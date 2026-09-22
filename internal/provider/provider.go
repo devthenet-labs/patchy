@@ -20,6 +20,22 @@ import (
 // drift.
 const BrokerTokenHeader = "X-Patchy-Broker-Token"
 
+// PlaceholderAuthEnv and PlaceholderAuthToken are the fixed, non-secret auth
+// token internal/jobs sets on every brokered claude pod. The claude CLI
+// (2.1.263 onward) refuses to start — "Not logged in · Please run /login" —
+// unless some API key or auth token is present in its environment, but a
+// brokered pod deliberately holds no model credential. This value satisfies
+// that start-up gate and nothing else: the egress broker strips every
+// inbound Authorization and x-api-key header before injecting the real
+// credential, so the placeholder never leaves the broker. It is a literal in
+// the Job spec (never a Secret), and only patchy sets it: the env name is
+// one of claude's own credential channels, which internal/jobs reserves
+// against Config.Env and filters out of the per-runner Env.
+const (
+	PlaceholderAuthEnv   = "ANTHROPIC_AUTH_TOKEN"
+	PlaceholderAuthToken = "patchy-brokered-placeholder"
+)
+
 // Provider names — the model APIs a brokered claude runner can front.
 const (
 	Anthropic = "anthropic"

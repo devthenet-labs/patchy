@@ -5,9 +5,11 @@ package provider
 
 import (
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/bitwise-media-group/patchy/internal/harness"
 	"github.com/bitwise-media-group/patchy/internal/model"
 )
 
@@ -32,6 +34,8 @@ func TestValidate(t *testing.T) {
 			ExtraEnv: map[string]string{"ANTHROPIC_API_KEY": "sk"}}, "cannot be set here"},
 		{"gateway extra env", Config{Name: Anthropic, BrokerURL: broker,
 			ExtraEnv: map[string]string{"ANTHROPIC_BASE_URL": "https://elsewhere"}}, "cannot be set here"},
+		{"placeholder extra env", Config{Name: Anthropic, BrokerURL: broker,
+			ExtraEnv: map[string]string{PlaceholderAuthEnv: "operator-token"}}, "cannot be set here"},
 		{"benign extra env", Config{Name: Anthropic, BrokerURL: broker,
 			ExtraEnv: map[string]string{"HTTPS_PROXY": "http://proxy"}}, ""},
 	}
@@ -203,6 +207,24 @@ func TestEffectiveModelMap(t *testing.T) {
 			t.Errorf("map = %v, want %v", got, mm)
 		}
 	})
+}
+
+// TestPlaceholderAuthChannel: the placeholder rides one of claude's own
+// credential channels, which is what keeps it patchy-owned — internal/jobs
+// reserves and filters every such channel, so no operator env reaches it —
+// and the gateway env never emits it (jobs sets it on brokered pods only).
+func TestPlaceholderAuthChannel(t *testing.T) {
+	if !slices.Contains(harness.NewClaude().EnvKeys(), PlaceholderAuthEnv) {
+		t.Errorf("%s is not a claude credential channel", PlaceholderAuthEnv)
+	}
+	if PlaceholderAuthToken == "" || !strings.Contains(PlaceholderAuthToken, "placeholder") {
+		t.Errorf("PlaceholderAuthToken = %q, want a self-describing non-secret", PlaceholderAuthToken)
+	}
+	for _, name := range Names {
+		if _, ok := Env(Config{Name: name, BrokerURL: broker}, nil)[PlaceholderAuthEnv]; ok {
+			t.Errorf("provider %s gateway env emits %s; only internal/jobs sets it", name, PlaceholderAuthEnv)
+		}
+	}
 }
 
 func TestValidateCoverage(t *testing.T) {

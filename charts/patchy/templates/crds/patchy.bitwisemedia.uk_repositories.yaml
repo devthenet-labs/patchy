@@ -9,7 +9,7 @@ metadata:
     {{- if .Values.crds.keep }}
     helm.sh/resource-policy: keep
     {{- end }}
-    controller-gen.kubebuilder.io/version: v0.21.0
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: repositories.patchy.bitwisemedia.uk
 spec:
   group: patchy.bitwisemedia.uk
@@ -33,6 +33,10 @@ spec:
       type: string
     - jsonPath: .status.resolvedSHA
       name: SHA
+      priority: 1
+      type: string
+    - jsonPath: .status.runnerImage.image
+      name: Image
       priority: 1
       type: string
     - jsonPath: .metadata.creationTimestamp
@@ -119,8 +123,9 @@ spec:
                 type: object
               conditions:
                 description: |-
-                  Conditions of the repository (Ready: artifact available; Stalled:
-                  cannot clone or artifact over the size cap).
+                  Conditions of the repository (Ready: artifact available and, when the
+                  tree declares a runner image, that image resolved; Stalled: cannot
+                  clone, artifact over the size cap, or runner image rejected).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -196,6 +201,61 @@ spec:
                   ResolvedSHA is the commit the artifact is pinned to; investigation and
                   remediation both work this exact tree, and it is the push base.
                 type: string
+              runnerImage:
+                description: |-
+                  RunnerImage is the repository-declared agent image, pinned to a digest
+                  exactly once beside ResolvedSHA (source-controller). Nil when the tree
+                  declares none or the feature is disabled.
+                properties:
+                  declared:
+                    description: |-
+                      Declared is the reference exactly as the declaring file names it, in
+                      tag or digest form.
+                    type: string
+                  image:
+                    description: |-
+                      Image is the digest-pinned reference (name@sha256:...) that was
+                      checked, verified and recorded; a launching Job runs exactly this.
+                      Empty when the declaration was rejected.
+                    type: string
+                  manifest:
+                    description: |-
+                      Manifest is the repository-relative path of the declaring file:
+                      ".patchy/agent.yaml" or ".devcontainer/devcontainer.json". It is the
+                      one record of which file won the precedence, so no separate source
+                      field exists; empty when neither file exists.
+                    type: string
+                  message:
+                    description: |-
+                      Message is the human-readable explanation behind Rejected, mirrored
+                      from the Stalled condition so the tracking issue can quote it.
+                    maxLength: 4096
+                    type: string
+                  rejected:
+                    description: |-
+                      Rejected is the short reason the declaration failed policy (the
+                      RunnerImageRejected condition's detail, e.g. not allowlisted, unsigned,
+                      oversized); empty when the image was accepted. A rejected Repository
+                      keeps its artifact, so a human-revived finding runs on the default
+                      image with this recorded.
+                    type: string
+                  resolvedAt:
+                    description: ResolvedAt is when resolution finished, accepted
+                      or rejected.
+                    format: date-time
+                    type: string
+                  searchPath:
+                    description: |-
+                      SearchPath is the image's sanitized PATH: absolute entries only, no
+                      empty component, the runc default when the image config carries none.
+                      The Job prepends its own binary directory to it.
+                    type: string
+                  verified:
+                    description: |-
+                      Verified reports that a signature by the operator's cosign key was
+                      checked against Image; false when the operator allows unsigned images.
+                    type: boolean
+                type: object
             type: object
         required:
         - spec

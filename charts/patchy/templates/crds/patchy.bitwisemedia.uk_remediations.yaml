@@ -9,7 +9,7 @@ metadata:
     {{- if .Values.crds.keep }}
     helm.sh/resource-policy: keep
     {{- end }}
-    controller-gen.kubebuilder.io/version: v0.21.0
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: remediations.patchy.bitwisemedia.uk
 spec:
   group: patchy.bitwisemedia.uk
@@ -322,6 +322,35 @@ spec:
                 description: Report is the full remediation report markdown.
                 maxLength: 65536
                 type: string
+              runnerImage:
+                description: |-
+                  RunnerImage is the image the Job actually launched on, written beside
+                  JobRef from what the Job client returned; the changeset validator
+                  applies its repository-image rules on this Source.
+                properties:
+                  image:
+                    description: Image is the digest-pinned reference the pod ran.
+                    type: string
+                  manifest:
+                    description: |-
+                      Manifest is the declaring file's repository-relative path, copied from
+                      the Repository at launch when Source is "repository" so the tracking
+                      issue and describe can name the file; empty otherwise.
+                    type: string
+                  source:
+                    description: |-
+                      Source is RunnerImageSourceRepository when the image came from the
+                      Repository's declaration and RunnerImageSourceDefault when the
+                      per-harness runner image ran (nothing declared, a non-claude harness,
+                      the kill switch).
+                    enum:
+                    - repository
+                    - default
+                    type: string
+                required:
+                - image
+                - source
+                type: object
               stage:
                 description: Stage is the agent accounting for the run.
                 properties:
@@ -351,7 +380,10 @@ spec:
                     description: |-
                       Outcome is the envelope outcome vocabulary (ok, runtime_error, timeout,
                       budget_exceeded, report_missing, report_invalid, commit_failed,
-                      changeset_too_large) plus "aborted" for a run killed with no envelope.
+                      changeset_too_large, image_incompatible, changeset_rejected) plus
+                      "aborted" for a run killed with no envelope. The pod never emits
+                      changeset_rejected: the remediation collector sets it when a changeset
+                      fails validation before any forge call.
                     type: string
                   sessionID:
                     description: SessionID of the harness session.

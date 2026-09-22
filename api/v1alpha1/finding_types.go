@@ -333,6 +333,10 @@ type InvestigationSummary struct {
 	// the approving human can see what they are authorizing.
 	// +optional
 	Estimate *AgentEstimate `json:"estimate,omitempty"`
+	// RunnerImage the investigation ran on, mirrored from the child for the
+	// projection (the tracking issue's sticky comment and the status page).
+	// +optional
+	RunnerImage *RunnerImageRef `json:"runnerImage,omitempty"`
 	// CompletedAt is when the investigation finished.
 	// +optional
 	CompletedAt *metav1.Time `json:"completedAt,omitempty"`

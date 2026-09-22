@@ -14,9 +14,11 @@ carries an unguessable 128-bit id, the Job pins the sha256 digest, and the init 
 and synthesizing the local git base. And for the claude runner there is no model key either: the broker injects or signs
 the model credential outbound, and the pod authenticates to it with an audience-bound projected ServiceAccount token —
 **an identity document, not a capability**: it names the pod to the broker and is honoured nowhere else, so exfiltrating
-it buys model access through an audited chokepoint and nothing more. The per-Job Secret carries only handoff markdown,
-and `internal/jobs` lists `GITHUB_TOKEN` (and every other credential channel) as a reserved env name so no configuration
-can smuggle a credential in.
+it buys model access through an audited chokepoint and nothing more. The one auth-shaped value the claude pod does carry
+is a fixed, non-secret placeholder `ANTHROPIC_AUTH_TOKEN=patchy-brokered-placeholder`, set only by patchy because the
+CLI refuses to start without some token; the broker strips it with every other inbound credential header, so it is worth
+nothing. The per-Job Secret carries only handoff markdown, and `internal/jobs` lists `GITHUB_TOKEN` (and every other
+credential channel) as a reserved env name so no configuration can smuggle a credential in.
 
 | Credential                                          | Where it lives                                                                      | Who sees it                                                                                                                |
 | --------------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |

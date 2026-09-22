@@ -162,7 +162,9 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   (frontmatter schemas in, JSONL events out); `agentresult` converts envelope results onto CR status.
 - `jobs` — the Kubernetes Job the agent runs in. The isolation model lives here, and it STRENGTHENED with the
   broker: a brokered (claude) pod holds no credential of any kind — its projected SA token (audience-bound,
-  agent container only, never the init) is an identity document, not a capability — while non-brokered runners
+  agent container only, never the init) is an identity document, not a capability; its fixed, non-secret
+  `ANTHROPIC_AUTH_TOKEN` placeholder (`provider.PlaceholderAuthToken`) exists only to get past the CLI's login
+  gate and is stripped by the broker — while non-brokered runners
   keep the one SecretKeyRef; the init container fetches the digest-verified artifact tarball, identity-free.
   `reservedEnv` covers every credential channel plus the provider gateway names; `Runner.Env` is the per-runner
   gateway env (wins over `Config.Env`, can never name a credential). `eval.go` is the evaluation Job flavour

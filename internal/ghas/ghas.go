@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -108,11 +109,15 @@ func (h *Handler) Resolve(ctx context.Context, alerts []source.AlertRef, v sourc
 type delivery struct {
 	Action string `json:"action"`
 	Alert  struct {
-		Number int `json:"number"`
+		Number             int `json:"number"`
+		MostRecentInstance struct {
+			Ref string `json:"ref"`
+		} `json:"most_recent_instance"`
 	} `json:"alert"`
 	Repository struct {
-		Name  string `json:"name"`
-		Owner struct {
+		Name          string `json:"name"`
+		DefaultBranch string `json:"default_branch"`
+		Owner         struct {
 			Login string `json:"login"`
 		} `json:"owner"`
 	} `json:"repository"`
@@ -135,6 +140,13 @@ func (h *Handler) Findings(ctx context.Context, event string, payload []byte) ([
 	if repo.Owner == "" || repo.Name == "" || d.Alert.Number == 0 {
 		return nil, fmt.Errorf("ghas: %s payload missing repository or alert number", EventType)
 	}
+	ref := d.Alert.MostRecentInstance.Ref
+	if skip, reason := offDefaultBranch(ref, d.Repository.DefaultBranch); skip {
+		slog.Default().LogAttrs(ctx, slog.LevelInfo, "ghas alert skipped",
+			slog.String("repo", repo.String()), slog.Int("alert", d.Alert.Number),
+			slog.String("ref", ref), slog.String("reason", reason))
+		return nil, nil
+	}
 
 	alert, err := h.alerts.GetAlert(ctx, repo, d.Alert.Number)
 	if err != nil {
@@ -142,6 +154,39 @@ func (h *Handler) Findings(ctx context.Context, event string, payload []byte) ([
 	}
 
 	return []source.Finding{FindingFromAlert(repo, alert)}, nil
+}
+
+// offDefaultBranch reports whether an alert instance found on ref should be
+// skipped because it is not on the repository's default branch, and why.
+// Only default-branch alerts are findings: an alert on any other ref —
+// patchy's own patchy/<finding> remediation branches, or the
+// refs/pull/<n>/{merge,head} refs CodeQL analyses pull requests on — is
+// CodeQL judging an unmerged change, and ingesting it would turn a rejected
+// fix into the next generation of the same finding, which opens another PR,
+// which CodeQL rejects again.
+//
+// A missing ref or default branch is "unknown", and unknown ingests (fail
+// open): dropping a genuine default-branch alert because a payload omitted a
+// field is worse than the occasional off-branch finding, which humans or the
+// investigation can still dismiss.
+func offDefaultBranch(ref, defaultBranch string) (skip bool, reason string) {
+	if ref == "" || defaultBranch == "" {
+		return false, ""
+	}
+	if strings.HasPrefix(ref, "refs/pull/") {
+		return true, "pull request ref"
+	}
+	branch, ok := strings.CutPrefix(ref, "refs/heads/")
+	if !ok {
+		if strings.HasPrefix(ref, "refs/") {
+			return false, "" // not a branch (a tag, say): unknown, ingest
+		}
+		branch = ref // a bare branch name
+	}
+	if branch != defaultBranch {
+		return true, "not the default branch " + defaultBranch
+	}
+	return false, ""
 }
 
 // FindingFromAlert normalizes one code-scanning alert into the

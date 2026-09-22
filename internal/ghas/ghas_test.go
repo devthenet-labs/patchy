@@ -100,6 +100,60 @@ func TestFindingsSkips(t *testing.T) {
 	}
 }
 
+// refPayload is a created delivery whose most recent instance sits on ref,
+// in a repository whose default branch is main. An empty ref omits the
+// instance's ref field entirely.
+func refPayload(ref string) string {
+	inst := `{}`
+	if ref != "" {
+		inst = `{"ref":"` + ref + `"}`
+	}
+	return `{"action":"created","alert":{"number":7,"most_recent_instance":` + inst + `},
+		"repository":{"name":"shop","owner":{"login":"acme"},"default_branch":"main"}}`
+}
+
+// TestFindingsRefFilter pins the default-branch-only ingest: an alert raised
+// on any other ref (patchy's own remediation branches, or the PR merge refs
+// CodeQL analyses) must not become a finding, or a rejected fix loops back in
+// as the next generation of the same finding.
+func TestFindingsRefFilter(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		ingest  bool
+	}{
+		{"default branch ref is ingested", refPayload("refs/heads/main"), true},
+		{"patchy remediation branch is skipped", refPayload("refs/heads/patchy/finding-x"), false},
+		{"pull request merge ref is skipped", refPayload("refs/pull/7/merge"), false},
+		{"pull request head ref is skipped", refPayload("refs/pull/7/head"), false},
+		{"missing ref fails open", refPayload(""), true},
+		{"missing default branch fails open", `{"action":"created",
+			"alert":{"number":7,"most_recent_instance":{"ref":"refs/heads/feature"}},
+			"repository":{"name":"shop","owner":{"login":"acme"}}}`, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			alerts := &fakeAlerts{alert: testAlert()}
+			got, err := New(alerts).Findings(context.Background(), "code_scanning_alert", []byte(tt.payload))
+			if err != nil {
+				t.Fatalf("Findings() error = %v", err)
+			}
+			if tt.ingest {
+				if len(got) != 1 || got[0].AlertNumber != 7 {
+					t.Errorf("Findings() = %+v, want alert 7 ingested", got)
+				}
+				return
+			}
+			if got != nil {
+				t.Errorf("Findings() = %+v, want nil for an off-default-branch alert", got)
+			}
+			if alerts.calls != 0 {
+				t.Errorf("GetAlert called %d times for a skipped delivery", alerts.calls)
+			}
+		})
+	}
+}
+
 func TestFindingsErrors(t *testing.T) {
 	tests := []struct {
 		name    string

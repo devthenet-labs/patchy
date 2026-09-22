@@ -44,7 +44,10 @@ an issue; one with only `issues` is a tracking surface for findings that arrived
 how a [Google Cloud SCC](google-scc.md) estate gets its tracking issues.
 
 Only `created` and `reopened` alert actions produce a finding. `fixed`, `closed_by_user`, `appeared_in_branch` and the
-rest are state GitHub already manages.
+rest are state GitHub already manages. Only alerts on the repository's default branch are ingested: an alert whose most
+recent instance is on another branch (including patchy's own `patchy/<finding>` remediation branches) or on a
+pull-request ref (`refs/pull/<n>/merge`) is skipped, so a fix CodeQL rejects on its PR cannot loop back in as a new
+finding.
 
 ## What patchy keeps
 

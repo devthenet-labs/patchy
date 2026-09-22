@@ -574,6 +574,106 @@ func TestInvestigationFailures(t *testing.T) {
 	}
 }
 
+// TestRuntimeErrorDetailCarriesEvidence pins the evidence a crashed CLI
+// leaves behind onto the runtime-error detail: a CLI that segfaults before
+// writing stdout used to surface only as "empty CLI output", with the exit
+// status and stderr that named the crash logged at debug level inside the
+// pod. Both stages report the same way; stderr is bounded and scrubbed of
+// credential values before it leaves the pod.
+func TestRuntimeErrorDetailCarriesEvidence(t *testing.T) {
+	const secret = "sk-test-0123456789abcdef"
+	t.Setenv("EXAMPLE_API_KEY", secret)
+	long := strings.Repeat("x", 10<<10) + "\nEND"
+
+	tests := []struct {
+		name      string
+		result    runner.Result
+		want      string // exact detail, when set
+		contains  []string
+		absent    []string
+		maxStderr int // bound on the stderr part of the detail, when set
+	}{
+		{
+			name:   "segfault with stderr",
+			result: runner.Result{ExitCode: 139, StderrTail: "Segmentation fault (core dumped)"},
+			want:   "empty CLI output (exit status 139; stderr: Segmentation fault (core dumped))",
+		},
+		{
+			name:   "signal death names the signal",
+			result: runner.Result{ExitCode: -1, ExitStatus: "signal: segmentation fault (core dumped)"},
+			want:   "empty CLI output (signal: segmentation fault (core dumped))",
+		},
+		{
+			name:   "clean exit without stderr keeps the bare reason",
+			result: runner.Result{},
+			want:   "empty CLI output",
+		},
+		{
+			name:     "stderr echoing a credential is scrubbed",
+			result:   runner.Result{ExitCode: 1, StderrTail: "auth failed for key " + secret},
+			contains: []string{"exit status 1", "auth failed for key «redacted»"},
+			absent:   []string{secret},
+		},
+		{
+			name:      "long stderr keeps only a bounded tail",
+			result:    runner.Result{ExitCode: 2, StderrTail: long},
+			contains:  []string{"exit status 2", "END)"},
+			maxStderr: 2<<10 + len("…"),
+		},
+	}
+	for _, phase := range []Phase{PhaseInvestigate, PhaseRemediate} {
+		for _, tt := range tests {
+			t.Run(string(phase)+"/"+tt.name, func(t *testing.T) {
+				var out bytes.Buffer
+				cfg, ws := remediateConfig(t, goodInvestigation, &out)
+				cfg.Phase = phase
+				fx := &fakeExec{steps: []step{{ws: ws, stdout: "", result: tt.result}}}
+
+				if err := New(cfg, fx).Run(context.Background()); err != nil {
+					t.Fatalf("Run() error = %v", err)
+				}
+				evs := events(t, out.String())
+				if len(evs) != 1 {
+					t.Fatalf("events = %d, want 1:\n%s", len(evs), out.String())
+				}
+				var outcome envelope.Outcome
+				var detail string
+				switch phase {
+				case PhaseInvestigate:
+					outcome, detail = evs[0].Investigation.Outcome, evs[0].Investigation.Detail
+				default:
+					outcome, detail = evs[0].Remediation.Outcome, evs[0].Remediation.Detail
+				}
+				if outcome != envelope.OutcomeRuntimeError {
+					t.Fatalf("outcome = %q, want %q (detail: %q)", outcome, envelope.OutcomeRuntimeError, detail)
+				}
+				if tt.want != "" && detail != tt.want {
+					t.Errorf("detail = %q, want %q", detail, tt.want)
+				}
+				for _, s := range tt.contains {
+					if !strings.Contains(detail, s) {
+						t.Errorf("detail = %q, want it to contain %q", detail, s)
+					}
+				}
+				for _, s := range tt.absent {
+					if strings.Contains(detail, s) {
+						t.Errorf("detail = %q, must not contain %q", detail, s)
+					}
+				}
+				if tt.maxStderr > 0 {
+					_, tail, ok := strings.Cut(detail, "stderr: ")
+					if !ok {
+						t.Fatalf("detail = %q, want a stderr tail", detail)
+					}
+					if n := len(strings.TrimSuffix(tail, ")")); n > tt.maxStderr {
+						t.Errorf("stderr tail = %d bytes, want <= %d", n, tt.maxStderr)
+					}
+				}
+			})
+		}
+	}
+}
+
 // remediateConfig builds a PhaseRemediate config over a workspace seeded
 // with the given analysis handoff.
 func remediateConfig(t *testing.T, analysis string, out io.Writer) (Config, string) {

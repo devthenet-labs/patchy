@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/bitwise-media-group/patchy/internal/envelope"
 	"github.com/bitwise-media-group/patchy/internal/harness"
@@ -171,7 +173,7 @@ func (a *Agent) remediate(ctx context.Context, params remediationParams) *envelo
 		ev.Detail = res.AbortReason
 		return ev
 	}
-	if outcome, detail := stageOutcome(h, res, runErr); outcome != envelope.OutcomeOK {
+	if outcome, detail := stageOutcome(h, res, runErr, credentialValues(h, a.scrub...)); outcome != envelope.OutcomeOK {
 		ev.Outcome, ev.Detail = outcome, detail
 		return ev
 	}
@@ -402,7 +404,7 @@ func (a *Agent) investigate(ctx context.Context) *envelope.Investigation {
 		ev.Detail = res.AbortReason
 		return ev
 	}
-	if outcome, detail := stageOutcome(h, res, runErr); outcome != envelope.OutcomeOK {
+	if outcome, detail := stageOutcome(h, res, runErr, credentialValues(h, a.scrub...)); outcome != envelope.OutcomeOK {
 		ev.Outcome, ev.Detail = outcome, detail
 		return ev
 	}
@@ -604,8 +606,10 @@ func (a *Agent) fillStage(st *envelope.Stage, h harness.Harness, res runner.Resu
 // gate into an outcome; OK means the stage's report can be trusted to exist.
 // A run that exhausted its turn or token limit is reported as budget
 // exceeded rather than a generic runtime error — it names the cause, and it
-// is the same outcome the runner's own kill switch raises.
-func stageOutcome(h harness.Harness, res runner.Result, runErr error) (envelope.Outcome, string) {
+// is the same outcome the runner's own kill switch raises. A runtime error
+// carries the process's exit status and scrubbed stderr tail (runEvidence);
+// secrets are the credential values to scrub from it.
+func stageOutcome(h harness.Harness, res runner.Result, runErr error, secrets []string) (envelope.Outcome, string) {
 	if runErr != nil {
 		return envelope.OutcomeRuntimeError, runErr.Error()
 	}
@@ -616,9 +620,51 @@ func stageOutcome(h harness.Harness, res runner.Result, runErr error) (envelope.
 		if b, ok := h.(harness.BudgetReporter); ok && b.Exhausted(res.Stdout) {
 			return envelope.OutcomeBudgetExceeded, msg
 		}
-		return envelope.OutcomeRuntimeError, msg
+		return envelope.OutcomeRuntimeError, msg + runEvidence(res, secrets)
 	}
 	return envelope.OutcomeOK, ""
+}
+
+// stderrDetailBytes bounds the stderr tail a runtime-error detail carries: it
+// lands on CR status and in a tracking-issue comment, so it stays short.
+const stderrDetailBytes = 2 << 10
+
+// runEvidence renders how the CLI process ended and the tail of its stderr as
+// a parenthesised suffix for a runtime-error detail, or "" when there is
+// nothing to add. A CLI that crashes before writing stdout (a segfault, a
+// missing library) leaves no other trace outside the pod; without this its
+// failure reads only "empty CLI output". The tail is scrubbed of credential
+// values first, since stderr can echo the environment.
+func runEvidence(res runner.Result, secrets []string) string {
+	var parts []string
+	switch {
+	case res.ExitStatus != "":
+		parts = append(parts, res.ExitStatus)
+	case res.ExitCode != 0:
+		parts = append(parts, fmt.Sprintf("exit status %d", res.ExitCode))
+	}
+	if tail := stderrTail(transcript.Scrub(res.StderrTail, secrets)); tail != "" {
+		parts = append(parts, "stderr: "+tail)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, "; ") + ")"
+}
+
+// stderrTail keeps the last stderrDetailBytes of s, cut on a rune boundary
+// and marked with a leading ellipsis when shortened, with surrounding
+// whitespace trimmed.
+func stderrTail(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= stderrDetailBytes {
+		return s
+	}
+	cut := len(s) - stderrDetailBytes
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return "…" + strings.TrimLeftFunc(s[cut:], unicode.IsSpace)
 }
 
 // emit writes one envelope event to the runner's stdout.

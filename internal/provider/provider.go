@@ -20,6 +20,14 @@ import (
 // drift.
 const BrokerTokenHeader = "X-Patchy-Broker-Token"
 
+// LimitMessagePrefix opens the error message of every 429 the egress broker
+// returns for a spend limit it enforces on a pod's behalf (requests, tokens,
+// concurrency, the hourly ceiling, the max_tokens ceiling). The in-pod
+// runtime maps a CLI failure carrying it to budget_exceeded, so the prefix
+// is a contract between the two sides and is defined here for the same
+// reason BrokerTokenHeader is.
+const LimitMessagePrefix = "egress broker: per-pod limit"
+
 // PlaceholderAuthEnv and PlaceholderAuthToken are the fixed, non-secret auth
 // token internal/jobs sets on every brokered claude pod. The claude CLI
 // (2.1.263 onward) refuses to start — "Not logged in · Please run /login" —

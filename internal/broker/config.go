@@ -9,7 +9,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/bitwise-media-group/patchy/internal/provider"
 )
 
 // Default knob values, applied by Config.withDefaults.
@@ -21,9 +26,29 @@ const (
 	DefaultVerdictTTL = time.Minute
 	// DefaultPingInterval is the SSE idle keep-alive period.
 	DefaultPingInterval = 30 * time.Second
-	// DefaultMaxRequestBytes caps a buffered (SigV4-signed) request body.
+	// DefaultMaxRequestBytes caps a buffered request body on a
+	// payload-signing route (bedrock).
 	DefaultMaxRequestBytes = 10 << 20
+	// DefaultMaxAnthropicRequestBytes caps a buffered request body on every
+	// other route. Every route buffers, so the body can be inspected before
+	// it is forwarded.
+	DefaultMaxAnthropicRequestBytes = 2 << 20
 )
+
+// DefaultBetaDenylist is the anthropic-beta entries stripped when
+// Config.BetaDenylist is nil: the betas that would have the upstream reach
+// MCP servers, the web, a code-execution container or the Files API on the
+// pod's behalf, plus the 1M context window (a spend multiplier). A
+// deny-list rather than an allowlist because the CLI's beta set changes
+// every release.
+var DefaultBetaDenylist = []string{"mcp-client-*", "web-fetch-*", "code-execution-*", "files-api-*", "context-1m-*"}
+
+// HelperModelFamilies are the model families the claude CLI calls for its
+// own helper turns (summaries, titles) in every run. They are admitted
+// beside any configured Limits.ModelAllowlist, so an allowlist naming only
+// the stage models does not break every run; an entry matches a wire id
+// equal to it or continuing with "-".
+var HelperModelFamilies = []string{"claude-haiku"}
 
 // CredentialFunc attaches the upstream credential to one outbound request:
 // inject an API key header, attach an OAuth bearer, or SigV4-sign. It runs on
@@ -37,13 +62,46 @@ type Upstream struct {
 	Target *url.URL
 	// Credential attaches the upstream credential; nil forwards unmodified.
 	Credential CredentialFunc
-	// BufferBody buffers the request body in memory (bounded by
-	// Config.MaxRequestBytes) before forwarding — required when Credential
-	// hashes the payload, as SigV4 does.
+	// BufferBody marks a route whose Credential hashes the payload, as
+	// SigV4 does; its bodies are bounded by Config.MaxRequestBytes rather
+	// than MaxAnthropicRequestBytes. Every route buffers regardless, so the
+	// body can be inspected.
 	BufferBody bool
 	// Ready reports whether the route's credential source is usable; readyz
 	// fails while any configured route's is not. Nil means always ready.
 	Ready func(ctx context.Context) error
+}
+
+// Limits is the spend and capability bound the broker enforces per caller
+// pod (the identity TokenReview reports) and broker-wide. Under an untrusted
+// agent image the in-pod kill switch is advisory and the caller token is
+// readable by anything in the pod, so this is the enforcement point. A zero
+// value disables that limit; an empty ModelAllowlist admits every model.
+type Limits struct {
+	// RequestsPerPod caps the requests one pod may make in its lifetime.
+	RequestsPerPod int64
+	// ConcurrentPerPod caps a pod's in-flight requests.
+	ConcurrentPerPod int64
+	// TokensPerPod caps the tokens (input, cache creation, cache read and
+	// output; the request-size estimate for a cut or usage-less response)
+	// charged to one pod.
+	TokensPerPod int64
+	// TokensPerHour is the broker-wide trailing-hour token ceiling, the
+	// backstop against attacker-minted findings.
+	TokensPerHour int64
+	// MaxTokensCeiling caps a request's max_tokens.
+	MaxTokensCeiling int64
+	// ModelAllowlist is the model ids a pod may name, in canonical
+	// ("anthropic/claude-sonnet-5") or wire form; dated and versioned
+	// variants of an entry match, and HelperModelFamilies are always
+	// admitted beside it.
+	ModelAllowlist []string
+}
+
+// perPod reports whether any per-pod limit is configured, in which case a
+// token whose review lacks the bound pod name is rejected outright.
+func (l Limits) perPod() bool {
+	return l.RequestsPerPod > 0 || l.ConcurrentPerPod > 0 || l.TokensPerPod > 0
 }
 
 // Config configures the broker engine.
@@ -59,8 +117,26 @@ type Config struct {
 	// PingInterval is the SSE idle keep-alive period; 0 takes the default,
 	// negative disables ping injection (pure passthrough).
 	PingInterval time.Duration
-	// MaxRequestBytes caps a buffered request body (BufferBody routes).
+	// MaxRequestBytes caps a buffered request body on BufferBody routes.
 	MaxRequestBytes int64
+	// MaxAnthropicRequestBytes caps a buffered request body on every other
+	// route.
+	MaxAnthropicRequestBytes int64
+	// Limits is the per-pod and broker-wide enforcement; zero values are
+	// off.
+	Limits Limits
+	// BetaDenylist is the anthropic-beta patterns (path.Match globs) to
+	// strip: nil takes DefaultBetaDenylist, an empty non-nil slice strips
+	// nothing.
+	BetaDenylist []string
+	// PreauthRequestsPerSecond and PreauthBurst are the per-source-IP token
+	// bucket ahead of authentication; the burst is also the per-IP in-flight
+	// cap. Zero disables.
+	PreauthRequestsPerSecond float64
+	PreauthBurst             int
+	// TokenReviewsPerSecond bounds TokenReview calls broker-wide, with a
+	// short queue; zero disables.
+	TokenReviewsPerSecond float64
 	// Upstreams is the route table, keyed by path prefix
 	// ("anthropic"/"bedrock"/"vertex"/"foundry").
 	Upstreams map[string]Upstream
@@ -80,6 +156,12 @@ func (c Config) withDefaults() Config {
 	if c.MaxRequestBytes <= 0 {
 		c.MaxRequestBytes = DefaultMaxRequestBytes
 	}
+	if c.MaxAnthropicRequestBytes <= 0 {
+		c.MaxAnthropicRequestBytes = DefaultMaxAnthropicRequestBytes
+	}
+	if c.BetaDenylist == nil {
+		c.BetaDenylist = slices.Clone(DefaultBetaDenylist)
+	}
 	return c
 }
 
@@ -92,8 +174,29 @@ func (c Config) validate() error {
 		return errors.New("broker: agent namespace and service account are required")
 	}
 	for name, u := range c.Upstreams {
+		if !slices.Contains(provider.Names, name) {
+			return fmt.Errorf("broker: upstream %q is not one of %s", name, strings.Join(provider.Names, ", "))
+		}
 		if u.Target == nil {
 			return fmt.Errorf("broker: upstream %q has no target URL", name)
+		}
+	}
+	l := c.Limits
+	for name, v := range map[string]int64{
+		"requests per pod": l.RequestsPerPod, "concurrent per pod": l.ConcurrentPerPod,
+		"tokens per pod": l.TokensPerPod, "tokens per hour": l.TokensPerHour,
+		"max tokens ceiling": l.MaxTokensCeiling,
+	} {
+		if v < 0 {
+			return fmt.Errorf("broker: %s must not be negative", name)
+		}
+	}
+	if c.PreauthRequestsPerSecond < 0 || c.TokenReviewsPerSecond < 0 || c.PreauthBurst < 0 {
+		return errors.New("broker: pre-authentication rates must not be negative")
+	}
+	for _, p := range c.BetaDenylist {
+		if _, err := path.Match(p, ""); err != nil {
+			return fmt.Errorf("broker: beta deny pattern %q: %w", p, err)
 		}
 	}
 	return nil

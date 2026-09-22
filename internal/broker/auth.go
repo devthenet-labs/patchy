@@ -29,7 +29,7 @@ const podNameExtraKey = "authentication.kubernetes.io/pod-name"
 // identity is who a validated caller token belongs to.
 type identity struct {
 	user string // e.g. system:serviceaccount:patchy-agents:patchy-agent
-	pod  string // bound pod name, for audit; may be empty
+	pod  string // bound pod name: the audit and ledger key; may be empty
 }
 
 // verdict is one cached TokenReview outcome. Denials are cached too — a
@@ -43,24 +43,27 @@ type verdict struct {
 }
 
 // authenticator validates caller tokens via TokenReview, caching verdicts by
-// token hash for the configured TTL.
+// token hash for the configured TTL and, when configured, queueing behind a
+// broker-wide review limiter.
 type authenticator struct {
 	cs       kubernetes.Interface
 	audience string
 	subject  string // the only accepted username
 	ttl      time.Duration
+	reviews  *reviewLimiter // nil: unlimited
 	now      func() time.Time
 
 	mu    sync.Mutex
 	cache map[[sha256.Size]byte]verdict
 }
 
-func newAuthenticator(cs kubernetes.Interface, cfg Config) *authenticator {
+func newAuthenticator(cs kubernetes.Interface, cfg Config, reviews *reviewLimiter) *authenticator {
 	return &authenticator{
 		cs:       cs,
 		audience: cfg.Audience,
 		subject:  fmt.Sprintf("system:serviceaccount:%s:%s", cfg.AgentNamespace, cfg.AgentServiceAccount),
 		ttl:      cfg.VerdictTTL,
+		reviews:  reviews,
 		now:      time.Now,
 		cache:    map[[sha256.Size]byte]verdict{},
 	}
@@ -92,8 +95,13 @@ func (a *authenticator) authenticate(r *http.Request) (identity, error) {
 	return v.id, nil
 }
 
-// review asks the API server for a verdict on one token.
+// review asks the API server for a verdict on one token, waiting its turn
+// behind the review limiter first. A refused slot is not a verdict and is
+// not cached beyond now, like an unreachable API server.
 func (a *authenticator) review(r *http.Request, token string) verdict {
+	if err := a.reviews.admit(r.Context()); err != nil {
+		return verdict{allowed: false, reason: "token review throttled", expiry: a.now()}
+	}
 	expiry := a.now().Add(a.ttl)
 	tr, err := a.cs.AuthenticationV1().TokenReviews().Create(r.Context(), &authnv1.TokenReview{
 		Spec: authnv1.TokenReviewSpec{Token: token, Audiences: []string{a.audience}},

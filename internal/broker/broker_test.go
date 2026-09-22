@@ -5,6 +5,7 @@ package broker
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -32,9 +33,50 @@ const (
 	testSubject   = "system:serviceaccount:" + testNamespace + ":" + testSA
 )
 
+// tokenExp is a fixed far-future expiry so a minted token is byte-stable
+// across a test (the verdict cache keys on the token).
+const tokenExp = 4102444800 // 2100-01-01
+
+// tok mints a JWT-shaped, pod-bound token for the broker audience whose sub
+// claim drives the fake TokenReview: "good" authenticates as the agent SA
+// (pod agent-pod-1), "nopod" as the agent SA without a bound pod, "other" as
+// a foreign identity, everything else fails authentication. The signature
+// is junk: the shape check never verifies it, the fake reviewer never looks.
+func tok(sub string) string {
+	return tokWith(map[string]any{
+		"sub": sub, "aud": []string{DefaultAudience}, "exp": tokenExp,
+		"kubernetes.io": map[string]any{"pod": map[string]any{"name": "agent-pod-1"}},
+	})
+}
+
+func tokWith(claims map[string]any) string {
+	seg := func(v any) string {
+		b, _ := json.Marshal(v)
+		return base64.RawURLEncoding.EncodeToString(b)
+	}
+	return seg(map[string]string{"alg": "RS256"}) + "." + seg(claims) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte("sig"))
+}
+
+// tokenSub reads the sub claim back out of a minted token.
+func tokenSub(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Sub string `json:"sub"`
+	}
+	_ = json.Unmarshal(payload, &claims)
+	return claims.Sub
+}
+
 // fakeReviews wires a fake clientset whose TokenReview verdict is table-driven
-// by token value: "good" authenticates as the agent SA (pod agent-pod-1),
-// "other" as a foreign identity, everything else fails authentication.
+// by the token's sub claim (see tok).
 func fakeReviews(calls *atomic.Int64) *fake.Clientset {
 	cs := fake.NewClientset()
 	cs.PrependReactor("create", "tokenreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
@@ -43,7 +85,7 @@ func fakeReviews(calls *atomic.Int64) *fake.Clientset {
 		}
 		tr := action.(k8stesting.CreateAction).GetObject().(*authnv1.TokenReview)
 		out := tr.DeepCopy()
-		switch tr.Spec.Token {
+		switch tokenSub(tr.Spec.Token) {
 		case "good":
 			out.Status = authnv1.TokenReviewStatus{
 				Authenticated: true,
@@ -53,6 +95,11 @@ func fakeReviews(calls *atomic.Int64) *fake.Clientset {
 						podNameExtraKey: {"agent-pod-1"},
 					},
 				},
+			}
+		case "nopod":
+			out.Status = authnv1.TokenReviewStatus{
+				Authenticated: true,
+				User:          authnv1.UserInfo{Username: testSubject},
 			}
 		case "other":
 			out.Status = authnv1.TokenReviewStatus{
@@ -107,15 +154,26 @@ func TestAuthRequired(t *testing.T) {
 	}, nil)
 	h := s.Handler()
 
+	podClaim := map[string]any{"pod": map[string]any{"name": "agent-pod-1"}}
 	tests := []struct {
 		name  string
 		token string
 		want  int
 	}{
 		{"no token", "", http.StatusUnauthorized},
-		{"bad token", "expired", http.StatusUnauthorized},
-		{"foreign identity", "other", http.StatusUnauthorized},
-		{"agent identity", "good", http.StatusOK},
+		{"not a jwt", "expired", http.StatusUnauthorized},
+		{"wrong audience", tokWith(map[string]any{
+			"sub": "good", "aud": "other-audience", "exp": tokenExp, "kubernetes.io": podClaim,
+		}), http.StatusUnauthorized},
+		{"expired", tokWith(map[string]any{
+			"sub": "good", "aud": DefaultAudience, "exp": 1, "kubernetes.io": podClaim,
+		}), http.StatusUnauthorized},
+		{"not pod-bound", tokWith(map[string]any{
+			"sub": "good", "aud": DefaultAudience, "exp": tokenExp,
+		}), http.StatusUnauthorized},
+		{"unauthenticated", tok("expired"), http.StatusUnauthorized},
+		{"foreign identity", tok("other"), http.StatusUnauthorized},
+		{"agent identity", tok("good"), http.StatusOK},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -154,7 +212,7 @@ func TestVerdictCache(t *testing.T) {
 
 	for range 3 {
 		req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
-		req.Header.Set(TokenHeader, "good")
+		req.Header.Set(TokenHeader, tok("good"))
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -168,7 +226,7 @@ func TestVerdictCache(t *testing.T) {
 	// Denials are cached too: retrying a bad token must not add QPS.
 	for range 3 {
 		req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
-		req.Header.Set(TokenHeader, "expired")
+		req.Header.Set(TokenHeader, tok("expired"))
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {
@@ -196,7 +254,7 @@ func TestAnthropicInjectionAndStripping(t *testing.T) {
 	}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(`{}`))
-	req.Header.Set(TokenHeader, "good")
+	req.Header.Set(TokenHeader, tok("good"))
 	req.Header.Set("Authorization", "Bearer caller-supplied")
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
@@ -243,7 +301,7 @@ func TestAnthropicBearerMode(t *testing.T) {
 	}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(`{}`))
-	req.Header.Set(TokenHeader, "good")
+	req.Header.Set(TokenHeader, tok("good"))
 	req.Header.Set("Authorization", "Bearer caller-supplied")
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
@@ -288,7 +346,7 @@ func TestPlaceholderNeverForwarded(t *testing.T) {
 			}, nil)
 
 			req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(`{}`))
-			req.Header.Set(TokenHeader, "good")
+			req.Header.Set(TokenHeader, tok("good"))
 			req.Header.Set("Authorization", "Bearer "+provider.PlaceholderAuthToken)
 			req.Header.Set("x-api-key", provider.PlaceholderAuthToken)
 			rec := httptest.NewRecorder()
@@ -331,7 +389,7 @@ func TestBedrockSigning(t *testing.T) {
 	body := `{"anthropic_version":"bedrock-2023-05-31"}`
 	req := httptest.NewRequest(http.MethodPost,
 		"/bedrock/model/us.anthropic.claude-sonnet-5/invoke-with-response-stream", strings.NewReader(body))
-	req.Header.Set(TokenHeader, "good")
+	req.Header.Set(TokenHeader, tok("good"))
 	req.Header.Set("X-Amz-Security-Token", "caller-junk")
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
@@ -374,7 +432,7 @@ func TestBedrockBodyTooLarge(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/bedrock/model/m/invoke",
 		strings.NewReader(strings.Repeat("x", 64)))
-	req.Header.Set(TokenHeader, "good")
+	req.Header.Set(TokenHeader, tok("good"))
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusRequestEntityTooLarge {
@@ -392,7 +450,7 @@ func TestUpstreamErrorEnvelope(t *testing.T) {
 	}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", nil)
-	req.Header.Set(TokenHeader, "good")
+	req.Header.Set(TokenHeader, tok("good"))
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadGateway {
@@ -433,7 +491,7 @@ func TestSSEPingInjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set(TokenHeader, "good")
+	req.Header.Set(TokenHeader, tok("good"))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -471,7 +529,7 @@ func TestSSENoPingOnNonStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set(TokenHeader, "good")
+	req.Header.Set(TokenHeader, tok("good"))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -534,7 +592,7 @@ func TestAuditLine(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader("{}"))
-	req.Header.Set(TokenHeader, "good")
+	req.Header.Set(TokenHeader, tok("good"))
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 
@@ -542,7 +600,8 @@ func TestAuditLine(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &line); err != nil {
 		t.Fatalf("audit line is not JSON: %v: %s", err, buf.String())
 	}
-	for _, key := range []string{"pod", "route", "method", "path", "status", "duration", "bytes"} {
+	for _, key := range []string{"pod", "route", "method", "path", "status", "duration", "bytes",
+		"model", "tokens", "pod_requests", "pod_tokens"} {
 		if _, ok := line[key]; !ok {
 			t.Errorf("audit line missing %q: %s", key, buf.String())
 		}

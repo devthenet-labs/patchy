@@ -235,7 +235,8 @@ var evalBrokeredCommand = []string{"/bin/sh", "-c",
 // evalAgentContainer runs the in-pod evolve client. The pod IS the sandbox:
 // a non-brokered runner's only credential is the model key, injected through
 // the same Secret channel as the finding runners; a brokered runner gets no
-// credential at all — the gateway env plus the projected caller token.
+// credential at all — the gateway env plus the projected caller token (and
+// the non-secret placeholder the CLI's login gate demands).
 func (c *Client) evalAgentContainer(runner Runner, res corev1.ResourceRequirements) corev1.Container {
 	env := []corev1.EnvVar{
 		{Name: "HOME", Value: workspaceDir},
@@ -255,6 +256,7 @@ func (c *Client) evalAgentContainer(runner Runner, res corev1.ResourceRequiremen
 	switch {
 	case runner.Brokered:
 		command = evalBrokeredCommand
+		env = append(env, brokeredPlaceholderEnv())
 		mounts = append(mounts, corev1.VolumeMount{Name: volBrokerToken, MountPath: brokerTokenDir, ReadOnly: true})
 	case runner.Secret != "":
 		env = append(env, corev1.EnvVar{

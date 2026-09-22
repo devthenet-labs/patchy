@@ -581,9 +581,13 @@ func (c *Client) agentEnv(runner Runner, spec Spec) []corev1.EnvVar {
 	}
 
 	// A brokered runner authenticates to the egress broker with the
-	// projected caller token; no model credential enters the pod at all.
+	// projected caller token; no model credential enters the pod at all —
+	// only the fixed placeholder the CLI's login gate demands, which the
+	// broker strips.
 	if runner.Brokered {
-		return append(env, corev1.EnvVar{Name: "PATCHY_BROKER_TOKEN_FILE", Value: brokerTokenPath})
+		return append(env,
+			corev1.EnvVar{Name: "PATCHY_BROKER_TOKEN_FILE", Value: brokerTokenPath},
+			brokeredPlaceholderEnv())
 	}
 	// The fake runner needs no credential; the fixture replay authenticates
 	// nothing.
@@ -596,6 +600,14 @@ func (c *Client) agentEnv(runner Runner, spec Spec) []corev1.EnvVar {
 			Key:                  runner.SecretKey,
 		},
 	}})
+}
+
+// brokeredPlaceholderEnv is the non-secret auth token every brokered claude
+// container carries so the CLI starts (see provider.PlaceholderAuthToken).
+// It is set here and only here: the name is a reserved credential channel,
+// so neither Config.Env nor Runner.Env can set or shadow it.
+func brokeredPlaceholderEnv() corev1.EnvVar {
+	return corev1.EnvVar{Name: provider.PlaceholderAuthEnv, Value: provider.PlaceholderAuthToken}
 }
 
 func containerSecurity() *corev1.SecurityContext {

@@ -137,6 +137,9 @@ tarball from source-controller over the cluster network; claude model traffic go
 broker, authenticated by an audience-bound projected ServiceAccount token — an identity document, not a
 capability — so the broker (a trusted Deployment) is where the model credential or cloud workload identity
 lives, and claude egress collapses to DNS + the artifact server + the broker, all cluster-local. The optional
+The claude pod does carry one fixed, non-secret placeholder `ANTHROPIC_AUTH_TOKEN`
+(`patchy-brokered-placeholder`), set only by patchy, because the CLI refuses to start without some token; the
+broker strips it with every other inbound credential header. The optional
 non-brokered runners (codex/copilot) still carry their one model key, with NetworkPolicies (plus optional
 Cilium FQDN / Istio allowlists) restricting their egress to their model APIs. All GitHub side effects — issue
 projection, alert dismissal, branch push, pull requests — happen controller-side with short-lived,

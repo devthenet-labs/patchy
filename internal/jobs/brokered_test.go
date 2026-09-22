@@ -127,6 +127,55 @@ func TestBrokeredJobShape(t *testing.T) {
 	if _, ok := envs["ANTHROPIC_API_KEY"]; ok {
 		t.Error("credential channel leaked through the per-runner env")
 	}
+	assertPlaceholder(t, envs)
+}
+
+// assertPlaceholder checks a brokered agent container carries exactly the
+// fixed placeholder on the placeholder channel — a literal, never a Secret.
+func assertPlaceholder(t *testing.T, envs map[string]corev1.EnvVar) {
+	t.Helper()
+	got, ok := envs[provider.PlaceholderAuthEnv]
+	if !ok {
+		t.Fatalf("%s missing; the claude CLI refuses to start without it", provider.PlaceholderAuthEnv)
+	}
+	if got.Value != provider.PlaceholderAuthToken || got.ValueFrom != nil {
+		t.Errorf("%s = %+v, want the literal placeholder %q", provider.PlaceholderAuthEnv, got, provider.PlaceholderAuthToken)
+	}
+}
+
+// TestPlaceholderAuthToken: only patchy sets the placeholder, and only on
+// brokered runners. Neither the controller-global Config.Env nor the
+// per-runner Env can set or override that name, and a non-brokered runner
+// never gets it.
+func TestPlaceholderAuthToken(t *testing.T) {
+	tests := []struct {
+		name    string
+		harness string
+		want    bool // placeholder expected
+	}{
+		{name: "brokered claude", harness: "claude", want: true},
+		{name: "non-brokered codex", harness: "codex", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := brokeredConfig()
+			cfg.Env[provider.PlaceholderAuthEnv] = "operator-set"
+			claude := cfg.Runners["claude"]
+			claude.Env[provider.PlaceholderAuthEnv] = "runner-set"
+			cfg.Runners["claude"] = claude
+
+			spec := testSpec()
+			spec.Harness = tt.harness
+			envs := envMap(createJob(t, cfg, spec).Spec.Template.Spec.Containers[0])
+			if tt.want {
+				assertPlaceholder(t, envs)
+				return
+			}
+			if got, ok := envs[provider.PlaceholderAuthEnv]; ok {
+				t.Errorf("%s = %+v on a non-brokered runner, want absent", provider.PlaceholderAuthEnv, got)
+			}
+		})
+	}
 }
 
 func TestFindingTokenTTLFloor(t *testing.T) {
@@ -177,6 +226,9 @@ func TestNonBrokeredJobUnchanged(t *testing.T) {
 	envs := envMap(agent)
 	if _, ok := envs["PATCHY_BROKER_TOKEN_FILE"]; ok {
 		t.Error("non-brokered agent got PATCHY_BROKER_TOKEN_FILE")
+	}
+	if _, ok := envs[provider.PlaceholderAuthEnv]; ok {
+		t.Errorf("non-brokered agent got the %s placeholder", provider.PlaceholderAuthEnv)
 	}
 	sec := envs["OPENAI_API_KEY"]
 	if sec.ValueFrom == nil || sec.ValueFrom.SecretKeyRef == nil {
@@ -239,6 +291,7 @@ func TestBrokeredEvalJobShape(t *testing.T) {
 	if _, ok := envs["ANTHROPIC_API_KEY"]; ok {
 		t.Error("credential channel leaked into the eval env")
 	}
+	assertPlaceholder(t, envs)
 }
 
 func TestBrokeredEvalDeadlinePastTokenCap(t *testing.T) {

@@ -12,5 +12,7 @@
 // repository as a digest-verified tarball from source-controller's artifact
 // server and synthesizes the local git base; the per-Job Secret holds only
 // the handoff markdown. Results come back on the agent container's stdout
-// as envelope events, read once at Job completion.
+// as envelope events, read once at Job completion. Brokered claude pods also
+// carry a fixed, non-secret placeholder ANTHROPIC_AUTH_TOKEN (the CLI will not
+// start without one); the egress broker strips it and injects the real key.
 package jobs

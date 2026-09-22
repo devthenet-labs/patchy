@@ -51,25 +51,25 @@ labels:
 # job controllers stamp into the Jobs they create. `images:` does not rewrite
 # ConfigMap values, so an overlay that pins a runner image must patch BOTH.
 images:
-    - name: ghcr.io/bitwise-media-group/patchy/integration-controller
+    - name: ghcr.io/devthenet-labs/patchy/integration-controller
       newTag: latest
-    - name: ghcr.io/bitwise-media-group/patchy/source-controller
+    - name: ghcr.io/devthenet-labs/patchy/source-controller
       newTag: latest
-    - name: ghcr.io/bitwise-media-group/patchy/context-controller
+    - name: ghcr.io/devthenet-labs/patchy/context-controller
       newTag: latest
-    - name: ghcr.io/bitwise-media-group/patchy/investigation-controller
+    - name: ghcr.io/devthenet-labs/patchy/investigation-controller
       newTag: latest
-    - name: ghcr.io/bitwise-media-group/patchy/remediation-controller
+    - name: ghcr.io/devthenet-labs/patchy/remediation-controller
       newTag: latest
-    - name: ghcr.io/bitwise-media-group/patchy/evaluation-controller
+    - name: ghcr.io/devthenet-labs/patchy/evaluation-controller
       newTag: latest
-    - name: ghcr.io/bitwise-media-group/patchy/claude-agent-runner
+    - name: ghcr.io/devthenet-labs/patchy/claude-agent-runner
       newTag: latest
-    - name: ghcr.io/bitwise-media-group/patchy/codex-agent-runner
+    - name: ghcr.io/devthenet-labs/patchy/codex-agent-runner
       newTag: latest
-    - name: ghcr.io/bitwise-media-group/patchy/copilot-agent-runner
+    - name: ghcr.io/devthenet-labs/patchy/copilot-agent-runner
       newTag: latest
-    - name: ghcr.io/bitwise-media-group/patchy/status-server
+    - name: ghcr.io/devthenet-labs/patchy/status-server
       newTag: latest
-    - name: ghcr.io/bitwise-media-group/patchy/egress-broker
+    - name: ghcr.io/devthenet-labs/patchy/egress-broker
       newTag: latest

@@ -124,7 +124,7 @@ run = "./hack/dev-colima.sh"
 
 # The helm charts (charts/patchy = the stack, charts/patchy-config = the
 # Integration/Forge CRs) render the same stack as deploy/kustomize and are
-# published to oci://ghcr.io/bitwise-media-group/patchy/charts by
+# published to oci://ghcr.io/devthenet-labs/patchy/charts by
 # .github/workflows/helm.yaml on release. This is the local gate: lint plus a
 # render of every component combination the templates branch on.
 [helm-lint]

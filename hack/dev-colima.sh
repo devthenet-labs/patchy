@@ -40,13 +40,13 @@ mise run snapshot
 arch=$(uname -m)
 [ "$arch" = x86_64 ] && arch=amd64
 for app in integration-controller source-controller context-controller investigation-controller remediation-controller egress-broker claude-agent-runner codex-agent-runner copilot-agent-runner status-server; do
-  tag=$(docker images "ghcr.io/bitwise-media-group/patchy/$app" --format '{{.Tag}}' |
+  tag=$(docker images "ghcr.io/devthenet-labs/patchy/$app" --format '{{.Tag}}' |
     grep -- "-$arch$" | head -1)
   [ -n "$tag" ] || {
     echo "error: no snapshot image for $app ($arch)" >&2
     exit 1
   }
-  docker tag "ghcr.io/bitwise-media-group/patchy/$app:$tag" "patchy/$app:dev"
+  docker tag "ghcr.io/devthenet-labs/patchy/$app:$tag" "patchy/$app:dev"
 done
 
 # PATCHY_OVERLAY=dev-fake swaps in the credential-less stack: the scripted

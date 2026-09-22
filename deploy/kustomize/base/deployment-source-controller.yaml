@@ -42,7 +42,7 @@ spec:
                 - name: controller
                   # Built from Dockerfile.controller (repo root)
                   # (TARGET=source-controller in .goreleaser.yaml).
-                  image: ghcr.io/bitwise-media-group/patchy/source-controller:latest
+                  image: ghcr.io/devthenet-labs/patchy/source-controller:latest
                   args: ["serve"]
                   envFrom:
                       - configMapRef:

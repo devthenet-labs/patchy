@@ -7,7 +7,7 @@ in severity order, parses the `PATCHY-EVENT:` stream, stamps the results, and ro
 
 ```sh
 investigation-controller serve --namespace patchy \
-  --claude-agent-image ghcr.io/bitwise-media-group/patchy/claude-agent-runner:v0.9.0 # match your installed release
+  --claude-agent-image ghcr.io/devthenet-labs/patchy/claude-agent-runner:v0.9.0 # match your installed release
 ```
 
 ## Pipeline flags

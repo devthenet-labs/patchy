@@ -6,7 +6,7 @@ and the rollup/TTL loop, which makes it the one deleter of expired Findings.
 
 ```sh
 remediation-controller serve --namespace patchy \
-  --claude-agent-image ghcr.io/bitwise-media-group/patchy/claude-agent-runner:v0.9.0 # match your installed release
+  --claude-agent-image ghcr.io/devthenet-labs/patchy/claude-agent-runner:v0.9.0 # match your installed release
 ```
 
 ## Pipeline flags

@@ -9,9 +9,10 @@
 #
 # Produces cross-platform binary archives + checksums + SBOMs + keyless cosign
 # signatures, the container images (multi-arch manifests built by buildx from
-# the repo-root Dockerfile.* — dockers_v2 below — and pushed to ghcr on
-# release), and a Homebrew cask for the workstation CLI pushed to
-# bitwise-media-group/homebrew-tap.
+# the repo-root Dockerfile.* — dockers_v2 below — and pushed to
+# ghcr.io/devthenet-labs/patchy on release). No Homebrew cask: this fork has no
+# tap to push to, so the workstation CLI ships only as the patchy-cli archive
+# attached to the GitHub release.
 version: 2
 
 # ^ref: https://goreleaser.com/errors/multiple-tokens/
@@ -268,7 +269,7 @@ dockers_v2:
       ids: [source-controller]
       dockerfile: Dockerfile.controller
       images:
-          - ghcr.io/bitwise-media-group/patchy/source-controller
+          - ghcr.io/devthenet-labs/patchy/source-controller
       tags:
           - v{{ .Version }}
           - latest
@@ -279,7 +280,7 @@ dockers_v2:
           TARGET: source-controller
       labels:
           # the source label is what links the ghcr package to this repository
-          org.opencontainers.image.source: https://github.com/bitwise-media-group/patchy
+          org.opencontainers.image.source: https://github.com/devthenet-labs/patchy
           org.opencontainers.image.licenses: MIT
           org.opencontainers.image.revision: "{{ .FullCommit }}"
           org.opencontainers.image.version: "{{ .Version }}"
@@ -287,7 +288,7 @@ dockers_v2:
       ids: [context-controller]
       dockerfile: Dockerfile.controller
       images:
-          - ghcr.io/bitwise-media-group/patchy/context-controller
+          - ghcr.io/devthenet-labs/patchy/context-controller
       tags:
           - v{{ .Version }}
           - latest
@@ -297,7 +298,7 @@ dockers_v2:
       build_args:
           TARGET: context-controller
       labels:
-          org.opencontainers.image.source: https://github.com/bitwise-media-group/patchy
+          org.opencontainers.image.source: https://github.com/devthenet-labs/patchy
           org.opencontainers.image.licenses: MIT
           org.opencontainers.image.revision: "{{ .FullCommit }}"
           org.opencontainers.image.version: "{{ .Version }}"
@@ -305,7 +306,7 @@ dockers_v2:
       ids: [evaluation-controller]
       dockerfile: Dockerfile.controller
       images:
-          - ghcr.io/bitwise-media-group/patchy/evaluation-controller
+          - ghcr.io/devthenet-labs/patchy/evaluation-controller
       tags:
           - v{{ .Version }}
           - latest
@@ -315,7 +316,7 @@ dockers_v2:
       build_args:
           TARGET: evaluation-controller
       labels:
-          org.opencontainers.image.source: https://github.com/bitwise-media-group/patchy
+          org.opencontainers.image.source: https://github.com/devthenet-labs/patchy
           org.opencontainers.image.licenses: MIT
           org.opencontainers.image.revision: "{{ .FullCommit }}"
           org.opencontainers.image.version: "{{ .Version }}"
@@ -323,7 +324,7 @@ dockers_v2:
       ids: [remediation-controller]
       dockerfile: Dockerfile.controller
       images:
-          - ghcr.io/bitwise-media-group/patchy/remediation-controller
+          - ghcr.io/devthenet-labs/patchy/remediation-controller
       tags:
           - v{{ .Version }}
           - latest
@@ -333,7 +334,7 @@ dockers_v2:
       build_args:
           TARGET: remediation-controller
       labels:
-          org.opencontainers.image.source: https://github.com/bitwise-media-group/patchy
+          org.opencontainers.image.source: https://github.com/devthenet-labs/patchy
           org.opencontainers.image.licenses: MIT
           org.opencontainers.image.revision: "{{ .FullCommit }}"
           org.opencontainers.image.version: "{{ .Version }}"
@@ -341,7 +342,7 @@ dockers_v2:
       ids: [integration-controller]
       dockerfile: Dockerfile.controller
       images:
-          - ghcr.io/bitwise-media-group/patchy/integration-controller
+          - ghcr.io/devthenet-labs/patchy/integration-controller
       tags:
           - v{{ .Version }}
           - latest
@@ -351,7 +352,7 @@ dockers_v2:
       build_args:
           TARGET: integration-controller
       labels:
-          org.opencontainers.image.source: https://github.com/bitwise-media-group/patchy
+          org.opencontainers.image.source: https://github.com/devthenet-labs/patchy
           org.opencontainers.image.licenses: MIT
           org.opencontainers.image.revision: "{{ .FullCommit }}"
           org.opencontainers.image.version: "{{ .Version }}"
@@ -359,7 +360,7 @@ dockers_v2:
       ids: [investigation-controller]
       dockerfile: Dockerfile.controller
       images:
-          - ghcr.io/bitwise-media-group/patchy/investigation-controller
+          - ghcr.io/devthenet-labs/patchy/investigation-controller
       tags:
           - v{{ .Version }}
           - latest
@@ -369,7 +370,7 @@ dockers_v2:
       build_args:
           TARGET: investigation-controller
       labels:
-          org.opencontainers.image.source: https://github.com/bitwise-media-group/patchy
+          org.opencontainers.image.source: https://github.com/devthenet-labs/patchy
           org.opencontainers.image.licenses: MIT
           org.opencontainers.image.revision: "{{ .FullCommit }}"
           org.opencontainers.image.version: "{{ .Version }}"
@@ -377,7 +378,7 @@ dockers_v2:
       ids: [egress-broker]
       dockerfile: Dockerfile.controller
       images:
-          - ghcr.io/bitwise-media-group/patchy/egress-broker
+          - ghcr.io/devthenet-labs/patchy/egress-broker
       tags:
           - v{{ .Version }}
           - latest
@@ -387,7 +388,7 @@ dockers_v2:
       build_args:
           TARGET: egress-broker
       labels:
-          org.opencontainers.image.source: https://github.com/bitwise-media-group/patchy
+          org.opencontainers.image.source: https://github.com/devthenet-labs/patchy
           org.opencontainers.image.licenses: MIT
           org.opencontainers.image.revision: "{{ .FullCommit }}"
           org.opencontainers.image.version: "{{ .Version }}"
@@ -395,7 +396,7 @@ dockers_v2:
       ids: [agent-runner]
       dockerfile: Dockerfile.claude-agent-runner
       images:
-          - ghcr.io/bitwise-media-group/patchy/claude-agent-runner
+          - ghcr.io/devthenet-labs/patchy/claude-agent-runner
       tags:
           - v{{ .Version }}
           - latest
@@ -403,7 +404,7 @@ dockers_v2:
           - linux/amd64
           - linux/arm64
       labels:
-          org.opencontainers.image.source: https://github.com/bitwise-media-group/patchy
+          org.opencontainers.image.source: https://github.com/devthenet-labs/patchy
           org.opencontainers.image.licenses: MIT
           org.opencontainers.image.revision: "{{ .FullCommit }}"
           org.opencontainers.image.version: "{{ .Version }}"
@@ -411,7 +412,7 @@ dockers_v2:
       ids: [agent-runner]
       dockerfile: Dockerfile.codex-agent-runner
       images:
-          - ghcr.io/bitwise-media-group/patchy/codex-agent-runner
+          - ghcr.io/devthenet-labs/patchy/codex-agent-runner
       tags:
           - v{{ .Version }}
           - latest
@@ -419,7 +420,7 @@ dockers_v2:
           - linux/amd64
           - linux/arm64
       labels:
-          org.opencontainers.image.source: https://github.com/bitwise-media-group/patchy
+          org.opencontainers.image.source: https://github.com/devthenet-labs/patchy
           org.opencontainers.image.licenses: MIT
           org.opencontainers.image.revision: "{{ .FullCommit }}"
           org.opencontainers.image.version: "{{ .Version }}"
@@ -427,7 +428,7 @@ dockers_v2:
       ids: [agent-runner]
       dockerfile: Dockerfile.copilot-agent-runner
       images:
-          - ghcr.io/bitwise-media-group/patchy/copilot-agent-runner
+          - ghcr.io/devthenet-labs/patchy/copilot-agent-runner
       tags:
           - v{{ .Version }}
           - latest
@@ -435,7 +436,7 @@ dockers_v2:
           - linux/amd64
           - linux/arm64
       labels:
-          org.opencontainers.image.source: https://github.com/bitwise-media-group/patchy
+          org.opencontainers.image.source: https://github.com/devthenet-labs/patchy
           org.opencontainers.image.licenses: MIT
           org.opencontainers.image.revision: "{{ .FullCommit }}"
           org.opencontainers.image.version: "{{ .Version }}"
@@ -443,7 +444,7 @@ dockers_v2:
       ids: [status-server]
       dockerfile: Dockerfile.controller
       images:
-          - ghcr.io/bitwise-media-group/patchy/status-server
+          - ghcr.io/devthenet-labs/patchy/status-server
       tags:
           - v{{ .Version }}
           - latest
@@ -453,7 +454,7 @@ dockers_v2:
       build_args:
           TARGET: status-server
       labels:
-          org.opencontainers.image.source: https://github.com/bitwise-media-group/patchy
+          org.opencontainers.image.source: https://github.com/devthenet-labs/patchy
           org.opencontainers.image.licenses: MIT
           org.opencontainers.image.revision: "{{ .FullCommit }}"
           org.opencontainers.image.version: "{{ .Version }}"
@@ -463,8 +464,8 @@ dockers_v2:
 # image/manifest, sha256sum format — which the release workflow feeds to
 # actions/attest so the images get the same GitHub build-provenance
 # attestation as every file in checksums.txt. Verify with:
-#   gh attestation verify --owner bitwise-media-group \
-#     oci://ghcr.io/bitwise-media-group/patchy/<name>:vX.Y.Z
+#   gh attestation verify --owner devthenet-labs \
+#     oci://ghcr.io/devthenet-labs/patchy/<name>:vX.Y.Z
 docker_digest:
     name_template: digests.txt
 
@@ -480,7 +481,7 @@ docker_digest:
 # a legacy-format (.sig tag) pin.
 # Runs only on publish; `make snapshot` additionally skips it via --skip=sign.
 # Verify with:
-#   cosign verify ghcr.io/bitwise-media-group/patchy/<name>:vX.Y.Z \
+#   cosign verify ghcr.io/devthenet-labs/patchy/<name>:vX.Y.Z \
 #     --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
 #     --certificate-identity-regexp='^https://github.com/bitwise-media-group/github-workflows/'
 docker_signs:
@@ -556,7 +557,7 @@ changelog:
 
 release:
     github:
-        owner: bitwise-media-group
+        owner: devthenet-labs
         name: patchy
     # The release-please job in release.yaml leaves a draft release named after
     # the tag it pushes. Adopt that draft instead of creating a second release,
@@ -564,54 +565,3 @@ release:
     # undraft it only once every asset has been uploaded.
     use_existing_draft: true
     mode: replace
-
-# ^ref: https://goreleaser.com/customization/homebrew_casks/
-# The workstation CLI as a Homebrew cask — the cluster components are installed
-# by helm/kustomize from the ghcr images above and have no business in a tap.
-# `ids` sources the cask from the CLI-only archive, so the cask ships exactly
-# the two binaries it declares.
-homebrew_casks:
-    - name: patchy
-      ids: [patchy-cli]
-      # kubectl-patchy is the same program under the name kubectl looks for on
-      # PATH; installing both is what makes `kubectl patchy get findings` work
-      # for anyone who would rather not learn a second binary.
-      #
-      # kubectl_complete-patchy is what makes that second form *complete*:
-      # kubectl ignores a plugin's own completion script and instead executes
-      # kubectl_complete-<plugin> from PATH, so the hook has to be linked into
-      # bin like a binary — a bash_completion/zsh_completion stanza would put
-      # it somewhere kubectl never looks.
-      binaries: [patchy, kubectl-patchy, completions/kubectl_complete-patchy]
-      # Static completion stanzas, NOT generate_completions_from_executable:
-      # Homebrew installs cask artifacts in a fixed type-based order, but
-      # GeneratedCompletion is missing from that sort table (as of brew 6.0),
-      # so its position is decided by an unstable sort — it can run before the
-      # quarantine-clearing preflight below, executing the still-quarantined
-      # binary and tripping Gatekeeper mid-install. Static bash_completion /
-      # zsh_completion / fish_completion artifacts are ordered deterministically
-      # and never execute the binary.
-      completions:
-          bash: completions/patchy.bash
-          zsh: completions/patchy.zsh
-          fish: completions/patchy.fish
-      homepage: https://github.com/bitwise-media-group/patchy
-      description: Triage and remediate security findings from the terminal, over your own kubeconfig
-      # `patchy mirror` shells out to these at runtime: cosign for sign/verify,
-      # osv-scanner for the osv image scanner (grype/kubescape stay optional).
-      dependencies:
-          - formula: cosign
-          - formula: osv-scanner
-      # skip the tap push for snapshots and prereleases; publish on real tags
-      skip_upload: auto
-      repository:
-          owner: bitwise-media-group
-          name: homebrew-tap
-          branch: main
-          token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-      hooks:
-          pre:
-              install: |
-                  if OS.mac?
-                    system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/patchy", "#{staged_path}/kubectl-patchy", "#{staged_path}/completions/kubectl_complete-patchy"]
-                  end

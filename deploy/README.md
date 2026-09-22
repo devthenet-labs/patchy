@@ -11,7 +11,7 @@ custom resources you must create, and an honest account of what the agent sandbo
 For _what the system does_, read [DESIGN.md](../DESIGN.md); for _where the code lives_, read [AGENTS.md](../AGENTS.md).
 
 Prefer Helm? [`charts/patchy`](../charts/patchy/README.md) renders this same stack (published to
-`oci://ghcr.io/bitwise-media-group/patchy/charts/patchy` on release; the Integration/Forge CRs install separately via
+`oci://ghcr.io/devthenet-labs/patchy/charts/patchy` on release; the Integration/Forge CRs install separately via
 [`charts/patchy-config`](../charts/patchy-config/README.md)); everything below about the App, the Secrets, and the
 sandbox applies to both.
 
@@ -67,13 +67,13 @@ pods, pods/log, secrets). The agent Job pods have **no RBAC at all** and run wit
 ## Images
 
 All the images are built and published by GoReleaser (`dockers_v2` in `.goreleaser.yaml`) as part of every release:
-multi-arch (`linux/amd64` + `linux/arm64`) manifests pushed to `ghcr.io/bitwise-media-group/patchy/<name>` and tagged
+multi-arch (`linux/amd64` + `linux/arm64`) manifests pushed to `ghcr.io/devthenet-labs/patchy/<name>` and tagged
 `vX.Y.Z` + `latest`. GoReleaser compiles the binaries once and hands them to `docker buildx`; the repo-root
 `Dockerfile.*` only assemble the runtime layer (`COPY $TARGETPLATFORM/<binary>`), so they cannot be `docker build`
 directly from the repo. To build images locally, run `make snapshot` (needs docker + buildx) — it produces per-arch
 `ghcr.io/...:v<next>-snapshot-<sha>-<arch>` images without pushing, ready for `kind load docker-image`. Each release
 also uploads `digests.txt` and attests every image digest in it; verify with
-`gh attestation verify --owner bitwise-media-group oci://ghcr.io/bitwise-media-group/patchy/<name>:vX.Y.Z`.
+`gh attestation verify --owner devthenet-labs oci://ghcr.io/devthenet-labs/patchy/<name>:vX.Y.Z`.
 
 One Dockerfile builds every controller-shaped binary — the controllers, the status server, the egress broker — on the
 same `distroless/static` base; the per-image `build_args` in `.goreleaser.yaml` set `TARGET` to pick the binary. Every

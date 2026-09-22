@@ -48,6 +48,9 @@ permissions: {}
 
 jobs:
     merge:
+        # the FF Merge App only exists upstream; without it every job in the
+        # reusable workflow fails minting a token, so stay off until one is set up
+        if: vars.FF_MERGE_CLIENT_ID != ''
         uses: bitwise-media-group/github-workflows/.github/workflows/merge.yaml@a0d0170124ad80a06082078b60669d7c99d33ee6 # v6.3.0
         with:
             app-client-id: ${{ vars.FF_MERGE_CLIENT_ID }}

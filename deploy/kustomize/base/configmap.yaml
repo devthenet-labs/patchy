@@ -97,7 +97,7 @@ data:
     # kustomization.yaml for provenance, so overlays must keep the two in step
     # (the `images:` block does not rewrite these ConfigMap values).
     PATCHY_HARNESSES: claude
-    PATCHY_CLAUDE_AGENT_IMAGE: ghcr.io/bitwise-media-group/patchy/claude-agent-runner:latest
+    PATCHY_CLAUDE_AGENT_IMAGE: ghcr.io/devthenet-labs/patchy/claude-agent-runner:latest
     # The claude runner is BROKERED: all of its model traffic goes through
     # the egress credential broker (deployment-egress-broker.yaml), and no
     # credential of any kind enters a claude agent pod — the Anthropic key
@@ -121,7 +121,7 @@ data:
     PATCHY_ANTHROPIC_AUTH: key
     # Enable the codex runner by adding `codex` to PATCHY_HARNESSES and
     # supplying the OpenAI credential Secret (patchy-openai):
-    PATCHY_CODEX_AGENT_IMAGE: ghcr.io/bitwise-media-group/patchy/codex-agent-runner:latest
+    PATCHY_CODEX_AGENT_IMAGE: ghcr.io/devthenet-labs/patchy/codex-agent-runner:latest
     PATCHY_CODEX_SECRET: patchy-openai
     PATCHY_CODEX_SECRET_KEY: api-key
     PATCHY_CODEX_SECRET_ENV: OPENAI_API_KEY
@@ -134,7 +134,7 @@ data:
     # endpoints), but it is still the broadest credential in any agent pod, so
     # scope the token to Copilot alone and enable this deliberately. Add
     # `copilot` to PATCHY_HARNESSES and supply the Secret (patchy-copilot):
-    PATCHY_COPILOT_AGENT_IMAGE: ghcr.io/bitwise-media-group/patchy/copilot-agent-runner:latest
+    PATCHY_COPILOT_AGENT_IMAGE: ghcr.io/devthenet-labs/patchy/copilot-agent-runner:latest
     PATCHY_COPILOT_SECRET: patchy-copilot
     PATCHY_COPILOT_SECRET_KEY: token
     PATCHY_COPILOT_SECRET_ENV: COPILOT_GITHUB_TOKEN

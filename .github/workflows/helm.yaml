@@ -17,11 +17,11 @@
 #
 # Each pushed chart gets a keyless cosign signature and the same GitHub
 # build-provenance attestation as the binaries and images. Verify with:
-#   gh attestation verify --owner bitwise-media-group \
-#     oci://ghcr.io/bitwise-media-group/patchy/charts/patchy:X.Y.Z
-#   cosign verify ghcr.io/bitwise-media-group/patchy/charts/patchy:X.Y.Z \
+#   gh attestation verify --owner devthenet-labs \
+#     oci://ghcr.io/devthenet-labs/patchy/charts/patchy:X.Y.Z
+#   cosign verify ghcr.io/devthenet-labs/patchy/charts/patchy:X.Y.Z \
 #     --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
-#     --certificate-identity-regexp='^https://github.com/bitwise-media-group/patchy/'
+#     --certificate-identity-regexp='^https://github.com/devthenet-labs/patchy/'
 #
 # Actions are pinned to full commit SHAs (tag in the comment) so a moved tag
 # can never change what runs; Dependabot keeps the pins fresh.

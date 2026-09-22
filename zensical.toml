@@ -7,9 +7,9 @@
 [project]
 site_name = "Patchy"
 site_description = "Automated triage and remediation of security findings, using Kubernetes custom resources as the state machine."
-site_url = "https://oss.bitwisemedia.uk/patchy/"
-repo_url = "https://github.com/bitwise-media-group/patchy"
-repo_name = "bitwise-media-group/patchy"
+site_url = "https://devthenet-labs.github.io/patchy/"
+repo_url = "https://github.com/devthenet-labs/patchy"
+repo_name = "devthenet-labs/patchy"
 # The `#__consent` link re-opens the cookie consent dialog so visitors can
 # change their choice at any time (see [project.extra.consent] below).
 copyright = '© 2026 Bitwise Media Group Ltd — <a href="#__consent">Change cookie settings</a>'
@@ -135,7 +135,7 @@ scope = "/"
 
 [[project.extra.social]]
 icon = "fontawesome/brands/github"
-link = "https://github.com/bitwise-media-group/patchy"
+link = "https://github.com/devthenet-labs/patchy"
 
 [[project.extra.social]]
 icon = "fontawesome/brands/youtube"

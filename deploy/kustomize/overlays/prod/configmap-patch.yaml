@@ -41,4 +41,4 @@ data:
     # into every claude Job the controllers create. (Pin
     # PATCHY_CODEX_AGENT_IMAGE / PATCHY_COPILOT_AGENT_IMAGE too when those
     # runners are enabled.)
-    PATCHY_CLAUDE_AGENT_IMAGE: ghcr.io/bitwise-media-group/patchy/claude-agent-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    PATCHY_CLAUDE_AGENT_IMAGE: ghcr.io/devthenet-labs/patchy/claude-agent-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000

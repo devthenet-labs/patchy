@@ -43,7 +43,7 @@ spec:
                 - name: controller
                   # Built from Dockerfile.controller (repo root)
                   # (TARGET=integration-controller in .goreleaser.yaml).
-                  image: ghcr.io/bitwise-media-group/patchy/integration-controller:latest
+                  image: ghcr.io/devthenet-labs/patchy/integration-controller:latest
                   args: ["serve"]
                   envFrom:
                       - configMapRef:

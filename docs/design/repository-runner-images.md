@@ -3,7 +3,8 @@
 **Status:** Proposed, 2026-09-22. Revised the same day to apply the accepted findings of the security review; the
 "Security review" subsection at the end lists each one and where the design now handles it. Revised again the same day
 to record three v1 decisions (the devcontainer.json fallback, a render failure on broad egress, and the first live
-verification target); the "Decisions" subsection at the end records them.
+verification target); the "Decisions" subsection at the end records them. Amended the same day, after implementation
+began, so that a devcontainer.json patchy cannot honour is no declaration at all rather than a rejection (Decisions, 4).
 
 ## Context
 
@@ -32,8 +33,9 @@ the per-harness runner image (`agent.runners.<harness>.image`) as today.
 
 ## Non-goals
 
-- Building images. A devcontainer.json that uses `build`, `dockerFile`, `dockerComposeFile` or `features` is rejected
-  with a reason, never built; patchy honours only a prebuilt image named by its top-level `image`.
+- Building images. A devcontainer.json that uses `build`, `dockerFile`, `dockerComposeFile` or `features` is not
+  applicable: the default image runs, the reason is recorded, nothing is built; patchy honours only a prebuilt image
+  named by its top-level `image`.
 - Any other devcontainer.json behaviour: lifecycle commands (`postCreateCommand` and friends), `containerEnv`,
   `remoteEnv`, `remoteUser`, mounts and `customizations` are ignored, and devcontainer.json files at other paths
   (`.devcontainer.json`, `.devcontainer/<name>/devcontainer.json`) are not read.
@@ -126,31 +128,42 @@ The same 64 KiB cap applies. The file is JSONC, so it is parsed by a small toler
 the bytes tracking string and escape state that blanks `//` line comments and `/* */` block comments with spaces (byte
 offsets survive, so `encoding/json` error positions still point into the original file) and drops a comma whose next
 non-space, non-comment byte is `}` or `]`; the result is decoded with `encoding/json` into a map of raw values. An
-unterminated string or block comment, or anything `encoding/json` then refuses, is a rejection ("could not parse
-`.devcontainer/devcontainer.json`: `<error>`"). `github.com/tailscale/hujson` was the alternative; the pre-processor is
-about eighty lines with property tests, so the dependency does not pay for itself.
+unterminated string or block comment, or anything `encoding/json` then refuses, makes the file not applicable (reason
+"could not parse `.devcontainer/devcontainer.json`: `<error>`", see below). `github.com/tailscale/hujson` was the
+alternative; the pre-processor is about eighty lines with property tests, so the dependency does not pay for itself.
 
 The decoded file is then judged, first match wins:
 
-1. `build`, `dockerFile` or `dockerComposeFile` present: rejected with "`.devcontainer/devcontainer.json` builds its
-   image (`<key>`); patchy does not build images. Publish the image and set `image`, or declare one in
-   `.patchy/agent.yaml`, which takes precedence."
-2. `features` present and non-empty: rejected with the same shape ("... adds features, which patchy would have to build
-   ..."), because features change the image and patchy runs only what the registry serves.
+1. `build`, `dockerFile` or `dockerComposeFile` present: not applicable, with the reason
+   "`.devcontainer/devcontainer.json` builds its image (`<key>`); patchy does not build images. Publish the image and
+   set `image`, or declare one in `.patchy/agent.yaml`, which takes precedence."
+2. `features` present and non-empty: not applicable, with the same shape ("... adds features, which patchy would have to
+   build ..."), because features change the image and patchy runs only what the registry serves.
 3. `image` absent, not a JSON string, empty, or containing `${` (devcontainer variable substitution, which patchy does
-   not perform): rejected with a message naming which.
+   not perform): not applicable, with a reason naming which.
 4. Otherwise `image` enters resolution exactly as a `.patchy/agent.yaml` value would, through the same allowlist,
    digest, size, platform, ENV, PATH, VOLUME and signature checks.
 
-Every other key is ignored rather than rejected, unlike `.patchy/agent.yaml`: the file belongs to the editor tooling and
+**Not applicable is not a rejection.** A devcontainer.json was written for the editor, not for patchy, so one that
+patchy cannot honour (cases 1 to 3, an unparseable file, or one over the size cap) is treated as no declaration: the
+default runner image runs, the finding is never parked, `onReject` is not consulted, and the outcome is recorded as
+informational (`status.runnerImage.manifest` names the file and `message` carries the reason; `image` stays empty) so
+the sticky comment can tell the owner why the file was not used. `runnerimage.Declare` expresses this in its result
+type: a `Declaration` with `OutcomeNotApplicable` is a value, while an invalid `.patchy/agent.yaml` is a `*Rejection`
+error, so a caller that handles the error and then switches on the outcome cannot park a finding on a build-based
+devcontainer. Only an explicit `.patchy/agent.yaml` that fails validation, and a declared image (from either file,
+case 4) that fails a resolution check, are rejections subject to `onReject`.
+
+Every other key is ignored rather than judged, unlike `.patchy/agent.yaml`: the file belongs to the editor tooling and
 carries keys patchy has no business judging, and a repository owner who wants fail-closed strictness writes
 `.patchy/agent.yaml`.
 
 **Precedence.** `.patchy/agent.yaml` wins whenever it exists: a valid one is used and devcontainer.json is not read at
 all (so a build-based devcontainer never blocks a repository that declares its agent image explicitly); an invalid one
 is a rejection and never falls through to devcontainer.json, because a broken explicit declaration must not silently
-become a different image. Only when `.patchy/agent.yaml` is absent is devcontainer.json consulted; when neither exists
-the Repository gets the default image. `status.runnerImage.manifest` records which file the image came from.
+become a different image. Only when `.patchy/agent.yaml` is absent is devcontainer.json consulted, and a not-applicable
+one yields the default image exactly as if it were absent, with the reason recorded; when neither exists the Repository
+gets the default image. `status.runnerImage.manifest` records which file the image came from.
 
 Image contract, documented for repository owners and checked at resolution and by the preflight below: glibc-based Linux
 for `linux/amd64` or `linux/arm64` (a multi-arch index must satisfy the contract on both); `bash`, `sh` and `git` on the
@@ -210,15 +223,14 @@ Steps, in a new pure package `internal/runnerimage` plus an `ocireg`-backed reso
    `status.runnerImage{declared, manifest, image (name@sha256:...), searchPath, verified, resolvedAt}` and `Ready=True`,
    where `manifest` is the path of the declaring file.
 
-Deterministic rejections (bad manifest, an unparseable devcontainer.json or one that builds, uses features or names no
-usable `image`, not allowlisted, 404, 401/403, oversized, wrong or missing platform, reserved ENV, VOLUME, empty PATH,
-missing or bad signature) go through `stall`, extended to take a reason: `Stalled=True` / `Ready=False`, reason
-`RunnerImageRejected`, a human message. Transient errors go through `fail(ctx, repo, "RunnerImageResolveFailed", err)`,
-which returns the error for controller-runtime backoff, like a forge outage. Repositories are per Finding, so a
-10-minute in-memory cache of check results keyed by resolved digest bounds registry traffic without weakening pin-once:
-the HEAD that resolves a tag is never cached, so a moved tag cannot reuse a stale verdict. The `ocireg` client is built
-with the explicit keychain above, never `authn.DefaultKeychain`. `imageref` and `ocireg` gain a controller consumer; the
-"mirror is CLI-only" line in `AGENTS.md` is amended.
+Deterministic rejections (a bad `.patchy/agent.yaml`, not allowlisted, 404, 401/403, oversized, wrong or missing
+platform, reserved ENV, VOLUME, empty PATH, missing or bad signature) go through `stall`, extended to take a reason:
+`Stalled=True` / `Ready=False`, reason `RunnerImageRejected`, a human message. Transient errors go through
+`fail(ctx, repo, "RunnerImageResolveFailed", err)`, which returns the error for controller-runtime backoff, like a forge
+outage. Repositories are per Finding, so a 10-minute in-memory cache of check results keyed by resolved digest bounds
+registry traffic without weakening pin-once: the HEAD that resolves a tag is never cached, so a moved tag cannot reuse a
+stale verdict. The `ocireg` client is built with the explicit keychain above, never `authn.DefaultKeychain`. `imageref`
+and `ocireg` gain a controller consumer; the "mirror is CLI-only" line in `AGENTS.md` is amended.
 
 ### Operator policy
 
@@ -394,21 +406,24 @@ evaluation-controller page says so.
 ### Failure modes and what the human sees
 
 - **No manifest, or feature disabled**: default image, `status.runnerImage` nil, `runner-image-source: default`.
-- **Policy rejection** (including an unusable devcontainer.json): `Stalled=True` / `RunnerImageRejected` on the
-  Repository, artifact retained; the gate's `ensureRepository` parks the Finding `HandedOff` with `LastFailureReason`
-  set to the Stalled message (today it forwards a fixed size-cap string), which the issue projection's phase notice
-  renders. No attempt consumed. Pin-once stays absolute: the manifest is bound to the pinned SHA, so re-resolution only
-  matters if operator policy changed. The revival path is the existing one: a human `approve` or `retry` on the parked
-  Finding runs it on the default image, with `status.runnerImage.rejected` recorded and the sticky comment stating so;
-  `launch()` copies the pin only when `Image != ""`, so the spawners need no special case beyond not blocking on
-  `Stalled`. A fixed manifest is picked up by the next Finding on that repository. With `onReject: default` the run
-  proceeds on the default image without the human step, and the rejection is still recorded.
-- **devcontainer.json that builds**: the most common rejection once the feature is on, because many repositories carry a
-  `build`-based devcontainer for their editors. The Repository condition and the Finding's `LastFailureReason` carry the
-  specific message from the declaration section (the key, "patchy does not build images", and the two fixes), so the
-  issue says what to change. Under `onReject: handoff` every finding on such a repository parks until the owner acts or
-  a human revives it; operators enabling the feature on an estate of build-based devcontainers choose
-  `onReject: default`, which runs them on the default image and still posts the reason as the sticky comment.
+- **Policy rejection** (an invalid `.patchy/agent.yaml`, or a declared image that fails a resolution check):
+  `Stalled=True` / `RunnerImageRejected` on the Repository, artifact retained; the gate's `ensureRepository` parks the
+  Finding `HandedOff` with `LastFailureReason` set to the Stalled message (today it forwards a fixed size-cap string),
+  which the issue projection's phase notice renders. No attempt consumed. Pin-once stays absolute: the manifest is bound
+  to the pinned SHA, so re-resolution only matters if operator policy changed. The revival path is the existing one: a
+  human `approve` or `retry` on the parked Finding runs it on the default image, with `status.runnerImage.rejected`
+  recorded and the sticky comment stating so; `launch()` copies the pin only when `Image != ""`, so the spawners need no
+  special case beyond not blocking on `Stalled`. A fixed manifest is picked up by the next Finding on that repository.
+  With `onReject: default` the run proceeds on the default image without the human step, and the rejection is still
+  recorded.
+- **devcontainer.json that is not applicable** (it builds its image, adds features, names no usable `image`, or cannot
+  be parsed): the most common outcome once the feature is on, because many repositories carry a `build`-based
+  devcontainer for their editors. It is no declaration: the run proceeds on the default image with no human step, the
+  finding is never parked, `onReject` is not consulted and `runner-image-source` is `default`. The reason from the
+  declaration section (the key, "patchy does not build images", and the two fixes) is recorded on `status.runnerImage`
+  (`manifest` and `message`, no `image`) and posted as the sticky comment, so the owner learns why the file was not used
+  and what to change. A repository that wants patchy to use its devcontainer image publishes it and sets `image`, or
+  declares it in `.patchy/agent.yaml`.
 - **Registry denies access**: 401/403 is a policy rejection (above) with a message naming the reference and the fix, not
   backoff.
 - **Registry unreachable**: `Ready=False` / `RunnerImageResolveFailed`, backoff; the Finding waits; the artifact is not
@@ -448,8 +463,9 @@ evaluation-controller page says so.
 (`<!-- patchy:runner-image -->`, the existing `findSticky` mechanism in `internal/controller/integration/project.go`,
 template `runner_image_comment.md.tmpl`) stating one of "ran on `<image>` declared in `<manifest>`" (the declaring file,
 `.patchy/agent.yaml` or `.devcontainer/devcontainer.json`), "could not use `<ref>` from `<manifest>`: `<reason>`; the
-default image was used" (a devcontainer rejection quotes the build/features message verbatim), or the held-ignore
-sentence above, so fallback is never silent and a repository owner without cluster access learns why. The comment and
+default image was used" (a rejection), "`.devcontainer/devcontainer.json` was not used: `<reason>`; the default image
+was used" (a not-applicable devcontainer, quoting the build/features reason verbatim), or the held-ignore sentence
+above, so fallback is never silent and a repository owner without cluster access learns why. The comment and
 `InvestigationSummary.RunnerImage` derive from the same `status.runnerImage` value the launch recorded.
 
 ## CRD, config and chart changes
@@ -532,17 +548,18 @@ condition holds. `deploy/kustomize/base` mirrors the ConfigMap keys with disable
 ## Documentation changes
 
 - New `docs/deployment/repository-images.md` ("Repository runner images"): repository owners first (the manifest, the
-  devcontainer.json fallback with its precedence, the one honoured key, the ignored keys, the build/features rejection
-  and its two fixes, the image contract including no `VOLUME` and no reserved `ENV`, offline caches, uid 65532, a Go and
-  a Node example, `cosign sign --key`, gating `patchy/**` branches in CI, the preflight, how outcomes appear on the
-  issue including the held-ignore notice), then operators (the `agent.repositoryImages` block, allowlist precision and
-  the pull-through-cache namespaces never to allowlist, the signing requirement and `allowUnsigned`, both signature
-  forms and that `patchy mirror sign` output verifies, the size cap and ephemeral storage, the kill switch, `pullSecret`
-  and the two-namespace rule versus cloud credentials, the `broadEgress` render failure and its brokered-only
-  consequence under `mode: none`, `onReject: default` for estates of build-based devcontainers, the CNI-enforcement
-  prerequisite with the EKS Auto Mode caveat and the probe, the DNS channel and Cilium `toFQDNs`, broker limits and the
-  aggregate-spend formula, sizing for evaluations), then the security model (this threat model, shadowing defences,
-  audit trail, why CLI-reported usage is untrusted). `zensical.toml`: Deployment group, after "Isolation model".
+  devcontainer.json fallback with its precedence, the one honoured key, the ignored keys, the build/features
+  not-applicable outcome and its two fixes, the image contract including no `VOLUME` and no reserved `ENV`, offline
+  caches, uid 65532, a Go and a Node example, `cosign sign --key`, gating `patchy/**` branches in CI, the preflight, how
+  outcomes appear on the issue including the held-ignore notice), then operators (the `agent.repositoryImages` block,
+  allowlist precision and the pull-through-cache namespaces never to allowlist, the signing requirement and
+  `allowUnsigned`, both signature forms and that `patchy mirror sign` output verifies, the size cap and ephemeral
+  storage, the kill switch, `pullSecret` and the two-namespace rule versus cloud credentials, the `broadEgress` render
+  failure and its brokered-only consequence under `mode: none`, `onReject: default` for estates of build-based
+  devcontainers, the CNI-enforcement prerequisite with the EKS Auto Mode caveat and the probe, the DNS channel and
+  Cilium `toFQDNs`, broker limits and the aggregate-spend formula, sizing for evaluations), then the security model
+  (this threat model, shadowing defences, audit trail, why CLI-reported usage is untrusted). `zensical.toml`: Deployment
+  group, after "Isolation model".
 - `docs/design/repository-runner-images.md`: this document, under a new "Design" nav group.
 - `docs/deployment/isolation.md`: new section "Repository-declared images" after "Pod security"; one sentence in "What
   leaves the pod" on forged events and changeset validation.
@@ -567,26 +584,27 @@ observable change.
 
 1. **Pure core.** `internal/runnerimage`: manifest extraction from a tar.gz stream (both files), the
    `.patchy/agent.yaml` parser, the JSONC pre-processor (`jsonc.go`) and the devcontainer.json judge with its build,
-   features and bad-image rejections, the precedence function, `Policy` entry validation and `Allow`, strict digest
-   check, the PATH sanitizer with the runc default, the reserved-ENV check with prefixes and proxy names, the VOLUME
-   check, `Resolver` interface. Tests: table tests (each rejection message; a valid `.patchy/agent.yaml` beside a
-   build-based devcontainer yields the yaml image; an invalid yaml never falls through; comments and trailing commas in
-   every position; `//` and `/*` inside strings and escaped quotes survive; an unterminated block comment is rejected)
-   plus seeded property tests (normalization idempotence; no entry matches a reference on another host or a sibling
-   path; a digest pin round-trips; the emitted PATH has no empty component and only absolute entries for any input; a
-   fixture config carrying `PATCHY_CHANGESET_MAX_BYTES` is rejected; the pre-processor is the identity on comment-free
-   JSON without trailing commas; for generated JSON with comments and trailing commas injected between tokens it decodes
-   equal to the original; its output always has the input's length).
+   features and bad-image not-applicable outcomes, the precedence function with its distinct not-applicable result,
+   `Policy` entry validation and `Allow`, strict digest check, the PATH sanitizer with the runc default, the
+   reserved-ENV check with prefixes and proxy names, the VOLUME check, `Resolver` interface. Tests: table tests (each
+   rejection message; a valid `.patchy/agent.yaml` beside a build-based devcontainer yields the yaml image; an invalid
+   yaml never falls through; comments and trailing commas in every position; `//` and `/*` inside strings and escaped
+   quotes survive; an unterminated block comment is rejected) plus seeded property tests (normalization idempotence; no
+   entry matches a reference on another host or a sibling path; a digest pin round-trips; the emitted PATH has no empty
+   component and only absolute entries for any input; a fixture config carrying `PATCHY_CHANGESET_MAX_BYTES` is
+   rejected; the pre-processor is the identity on comment-free JSON without trailing commas; for generated JSON with
+   comments and trailing commas injected between tokens it decodes equal to the original; its output always has the
+   input's length).
 2. **API.** Types, reasons, printcolumn, `Artifact` comment fix, the two new outcomes; codegen; drift gate. Tests: the
    existing deepcopy suite.
 3. **source-controller.** `artifact.Store.Open`, the ggcr resolver (single HEAD, digest-pinned reference, index
    enumeration, size per child, config, host-selected keychain, bundle and legacy signature verification), the two-phase
    status write, `RepositoryReconciler.Images`, pin-once guard, `stall(reason)`, flags, the digest-keyed cache. Tests:
    reconciler with a fake resolver and fixture tarballs (yaml only, devcontainer only with `manifest` recorded, both, a
-   build-based devcontainer yielding `RunnerImageRejected` with the build message on the condition); an in-process ggcr
-   registry that flips a tag between calls, asserting `status.runnerImage.image` is the object that was checked; a
-   seeded property that the checked configs equal the runnable children; signature fixtures in both forms signed with a
-   committed test key pair; a 401 fixture yielding `RunnerImageRejected`; `Open` round-trip.
+   build-based devcontainer yielding the default image with the not-applicable reason recorded and no `Stalled`
+   condition); an in-process ggcr registry that flips a tag between calls, asserting `status.runnerImage.image` is the
+   object that was checked; a seeded property that the checked configs equal the runnable children; signature fixtures
+   in both forms signed with a committed test key pair; a 401 fixture yielding `RunnerImageRejected`; `Open` round-trip.
 4. **jobs + agent-runner.** The `Spec`/`Runner`/`Config` fields, `patchy-bin` volume and copy tail, the probe tail,
    absolute command, PATH join and the scrub env including the exported `PATCHY_*` keys, ephemeral storage, annotations
    and label, `Create`'s return value, the `Status` fields; `harness.Available` `PATCHY_BIN_DIR`, preflight, the
@@ -615,7 +633,7 @@ observable change.
    pull-secret case, the broad-egress fixture asserting the message names `agent.networkPolicy.broadEgress: never` and
    passing once it is set.
 8. **Feedback, docs, verification.** `onReject`, the sticky comment and its template golden (goldens for a yaml source,
-   a devcontainer source and a devcontainer build rejection), CLI `describe` with the declaring file, every page above,
+   a devcontainer source and a not-applicable devcontainer), CLI `describe` with the declaring file, every page above,
    and the live verification below.
 
 ### Verification and rollout
@@ -635,10 +653,10 @@ with the message above before that value is set.
 Checks, in order: the probe and startup canary trip the breaker before enforcement and pass after it; with
 `.patchy/agent.yaml` naming the ECR image, `go test` runs in the remediation pod and the Job carries the annotations; a
 branch of the target with only a `.devcontainer/devcontainer.json` `image` resolves with `manifest` recorded as that
-file, and one with a `build`-based devcontainer parks the finding with the build message on the Repository condition and
-the tracking issue; a disallowed registry parks the finding with a readable reason and `approve` revives it on the
-default image; a scripted caller inside a pod gets 4xx for a `web_fetch` request and 429 over the token limit. The
-feature stays `enabled: false` in every other environment until these pass.
+file, and one with a `build`-based devcontainer runs on the default image with the not-applicable reason on
+`status.runnerImage` and the tracking issue; a disallowed registry parks the finding with a readable reason and
+`approve` revives it on the default image; a scripted caller inside a pod gets 4xx for a `web_fetch` request and 429
+over the token limit. The feature stays `enabled: false` in every other environment until these pass.
 
 ## Security review notes
 
@@ -737,14 +755,15 @@ Accepted findings of the 2026-09-22 review and where each one now lives:
 ## Decisions
 
 Recorded 2026-09-22. The user decided the first and third; the second was made on the user's behalf, with the reasoning
-stated.
+stated. The fourth is an amendment recorded the same day, after implementation began.
 
 1. **devcontainer.json fallback is in v1.** `.patchy/agent.yaml` `image` wins; if the file is absent,
    `.devcontainer/devcontainer.json` is consulted and only its top-level string `image` is honoured, parsed as JSONC by
    a small pre-processor in `internal/runnerimage`. A devcontainer that uses `build`, `dockerComposeFile` or `features`
-   is rejected with a specific reason that reaches the Repository condition and the tracking issue, because patchy does
-   not build images. Reason: many repositories already name their toolchain image there, so the fallback costs owners
-   nothing; the yaml keeps precedence because it is the explicit, strict, agent-specific declaration.
+   is not honoured, with a specific reason that reaches the tracking issue (amended by decision 4: not applicable, not
+   rejected), because patchy does not build images. Reason: many repositories already name their toolchain image there,
+   so the fallback costs owners nothing; the yaml keeps precedence because it is the explicit, strict, agent-specific
+   declaration.
 2. **Broad egress fails the render.** With `agent.repositoryImages.enabled: true` and `patchy.broadEgress` resolving
    true, the chart `fail`s with the message under Operator policy, naming `agent.networkPolicy.broadEgress: never`.
    Reason: a NOTES warning is invisible in CI, a render failure is not. The cost, accepted: under `mode: none` a fleet
@@ -752,6 +771,14 @@ stated.
 3. **First live verification target**: `devthenet-labs/patchy-target` on `devthenet-dev` with a golang-derived image in
    `377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/`, after NetworkPolicy enforcement is enabled on that cluster
    (in progress); see Verification and rollout.
+4. **A devcontainer.json patchy cannot honour is no declaration** (2026-09-22, amendment decided by the orchestrator
+   after the document was written and applied in the phase 1 pull request). A `.devcontainer/devcontainer.json` that
+   uses `build`, `dockerFile`, `dockerComposeFile` or `features`, has no string `image`, or cannot be parsed is not
+   applicable: the default runner image runs, the outcome is recorded as informational with its reason (surfaced later
+   as the sticky comment), and the finding is never parked. Only an explicit `.patchy/agent.yaml` that fails validation
+   or policy is a rejection subject to `onReject`. `runnerimage.Declare` keeps the two apart in its result type
+   (`OutcomeNotApplicable` is a value; a rejection is a `*Rejection` error). Reason: a devcontainer was not written for
+   patchy, and parking every finding on repositories with build-based devcontainers would be a regression from today.
 
 ## Open questions
 

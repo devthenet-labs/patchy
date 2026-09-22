@@ -88,6 +88,7 @@ func (o *observability) observe(ctx context.Context, span trace.Span, spec Comma
 	slog.DebugContext(ctx, "agent exec finished",
 		slog.String("dir", spec.Dir),
 		slog.Int("exit_code", res.ExitCode),
+		slog.String("exit_status", res.ExitStatus),
 		slog.Bool("timed_out", res.TimedOut),
 		slog.Bool("aborted", res.Aborted),
 		slog.String("abort_reason", res.AbortReason),
@@ -108,7 +109,8 @@ type Result struct {
 	Aborted     bool          // the per-line observer ended the run early
 	AbortReason string        // the observer's reason for aborting
 	ExitCode    int           // process exit code (-1 when killed)
-	StderrTail  string        // last bytes of stderr, for timeout diagnostics
+	ExitStatus  string        // how it ended ("exit status 139", "signal: ..."); empty if it never ran
+	StderrTail  string        // last bytes of stderr, for failure diagnostics
 	Elapsed     time.Duration // wall clock of the agent run
 }
 
@@ -196,6 +198,9 @@ func (e *Exec) Run(ctx context.Context, spec CommandSpec, timeout time.Duration,
 	}
 	if cmd.ProcessState != nil {
 		res.ExitCode = cmd.ProcessState.ExitCode()
+		// ExitCode is -1 for a signal death; the state's own description
+		// names the signal, which is the evidence a crashed CLI leaves.
+		res.ExitStatus = cmd.ProcessState.String()
 	}
 	switch {
 	case ctx.Err() != nil:

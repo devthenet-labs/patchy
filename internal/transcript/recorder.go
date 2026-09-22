@@ -68,16 +68,9 @@ type Recorder struct {
 // secrets are literal credential values scrubbed from every captured field:
 // the pod holds the model API key and a tool result can echo the environment.
 func NewRecorder(limits Limits, secrets []string, emit func(Turn)) *Recorder {
-	keep := make([]string, 0, len(secrets))
-	for _, s := range secrets {
-		// A short or empty value would redact half the transcript.
-		if len(s) >= 8 {
-			keep = append(keep, s)
-		}
-	}
 	return &Recorder{
 		limits:  limits.resolve(),
-		secrets: keep,
+		secrets: scrubbable(secrets),
 		now:     time.Now,
 		emit:    emit,
 	}
@@ -128,10 +121,7 @@ func (r *Recorder) record(t Turn) {
 		return
 	}
 
-	text := string(ansi.Strip([]byte(t.Text)))
-	for _, s := range r.secrets {
-		text = strings.ReplaceAll(text, s, Redacted)
-	}
+	text := Scrub(string(ansi.Strip([]byte(t.Text))), r.secrets)
 	if r.limits.MaxTurnBytes > 0 {
 		cut, did := Truncate(text, r.limits.MaxTurnBytes)
 		text, t.Truncated = cut, t.Truncated || did
@@ -162,4 +152,29 @@ func (r *Recorder) stop(format string, args ...any) {
 		Text:      fmt.Sprintf(format, args...),
 		Truncated: true,
 	})
+}
+
+// minSecretLen is the shortest value scrubbed; a short or empty value would
+// redact half the text.
+const minSecretLen = 8
+
+// scrubbable keeps the secrets long enough to redact safely.
+func scrubbable(secrets []string) []string {
+	keep := make([]string, 0, len(secrets))
+	for _, s := range secrets {
+		if len(s) >= minSecretLen {
+			keep = append(keep, s)
+		}
+	}
+	return keep
+}
+
+// Scrub replaces every literal secret value in text with Redacted, by the
+// same rule the recorder applies to turns. It serves any other text that
+// leaves the pod, such as a crashed CLI's stderr tail.
+func Scrub(text string, secrets []string) string {
+	for _, s := range scrubbable(secrets) {
+		text = strings.ReplaceAll(text, s, Redacted)
+	}
+	return text
 }

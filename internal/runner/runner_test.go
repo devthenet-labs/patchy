@@ -96,6 +96,56 @@ func TestRunSurfacesExitCode(t *testing.T) {
 	}
 }
 
+func TestRunDescribesHowTheProcessEnded(t *testing.T) {
+	// A CLI that crashes before writing stdout leaves only its exit status
+	// and stderr; both must reach the Result so the stage can report them.
+	tests := []struct {
+		name       string
+		script     string
+		wantCode   int
+		wantStatus string
+		wantStderr string
+	}{
+		{
+			name:       "clean exit",
+			script:     `exit 0`,
+			wantCode:   0,
+			wantStatus: "exit status 0",
+		},
+		{
+			name:       "crash exit code with stderr",
+			script:     `echo 'Segmentation fault (core dumped)' >&2; exit 139`,
+			wantCode:   139,
+			wantStatus: "exit status 139",
+			wantStderr: "Segmentation fault (core dumped)",
+		},
+		{
+			name:       "signal death",
+			script:     `kill -SEGV $$`,
+			wantCode:   -1,
+			wantStatus: "signal: segmentation fault",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := (&Exec{}).Run(context.Background(), sh(tt.script), 5*time.Second, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.ExitCode != tt.wantCode {
+				t.Errorf("ExitCode = %d, want %d", res.ExitCode, tt.wantCode)
+			}
+			// A signal death may add "(core dumped)" depending on the host.
+			if !strings.HasPrefix(res.ExitStatus, tt.wantStatus) {
+				t.Errorf("ExitStatus = %q, want prefix %q", res.ExitStatus, tt.wantStatus)
+			}
+			if res.StderrTail != tt.wantStderr {
+				t.Errorf("StderrTail = %q, want %q", res.StderrTail, tt.wantStderr)
+			}
+		})
+	}
+}
+
 func TestRunTimeoutKillsProcessGroup(t *testing.T) {
 	// The child ignores nothing, but it is a *grand*child via the subshell —
 	// only a process-group kill reaps it promptly. Timeout keeps the partial

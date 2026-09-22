@@ -75,9 +75,11 @@ FROM cgr.dev/chainguard/wolfi-base:latest@sha256:918a593b8268c222afd4e2c4f06860a
 
 # curl serves the init container's credential-less artifact fetch (the
 # SHA-pinned repo tarball from source-controller); git serves the agent's
-# commit/diff flow. ca-certificates-bundle ships in the base.
+# commit/diff flow. bash is for the codex CLI's shell tool, whose commands
+# are typically `bash -lc ...`; busybox sh alone is not enough.
+# ca-certificates-bundle ships in the base.
 # hadolint ignore=DL3018
-RUN apk add --no-cache curl git
+RUN apk add --no-cache bash curl git
 
 COPY --from=fetch /codex /usr/local/bin/codex
 

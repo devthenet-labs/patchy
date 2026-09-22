@@ -79,6 +79,9 @@ nav = [
     { "Command reference" = "cli/patchy.md" },
   ] },
   { "Extending" = "extending.md" },
+  { "Design" = [
+    { "Repository runner images" = "design/repository-runner-images.md" },
+  ] },
 ]
 
 [project.theme]

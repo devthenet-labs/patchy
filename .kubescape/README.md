@@ -61,6 +61,6 @@ scheme kubescape's check looks for. Verify for yourself:
     cosign verify \
       --certificate-identity-regexp '^https://github.com/bitwise-media-group/' \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-      ghcr.io/bitwise-media-group/patchy/source-controller:v0.3.0
+      ghcr.io/devthenet-labs/patchy/source-controller:v0.3.0
 
 Drop this entry if/when kubescape's signature rule learns the bundle format.

@@ -18,11 +18,11 @@ validated before the CRDs exist. Splitting the CRs out makes the ordering explic
 
 ```sh
 # 1. the stack: CRDs, controllers, agent sandbox
-helm install patchy oci://ghcr.io/bitwise-media-group/patchy/charts/patchy \
+helm install patchy oci://ghcr.io/devthenet-labs/patchy/charts/patchy \
     --version <X.Y.Z> --namespace patchy --create-namespace
 
 # 2. the switch-on: Integration + Forge CRs, SAME namespace
-helm install patchy-config oci://ghcr.io/bitwise-media-group/patchy/charts/patchy-config \
+helm install patchy-config oci://ghcr.io/devthenet-labs/patchy/charts/patchy-config \
     --version <X.Y.Z> --namespace patchy -f values.yaml
 ```
 
@@ -72,7 +72,7 @@ a requirement.
 
 ## Publishing
 
-`charts/patchy-config` is packaged and pushed to `oci://ghcr.io/bitwise-media-group/patchy/charts` by
+`charts/patchy-config` is packaged and pushed to `oci://ghcr.io/devthenet-labs/patchy/charts` by
 [`.github/workflows/helm.yaml`](../../.github/workflows/helm.yaml) alongside the patchy chart when a release is
 published; release-please stamps `version`/`appVersion` in `Chart.yaml` as part of the release PR. Lint locally with
 `mise run helm-lint`.

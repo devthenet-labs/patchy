@@ -58,9 +58,9 @@ make snapshot
 arch=arm64 # amd64 on Intel
 for app in integration-controller source-controller context-controller \
            investigation-controller remediation-controller agent-runner; do
-  tag=$(docker images "ghcr.io/bitwise-media-group/patchy/$app" \
+  tag=$(docker images "ghcr.io/devthenet-labs/patchy/$app" \
     --format '{{.Tag}}' | grep -- "-$arch$" | head -1)
-  docker tag "ghcr.io/bitwise-media-group/patchy/$app:$tag" "patchy/$app:dev"
+  docker tag "ghcr.io/devthenet-labs/patchy/$app:$tag" "patchy/$app:dev"
 done
 ```
 

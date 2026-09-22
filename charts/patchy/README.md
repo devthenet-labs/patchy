@@ -11,7 +11,7 @@ and NetworkPolicies. It is the Helm rendering of [`deploy/kustomize`](../../depl
 defaults, same isolation model — published to OCI on every release.
 
 ```sh
-helm install patchy oci://ghcr.io/bitwise-media-group/patchy/charts/patchy \
+helm install patchy oci://ghcr.io/devthenet-labs/patchy/charts/patchy \
     --version <X.Y.Z> --namespace patchy --create-namespace
 ```
 
@@ -50,7 +50,7 @@ manifest against the API server before applying anything, so the CRs cannot ride
 they depend on:
 
 ```sh
-helm install patchy-config oci://ghcr.io/bitwise-media-group/patchy/charts/patchy-config \
+helm install patchy-config oci://ghcr.io/devthenet-labs/patchy/charts/patchy-config \
     --version <X.Y.Z> --namespace patchy -f values.yaml
 ```
 
@@ -183,6 +183,6 @@ Do not scale the controllers: all five are singletons by construction, so the De
 ## Publishing
 
 `charts/patchy` (and the sibling `charts/patchy-config`) is packaged and pushed to
-`oci://ghcr.io/bitwise-media-group/patchy/charts` by [`.github/workflows/helm.yaml`](../../.github/workflows/helm.yaml)
-when a release is published; release-please stamps `version`/`appVersion` in each `Chart.yaml` as part of the release
-PR. Lint locally with `mise run helm-lint`.
+`oci://ghcr.io/devthenet-labs/patchy/charts` by [`.github/workflows/helm.yaml`](../../.github/workflows/helm.yaml) when
+a release is published; release-please stamps `version`/`appVersion` in each `Chart.yaml` as part of the release PR.
+Lint locally with `mise run helm-lint`.

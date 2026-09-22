@@ -5,14 +5,14 @@ singleton controller Deployments — each with its own ConfigMap, ServiceAccount
 (integration `:8080`, source `:9790`), and the agent namespace with its RBAC and sandbox policies. The companion
 `patchy-config` chart (`charts/patchy-config`) renders the `Integration`/`Forge` custom resources — a separate chart
 because Helm validates every manifest against the API server before applying anything, so the CRs cannot ride in the
-same first install as the CRDs they depend on. Both are published to `oci://ghcr.io/bitwise-media-group/patchy/charts/`
-on every release; release-please stamps `version` and `appVersion` 1:1 with the app, and the default image tag is
+same first install as the CRDs they depend on. Both are published to `oci://ghcr.io/devthenet-labs/patchy/charts/` on
+every release; release-please stamps `version` and `appVersion` 1:1 with the app, and the default image tag is
 `v<appVersion>` — chart `X.Y.Z` runs images `vX.Y.Z`.
 
 ```sh
-helm install patchy oci://ghcr.io/bitwise-media-group/patchy/charts/patchy \
+helm install patchy oci://ghcr.io/devthenet-labs/patchy/charts/patchy \
   --version <X.Y.Z> --namespace patchy --create-namespace
-helm install patchy-config oci://ghcr.io/bitwise-media-group/patchy/charts/patchy-config \
+helm install patchy-config oci://ghcr.io/devthenet-labs/patchy/charts/patchy-config \
   --version <X.Y.Z> --namespace patchy -f values.yaml
 ```
 
@@ -53,16 +53,16 @@ shared settings stay global.
 
 ### Global: images, CRDs
 
-| Key                 | Default                              | Purpose                                                                                                             |
-| ------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `image.repository`  | `ghcr.io/bitwise-media-group/patchy` | Repository prefix (registry included); the binary name is appended                                                  |
-| `image.tag`         | `""`                                 | Empty = `v<appVersion>`                                                                                             |
-| `image.pullPolicy`  | `IfNotPresent`                       |                                                                                                                     |
-| `image.pullSecrets` | `[]`                                 |                                                                                                                     |
-| `crds.install`      | `true`                               | Render the CRDs as templates (so upgrades track schema changes)                                                     |
-| `crds.keep`         | `true`                               | Stamp `helm.sh/resource-policy: keep` — uninstall never deletes the CRDs, or the FindingRollup statistics with them |
-| `commonLabels`      | `{}`                                 | Extra labels on every rendered object                                                                               |
-| `commonAnnotations` | `{}`                                 | Extra annotations on every rendered object, pods included (per-object annotations win)                              |
+| Key                 | Default                         | Purpose                                                                                                             |
+| ------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `image.repository`  | `ghcr.io/devthenet-labs/patchy` | Repository prefix (registry included); the binary name is appended                                                  |
+| `image.tag`         | `""`                            | Empty = `v<appVersion>`                                                                                             |
+| `image.pullPolicy`  | `IfNotPresent`                  |                                                                                                                     |
+| `image.pullSecrets` | `[]`                            |                                                                                                                     |
+| `crds.install`      | `true`                          | Render the CRDs as templates (so upgrades track schema changes)                                                     |
+| `crds.keep`         | `true`                          | Stamp `helm.sh/resource-policy: keep` — uninstall never deletes the CRDs, or the FindingRollup statistics with them |
+| `commonLabels`      | `{}`                            | Extra labels on every rendered object                                                                               |
+| `commonAnnotations` | `{}`                            | Extra annotations on every rendered object, pods included (per-object annotations win)                              |
 
 Per-component image overrides win key-by-key, and a `digest` pins over any tag: `<controller>.image` and
 `agent.runners.<harness>.image` — the latter is the runner image the job controllers stamp into every Job that harness
@@ -236,4 +236,4 @@ Scope the cloud role to Invoke only: `bedrock:InvokeModel*`, `aiplatform.endpoin
   so the Findings and the all-time FindingRollup statistics survive a reinstall.
 - Lint and render locally with `mise run helm-lint`.
 - Chart and images carry build-provenance attestations:
-  `gh attestation verify --owner bitwise-media-group oci://ghcr.io/bitwise-media-group/patchy/charts/patchy:X.Y.Z`.
+  `gh attestation verify --owner devthenet-labs oci://ghcr.io/devthenet-labs/patchy/charts/patchy:X.Y.Z`.

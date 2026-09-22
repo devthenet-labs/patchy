@@ -61,7 +61,7 @@ is the stack; [`charts/patchy-config`](charts/patchy-config/README.md) carries t
 installed as a second release once the CRDs exist:
 
 ```sh
-helm install patchy oci://ghcr.io/bitwise-media-group/patchy/charts/patchy --namespace patchy --create-namespace
+helm install patchy oci://ghcr.io/devthenet-labs/patchy/charts/patchy --namespace patchy --create-namespace
 ```
 
 ## The CLI

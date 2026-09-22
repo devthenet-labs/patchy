@@ -102,7 +102,7 @@ agent:
 ```
 
 ```sh
-helm install patchy oci://ghcr.io/bitwise-media-group/patchy/charts/patchy \
+helm install patchy oci://ghcr.io/devthenet-labs/patchy/charts/patchy \
   --version <X.Y.Z> --namespace patchy -f values.yaml
 ```
 
@@ -166,7 +166,7 @@ forges:
 ```
 
 ```sh
-helm install patchy-config oci://ghcr.io/bitwise-media-group/patchy/charts/patchy-config \
+helm install patchy-config oci://ghcr.io/devthenet-labs/patchy/charts/patchy-config \
   --version <X.Y.Z> --namespace patchy -f config-values.yaml
 ```
 
@@ -212,8 +212,8 @@ Bring the same two Secrets and your `Integration`/`Forge` resources; the base an
 Every chart version and container image carries a GitHub build-provenance attestation:
 
 ```sh
-gh attestation verify --owner bitwise-media-group \
-  oci://ghcr.io/bitwise-media-group/patchy/charts/patchy:X.Y.Z
+gh attestation verify --owner devthenet-labs \
+  oci://ghcr.io/devthenet-labs/patchy/charts/patchy:X.Y.Z
 ```
 
 Next: [follow one finding end to end](verify.md).

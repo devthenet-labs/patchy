@@ -22,6 +22,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+
+	"github.com/bitwise-media-group/patchy/internal/provider"
 )
 
 const (
@@ -254,6 +256,58 @@ func TestAnthropicBearerMode(t *testing.T) {
 	}
 	if v := gotHeader.Get("x-api-key"); v != "" {
 		t.Errorf("x-api-key = %q, want none in bearer mode", v)
+	}
+}
+
+// TestPlaceholderNeverForwarded: a brokered pod's CLI presents the fixed
+// placeholder token on whichever channel it picks (Bearer for
+// ANTHROPIC_AUTH_TOKEN, x-api-key otherwise). The anthropic route must strip
+// both and send only the broker's own credential upstream, in either mode.
+func TestPlaceholderNeverForwarded(t *testing.T) {
+	tests := []struct {
+		name       string
+		bearer     bool
+		wantHeader string
+		wantValue  string
+	}{
+		{name: "api key", bearer: false, wantHeader: "x-api-key", wantValue: "sk-test-123"},
+		{name: "bearer", bearer: true, wantHeader: "Authorization", wantValue: "Bearer sk-test-123"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotHeader http.Header
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotHeader = r.Header.Clone()
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer upstream.Close()
+			s := newTestServer(t, Config{
+				Upstreams: map[string]Upstream{
+					"anthropic": Anthropic(mustTarget(t, upstream.URL), keyFile(t, "sk-test-123"), tt.bearer),
+				},
+			}, nil)
+
+			req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(`{}`))
+			req.Header.Set(TokenHeader, "good")
+			req.Header.Set("Authorization", "Bearer "+provider.PlaceholderAuthToken)
+			req.Header.Set("x-api-key", provider.PlaceholderAuthToken)
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+			}
+			if v := gotHeader.Get(tt.wantHeader); v != tt.wantValue {
+				t.Errorf("%s = %q, want %q", tt.wantHeader, v, tt.wantValue)
+			}
+			for name, vals := range gotHeader {
+				for _, v := range vals {
+					if strings.Contains(v, provider.PlaceholderAuthToken) {
+						t.Errorf("placeholder forwarded upstream in %s: %q", name, v)
+					}
+				}
+			}
+		})
 	}
 }
 

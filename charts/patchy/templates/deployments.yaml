@@ -50,7 +50,11 @@ spec:
                 {{- with $c.vals.podLabels }}
                 {{- toYaml . | nindent 16 }}
                 {{- end }}
-            {{- with include "patchy.annotations" (dict "root" $ "extra" $c.vals.podAnnotations) }}
+            {{- /* checksum/config hashes this controller's own rendered ConfigMap
+                   (configmap.yaml), so a helm upgrade that changes it rolls
+                   the pod — envFrom is read once, at container start. */}}
+            {{- $checksums := dict "checksum/config" (include "patchy.controllerConfigMap" (dict "root" $ "c" $c) | sha256sum) }}
+            {{- with include "patchy.annotations" (dict "root" $ "extra" (merge $checksums ($c.vals.podAnnotations | default dict))) }}
             annotations:
                 {{- . | nindent 16 }}
             {{- end }}

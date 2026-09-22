@@ -142,7 +142,9 @@ Per-controller blocks — `integrationController`, `sourceController`, `contextC
   `findingTTL`), rendered into a per-controller ConfigMap. `config.*` holds the shared keys (`logLevel`, `maxAttempts`,
   `priorityAgingInterval`, `priorityAgingCap`), each overridable per controller by repeating it under
   `<controller>.config`; `config.extra` and `<controller>.config.extra` render arbitrary `PATCHY_*` keys and win over
-  anything the chart derives.
+  anything the chart derives. Each pod template carries a `checksum/config` annotation of its own ConfigMap (plus
+  `checksum/auth` for a chart-rendered auth Secret), so a `helm upgrade` that changes a component's configuration rolls
+  exactly that component — no manual `kubectl rollout restart`.
 - `<controller>.serviceAccount` / `networkPolicy` — that controller's identity and L3/L4 policy; `service` exists only
   on the two controllers anything dials (integration :8080, source :9790; NodePort covers the kind/dev flow).
 - `<controller>.resources`, `podAnnotations`, `podLabels`, `nodeSelector`, `tolerations`, `affinity` — per-controller

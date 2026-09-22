@@ -310,7 +310,16 @@ spec:
                 {{- with $vals.podLabels }}
                 {{- toYaml . | nindent 16 }}
                 {{- end }}
-            {{- with include "patchy.annotations" (dict "root" . "extra" $vals.podAnnotations) }}
+            {{- /* checksum/config hashes the ConfigMap data above and, when the
+                   chart renders the auth Secret (auth.config), checksum/auth
+                   hashes that too, so a helm upgrade that changes either rolls
+                   the pod. An auth.existingSecret is operator-owned and not
+                   hashed. */}}
+            {{- $checksums := dict "checksum/config" (toJson $data | sha256sum) }}
+            {{- with $vals.auth.config }}
+            {{- $_ := set $checksums "checksum/auth" (toYaml . | sha256sum) }}
+            {{- end }}
+            {{- with include "patchy.annotations" (dict "root" . "extra" (merge $checksums ($vals.podAnnotations | default dict))) }}
             annotations:
                 {{- . | nindent 16 }}
             {{- end }}

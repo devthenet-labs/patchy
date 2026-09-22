@@ -127,6 +127,53 @@ func TestRemediationChangesetRoundTrip(t *testing.T) {
 	}
 }
 
+// TestOutcomeVocabulary pins every outcome's wire string and proves each one
+// survives the envelope round trip, so a renamed or duplicated outcome fails
+// here before a controller routes on it.
+func TestOutcomeVocabulary(t *testing.T) {
+	tests := []struct {
+		outcome Outcome
+		wire    string
+	}{
+		{OutcomeOK, "ok"},
+		{OutcomeRuntimeError, "runtime_error"},
+		{OutcomeTimeout, "timeout"},
+		{OutcomeBudgetExceeded, "budget_exceeded"},
+		{OutcomeReportMissing, "report_missing"},
+		{OutcomeReportInvalid, "report_invalid"},
+		{OutcomeCommitFailed, "commit_failed"},
+		{OutcomeChangesetTooLarge, "changeset_too_large"},
+		{OutcomeImageIncompatible, "image_incompatible"},
+		{OutcomeChangesetRejected, "changeset_rejected"},
+	}
+	seen := make(map[string]bool, len(tests))
+	for _, tt := range tests {
+		t.Run(tt.wire, func(t *testing.T) {
+			if string(tt.outcome) != tt.wire {
+				t.Fatalf("outcome = %q, want %q", tt.outcome, tt.wire)
+			}
+			if seen[tt.wire] {
+				t.Fatalf("wire string %q is used by two outcomes", tt.wire)
+			}
+			seen[tt.wire] = true
+			line, err := (Event{
+				Type: TypeRemediation, Repo: "acme/shop",
+				Remediation: &Remediation{Stage: Stage{Outcome: tt.outcome, Harness: "claude", Model: "claude-sonnet-5"}},
+			}).Encode()
+			if err != nil {
+				t.Fatalf("Encode() error = %v", err)
+			}
+			if !strings.Contains(line, `"outcome":"`+tt.wire+`"`) {
+				t.Errorf("line %q does not carry outcome %q verbatim", line, tt.wire)
+			}
+			got, ok := Decode([]byte(line))
+			if !ok || got.Remediation == nil || got.Remediation.Outcome != tt.outcome {
+				t.Errorf("Decode() = %+v, %v; want remediation outcome %q", got, ok, tt.outcome)
+			}
+		})
+	}
+}
+
 func TestFatalEvent(t *testing.T) {
 	line, err := (Event{Type: TypeFatal, Repo: "acme/shop", Error: "workspace missing"}).Encode()
 	if err != nil {

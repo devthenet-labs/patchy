@@ -1,7 +1,9 @@
 # Repository-declared runner images
 
 **Status:** Proposed, 2026-09-22. Revised the same day to apply the accepted findings of the security review; the
-"Security review" subsection at the end lists each one and where the design now handles it.
+"Security review" subsection at the end lists each one and where the design now handles it. Revised again the same day
+to record three v1 decisions (the devcontainer.json fallback, a render failure on broad egress, and the first live
+verification target); the "Decisions" subsection at the end records them.
 
 ## Context
 
@@ -19,7 +21,8 @@ the per-harness runner image (`agent.runners.<harness>.image`) as today.
 
 ## Goals
 
-- A repository owner selects the agent's toolchain with one committed file and no cluster access.
+- A repository owner selects the agent's toolchain with one committed file and no cluster access: `.patchy/agent.yaml`,
+  or the top-level `image` of an existing `.devcontainer/devcontainer.json`.
 - The default Job shape is byte-for-byte unchanged; upgrading with the feature off changes nothing observable.
 - One chart block, off by default, holds every policy knob; turning the feature off is one value.
 - The image is pinned to a digest exactly once per Repository, beside `resolvedSHA`, by the same single writer, and
@@ -29,8 +32,11 @@ the per-harness runner image (`agent.runners.<harness>.image`) as today.
 
 ## Non-goals
 
-- Building images (`build`/`dockerFile` forms of devcontainer.json); reading devcontainer.json at all in v1 (see Open
-  questions).
+- Building images. A devcontainer.json that uses `build`, `dockerFile`, `dockerComposeFile` or `features` is rejected
+  with a reason, never built; patchy honours only a prebuilt image named by its top-level `image`.
+- Any other devcontainer.json behaviour: lifecycle commands (`postCreateCommand` and friends), `containerEnv`,
+  `remoteEnv`, `remoteUser`, mounts and `customizations` are ignored, and devcontainer.json files at other paths
+  (`.devcontainer.json`, `.devcontainer/<name>/devcontainer.json`) are not read.
 - Repository images for codex/copilot (they hold a real credential in-pod) or for evaluation Jobs.
 - Keyless (Fulcio/Rekor) signature verification; key-mode cosign only, in both the bundle and the legacy tag form.
 - A per-run-kind exemption from the broker's per-pod limits for evaluation pods (it would need a pod lookup and new RBAC
@@ -41,11 +47,11 @@ the per-harness runner image (`agent.runners.<harness>.image`) as today.
 **Who can influence the image.** Three principals, not one:
 
 1. Anyone who can commit to the branch source-controller pins (`Repository.spec.ref.branch`, the default branch when
-   empty). The manifest is read from the tarball already stored at `status.resolvedSHA`, never from a second forge call,
-   so the declaration is bound to the tree the agent works on. That principal already controls what the agent executes,
-   because the remediation stage runs the repository's own build and tests. What the image adds is control of the
-   process environment the harness runs in, which is why the harness binaries are injected from a trusted image rather
-   than taken from the declared one.
+   empty). The declaration (`.patchy/agent.yaml` or `.devcontainer/devcontainer.json`) is read from the tarball already
+   stored at `status.resolvedSHA`, never from a second forge call, so it is bound to the tree the agent works on. That
+   principal already controls what the agent executes, because the remediation stage runs the repository's own build and
+   tests. What the image adds is control of the process environment the harness runs in, which is why the harness
+   binaries are injected from a trusted image rather than taken from the declared one.
 2. Anyone who can push to an allowlisted registry path: members of a ghcr organisation holding `packages: write`,
    holders of `ecr:PutImage` on an allowlisted ECR repository, and the registry operator itself. Registry write alone is
    never image authority: a signature by the operator's key is required unless the operator explicitly sets
@@ -102,8 +108,49 @@ image: ghcr.io/devthenet-labs/go-agent-env:1.26
 `image` is the only key; unknown keys are rejected (fail closed on a newer schema), the file is capped at 64 KiB,
 `build:` forms are unsupported. Tags are accepted and pinned to a digest at resolution. A `@sha256:` pin must be
 `sha256:` plus 64 hex (`imageref.Parse` accepts anything after `@`); it skips only the HEAD that resolves a tag and goes
-through the identical size, platform, ENV, PATH, VOLUME and signature checks. There is no second source in v1, so there
-is no precedence to guess.
+through the identical size, platform, ENV, PATH, VOLUME and signature checks.
+
+**devcontainer.json fallback.** When the pinned tree has no `.patchy/agent.yaml`, `.devcontainer/devcontainer.json` is
+consulted, and only its top-level string `image` is honoured:
+
+```jsonc
+{
+  // the agent runs in this prebuilt image
+  "image": "ghcr.io/devthenet-labs/go-agent-env:1.26",
+  "customizations": { "vscode": { "extensions": ["golang.go"] } },
+}
+```
+
+The same 64 KiB cap applies. The file is JSONC, so it is parsed by a small tolerant pre-processor in
+`internal/runnerimage/jsonc.go`, beside the `.patchy/agent.yaml` parser, rather than by a new dependency: one pass over
+the bytes tracking string and escape state that blanks `//` line comments and `/* */` block comments with spaces (byte
+offsets survive, so `encoding/json` error positions still point into the original file) and drops a comma whose next
+non-space, non-comment byte is `}` or `]`; the result is decoded with `encoding/json` into a map of raw values. An
+unterminated string or block comment, or anything `encoding/json` then refuses, is a rejection ("could not parse
+`.devcontainer/devcontainer.json`: `<error>`"). `github.com/tailscale/hujson` was the alternative; the pre-processor is
+about eighty lines with property tests, so the dependency does not pay for itself.
+
+The decoded file is then judged, first match wins:
+
+1. `build`, `dockerFile` or `dockerComposeFile` present: rejected with "`.devcontainer/devcontainer.json` builds its
+   image (`<key>`); patchy does not build images. Publish the image and set `image`, or declare one in
+   `.patchy/agent.yaml`, which takes precedence."
+2. `features` present and non-empty: rejected with the same shape ("... adds features, which patchy would have to build
+   ..."), because features change the image and patchy runs only what the registry serves.
+3. `image` absent, not a JSON string, empty, or containing `${` (devcontainer variable substitution, which patchy does
+   not perform): rejected with a message naming which.
+4. Otherwise `image` enters resolution exactly as a `.patchy/agent.yaml` value would, through the same allowlist,
+   digest, size, platform, ENV, PATH, VOLUME and signature checks.
+
+Every other key is ignored rather than rejected, unlike `.patchy/agent.yaml`: the file belongs to the editor tooling and
+carries keys patchy has no business judging, and a repository owner who wants fail-closed strictness writes
+`.patchy/agent.yaml`.
+
+**Precedence.** `.patchy/agent.yaml` wins whenever it exists: a valid one is used and devcontainer.json is not read at
+all (so a build-based devcontainer never blocks a repository that declares its agent image explicitly); an invalid one
+is a rejection and never falls through to devcontainer.json, because a broken explicit declaration must not silently
+become a different image. Only when `.patchy/agent.yaml` is absent is devcontainer.json consulted; when neither exists
+the Repository gets the default image. `status.runnerImage.manifest` records which file the image came from.
 
 Image contract, documented for repository owners and checked at resolution and by the preflight below: glibc-based Linux
 for `linux/amd64` or `linux/arm64` (a multi-arch index must satisfy the contract on both); `bash`, `sh` and `git` on the
@@ -128,7 +175,8 @@ Repository still has a tree to run on.
 Steps, in a new pure package `internal/runnerimage` plus an `ocireg`-backed resolver:
 
 1. `artifact.Store.Open(key) (io.ReadCloser, error)` streams the stored tarball; a bounded tar walk reads
-   `<first component>/.patchy/agent.yaml` (the GitHub archive prefix) and nothing else.
+   `<first component>/.patchy/agent.yaml` and `<first component>/.devcontainer/devcontainer.json` (the GitHub archive
+   prefix) and nothing else, then applies the precedence above.
 2. `imageref.Normalize` + `imageref.Parse`, then `Policy.Allow`. `Policy` validates its entries at construction (flag
    parse time; the chart mirrors the rules): an entry is `host/segment[/...]` with at least one path segment (a
    host-only entry fails), is normalized to a trailing `/`, is matched on segment boundaries (`ghcr.io/org/` never
@@ -159,16 +207,18 @@ Steps, in a new pure package `internal/runnerimage` plus an `ocireg`-backed reso
 6. Signature verification against the recorded digest (required unless `allowUnsigned: true`; the two accepted forms are
    under Operator policy).
 7. The second status update writes
-   `status.runnerImage{declared, manifest, image (name@sha256:...), searchPath, verified, resolvedAt}` and `Ready=True`.
+   `status.runnerImage{declared, manifest, image (name@sha256:...), searchPath, verified, resolvedAt}` and `Ready=True`,
+   where `manifest` is the path of the declaring file.
 
-Deterministic rejections (bad manifest, not allowlisted, 404, 401/403, oversized, wrong or missing platform, reserved
-ENV, VOLUME, empty PATH, missing or bad signature) go through `stall`, extended to take a reason: `Stalled=True` /
-`Ready=False`, reason `RunnerImageRejected`, a human message. Transient errors go through
-`fail(ctx, repo, "RunnerImageResolveFailed", err)`, which returns the error for controller-runtime backoff, like a forge
-outage. Repositories are per Finding, so a 10-minute in-memory cache of check results keyed by resolved digest bounds
-registry traffic without weakening pin-once: the HEAD that resolves a tag is never cached, so a moved tag cannot reuse a
-stale verdict. The `ocireg` client is built with the explicit keychain above, never `authn.DefaultKeychain`. `imageref`
-and `ocireg` gain a controller consumer; the "mirror is CLI-only" line in `AGENTS.md` is amended.
+Deterministic rejections (bad manifest, an unparseable devcontainer.json or one that builds, uses features or names no
+usable `image`, not allowlisted, 404, 401/403, oversized, wrong or missing platform, reserved ENV, VOLUME, empty PATH,
+missing or bad signature) go through `stall`, extended to take a reason: `Stalled=True` / `Ready=False`, reason
+`RunnerImageRejected`, a human message. Transient errors go through `fail(ctx, repo, "RunnerImageResolveFailed", err)`,
+which returns the error for controller-runtime backoff, like a forge outage. Repositories are per Finding, so a
+10-minute in-memory cache of check results keyed by resolved digest bounds registry traffic without weakening pin-once:
+the HEAD that resolves a tag is never cached, so a moved tag cannot reuse a stale verdict. The `ocireg` client is built
+with the explicit keychain above, never `authn.DefaultKeychain`. `imageref` and `ocireg` gain a controller consumer; the
+"mirror is CLI-only" line in `AGENTS.md` is amended.
 
 ### Operator policy
 
@@ -213,12 +263,24 @@ One chart block, `agent.repositoryImages`, rendered into the controllers' Config
   refuses repository-image Jobs until it passes.
 
 Prerequisites the chart enforces: render fails when enabled with `agent.networkPolicy.create: false`; when enabled while
-`patchy.broadEgress` resolves true (under `mode: none` the base policy grants TCP 443 anywhere, so even an enforcing CNI
-would let a hostile image reach a model API with its own key; a brokered-only fleet sets `broadEgress: never`); when
-enabled without `cosignPublicKey` and without `allowUnsigned: true`; and when enabled while the broker's effective
-`modelAllowlist` is empty. What the chart cannot check, and NOTES states loudly: the CNI must actually enforce
-NetworkPolicy. EKS Auto Mode does not by default; the probe turns that into a `SandboxUnenforced` failure instead of a
-silent hole.
+`patchy.broadEgress` resolves true (under `mode: none`, and `istio`, with the default `broadEgress: auto`, the base
+policy grants TCP 443 anywhere, so even an enforcing CNI would let a hostile image reach a model API with its own key);
+when enabled without `cosignPublicKey` and without `allowUnsigned: true`; and when enabled while the broker's effective
+`modelAllowlist` is empty.
+
+The broad-egress guard is decided as a render failure, not a NOTES warning (see Decisions). `_helpers.tpl` fails with:
+
+```text
+agent.repositoryImages.enabled requires narrow agent egress, but agent.networkPolicy.broadEgress ("auto") resolves to
+broad under agent.networkPolicy.mode "none": the base policy would allow TCP 443 to anywhere. Set
+agent.networkPolicy.broadEgress: never (brokered claude runners only), or use agent.networkPolicy.mode cilium or gke.
+```
+
+with the two quoted values filled from the render. `agent.networkPolicy.broadEgress: never` is the value it names: it
+removes the 443 rule for every runner, so under `mode: none` codex and copilot runners lose their model egress and a
+fleet enabling repository images is brokered-only; the operator page says so. What the chart cannot check, and NOTES
+states loudly: the CNI must actually enforce NetworkPolicy. EKS Auto Mode does not by default; the probe turns that into
+a `SandboxUnenforced` failure instead of a silent hole.
 
 ### Pod construction
 
@@ -332,15 +394,21 @@ evaluation-controller page says so.
 ### Failure modes and what the human sees
 
 - **No manifest, or feature disabled**: default image, `status.runnerImage` nil, `runner-image-source: default`.
-- **Policy rejection**: `Stalled=True` / `RunnerImageRejected` on the Repository, artifact retained; the gate's
-  `ensureRepository` parks the Finding `HandedOff` with `LastFailureReason` set to the Stalled message (today it
-  forwards a fixed size-cap string), which the issue projection's phase notice renders. No attempt consumed. Pin-once
-  stays absolute: the manifest is bound to the pinned SHA, so re-resolution only matters if operator policy changed. The
-  revival path is the existing one: a human `approve` or `retry` on the parked Finding runs it on the default image,
-  with `status.runnerImage.rejected` recorded and the sticky comment stating so; `launch()` copies the pin only when
-  `Image != ""`, so the spawners need no special case beyond not blocking on `Stalled`. A fixed manifest is picked up by
-  the next Finding on that repository. With `onReject: default` the run proceeds on the default image without the human
-  step, and the rejection is still recorded.
+- **Policy rejection** (including an unusable devcontainer.json): `Stalled=True` / `RunnerImageRejected` on the
+  Repository, artifact retained; the gate's `ensureRepository` parks the Finding `HandedOff` with `LastFailureReason`
+  set to the Stalled message (today it forwards a fixed size-cap string), which the issue projection's phase notice
+  renders. No attempt consumed. Pin-once stays absolute: the manifest is bound to the pinned SHA, so re-resolution only
+  matters if operator policy changed. The revival path is the existing one: a human `approve` or `retry` on the parked
+  Finding runs it on the default image, with `status.runnerImage.rejected` recorded and the sticky comment stating so;
+  `launch()` copies the pin only when `Image != ""`, so the spawners need no special case beyond not blocking on
+  `Stalled`. A fixed manifest is picked up by the next Finding on that repository. With `onReject: default` the run
+  proceeds on the default image without the human step, and the rejection is still recorded.
+- **devcontainer.json that builds**: the most common rejection once the feature is on, because many repositories carry a
+  `build`-based devcontainer for their editors. The Repository condition and the Finding's `LastFailureReason` carry the
+  specific message from the declaration section (the key, "patchy does not build images", and the two fixes), so the
+  issue says what to change. Under `onReject: handoff` every finding on such a repository parks until the owner acts or
+  a human revives it; operators enabling the feature on an estate of build-based devcontainers choose
+  `onReject: default`, which runs them on the default image and still posts the reason as the sticky comment.
 - **Registry denies access**: 401/403 is a policy rejection (above) with a message naming the reference and the fix, not
   backoff.
 - **Registry unreachable**: `Ready=False` / `RunnerImageResolveFailed`, backoff; the Finding waits; the artifact is not
@@ -378,10 +446,11 @@ evaluation-controller page says so.
 
 `onReject: handoff | default` (default `handoff`) ships together with a sticky tracking-issue comment
 (`<!-- patchy:runner-image -->`, the existing `findSticky` mechanism in `internal/controller/integration/project.go`,
-template `runner_image_comment.md.tmpl`) stating one of "ran on `<image>` declared in `.patchy/agent.yaml`", "could not
-use `<ref>`: `<reason>`; the default image was used", or the held-ignore sentence above, so fallback is never silent and
-a repository owner without cluster access learns why. The comment and `InvestigationSummary.RunnerImage` derive from the
-same `status.runnerImage` value the launch recorded.
+template `runner_image_comment.md.tmpl`) stating one of "ran on `<image>` declared in `<manifest>`" (the declaring file,
+`.patchy/agent.yaml` or `.devcontainer/devcontainer.json`), "could not use `<ref>` from `<manifest>`: `<reason>`; the
+default image was used" (a devcontainer rejection quotes the build/features message verbatim), or the held-ignore
+sentence above, so fallback is never silent and a repository owner without cluster access learns why. The comment and
+`InvestigationSummary.RunnerImage` derive from the same `status.runnerImage` value the launch recorded.
 
 ## CRD, config and chart changes
 
@@ -390,9 +459,13 @@ same `status.runnerImage` value the launch recorded.
 - `repository_types.go`: a `RunnerImage` struct with `Declared`, `Manifest`, `Image` and `SearchPath` strings, a
   `Verified` bool, `Rejected` and `Message` strings and `ResolvedAt *metav1.Time`;
   `RepositoryStatus.RunnerImage *RunnerImage`; printcolumn `Image` on `.status.runnerImage.image`, priority 1; the stale
-  ".git directory" claim on `Artifact` corrected.
-- `common_types.go`: `RunnerImageRef struct { Image, Source string }`; `InvestigationStatus.RunnerImage`,
-  `RemediationStatus.RunnerImage` and `InvestigationSummary.RunnerImage *RunnerImageRef` (the last for the projection).
+  ".git directory" claim on `Artifact` corrected. `Manifest` holds the repository-relative path of the declaring file,
+  `.patchy/agent.yaml` or `.devcontainer/devcontainer.json`, and is empty when neither exists; it is the one record of
+  which file won, so no separate source field is added.
+- `common_types.go`: `RunnerImageRef struct { Image, Source, Manifest string }` (`Manifest` copied from the Repository
+  at launch when `Source` is `repository`, so the sticky comment and `describe` name the file);
+  `InvestigationStatus.RunnerImage`, `RemediationStatus.RunnerImage` and
+  `InvestigationSummary.RunnerImage *RunnerImageRef` (the last for the projection).
 - `conditions.go`: `ReasonRunnerImageResolving`, `ReasonRunnerImageRejected`, `ReasonRunnerImageResolveFailed`. No new
   condition type, no Forge or Integration field (`charts/patchy-config` untouched), no transition-table change.
 - `internal/envelope`: `OutcomeImageIncompatible Outcome = "image_incompatible"` and
@@ -459,15 +532,17 @@ condition holds. `deploy/kustomize/base` mirrors the ConfigMap keys with disable
 ## Documentation changes
 
 - New `docs/deployment/repository-images.md` ("Repository runner images"): repository owners first (the manifest, the
-  image contract including no `VOLUME` and no reserved `ENV`, offline caches, uid 65532, a Go and a Node example,
-  `cosign sign --key`, gating `patchy/**` branches in CI, the preflight, how outcomes appear on the issue including the
-  held-ignore notice), then operators (the `agent.repositoryImages` block, allowlist precision and the
-  pull-through-cache namespaces never to allowlist, the signing requirement and `allowUnsigned`, both signature forms
-  and that `patchy mirror sign` output verifies, the size cap and ephemeral storage, the kill switch, `pullSecret` and
-  the two-namespace rule versus cloud credentials, the `broadEgress` guard, the CNI-enforcement prerequisite with the
-  EKS Auto Mode caveat and the probe, the DNS channel and Cilium `toFQDNs`, broker limits and the aggregate-spend
-  formula, sizing for evaluations), then the security model (this threat model, shadowing defences, audit trail, why
-  CLI-reported usage is untrusted). `zensical.toml`: Deployment group, after "Isolation model".
+  devcontainer.json fallback with its precedence, the one honoured key, the ignored keys, the build/features rejection
+  and its two fixes, the image contract including no `VOLUME` and no reserved `ENV`, offline caches, uid 65532, a Go and
+  a Node example, `cosign sign --key`, gating `patchy/**` branches in CI, the preflight, how outcomes appear on the
+  issue including the held-ignore notice), then operators (the `agent.repositoryImages` block, allowlist precision and
+  the pull-through-cache namespaces never to allowlist, the signing requirement and `allowUnsigned`, both signature
+  forms and that `patchy mirror sign` output verifies, the size cap and ephemeral storage, the kill switch, `pullSecret`
+  and the two-namespace rule versus cloud credentials, the `broadEgress` render failure and its brokered-only
+  consequence under `mode: none`, `onReject: default` for estates of build-based devcontainers, the CNI-enforcement
+  prerequisite with the EKS Auto Mode caveat and the probe, the DNS channel and Cilium `toFQDNs`, broker limits and the
+  aggregate-spend formula, sizing for evaluations), then the security model (this threat model, shadowing defences,
+  audit trail, why CLI-reported usage is untrusted). `zensical.toml`: Deployment group, after "Isolation model".
 - `docs/design/repository-runner-images.md`: this document, under a new "Design" nav group.
 - `docs/deployment/isolation.md`: new section "Repository-declared images" after "Pod security"; one sentence in "What
   leaves the pod" on forged events and changeset validation.
@@ -490,21 +565,28 @@ condition holds. `deploy/kustomize/base` mirrors the ConfigMap keys with disable
 Branch `feature/repository-runner-images`, one draft PR per phase, `make pr` green at each; phases 1 to 3 ship with no
 observable change.
 
-1. **Pure core.** `internal/runnerimage`: manifest extraction from a tar.gz stream, `Policy` entry validation and
-   `Allow`, strict digest check, the PATH sanitizer with the runc default, the reserved-ENV check with prefixes and
-   proxy names, the VOLUME check, `Resolver` interface. Tests: table tests plus seeded property tests (normalization
-   idempotence; no entry matches a reference on another host or a sibling path; a digest pin round-trips; the emitted
-   PATH has no empty component and only absolute entries for any input; a fixture config carrying
-   `PATCHY_CHANGESET_MAX_BYTES` is rejected).
+1. **Pure core.** `internal/runnerimage`: manifest extraction from a tar.gz stream (both files), the
+   `.patchy/agent.yaml` parser, the JSONC pre-processor (`jsonc.go`) and the devcontainer.json judge with its build,
+   features and bad-image rejections, the precedence function, `Policy` entry validation and `Allow`, strict digest
+   check, the PATH sanitizer with the runc default, the reserved-ENV check with prefixes and proxy names, the VOLUME
+   check, `Resolver` interface. Tests: table tests (each rejection message; a valid `.patchy/agent.yaml` beside a
+   build-based devcontainer yields the yaml image; an invalid yaml never falls through; comments and trailing commas in
+   every position; `//` and `/*` inside strings and escaped quotes survive; an unterminated block comment is rejected)
+   plus seeded property tests (normalization idempotence; no entry matches a reference on another host or a sibling
+   path; a digest pin round-trips; the emitted PATH has no empty component and only absolute entries for any input; a
+   fixture config carrying `PATCHY_CHANGESET_MAX_BYTES` is rejected; the pre-processor is the identity on comment-free
+   JSON without trailing commas; for generated JSON with comments and trailing commas injected between tokens it decodes
+   equal to the original; its output always has the input's length).
 2. **API.** Types, reasons, printcolumn, `Artifact` comment fix, the two new outcomes; codegen; drift gate. Tests: the
    existing deepcopy suite.
 3. **source-controller.** `artifact.Store.Open`, the ggcr resolver (single HEAD, digest-pinned reference, index
    enumeration, size per child, config, host-selected keychain, bundle and legacy signature verification), the two-phase
    status write, `RepositoryReconciler.Images`, pin-once guard, `stall(reason)`, flags, the digest-keyed cache. Tests:
-   reconciler with a fake resolver and a fixture tarball; an in-process ggcr registry that flips a tag between calls,
-   asserting `status.runnerImage.image` is the object that was checked; a seeded property that the checked configs equal
-   the runnable children; signature fixtures in both forms signed with a committed test key pair; a 401 fixture yielding
-   `RunnerImageRejected`; `Open` round-trip.
+   reconciler with a fake resolver and fixture tarballs (yaml only, devcontainer only with `manifest` recorded, both, a
+   build-based devcontainer yielding `RunnerImageRejected` with the build message on the condition); an in-process ggcr
+   registry that flips a tag between calls, asserting `status.runnerImage.image` is the object that was checked; a
+   seeded property that the checked configs equal the runnable children; signature fixtures in both forms signed with a
+   committed test key pair; a 401 fixture yielding `RunnerImageRejected`; `Open` round-trip.
 4. **jobs + agent-runner.** The `Spec`/`Runner`/`Config` fields, `patchy-bin` volume and copy tail, the probe tail,
    absolute command, PATH join and the scrub env including the exported `PATCHY_*` keys, ephemeral storage, annotations
    and label, `Create`'s return value, the `Status` fields; `harness.Available` `PATCHY_BIN_DIR`, preflight, the
@@ -528,15 +610,35 @@ observable change.
    `message_start` with large `input_tokens` trips the cap before the second request; a mid-stream cut is charged; a
    token without the `pod-name` extra is rejected when limits are on; a malformed-token flood produces no TokenReview.
 7. **Chart + kustomize.** Values, ConfigMap rendering, mounts with the `config.json` item mapping, `imagePullSecrets`
-   and the optional agent-namespace Secret, the four `fail` guards, NOTES, broker flags and the rendered allowlist.
-   Tests: `mise run helm-lint`; a render fixture per guard and per pull-secret case.
-8. **Feedback, docs, verification.** `onReject`, the sticky comment and its template golden, CLI `describe`, every page
-   above; deploy to devthenet-dev with a Go test repository under devthenet-labs declaring a golang-derived image in an
-   allowlisted ECR path pulled through the ECR keychain; confirm `go test` runs in the remediation pod and the Job
-   carries the annotations; confirm a disallowed registry parks the finding with a readable reason and that `approve`
-   revives it on the default image; confirm the probe trips the breaker on a cluster without NetworkPolicy enforcement
-   and passes with it; confirm a scripted caller inside a pod gets 4xx for a `web_fetch` request and 429 over the token
-   limit.
+   and the optional agent-namespace Secret, the four `fail` guards (broad egress among them, with the message above),
+   NOTES, broker flags and the rendered allowlist. Tests: `mise run helm-lint`; a render fixture per guard and per
+   pull-secret case, the broad-egress fixture asserting the message names `agent.networkPolicy.broadEgress: never` and
+   passing once it is set.
+8. **Feedback, docs, verification.** `onReject`, the sticky comment and its template golden (goldens for a yaml source,
+   a devcontainer source and a devcontainer build rejection), CLI `describe` with the declaring file, every page above,
+   and the live verification below.
+
+### Verification and rollout
+
+The first live target is decided (see Decisions): the `devthenet-labs/patchy-target` Go repository on the EKS cluster
+`devthenet-dev` (us-east-1), running a golang-derived image hosted in ECR under
+`377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/` (for example `.../patchy/go-agent-env`), with that prefix as the
+only allowlist entry, resolution through the ECR keychain and pulls through node credentials, and the image signed with
+the key whose public half is `cosignPublicKey`.
+
+Prerequisite, **in progress**: NetworkPolicy enforcement on `devthenet-dev`, which EKS Auto Mode does not provide by
+default, is being enabled in parallel. Until it is, the sandbox probe is expected to fail every repository-image Job
+with `SandboxUnenforced`, which is itself the first check. The chart values for the cluster set
+`agent.networkPolicy.broadEgress: never` (the fleet there is brokered claude only), and the render is confirmed to fail
+with the message above before that value is set.
+
+Checks, in order: the probe and startup canary trip the breaker before enforcement and pass after it; with
+`.patchy/agent.yaml` naming the ECR image, `go test` runs in the remediation pod and the Job carries the annotations; a
+branch of the target with only a `.devcontainer/devcontainer.json` `image` resolves with `manifest` recorded as that
+file, and one with a `build`-based devcontainer parks the finding with the build message on the Repository condition and
+the tracking issue; a disallowed registry parks the finding with a readable reason and `approve` revives it on the
+default image; a scripted caller inside a pod gets 4xx for a `web_fetch` request and 429 over the token limit. The
+feature stays `enabled: false` in every other environment until these pass.
 
 ## Security review notes
 
@@ -558,6 +660,9 @@ observable change.
   cluster resolver exists today and is unchanged.
 - Reading the manifest is a bounded tar walk over an already size-capped (1 GiB) artifact; the ENV, PATH and VOLUME
   checks read one config blob per platform child, not layers.
+- The devcontainer.json fallback adds no principal: the file sits in the same pinned tree as `.patchy/agent.yaml`, and
+  its `image` passes every check a yaml value does. The JSONC pre-processor runs on at most 64 KiB, allocates one buffer
+  of the input's size, and never evaluates variables or executes anything the file names.
 
 ### Security review
 
@@ -629,17 +734,31 @@ Accepted findings of the 2026-09-22 review and where each one now lives:
   Evaluation Jobs section states the shared limits and the rejected exemption, the docs say to size for the longest
   evaluation, and the 429 envelope's fixed prefix is mapped to `budget_exceeded` by `agentrun.stageOutcome`.
 
+## Decisions
+
+Recorded 2026-09-22. The user decided the first and third; the second was made on the user's behalf, with the reasoning
+stated.
+
+1. **devcontainer.json fallback is in v1.** `.patchy/agent.yaml` `image` wins; if the file is absent,
+   `.devcontainer/devcontainer.json` is consulted and only its top-level string `image` is honoured, parsed as JSONC by
+   a small pre-processor in `internal/runnerimage`. A devcontainer that uses `build`, `dockerComposeFile` or `features`
+   is rejected with a specific reason that reaches the Repository condition and the tracking issue, because patchy does
+   not build images. Reason: many repositories already name their toolchain image there, so the fallback costs owners
+   nothing; the yaml keeps precedence because it is the explicit, strict, agent-specific declaration.
+2. **Broad egress fails the render.** With `agent.repositoryImages.enabled: true` and `patchy.broadEgress` resolving
+   true, the chart `fail`s with the message under Operator policy, naming `agent.networkPolicy.broadEgress: never`.
+   Reason: a NOTES warning is invisible in CI, a render failure is not. The cost, accepted: under `mode: none` a fleet
+   using repository images is brokered-only.
+3. **First live verification target**: `devthenet-labs/patchy-target` on `devthenet-dev` with a golang-derived image in
+   `377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/`, after NetworkPolicy enforcement is enabled on that cluster
+   (in progress); see Verification and rollout.
+
 ## Open questions
 
-1. Honour `.devcontainer/devcontainer.json` `image` as a v1 fallback (a JSONC parser, `build` rejection), or wait for
-   demand?
-2. Render failure versus a NOTES warning when enabled under `broadEgress: auto` on `mode: none` (the EKS default).
-   Failing is proposed; it forces `broadEgress: never`, which also removes non-brokered runners' egress under
-   `mode: none`.
-3. A human `dismiss` verb: a new custom verb in `internal/action`, the admission policy, status-server and the CLI, with
+1. A human `dismiss` verb: a new custom verb in `internal/action`, the admission policy, status-server and the CLI, with
    the `HandedOff` to `Dismissed` edge routed through the existing `resolveSource` write-back. Deferred; until it exists
    a held `ignore` is resolved in the scanner of record by hand.
-4. An operator per-Forge path deny-list for changesets (beyond the built-in CI paths), which touches
+2. An operator per-Forge path deny-list for changesets (beyond the built-in CI paths), which touches
    `charts/patchy-config`.
-5. Usage parsing on the bedrock, vertex and foundry routes, so `TokensPerPod` meters them and `activeDeadlineSeconds`
+3. Usage parsing on the bedrock, vertex and foundry routes, so `TokensPerPod` meters them and `activeDeadlineSeconds`
    stops being the only wall there.

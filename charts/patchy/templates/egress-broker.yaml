@@ -137,7 +137,12 @@ spec:
                 {{- with $vals.podLabels }}
                 {{- toYaml . | nindent 16 }}
                 {{- end }}
-            {{- with include "patchy.annotations" (dict "root" . "extra" $vals.podAnnotations) }}
+            {{- /* checksum/config hashes the ConfigMap data above, so a helm
+                   upgrade that changes it rolls the pod (envFrom is read once,
+                   at start). The model-credential Secrets are operator-owned
+                   and re-read per request, so they are not hashed. */}}
+            {{- $checksums := dict "checksum/config" (toJson $data | sha256sum) }}
+            {{- with include "patchy.annotations" (dict "root" . "extra" (merge $checksums ($vals.podAnnotations | default dict))) }}
             annotations:
                 {{- . | nindent 16 }}
             {{- end }}

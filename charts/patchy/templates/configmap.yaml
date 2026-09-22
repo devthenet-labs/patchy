@@ -23,7 +23,20 @@
     (dict "name" "investigation-controller" "vals" .Values.investigationController)
     (dict "name" "remediation-controller" "vals" .Values.remediationController)
 }}
-{{- $g := $.Values.config }}
+{{- include "patchy.controllerConfigMap" (dict "root" $ "c" $c) }}
+{{- end }}
+
+{{- /*
+One controller's ConfigMap document. Context: dict "root" $ "c" (dict "name"
+<controller> "vals" <its values block>). A define rather than inline so
+deployments.yaml can hash exactly this controller's ConfigMap into its pod
+template's checksum/config annotation: a helm upgrade that changes one
+controller's config rolls that controller, and no other.
+*/}}
+{{- define "patchy.controllerConfigMap" }}
+{{- $root := .root }}
+{{- $c := .c }}
+{{- $g := $root.Values.config }}
 {{- $own := $c.vals.config }}
 {{/*
 The health address is fixed: the containerPort, probes, and NetworkPolicy
@@ -50,8 +63,8 @@ The binary's own default base URL assumes the kustomize Service name
 (patchy-source-controller); the chart's Service is <fullname>-source-
 controller, so the URL minted into Repository statuses is pinned here.
 */}}
-{{- $_ := set $data "PATCHY_ARTIFACT_BASE_URL" (printf "http://%s-source-controller.%s.svc.cluster.local:9790" (include "patchy.fullname" $) $.Release.Namespace) }}
-{{- if $.Values.evaluationController.enabled }}
+{{- $_ := set $data "PATCHY_ARTIFACT_BASE_URL" (printf "http://%s-source-controller.%s.svc.cluster.local:9790" (include "patchy.fullname" $root) $root.Release.Namespace) }}
+{{- if $root.Values.evaluationController.enabled }}
 {{/*
 The internal workspace-blob endpoint the evaluation controller streams
 uploads to (NetworkPolicy-gated to that one client). Rendered only when the
@@ -59,7 +72,7 @@ evaluation controller is deployed — without it the second listener never
 starts.
 */}}
 {{- $_ := set $data "PATCHY_ARTIFACT_INTERNAL_ADDR" ":9791" }}
-{{- $_ := set $data "PATCHY_WORKSPACE_RETENTION" $.Values.evaluationController.workspaceRetention }}
+{{- $_ := set $data "PATCHY_WORKSPACE_RETENTION" $root.Values.evaluationController.workspaceRetention }}
 {{- end }}
 {{- else if or (eq $c.name "investigation-controller") (eq $c.name "remediation-controller") }}
 {{/*
@@ -74,20 +87,20 @@ agent.runners.<harness>.image.
 {{- $_ := set $data "PATCHY_MAX_ATTEMPTS" ($own.maxAttempts | default $g.maxAttempts) }}
 {{- $_ := set $data "PATCHY_PRIORITY_AGING_INTERVAL" ($own.priorityAgingInterval | default $g.priorityAgingInterval) }}
 {{- $_ := set $data "PATCHY_PRIORITY_AGING_CAP" ($own.priorityAgingCap | default $g.priorityAgingCap) }}
-{{- $_ := set $data "PATCHY_AGENT_NAMESPACE" $.Values.agent.namespace }}
-{{- $_ := set $data "PATCHY_AGENT_SERVICE_ACCOUNT" $.Values.agent.serviceAccount }}
+{{- $_ := set $data "PATCHY_AGENT_NAMESPACE" $root.Values.agent.namespace }}
+{{- $_ := set $data "PATCHY_AGENT_SERVICE_ACCOUNT" $root.Values.agent.serviceAccount }}
 {{- $enabled := list }}
-{{- range $id, $r := $.Values.agent.runners }}
+{{- range $id, $r := $root.Values.agent.runners }}
 {{- if $r.enabled }}
 {{- $enabled = append $enabled $id }}
-{{- $_ := set $data (printf "PATCHY_%s_AGENT_IMAGE" (upper $id)) (include "patchy.image" (dict "root" $ "binary" (printf "%s-agent-runner" $id) "image" $r.image)) }}
+{{- $_ := set $data (printf "PATCHY_%s_AGENT_IMAGE" (upper $id)) (include "patchy.image" (dict "root" $root "binary" (printf "%s-agent-runner" $id) "image" $r.image)) }}
 {{- if eq $id "claude" }}
 {{/*
 Claude is brokered: the broker URL + provider stamps replace the
 PATCHY_CLAUDE_SECRET* keys — no model credential exists in the agent
 namespace for claude anymore.
 */}}
-{{- $_ := include "patchy.claudeProviderData" (dict "root" $ "data" $data) }}
+{{- $_ := include "patchy.claudeProviderData" (dict "root" $root "data" $data) }}
 {{- else if $r.secret }}
 {{- $_ := set $data (printf "PATCHY_%s_SECRET" (upper $id)) $r.secret }}
 {{- $_ := set $data (printf "PATCHY_%s_SECRET_KEY" (upper $id)) $r.secretKey }}
@@ -96,27 +109,27 @@ namespace for claude anymore.
 {{- end }}
 {{- end }}
 {{- $_ := set $data "PATCHY_HARNESSES" (join "," $enabled) }}
-{{- $_ := set $data "PATCHY_JOB_DEADLINE" $.Values.agent.jobDeadline }}
-{{- $_ := set $data "PATCHY_JOB_TTL" $.Values.agent.jobTTL }}
-{{- $_ := set $data "PATCHY_MODEL_ALLOWLIST" $.Values.agent.modelAllowlist }}
-{{- $_ := set $data "PATCHY_REMEDIATE_AUTO_MAX_TURNS" $.Values.agent.remediate.auto.maxTurns }}
-{{- $_ := set $data "PATCHY_REMEDIATE_AUTO_TOKEN_BUDGET" $.Values.agent.remediate.auto.tokenBudget }}
-{{- $_ := set $data "PATCHY_REMEDIATE_MANUAL_MAX_TURNS" $.Values.agent.remediate.manual.maxTurns }}
-{{- $_ := set $data "PATCHY_REMEDIATE_MANUAL_TOKEN_BUDGET" $.Values.agent.remediate.manual.tokenBudget }}
+{{- $_ := set $data "PATCHY_JOB_DEADLINE" $root.Values.agent.jobDeadline }}
+{{- $_ := set $data "PATCHY_JOB_TTL" $root.Values.agent.jobTTL }}
+{{- $_ := set $data "PATCHY_MODEL_ALLOWLIST" $root.Values.agent.modelAllowlist }}
+{{- $_ := set $data "PATCHY_REMEDIATE_AUTO_MAX_TURNS" $root.Values.agent.remediate.auto.maxTurns }}
+{{- $_ := set $data "PATCHY_REMEDIATE_AUTO_TOKEN_BUDGET" $root.Values.agent.remediate.auto.tokenBudget }}
+{{- $_ := set $data "PATCHY_REMEDIATE_MANUAL_MAX_TURNS" $root.Values.agent.remediate.manual.maxTurns }}
+{{- $_ := set $data "PATCHY_REMEDIATE_MANUAL_TOKEN_BUDGET" $root.Values.agent.remediate.manual.tokenBudget }}
 {{- if eq $c.name "investigation-controller" }}
 {{- $_ := set $data "PATCHY_FINDING_MIN_AGE" $own.findingMinAge }}
 {{- $_ := set $data "PATCHY_GATE_CONCURRENCY" $own.gateConcurrency }}
 {{- $_ := set $data "PATCHY_MAX_CONCURRENT_INVESTIGATIONS" $own.maxConcurrentInvestigations }}
 {{- $_ := set $data "PATCHY_CONFIDENCE_THRESHOLD" $own.confidenceThreshold }}
-{{- $_ := set $data "PATCHY_INVESTIGATE_MODEL" $.Values.agent.investigate.model }}
-{{- $_ := set $data "PATCHY_INVESTIGATE_TIMEOUT" $.Values.agent.investigate.timeout }}
-{{- $_ := set $data "PATCHY_INVESTIGATE_MAX_TURNS" $.Values.agent.investigate.maxTurns }}
-{{- $_ := set $data "PATCHY_INVESTIGATE_TOKEN_BUDGET" $.Values.agent.investigate.tokenBudget }}
+{{- $_ := set $data "PATCHY_INVESTIGATE_MODEL" $root.Values.agent.investigate.model }}
+{{- $_ := set $data "PATCHY_INVESTIGATE_TIMEOUT" $root.Values.agent.investigate.timeout }}
+{{- $_ := set $data "PATCHY_INVESTIGATE_MAX_TURNS" $root.Values.agent.investigate.maxTurns }}
+{{- $_ := set $data "PATCHY_INVESTIGATE_TOKEN_BUDGET" $root.Values.agent.investigate.tokenBudget }}
 {{- else }}
 {{- $_ := set $data "PATCHY_MAX_CONCURRENT_REMEDIATIONS" $own.maxConcurrentRemediations }}
 {{- $_ := set $data "PATCHY_FINDING_TTL" $own.findingTTL }}
-{{- $_ := set $data "PATCHY_REMEDIATE_MODEL" $.Values.agent.remediate.model }}
-{{- $_ := set $data "PATCHY_REMEDIATE_TIMEOUT" $.Values.agent.remediate.timeout }}
+{{- $_ := set $data "PATCHY_REMEDIATE_MODEL" $root.Values.agent.remediate.model }}
+{{- $_ := set $data "PATCHY_REMEDIATE_TIMEOUT" $root.Values.agent.remediate.timeout }}
 {{- end }}
 {{- end }}
 {{/*
@@ -126,7 +139,7 @@ so in-cluster traffic (the artifact endpoint, the egress broker, the API
 server) never detours through the proxy. Set before the extra loops so
 config.extra keeps the last word.
 */}}
-{{- $p := $.Values.proxy | default dict }}
+{{- $p := $root.Values.proxy | default dict }}
 {{- if or $p.httpsProxy $p.httpProxy }}
 {{- with $p.httpsProxy }}
 {{- $_ := set $data "HTTPS_PROXY" . }}
@@ -150,11 +163,11 @@ config.extra keeps the last word.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-    name: {{ include "patchy.configMapName" (dict "root" $ "name" $c.name) }}
-    namespace: {{ $.Release.Namespace }}
+    name: {{ include "patchy.configMapName" (dict "root" $root "name" $c.name) }}
+    namespace: {{ $root.Release.Namespace }}
     labels:
-        {{- include "patchy.labels" (dict "root" $ "name" $c.name) | nindent 8 }}
-    {{- with include "patchy.annotations" (dict "root" $) }}
+        {{- include "patchy.labels" (dict "root" $root "name" $c.name) | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" $root) }}
     annotations:
         {{- . | nindent 8 }}
     {{- end }}

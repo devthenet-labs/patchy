@@ -33,6 +33,9 @@ permissions: {}
 
 jobs:
     add:
+        # the project board and its Project Sync App belong to the upstream org;
+        # a fork has neither, so skip rather than fail on every issue/PR
+        if: vars.ADD_TO_PROJECT_CLIENT_ID != ''
         uses: bitwise-media-group/github-workflows/.github/workflows/add-to-project.yaml@a0d0170124ad80a06082078b60669d7c99d33ee6 # v6.3.0
         with:
             project-url: https://github.com/orgs/bitwise-media-group/projects/1

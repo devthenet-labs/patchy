@@ -39,7 +39,7 @@ spec:
                 - name: controller
                   # Built from Dockerfile.controller (repo root)
                   # (TARGET=evaluation-controller in .goreleaser.yaml).
-                  image: ghcr.io/bitwise-media-group/patchy/evaluation-controller:latest
+                  image: ghcr.io/devthenet-labs/patchy/evaluation-controller:latest
                   args: ["serve"]
                   envFrom:
                       - configMapRef:

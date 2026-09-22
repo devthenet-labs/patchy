@@ -53,7 +53,7 @@ spec:
                 - name: broker
                   # Built from Dockerfile.controller (repo root)
                   # (TARGET=egress-broker in .goreleaser.yaml).
-                  image: ghcr.io/bitwise-media-group/patchy/egress-broker:latest
+                  image: ghcr.io/devthenet-labs/patchy/egress-broker:latest
                   args: ["serve"]
                   envFrom:
                       - configMapRef:

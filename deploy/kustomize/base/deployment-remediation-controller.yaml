@@ -39,7 +39,7 @@ spec:
                 - name: controller
                   # Built from Dockerfile.controller (repo root)
                   # (TARGET=remediation-controller in .goreleaser.yaml).
-                  image: ghcr.io/bitwise-media-group/patchy/remediation-controller:latest
+                  image: ghcr.io/devthenet-labs/patchy/remediation-controller:latest
                   args: ["serve"]
                   envFrom:
                       - configMapRef:

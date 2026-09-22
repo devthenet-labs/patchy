@@ -41,7 +41,7 @@ spec:
                 - name: server
                   # Built from Dockerfile.controller (repo root)
                   # (TARGET=status-server in .goreleaser.yaml).
-                  image: ghcr.io/bitwise-media-group/patchy/status-server:latest
+                  image: ghcr.io/devthenet-labs/patchy/status-server:latest
                   args: ["serve"]
                   envFrom:
                       - configMapRef:

@@ -10,8 +10,8 @@
 # (dockers_v2 over the repo-root Dockerfile.*) to ghcr, and their digests
 # (dist/digests.txt) get the same build-provenance attestation as the archives.
 # The workstation CLI — the one binary that runs on a laptop rather than in the
-# cluster — additionally ships as a Homebrew cask pushed to
-# bitwise-media-group/homebrew-tap.
+# cluster — ships as the patchy-cli archive on the release; this fork publishes
+# no Homebrew cask (.goreleaser.yaml has no homebrew_casks block).
 # When a release was actually cut, the helm job then packages, cosign-signs,
 # and pushes the chart to ghcr (helm.yaml, called at the release tag) — it runs
 # here rather than on `release: published` because goreleaser publishes the
@@ -57,7 +57,8 @@ jobs:
             attestations: write
             # artifact storage record for the attestation
             artifact-metadata: write
-            # granted for parity with the reusable workflow's docs job ceiling
+            # the reusable workflow's docs job publishes zensical.toml's site to
+            # this repo's GitHub Pages (Settings -> Pages -> Source: GitHub Actions)
             pages: write
         with:
             # author the release PR as the FF Merge App so it can auto-merge (a
@@ -66,9 +67,6 @@ jobs:
         secrets:
             # private key for the App that authors the release PR (same App as /merge)
             app-private-key: ${{ secrets.FF_MERGE_PRIVATE_KEY }}
-            # PAT with write access to bitwise-media-group/homebrew-tap — the default
-            # GITHUB_TOKEN cannot push the cask to another repository.
-            homebrew-tap-token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
     # Package, sign, and push the helm chart to ghcr — only when this run cut a
     # release (release_created is an empty string otherwise). Runs after the

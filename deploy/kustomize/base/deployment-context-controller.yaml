@@ -39,7 +39,7 @@ spec:
                 - name: controller
                   # Built from Dockerfile.controller (repo root)
                   # (TARGET=context-controller in .goreleaser.yaml).
-                  image: ghcr.io/bitwise-media-group/patchy/context-controller:latest
+                  image: ghcr.io/devthenet-labs/patchy/context-controller:latest
                   args: ["serve"]
                   envFrom:
                       - configMapRef:

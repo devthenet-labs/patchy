@@ -18,7 +18,7 @@
 # digest here also lands in its PATCHY_<HARNESS>_AGENT_IMAGE — unlike
 # kustomize, there is one knob, not two.
 image:
-    repository: ghcr.io/bitwise-media-group/patchy
+    repository: ghcr.io/devthenet-labs/patchy
     tag: ""
     pullPolicy: IfNotPresent
     pullSecrets: []

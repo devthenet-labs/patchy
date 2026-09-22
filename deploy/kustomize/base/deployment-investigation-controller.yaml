@@ -39,7 +39,7 @@ spec:
                 - name: controller
                   # Built from Dockerfile.controller (repo root)
                   # (TARGET=investigation-controller in .goreleaser.yaml).
-                  image: ghcr.io/bitwise-media-group/patchy/investigation-controller:latest
+                  image: ghcr.io/devthenet-labs/patchy/investigation-controller:latest
                   args: ["serve"]
                   envFrom:
                       - configMapRef:

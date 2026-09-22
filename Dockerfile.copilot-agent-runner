@@ -99,9 +99,10 @@ FROM cgr.dev/chainguard/wolfi-base:latest@sha256:918a593b8268c222afd4e2c4f06860a
 # commit/diff flow. libstdc++ (which pulls libgcc) is for the copilot binary:
 # its ELF NEEDED set includes libstdc++.so.6 and libgcc_s.so.1, which debian
 # carried implicitly via apt's own dependency chain but wolfi-base does not.
+# bash is for the CLI's shell tool, which runs commands through bash, not sh.
 # ca-certificates-bundle ships in the base.
 # hadolint ignore=DL3018
-RUN apk add --no-cache curl git libstdc++
+RUN apk add --no-cache bash curl git libstdc++
 
 COPY --from=fetch /out/copilot /usr/local/bin/copilot
 

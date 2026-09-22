@@ -39,10 +39,12 @@ at the broker. See the [isolation model](deployment/isolation.md).
 
 The **integration-controller** validates each `code_scanning_alert` delivery and hands it to the matching
 [`pkg/source` handler](extending.md), which normalizes the alert into advisories (GHSA/CVE/CWE), severity, and
-locations. The result is folded into a `Finding` resource: a new one at phase `Opened` for a first alert, or — for the
-**accumulation window** (one hour by default) — merged into the existing Finding for the same repository and advisory
-family. Accumulation is a condition (`AccumulationComplete`), not a phase, so alerts keep folding in while enhancement
-runs concurrently. Alerts arriving after the window close open a fresh Finding.
+locations; the GHAS handler ingests only alerts on the repository's default branch, so alerts CodeQL raises on
+remediation PR branches never become findings. The result is folded into a `Finding` resource: a new one at phase
+`Opened` for a first alert, or — for the **accumulation window** (one hour by default) — merged into the existing
+Finding for the same repository and advisory family. Accumulation is a condition (`AccumulationComplete`), not a phase,
+so alerts keep folding in while enhancement runs concurrently. Alerts arriving after the window close open a fresh
+Finding.
 
 ## 2. The tracking issue is a projection
 

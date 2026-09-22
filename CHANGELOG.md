@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.4](https://github.com/devthenet-labs/patchy/compare/v0.11.3...v0.11.4) (2026-09-22)
+
+
+### Bug Fixes
+
+* **ghas:** ingest only alerts on the repository's default branch ([#7](https://github.com/devthenet-labs/patchy/issues/7)) ([1f2586f](https://github.com/devthenet-labs/patchy/commit/1f2586fc3a30aa68c493ec4ea4860fcb8b97e6e1))
+
 ## [0.11.3](https://github.com/devthenet-labs/patchy/compare/v0.11.2...v0.11.3) (2026-09-22)
 
 

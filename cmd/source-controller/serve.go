@@ -22,6 +22,8 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/controller/source"
 	"github.com/bitwise-media-group/patchy/internal/forge"
 	"github.com/bitwise-media-group/patchy/internal/kube"
+	"github.com/bitwise-media-group/patchy/internal/runnerimage"
+	"github.com/bitwise-media-group/patchy/internal/runnerimage/resolve"
 	"github.com/bitwise-media-group/patchy/internal/telemetry"
 	"github.com/bitwise-media-group/patchy/internal/version"
 )
@@ -49,7 +51,56 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.Int("max-workspace-bytes", 64<<20, "largest workspace bundle accepted on the internal endpoint")
 	f.Duration("workspace-retention", 7*24*time.Hour,
 		"remove workspace bundles not accessed for this long (0 keeps forever)")
+	f.Bool("repository-images", false,
+		"resolve repository-declared agent runner images (.patchy/agent.yaml, devcontainer.json); the kill switch")
+	f.String("repository-image-registries", "",
+		"comma-separated host/path prefixes a declared image must sit under (required with --repository-images)")
+	f.Int("repository-image-max-bytes", int(resolve.DefaultMaxBytes),
+		"largest compressed layer total per platform of a declared image")
+	f.String("repository-image-cosign-key-file", "",
+		"PEM public key every declared image must be cosign-signed with (required unless --repository-image-allow-unsigned)")
+	f.Bool("repository-image-allow-unsigned", false,
+		"admit declared images without a signature (explicit opt-out; never the default)")
+	f.String("repository-image-on-reject", source.OnRejectHandoff,
+		"what a rejected declaration does to the finding: handoff (stall for a human) or default (run the default image)")
 	return cmd
+}
+
+// runnerImages builds the repository-declared runner image configuration
+// from the flags, or nil when the feature is off. Every policy value is
+// validated here so a bad allowlist entry or key fails startup rather than
+// admitting an image.
+func runnerImages(opts *cli.Options) (*source.RunnerImages, error) {
+	if !opts.Bool("repository-images") {
+		return nil, nil
+	}
+	policy, err := runnerimage.NewPolicy(opts.StringList("repository-image-registries"))
+	if err != nil {
+		return nil, fmt.Errorf("repository-image-registries: %w", err)
+	}
+	onReject := opts.String("repository-image-on-reject")
+	if onReject != source.OnRejectHandoff && onReject != source.OnRejectDefault {
+		return nil, fmt.Errorf("repository-image-on-reject: %q is not handoff or default", onReject)
+	}
+	cfg := resolve.Config{
+		MaxBytes:      int64(opts.Int("repository-image-max-bytes")),
+		AllowUnsigned: opts.Bool("repository-image-allow-unsigned"),
+		Keychain:      resolve.NewKeychain(),
+	}
+	if path := opts.String("repository-image-cosign-key-file"); path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("repository-image-cosign-key-file: %w", err)
+		}
+		if cfg.PublicKey, err = resolve.ParsePublicKey(raw); err != nil {
+			return nil, fmt.Errorf("repository-image-cosign-key-file: %w", err)
+		}
+	}
+	resolver, err := resolve.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &source.RunnerImages{Policy: policy, Resolver: resolver, OnReject: onReject}, nil
 }
 
 // internalUploadToken reads the optional shared secret internal uploads must
@@ -130,11 +181,16 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	if err := fc.SetupWithManager(mgr); err != nil {
 		return err
 	}
+	images, err := runnerImages(opts)
+	if err != nil {
+		return err
+	}
 	rc := &source.RepositoryReconciler{
 		Client:           mgr.GetClient(),
 		Forges:           forges,
 		Artifacts:        store,
 		MaxArtifactBytes: int64(opts.Int("max-artifact-bytes")),
+		Images:           images,
 		Log:              log,
 	}
 	if err := rc.SetupWithManager(mgr); err != nil {
@@ -160,7 +216,8 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		slog.String("namespace", namespace),
 		slog.String("artifact_addr", srv.Addr),
 		slog.String("artifact_internal_addr", internalAddr),
-		slog.String("artifact_base_url", baseURL))
+		slog.String("artifact_base_url", baseURL),
+		slog.Bool("repository_images", images != nil))
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return mgr.Start(ctx) })

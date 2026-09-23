@@ -39,7 +39,7 @@ func createJob(t *testing.T, cfg Config, spec Spec) *batchv1.Job {
 	t.Helper()
 	cs := fake.NewClientset()
 	c := New(cs, cfg, nil)
-	name, err := c.Create(context.Background(), spec)
+	name, _, err := c.Create(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

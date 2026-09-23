@@ -1,0 +1,254 @@
+metadata:
+  annotations:
+    patchy.bitwisemedia.uk/repo: octo/repo
+    patchy.bitwisemedia.uk/runner-image: ghcr.io/devthenet-labs/go-agent-env@sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+    patchy.bitwisemedia.uk/runner-image-source: repository
+    patchy.bitwisemedia.uk/tools-image: ghcr.io/bitwise-media-group/patchy/claude-agent-runner:1
+  labels:
+    app.kubernetes.io/managed-by: patchy
+    app.kubernetes.io/name: patchy-agent
+    patchy.bitwisemedia.uk/attempt: "1"
+    patchy.bitwisemedia.uk/finding: finding-abc123def0-1
+    patchy.bitwisemedia.uk/harness: claude
+    patchy.bitwisemedia.uk/kind: investigation
+    patchy.bitwisemedia.uk/owner: finding-abc123def0-1-inv-1
+    patchy.bitwisemedia.uk/runner-image-source: repository
+  name: patchy-f41d59eea6-inv-a1
+  namespace: patchy-agents
+spec:
+  activeDeadlineSeconds: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        patchy.bitwisemedia.uk/repo: octo/repo
+        patchy.bitwisemedia.uk/runner-image: ghcr.io/devthenet-labs/go-agent-env@sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+        patchy.bitwisemedia.uk/runner-image-source: repository
+        patchy.bitwisemedia.uk/tools-image: ghcr.io/bitwise-media-group/patchy/claude-agent-runner:1
+      labels:
+        app.kubernetes.io/managed-by: patchy
+        app.kubernetes.io/name: patchy-agent
+        patchy.bitwisemedia.uk/attempt: "1"
+        patchy.bitwisemedia.uk/finding: finding-abc123def0-1
+        patchy.bitwisemedia.uk/harness: claude
+        patchy.bitwisemedia.uk/kind: investigation
+        patchy.bitwisemedia.uk/owner: finding-abc123def0-1-inv-1
+        patchy.bitwisemedia.uk/runner-image-source: repository
+    spec:
+      containers:
+      - command:
+        - /patchy/bin/agent-runner
+        env:
+        - name: HOME
+          value: /workspace
+        - name: PATCHY_WORKSPACE
+          value: /workspace
+        - name: PATCHY_REPO
+          value: octo/repo
+        - name: PATCHY_PHASE
+          value: investigate
+        - name: PATCHY_FINDING
+          value: finding-abc123def0-1
+        - name: PATCHY_BASE_SHA
+          value: 0123456789abcdef0123456789abcdef01234567
+        - name: PATCHY_INVESTIGATE_HARNESS
+          value: claude
+        - name: PATCHY_INVESTIGATE_MODEL
+          value: anthropic/claude-sonnet-5
+        - name: ANTHROPIC_BASE_URL
+          value: http://patchy-egress-broker.patchy.svc.cluster.local:8080/anthropic
+        - name: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+          value: "1"
+        - name: PATCHY_INVESTIGATE_TIMEOUT
+          value: 15m
+        - name: PATCHY_BROKER_TOKEN_FILE
+          value: /var/run/patchy/broker/token
+        - name: ANTHROPIC_AUTH_TOKEN
+          value: patchy-brokered-placeholder
+        - name: PATCHY_BIN_DIR
+          value: /patchy/bin
+        - name: PATH
+          value: /patchy/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        - name: GIT_CONFIG_NOSYSTEM
+          value: "1"
+        - name: DISABLE_AUTOUPDATER
+          value: "1"
+        - name: ALL_PROXY
+        - name: ANTHROPIC_BEDROCK_BASE_URL
+        - name: ANTHROPIC_CUSTOM_HEADERS
+        - name: ANTHROPIC_FOUNDRY_BASE_URL
+        - name: ANTHROPIC_VERTEX_BASE_URL
+        - name: ANTHROPIC_VERTEX_PROJECT_ID
+        - name: AWS_REGION
+        - name: BASH_ENV
+        - name: CLAUDE_CODE_SKIP_BEDROCK_AUTH
+        - name: CLAUDE_CODE_SKIP_FOUNDRY_AUTH
+        - name: CLAUDE_CODE_SKIP_VERTEX_AUTH
+        - name: CLAUDE_CODE_USE_BEDROCK
+        - name: CLAUDE_CODE_USE_FOUNDRY
+        - name: CLAUDE_CODE_USE_VERTEX
+        - name: CLOUD_ML_REGION
+        - name: ENV
+        - name: GIT_CONFIG_GLOBAL
+        - name: GIT_CONFIG_SYSTEM
+        - name: GIT_EXEC_PATH
+        - name: GIT_SSH_COMMAND
+        - name: HTTPS_PROXY
+        - name: HTTP_PROXY
+        - name: LD_AUDIT
+        - name: LD_LIBRARY_PATH
+        - name: LD_PRELOAD
+        - name: NODE_OPTIONS
+        - name: NO_PROXY
+        - name: PATCHY_CALIBRATION
+        - name: PATCHY_CHANGESET_MAX_BYTES
+        - name: PATCHY_GRANTED_MAX_TURNS
+        - name: PATCHY_GRANTED_TOKEN_BUDGET
+        - name: PATCHY_INVESTIGATE_MAX_TURNS
+        - name: PATCHY_INVESTIGATE_TOKEN_BUDGET
+        - name: PATCHY_MODEL_ALLOWLIST
+        - name: PATCHY_MODEL_MAP
+        - name: PATCHY_REMEDIATE_AUTO_MAX_TURNS
+        - name: PATCHY_REMEDIATE_AUTO_TOKEN_BUDGET
+        - name: PATCHY_REMEDIATE_HARNESS
+        - name: PATCHY_REMEDIATE_MANUAL_MAX_TURNS
+        - name: PATCHY_REMEDIATE_MANUAL_TOKEN_BUDGET
+        - name: PATCHY_REMEDIATE_MODEL
+        - name: PATCHY_REMEDIATE_TIMEOUT
+        - name: PATCHY_TRANSCRIPT_MAX_TOTAL_BYTES
+        - name: PATCHY_TRANSCRIPT_MAX_TURNS
+        - name: PATCHY_TRANSCRIPT_MAX_TURN_BYTES
+        - name: PROMPT_COMMAND
+        - name: PYTHONSTARTUP
+        - name: SHELLOPTS
+        - name: all_proxy
+        - name: http_proxy
+        - name: https_proxy
+        - name: no_proxy
+        image: ghcr.io/devthenet-labs/go-agent-env@sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+        name: agent
+        resources:
+          limits:
+            cpu: "2"
+            ephemeral-storage: 8Gi
+            memory: 4Gi
+          requests:
+            cpu: 500m
+            ephemeral-storage: 8Gi
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /workspace
+          name: workspace
+        - mountPath: /tmp
+          name: tmp
+        - mountPath: /var/run/patchy/broker
+          name: broker-token
+          readOnly: true
+        - mountPath: /patchy/bin
+          name: patchy-bin
+          readOnly: true
+      initContainers:
+      - command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          mkdir -p /workspace/repo
+          cd /workspace/repo
+          curl -fsSL --retry 5 --retry-all-errors "$PATCHY_ARTIFACT_URL" -o /tmp/src.tar.gz
+          echo "$PATCHY_ARTIFACT_DIGEST  /tmp/src.tar.gz" | sha256sum -c - >/dev/null
+          tar -xzf /tmp/src.tar.gz --strip-components=1
+          rm -f /tmp/src.tar.gz
+          git init -q
+          git add -A
+          git -c user.name=patchy -c user.email=patchy@invalid commit -qm "base $PATCHY_BASE_SHA"
+          git checkout -q --detach HEAD
+          mkdir -p /workspace/input
+          cp /patchy/input/issue.md /workspace/input/issue.md
+          if [ -f /patchy/input/investigation.md ]; then
+            cp /patchy/input/investigation.md /workspace/input/investigation.md
+          fi
+          for bin in $PATCHY_INJECT; do
+            cp "/usr/local/bin/$bin" "/patchy/bin/$bin"
+          done
+          /usr/local/bin/agent-runner sandbox-probe
+        env:
+        - name: HOME
+          value: /workspace
+        - name: PATCHY_BASE_SHA
+          value: 0123456789abcdef0123456789abcdef01234567
+        - name: PATCHY_ARTIFACT_URL
+          value: http://patchy-source-controller.patchy.svc.cluster.local:9790/artifacts/deadbeef.tar.gz
+        - name: PATCHY_ARTIFACT_DIGEST
+          value: aa11bb22cc33dd44ee55ff6600112233445566778899aabbccddeeff00112233
+        - name: PATCHY_INJECT
+          value: agent-runner claude
+        - name: PATCHY_SANDBOX_PROBE_TIMEOUT
+          value: 20s
+        image: ghcr.io/bitwise-media-group/patchy/claude-agent-runner:1
+        name: prepare
+        resources:
+          limits:
+            cpu: "2"
+            ephemeral-storage: 8Gi
+            memory: 4Gi
+          requests:
+            cpu: 500m
+            ephemeral-storage: 8Gi
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /workspace
+          name: workspace
+        - mountPath: /tmp
+          name: tmp
+        - mountPath: /patchy/input
+          name: input
+          readOnly: true
+        - mountPath: /patchy/bin
+          name: patchy-bin
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 65532
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: patchy-agent
+      volumes:
+      - emptyDir: {}
+        name: workspace
+      - emptyDir: {}
+        name: tmp
+      - name: input
+        secret:
+          secretName: patchy-f41d59eea6-inv-a1
+      - name: broker-token
+        projected:
+          sources:
+          - serviceAccountToken:
+              audience: patchy-egress-broker
+              expirationSeconds: 4500
+              path: token
+      - emptyDir: {}
+        name: patchy-bin
+  ttlSecondsAfterFinished: 7200
+status: {}

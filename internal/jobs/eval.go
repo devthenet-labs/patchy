@@ -185,7 +185,9 @@ func (c *Client) buildEvalJob(name string, spec EvalSpec) (*batchv1.Job, error) 
 						FSGroup:        new(int64(runAsUser)),
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
-					Volumes:        c.podVolumes(name, runner, tokenTTL),
+					// Evaluation Jobs never inject: a workspace bundle has no
+					// pinned tree to read a declaration from.
+					Volumes:        c.podVolumes(name, runner, tokenTTL, false),
 					InitContainers: []corev1.Container{c.evalPrepareContainer(runner, spec, res)},
 					Containers:     []corev1.Container{c.evalAgentContainer(runner, res)},
 				},

@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -120,6 +121,26 @@ func (s *Store) Get(key string) (*Info, bool) {
 		return nil, false
 	}
 	return &Info{URL: s.baseURL + "/artifacts/" + e.id + ".tar.gz", Digest: e.digest, Size: e.size}, true
+}
+
+// Open streams the stored artifact for the owner key: source-controller
+// reads a Repository's declaration files back out of the tarball it already
+// holds, so the declaration is bound to the pinned tree and costs no second
+// forge call. The caller closes the reader. A missing key is
+// fs.ErrNotExist, so a store emptied by a restart reads as "re-fetch", never
+// as a corrupt archive.
+func (s *Store) Open(key string) (io.ReadCloser, error) {
+	s.mu.Lock()
+	e, ok := s.entries[key]
+	s.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("artifact %q: %w", key, fs.ErrNotExist)
+	}
+	f, err := os.Open(e.path)
+	if err != nil {
+		return nil, fmt.Errorf("open artifact %q: %w", key, err)
+	}
+	return f, nil
 }
 
 // Delete removes the owner key's artifact, if present.

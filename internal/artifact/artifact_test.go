@@ -6,6 +6,9 @@ package artifact
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io"
+	"io/fs"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -99,5 +102,33 @@ func TestUnknownIDIs404(t *testing.T) {
 	s.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/artifacts/deadbeef.tar.gz", nil))
 	if rr.Code != 404 {
 		t.Errorf("GET unknown artifact = %d, want 404", rr.Code)
+	}
+}
+
+func TestOpenRoundTrip(t *testing.T) {
+	s := newStore(t)
+	body := "tarball-bytes-for-open"
+	if _, err := s.Put("k", strings.NewReader(body)); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	rc, err := s.Open("k")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	got, err := io.ReadAll(rc)
+	if cerr := rc.Close(); cerr != nil {
+		t.Errorf("Close: %v", cerr)
+	}
+	if err != nil || string(got) != body {
+		t.Errorf("Open read = %q, %v; want %q", got, err, body)
+	}
+
+	if _, err := s.Open("missing"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Open(missing) = %v, want fs.ErrNotExist", err)
+	}
+	s.Delete("k")
+	if _, err := s.Open("k"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Open after Delete = %v, want fs.ErrNotExist", err)
 	}
 }

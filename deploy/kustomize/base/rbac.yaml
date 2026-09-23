@@ -24,8 +24,9 @@
 # ---- integration-controller ------------------------------------------------
 # Ingests scanner webhooks into Findings (create/fold/duplicate-merge —
 # the one deleter of duplicate Findings), projects Findings to tracking
-# issues (reads the children's reports), and applies human signals
-# (approve/close/PR-merge) to Finding spec + status.
+# issues (reads the children's reports and the Repository's runner-image
+# record), and applies human signals (approve/close/PR-merge) to Finding
+# spec + status.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -50,6 +51,11 @@ rules:
     - apiGroups: [patchy.bitwisemedia.uk]
       resources: [investigations, remediations]
       verbs: [get, list, watch, deletecollection]
+    # the runner-image comment (--repository-images) reads each finding's
+    # Repository record
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [repositories]
+      verbs: [get, list, watch]
     # the demo reset (Integration spec.reset) wipes every pipeline resource
     - apiGroups: [patchy.bitwisemedia.uk]
       resources: [repositories, findingrollups]

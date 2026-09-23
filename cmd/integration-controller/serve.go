@@ -35,6 +35,9 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.String("health-addr", ":8081", "healthz/readyz probe listen address")
 	f.Int("projection-concurrency", 2,
 		"findings projected to tracking issues in parallel (each projection may spend GitHub API requests)")
+	f.Bool("repository-images", false,
+		"project the runner-image comment (what patchy did with a repository-declared agent image) onto "+
+			"tracking issues; reads and watches Repositories, so it needs get/list/watch on repositories")
 	f.String("google-oidc-issuer", "",
 		"OIDC issuer the Pub/Sub push route verifies tokens against "+
 			"(default: Google, the only correct value in production; overridable for e2e)")
@@ -114,6 +117,7 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	fp := &integration.FindingReconciler{
 		Client: mgr.GetClient(), Creds: creds, Namespace: namespace,
 		Concurrency: opts.Int("projection-concurrency"), Log: log,
+		RunnerImages: opts.Bool("repository-images"),
 	}
 	if err := fp.SetupWithManager(mgr); err != nil {
 		return err

@@ -22,7 +22,8 @@ Ten binaries, one module. "Not monolithic" means separate binaries/deployments w
   scanner alerts into Findings (accumulation, duplicate merge), projects Findings out as tracking issues
   (trackingRef falls back to the namespace's issues-enabled Integration for non-github sources), applies human
   signals (issue close, `/approve`, PR merge) back onto Findings, and POSTs dismissal verdicts to generic
-  integrations' resolver endpoints.
+  integrations' resolver endpoints. With `--repository-images` it also keeps the runner-image sticky comment
+  (what patchy did with a repository-declared agent image), reading each finding's Repository.
 - `cmd/source-controller` — `Forge` + `Repository` reconcilers: validates forge credentials, pins
   each Repository's head SHA once, downloads the tarball archive at that SHA (pure HTTP, no git binary), and
   serves it from the artifact endpoint (`:9790`) agent pods fetch credential-lessly. With

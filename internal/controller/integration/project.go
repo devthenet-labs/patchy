@@ -95,6 +95,10 @@ type FindingReconciler struct {
 	WizAPI func(ctx context.Context, integ *v1alpha1.Integration) (wiz.IssueRejecter, error)
 	// GenericResolver overrides the generic write-back construction in tests.
 	GenericResolver func(ctx context.Context, integ *v1alpha1.Integration) (source.Resolver, error)
+	// RunnerImages projects the runner-image sticky comment, which reads each
+	// finding's Repository: on, the reconciler also watches Repositories and
+	// needs get/list/watch on them; off (the default), it reads none.
+	RunnerImages bool
 	// Log receives diagnostics; nil discards.
 	Log *slog.Logger
 }
@@ -370,6 +374,9 @@ func (r *FindingReconciler) projectComments(
 	ann := fnd.GetAnnotations()
 
 	if err := r.projectEnrichments(ctx, fnd, tracker, repo, number); err != nil {
+		return err
+	}
+	if err := r.projectRunnerImage(ctx, fnd, tracker, repo, number); err != nil {
 		return err
 	}
 
@@ -846,10 +853,16 @@ func (r *FindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 		return []ctrl.Request{{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: name}}}
 	})
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.Finding{}).
 		Watches(&v1alpha1.Investigation{}, mapChild).
-		Watches(&v1alpha1.Remediation{}, mapChild).
+		Watches(&v1alpha1.Remediation{}, mapChild)
+	if r.RunnerImages {
+		// The runner-image record lands on the Repository; watching it
+		// projects a resolution without waiting for the finding to move.
+		b = b.Watches(&v1alpha1.Repository{}, mapChild)
+	}
+	return b.
 		WithOptions(controller.Options{MaxConcurrentReconciles: max(1, r.Concurrency)}).
 		Named("finding-projection").
 		Complete(r)

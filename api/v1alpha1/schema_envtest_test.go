@@ -366,6 +366,17 @@ func testRepositoryRunnerImageSchema(ctx context.Context, t *testing.T, c client
 		t.Errorf("status.runnerImage (rejected) = %+v, want %+v", got.Status.RunnerImage, rejected)
 	}
 
+	// Message is mirrored from free-form resolver/policy output; the schema
+	// caps it so a hostile or runaway explanation cannot bloat the object.
+	// 4096 bytes is the ceiling, one more is rejected.
+	got.Status.RunnerImage.Message = strings.Repeat("m", 4096)
+	if err := c.Status().Update(ctx, got); err != nil {
+		t.Fatalf("Status().Update(runnerImage.message=4096 bytes) = %v, want nil", err)
+	}
+	got.Status.RunnerImage.Message = strings.Repeat("m", 4097)
+	if err := c.Status().Update(ctx, got); err == nil {
+		t.Error("Status().Update(runnerImage.message=4097 bytes) = nil, want maxLength rejection")
+	}
 }
 
 // testRunStatusRunnerImageSchema exercises the RunnerImageRef schema on

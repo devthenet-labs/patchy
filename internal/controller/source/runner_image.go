@@ -28,7 +28,9 @@ const (
 	// OnRejectDefault records the rejection and leaves the Repository Ready,
 	// so the finding runs on the default image with no human step. The
 	// --repository-image-on-reject default: a rejected declaration falls
-	// back rather than parking the finding.
+	// back rather than parking the finding. The rejection still reaches the
+	// repository owner as the tracking issue's runner-image comment, so
+	// falling back is never silent.
 	OnRejectDefault = "default"
 )
 

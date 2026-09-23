@@ -1,0 +1,43 @@
+{{- /* The runner-image sticky comment: what patchy did with the agent image
+the repository declared. Everything a committer or the image controls (the
+declared reference, the rejection or not-applicable reason, the preflight's
+detail) is rendered through code or fence, so it can never become markdown,
+a mention or a link on the issue. One line per paragraph: GitHub renders a
+line break inside an issue comment as a hard break. */ -}}
+<!-- patchy:runner-image -->
+### Agent runner image
+{{ if .NotApplicable }}
+patchy did not use `{{ .Manifest }}` to choose the image the agent runs in:
+{{ fence .Reason }}
+The agent ran in the default runner image instead, which carries no language toolchain. Nothing else about this finding changes.
+
+**To run the agent in your own image**, publish it prebuilt and name it in `image`, or declare it in `.patchy/agent.yaml`, which takes precedence. {{ code "patchy check image <ref>" }} runs patchy's checks on an image before you declare it, and the [agent image guide]({{ .GuideURL }}) covers what the image needs.
+{{- else if .Rejected }}
+patchy could not use {{ if .Declared }}{{ code .Declared }}, declared in{{ else }}the declaration in{{ end }} `{{ .Manifest }}` (`{{ .Rejected }}`):
+{{ fence .Reason }}
+{{- if .Parked }}
+patchy parked this finding for a human rather than run it on another image, because the operator set `onReject: handoff`. patchy will not investigate this finding: it stays with its human owners.
+{{- else }}
+The agent ran in the default runner image instead, which carries no language toolchain.
+{{- end }}
+
+**How to fix it:** correct the image or `{{ .Manifest }}`, then run {{ code (printf "patchy check image %s" .CheckRef) }}, which runs every check patchy runs and reports each verdict. The [troubleshooting table]({{ .GuideURL }}#troubleshooting) gives the fix for `{{ .Rejected }}`. patchy reads the declaration once per finding, so the fix applies to the next finding on this repository.
+{{- else }}
+`{{ .Manifest }}` declares {{ code .Declared }}. patchy pinned it to {{ code .Image }}{{ if .Verified }} and verified its signature{{ end }}.
+{{- if .Used }} Runs have launched in it, with patchy's own tools added under `/patchy/bin`.
+{{- else if .Unused }} No run has used it: each ran in the default runner image instead, which carries no language toolchain{{ if .SandboxRefused }}, for the reason below{{ else }}. That happens when the operator has switched repository images off, when the sandbox check refused a repository image on an earlier run, when the runner is not claude, or once a human has revived the finding{{ end }}.
+{{- else }} The agent will run in it, with patchy's own tools added under `/patchy/bin`.
+{{- end }}
+{{- with .Incompatible }}
+
+The {{ .Stage }} (attempt {{ .Attempt }}) stopped before the agent started: the image failed the agent's preflight (`image_incompatible`):
+{{ fence .Detail }}
+The image must be glibc-based, have `bash`, `sh` and `git` on its `PATH`, and let uid 65532 run them. {{ code (printf "patchy check image %s --run" $.CheckRef) }} runs the same preflight in a local container.
+{{- end }}
+{{- with .SandboxRefused }}
+
+The {{ .Stage }} (attempt {{ .Attempt }}) was refused before the agent started (`SandboxUnenforced`): the cluster does not enforce the network isolation patchy requires before it runs a repository-declared image. This is not a problem with your image; until an operator enables NetworkPolicy enforcement and restarts the controllers, this finding runs in the default runner image.
+{{- end }}
+
+To change the image, edit `{{ .Manifest }}`; the [agent image guide]({{ .GuideURL }}) covers what the image needs.
+{{- end }}

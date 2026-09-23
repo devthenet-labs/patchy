@@ -11,7 +11,11 @@
 // open finding for the accumulation window). Outbound, the Finding
 // projection reconciler renders each Finding — and its Investigation and
 // Remediation children — as a tracking issue: body, labels, comments,
-// assignment, alert dismissal, and closure. Human signals on the tracking
+// assignment, alert dismissal, and closure. With RunnerImages on it also
+// reads the finding's Repository and keeps one sticky comment telling the
+// repository owner what patchy did with the agent image the repository
+// declared (used, not applicable, rejected, or failed in a run), so falling
+// back to the default image is never silent. Human signals on the tracking
 // item (/approve comments, issue close/reopen, pull-request merge) flow back
 // as Finding writes.
 //

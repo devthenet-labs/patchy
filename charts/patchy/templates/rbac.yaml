@@ -42,6 +42,11 @@ PR-merge) to Finding spec + status.
 - apiGroups: [patchy.bitwisemedia.uk]
   resources: [investigations, remediations]
   verbs: [get, list, watch, deletecollection]
+{{- /* the runner-image tracking-issue comment reads each finding's Repository
+record (only watched with --repository-images; mirrors the kustomize base) */}}
+- apiGroups: [patchy.bitwisemedia.uk]
+  resources: [repositories]
+  verbs: [get, list, watch]
 {{- /* the demo reset (Integration spec.reset) wipes every pipeline resource */}}
 - apiGroups: [patchy.bitwisemedia.uk]
   resources: [repositories, findingrollups]

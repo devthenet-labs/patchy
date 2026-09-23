@@ -104,8 +104,12 @@ for c in investigation-controller remediation-controller; do
 done
 cm on remediation-controller PATCHY_CHANGESET_MAX_ENTRIES 500
 cm on investigation-controller PATCHY_CHANGESET_MAX_ENTRIES null
-for c in integration-controller context-controller; do
-  cm on "$c" PATCHY_REPOSITORY_IMAGES null
+cm on integration-controller PATCHY_REPOSITORY_IMAGES true
+cm on context-controller PATCHY_REPOSITORY_IMAGES null
+# the runner-image comment reads Repositories: integration-controller's Role
+# grants get/list/watch on them (read-only, as in the kustomize base)
+for r in default on; do
+  expect "$r" 'select(.kind == "Role" and .metadata.name == "patchy-integration-controller") | .rules[] | select((.resources | length) == 1 and .resources[0] == "repositories") | .verbs | join(",")' "get,list,watch"
 done
 
 # ---- feature on: source-controller's mounts, and only its -------------------

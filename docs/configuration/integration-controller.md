@@ -20,6 +20,12 @@ The [shared flags](index.md#shared-flags-all-five-controllers), plus:
 | -------------------------- | ------------------------------- | ------- | --------------------------------------------------------------------------------------------- |
 | `--accumulation-window`    | `PATCHY_ACCUMULATION_WINDOW`    | `1h`    | How long alerts of one finding family accumulate into a single Finding                        |
 | `--projection-concurrency` | `PATCHY_PROJECTION_CONCURRENCY` | `2`     | Findings projected to tracking issues in parallel (each projection may spend GitHub requests) |
+| `--repository-images`      | `PATCHY_REPOSITORY_IMAGES`      | `false` | Project the runner-image comment onto tracking issues; reads and watches Repositories         |
+
+`--repository-images` is the integration-controller's half of
+[repository-declared runner images](../integrations/agent-images.md): turn it on together with source-controller's. It
+needs `get`, `list` and `watch` on `repositories` in the release namespace, which the kustomize base grants; off, the
+controller reads no Repository at all.
 
 ## The webhook receiver
 
@@ -51,6 +57,12 @@ never fatal: the reconcile loops are the retry mechanism, and the webhook path o
 - **Projection** — a Finding reconciler renders each Finding to its tracking issue: the templated body, the
   [projected labels](../labels.md#the-projected-labels), enrichments and investigation reports as comments, and
   open/closed state. One-way only.
+- **Runner-image comment** — with `--repository-images`, one sticky comment (headed `<!-- patchy:runner-image -->`,
+  edited in place) tells the repository owner what patchy did with the agent image the repository declared: which file
+  declared which image and the digest it was pinned to; or why the declaration was rejected or the devcontainer.json not
+  applicable, whether the finding fell back to the default runner image or was parked (`onReject: handoff`), and how to
+  fix it; or that a run on the image ended `image_incompatible` or was refused with `SandboxUnenforced`. A repository
+  that declares nothing gets no comment.
 - **Human signals** — issue close (`→ HandedOff`), issue reopen (`Dismissed → HandedOff`), accepted `/approve` comments
   (recorded on `spec.approval`), and `pull_request` webhooks on `patchy/<finding>` branches (`InReview → Remediated` on
   merge, `→ Failed` on unmerged close).

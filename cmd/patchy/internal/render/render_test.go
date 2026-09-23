@@ -127,7 +127,7 @@ func TestFindingDetail(t *testing.T) {
 		},
 	}
 
-	got := doc(func(d *printer.Doc) { render.FindingDetail(d, f, testClock, "1000 tokens, $0.03") })
+	got := doc(func(d *printer.Doc) { render.FindingDetail(d, f, testClock, "1000 tokens, $0.03", nil) })
 
 	for _, want := range []string{
 		"GHSA-xxxx, CVE-2026-0001",
@@ -153,8 +153,8 @@ func TestEmptySectionsVanish(t *testing.T) {
 		Spec:       v1alpha1.FindingSpec{Advisories: []string{"CVE-2026-0001"}},
 		Status:     v1alpha1.FindingStatus{Phase: v1alpha1.PhaseOpened},
 	}
-	got := doc(func(d *printer.Doc) { render.FindingDetail(d, bare, testClock, "") })
-	for _, absent := range []string{"Tracking", "Alerts", "Ownership", "Spend"} {
+	got := doc(func(d *printer.Doc) { render.FindingDetail(d, bare, testClock, "", nil) })
+	for _, absent := range []string{"Tracking", "Alerts", "Ownership", "Spend", "Runner image"} {
 		if strings.Contains(got, "## "+absent) {
 			t.Errorf("empty section %q rendered:\n%s", absent, got)
 		}
@@ -301,6 +301,121 @@ func TestInvestigationHoldReasons(t *testing.T) {
 			}
 			if strings.Contains(out, tt.absent) {
 				t.Errorf("hold note wrongly contains %q:\n%s", tt.absent, out)
+			}
+		})
+	}
+}
+
+const testPinned = "ghcr.io/acme/go-env@sha256:" + "abababababababababababababababababababababababababababababababab"
+
+// TestRunnerImageDetail: describe shows where the agent image came from —
+// the declaring file, the pinned digest, whether runs use it — and why a
+// declaration was rejected or not applicable, in every view that has one.
+func TestRunnerImageDetail(t *testing.T) {
+	resolved := metav1.NewTime(testClock.Add(-time.Hour))
+	accepted := &v1alpha1.RunnerImage{Declared: "ghcr.io/acme/go-env:1.26", Manifest: ".patchy/agent.yaml",
+		Image: testPinned, Verified: true, ResolvedAt: &resolved}
+	cases := []struct {
+		name   string
+		render func(*printer.Doc)
+		want   []string
+		absent []string
+	}{
+		{"finding that ran its declared image", func(d *printer.Doc) {
+			f := &v1alpha1.Finding{
+				ObjectMeta: metav1.ObjectMeta{Name: "fnd-1"},
+				Status: v1alpha1.FindingStatus{Phase: v1alpha1.PhaseQueued,
+					Investigation: &v1alpha1.InvestigationSummary{Name: "fnd-1-inv-1", Attempt: 1,
+						RunnerImage: &v1alpha1.RunnerImageRef{Image: testPinned, Source: "repository",
+							Manifest: ".patchy/agent.yaml"}}},
+			}
+			render.FindingDetail(d, f, testClock, "", accepted)
+		}, []string{"## Runner image", "**Declared in:** .patchy/agent.yaml", "**Declared:** ghcr.io/acme/go-env:1.26",
+			"**Pinned:** " + testPinned, "**Signature:** verified", "**Source:** repository", "**Ran on:** " + testPinned},
+			[]string{"Rejected", "Not applicable"}},
+		// The Repository pinned an image, but the run did not use it: the
+		// run's own stamp is the source shown.
+		{"finding whose run skipped the pin", func(d *printer.Doc) {
+			f := &v1alpha1.Finding{
+				ObjectMeta: metav1.ObjectMeta{Name: "fnd-1"},
+				Status: v1alpha1.FindingStatus{Phase: v1alpha1.PhaseQueued,
+					Investigation: &v1alpha1.InvestigationSummary{Name: "fnd-1-inv-1", Attempt: 1,
+						RunnerImage: &v1alpha1.RunnerImageRef{Image: "ghcr.io/devthenet-labs/patchy/claude-agent-runner:v0.11.7",
+							Source: "default"}}},
+			}
+			render.FindingDetail(d, f, testClock, "", accepted)
+		}, []string{"**Pinned:** " + testPinned, "**Source:** default",
+			"**Ran on:** ghcr.io/devthenet-labs/patchy/claude-agent-runner:v0.11.7"}, []string{"**Source:** repository"}},
+		// No run has recorded its image yet: the pin is only a request the job
+		// controllers may skip, so no source is claimed for it.
+		{"finding with no run yet", func(d *printer.Doc) {
+			f := &v1alpha1.Finding{
+				ObjectMeta: metav1.ObjectMeta{Name: "fnd-1"},
+				Status:     v1alpha1.FindingStatus{Phase: v1alpha1.PhaseInvestigating},
+			}
+			render.FindingDetail(d, f, testClock, "", accepted)
+		}, []string{"**Pinned:** " + testPinned, "**Source:** not recorded yet (runs request the pinned image)"},
+			[]string{"**Source:** repository", "Ran on"}},
+		{"rejected repository", func(d *printer.Doc) {
+			render.RepositoryDetail(d, &v1alpha1.Repository{
+				ObjectMeta: metav1.ObjectMeta{Name: "fnd-1-src", Labels: map[string]string{v1alpha1.LabelFinding: "fnd-1"}},
+				Spec:       v1alpha1.RepositorySpec{URL: "https://github.com/acme/orders"},
+				Status: v1alpha1.RepositoryStatus{
+					ResolvedSHA: "abc123",
+					Conditions: []metav1.Condition{{Type: v1alpha1.ConditionStalled, Status: metav1.ConditionTrue,
+						Reason: v1alpha1.ReasonRunnerImageRejected, Message: "not allowlisted"}},
+					RunnerImage: &v1alpha1.RunnerImage{Declared: "docker.io/library/golang:1.26",
+						Manifest: ".patchy/agent.yaml", Rejected: "NotAllowlisted",
+						Message: "image `docker.io/library/golang:1.26` is not under an allowlisted registry path"},
+				},
+			}, testClock)
+		}, []string{"## Repository fnd-1-src", "**Finding:** fnd-1", "**Commit:** abc123",
+			"**Stalled:** True RunnerImageRejected — not allowlisted",
+			"**Declared:** docker.io/library/golang:1.26",
+			"**Rejected:** NotAllowlisted — image `docker.io/library/golang:1.26`",
+			"**Source:** default"}, []string{"Pinned", "Signature"}},
+		{"not-applicable devcontainer", func(d *printer.Doc) {
+			render.RepositoryDetail(d, &v1alpha1.Repository{
+				ObjectMeta: metav1.ObjectMeta{Name: "fnd-1-src"},
+				Status: v1alpha1.RepositoryStatus{RunnerImage: &v1alpha1.RunnerImage{
+					Manifest: ".devcontainer/devcontainer.json",
+					Message:  "`.devcontainer/devcontainer.json` builds its image (`build`)"}},
+			}, testClock)
+		}, []string{"**Declared in:** .devcontainer/devcontainer.json",
+			"**Not applicable:** `.devcontainer/devcontainer.json` builds its image (`build`)", "**Source:** default"},
+			[]string{"Rejected", "Pinned"}},
+		{"repository that declared nothing", func(d *printer.Doc) {
+			render.RepositoryDetail(d, &v1alpha1.Repository{
+				ObjectMeta: metav1.ObjectMeta{Name: "fnd-1-src"},
+				Status:     v1alpha1.RepositoryStatus{ResolvedSHA: "abc123"},
+			}, testClock)
+		}, []string{"**Commit:** abc123"}, []string{"Runner image"}},
+		{"investigation", func(d *printer.Doc) {
+			inv := testInvestigation()
+			inv.Status.RunnerImage = &v1alpha1.RunnerImageRef{Image: testPinned, Source: "repository",
+				Manifest: ".patchy/agent.yaml"}
+			render.InvestigationDetail(d, inv, testClock)
+		}, []string{"**Runner image:** " + testPinned + " (repository, declared in .patchy/agent.yaml)"}, nil},
+		{"remediation", func(d *printer.Doc) {
+			render.RemediationDetail(d, &v1alpha1.Remediation{
+				ObjectMeta: metav1.ObjectMeta{Name: "fnd-1-rem-1"},
+				Status: v1alpha1.RemediationStatus{RunnerImage: &v1alpha1.RunnerImageRef{
+					Image: "runner:v1", Source: "default"}},
+			}, testClock)
+		}, []string{"**Runner image:** runner:v1 (default)"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := doc(tc.render)
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("output missing %q:\n%s", want, got)
+				}
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(got, absent) {
+					t.Errorf("output contains %q:\n%s", absent, got)
+				}
 			}
 		})
 	}

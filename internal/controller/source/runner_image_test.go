@@ -97,7 +97,9 @@ func imageHarness(t *testing.T, gh *fakeForgeClient, fr *fakeResolver) (*Reposit
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.Images = &RunnerImages{Policy: policy, Resolver: fr}
+	// Handoff, not the default: most cases here assert the stall, and
+	// TestRunnerImageOnRejectDefault covers the fallback explicitly.
+	r.Images = &RunnerImages{Policy: policy, Resolver: fr, OnReject: OnRejectHandoff}
 	r.Now = func() time.Time { return time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC) }
 	return r, c
 }
@@ -290,30 +292,39 @@ func TestRunnerImageRejections(t *testing.T) {
 	}
 }
 
+// TestRunnerImageOnRejectDefault: under onReject default (the
+// --repository-image-on-reject default, which the chart always renders) a
+// rejection is recorded but the Repository stays Ready, so the finding runs
+// on the default image with no human step. An UNSET policy on the struct is
+// the fail-safe hand-off instead; TestRunnerImageOnRejectUnsetParks pins it.
 func TestRunnerImageOnRejectDefault(t *testing.T) {
-	gh := &fakeForgeClient{defaultBranch: "main", headSHA: "abc123",
-		tarball: tarball(t, map[string]string{runnerimage.AgentYAMLPath: "image: ghcr.io/acme-evil/app:1\n"})}
-	r, c := imageHarness(t, gh, &fakeResolver{})
-	r.Images.OnReject = OnRejectDefault
+	for _, policy := range []string{OnRejectDefault} {
+		t.Run("policy="+policy, func(t *testing.T) {
+			gh := &fakeForgeClient{defaultBranch: "main", headSHA: "abc123",
+				tarball: tarball(t, map[string]string{runnerimage.AgentYAMLPath: "image: ghcr.io/acme-evil/app:1\n"})}
+			r, c := imageHarness(t, gh, &fakeResolver{})
+			r.Images.OnReject = policy
 
-	reconcile(t, r)
+			reconcile(t, r)
 
-	repo := getRepo(t, c)
-	if !meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionReady) {
-		t.Errorf("Ready = %+v, want True under onReject=default", condition(t, repo, v1alpha1.ConditionReady))
-	}
-	if condition(t, repo, v1alpha1.ConditionStalled) != nil {
-		t.Errorf("Stalled = %+v, want absent", condition(t, repo, v1alpha1.ConditionStalled))
-	}
-	ri := repo.Status.RunnerImage
-	if ri == nil || ri.Rejected != "NotAllowlisted" || ri.Image != "" {
-		t.Errorf("runnerImage = %+v, want the rejection recorded with no image", ri)
-	}
-	// A later reconcile keeps it Ready and never re-resolves.
-	reconcile(t, r)
-	repo = getRepo(t, c)
-	if !meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionReady) {
-		t.Error("Ready flipped on the second reconcile")
+			repo := getRepo(t, c)
+			if !meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionReady) {
+				t.Errorf("Ready = %+v, want True under onReject=default", condition(t, repo, v1alpha1.ConditionReady))
+			}
+			if condition(t, repo, v1alpha1.ConditionStalled) != nil {
+				t.Errorf("Stalled = %+v, want absent", condition(t, repo, v1alpha1.ConditionStalled))
+			}
+			ri := repo.Status.RunnerImage
+			if ri == nil || ri.Rejected != "NotAllowlisted" || ri.Image != "" {
+				t.Errorf("runnerImage = %+v, want the rejection recorded with no image", ri)
+			}
+			// A later reconcile keeps it Ready and never re-resolves.
+			reconcile(t, r)
+			repo = getRepo(t, c)
+			if !meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionReady) {
+				t.Error("Ready flipped on the second reconcile")
+			}
+		})
 	}
 }
 
@@ -636,5 +647,27 @@ func TestRunnerImageResolveDeadline(t *testing.T) {
 	}
 	if repo.Status.RunnerImage != nil || condition(t, repo, v1alpha1.ConditionStalled) != nil {
 		t.Errorf("status = %+v, want no pin and no stall on a timeout", repo.Status)
+	}
+}
+
+// TestRunnerImageOnRejectUnsetParks: RunnerImages{} with no OnReject is the
+// fail-safe hand-off (RunnerImages.handoff), so a caller that forgets to wire
+// the policy parks a rejected declaration rather than silently running it on
+// the default image. The binary never leaves it unset: the flag defaults to
+// "default".
+func TestRunnerImageOnRejectUnsetParks(t *testing.T) {
+	gh := &fakeForgeClient{defaultBranch: "main", headSHA: "abc123",
+		tarball: tarball(t, map[string]string{runnerimage.AgentYAMLPath: "image: ghcr.io/acme-evil/app:1\n"})}
+	r, c := imageHarness(t, gh, &fakeResolver{})
+	r.Images.OnReject = ""
+
+	reconcile(t, r)
+
+	repo := getRepo(t, c)
+	if meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionReady) {
+		t.Errorf("Ready = %+v, want not Ready: an unset policy hands off", condition(t, repo, v1alpha1.ConditionReady))
+	}
+	if st := condition(t, repo, v1alpha1.ConditionStalled); st == nil || st.Reason != v1alpha1.ReasonRunnerImageRejected {
+		t.Errorf("Stalled = %+v, want RunnerImageRejected", st)
 	}
 }

@@ -72,6 +72,7 @@ func InvestigationDetail(d *printer.Doc, inv *v1alpha1.Investigation, now time.T
 		Field("Confidence", inv.Status.Confidence).
 		Field("Severity", string(inv.Status.Severity)).
 		Field("Priority", string(inv.Status.Priority)).
+		Field("Runner image", RunnerImageRef(inv.Status.RunnerImage)).
 		Field("Age", Age(inv.CreationTimestamp.Time, now))
 	if note := holdNotes(inv); note != "" {
 		d.Field("Hold", note)

@@ -13,6 +13,13 @@ import (
 // (Stalled / RunnerImageRejected) instead of backing off. Message is fixed for
 // its cause and is shown to humans verbatim.
 type Rejection struct {
+	// Reason is a short PascalCase label for the cause (NotAllowlisted,
+	// Oversized, Unsigned, ...), the value status.runnerImage.rejected
+	// records beside the message. The pure checks in this package leave it
+	// empty and the caller labels them by stage; the registry-backed
+	// resolver sets it, since only it knows which of its checks failed.
+	Reason string
+	// Message is the human explanation, shown verbatim.
 	Message string
 }
 

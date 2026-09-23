@@ -32,6 +32,7 @@ import (
 	"testing/quick"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -850,6 +851,39 @@ func TestResolveRegistryStatus(t *testing.T) {
 	}
 }
 
+// staticKeychain answers every host with one authenticator.
+type staticKeychain struct{ auth authn.Authenticator }
+
+func (k staticKeychain) Resolve(authn.Resource) (authn.Authenticator, error) { return k.auth, nil }
+
+// TestResolveUsesKeychain: the resolver presents the keychain's credential
+// to a registry that demands one, and without it is denied, which is what
+// ECR and pullSecret-backed registries depend on.
+func TestResolveUsesKeychain(t *testing.T) {
+	open := true
+	basic := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if u, p, ok := r.BasicAuth(); !open && (!ok || u != "patchy" || p != "s3cret") {
+				w.Header().Set("WWW-Authenticate", `Basic realm="test"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	repo := newRegistry(t, false, basic)
+	push(t, repo.Tag("v1"), image(t, nil, []byte("private")))
+	open = false
+
+	r := newResolver(t, Config{Keychain: staticKeychain{&authn.Basic{Username: "patchy", Password: "s3cret"}}})
+	if _, err := r.Resolve(context.Background(), declared(t, repo.String()+":v1")); err != nil {
+		t.Errorf("Resolve with the keychain: %v", err)
+	}
+	r = newResolver(t, Config{})
+	_, err := r.Resolve(context.Background(), declared(t, repo.String()+":v1"))
+	rejection(t, err, "AccessDenied", "registry denied access")
+}
+
 func TestResolveTransientErrorIsNotRejected(t *testing.T) {
 	repo := newRegistry(t, false, deny(http.StatusBadGateway))
 	r := newResolver(t, Config{})
@@ -890,6 +924,30 @@ func TestResolveCache(t *testing.T) {
 	}
 	if c.gets == gets {
 		t.Error("manifest GETs did not grow after the cache TTL elapsed")
+	}
+}
+
+// TestResolveCacheTagMoved: the verdict is cached by the digest the tag
+// resolved to, and the HEAD is never cached, so a tag moved to a rejected
+// image inside the TTL is resolved and judged afresh.
+func TestResolveCacheTagMoved(t *testing.T) {
+	c := &counter{}
+	repo := newRegistry(t, false, c.wrap)
+	push(t, repo.Tag("v1"), image(t, nil, []byte("a")))
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	r := newResolver(t, Config{CacheTTL: 10 * time.Minute, Now: func() time.Time { return now }})
+	ref := declared(t, repo.String()+":v1")
+	if _, err := r.Resolve(context.Background(), ref); err != nil {
+		t.Fatalf("Resolve before the move: %v", err)
+	}
+
+	push(t, repo.Tag("v1"), image(t, &v1.ConfigFile{Config: v1.Config{Volumes: map[string]struct{}{"/moved": {}}}}))
+	c.reset(nil)
+	now = now.Add(time.Minute)
+	_, err := r.Resolve(context.Background(), ref)
+	rejection(t, err, "Volume", "/moved")
+	if c.headCount() != 1 {
+		t.Errorf("HEADs after the move = %d, want 1: the tag is resolved every time", c.headCount())
 	}
 }
 
@@ -1079,9 +1137,17 @@ func pushReferrerLayers(t *testing.T, repo name.Repository, subject v1.Descripto
 // simple-signing payload layer, its ECDSA signature in the layer annotation.
 func signLegacy(t *testing.T, priv *ecdsa.PrivateKey, repo name.Repository, digest v1.Hash) {
 	t.Helper()
+	signLegacyNaming(t, priv, repo, digest, digest)
+}
+
+// signLegacyNaming writes the .sig tag of digest with a payload that names
+// payloadDigest: what copying another image's signature under this tag
+// looks like.
+func signLegacyNaming(t *testing.T, priv *ecdsa.PrivateKey, repo name.Repository, digest, payloadDigest v1.Hash) {
+	t.Helper()
 	payload := fmt.Appendf(nil, `{"critical":{"identity":{"docker-reference":"%s"},`+
 		`"image":{"docker-manifest-digest":"%s"},"type":"cosign container image signature"},"optional":null}`,
-		repo, digest)
+		repo, payloadDigest)
 	sum := sha256.Sum256(payload)
 	sig, err := ecdsa.SignASN1(rand.Reader, priv, sum[:])
 	if err != nil {
@@ -1182,6 +1248,47 @@ func TestResolveVerifiesMessageSignatureBundle(t *testing.T) {
 	}
 }
 
+// TestResolveSignedIndex: for an index the signature must name the index
+// digest, the object the kubelet pulls and cosign signs, not one of its
+// children (which `cosign sign --recursive` also signs, and which an
+// attacker-built index could reuse beside an unchecked child).
+func TestResolveSignedIndex(t *testing.T) {
+	priv, pub := testKeys(t)
+	cases := []struct {
+		name  string
+		sign  func(t *testing.T, repo name.Repository, index, child v1.Hash)
+		wantR string
+	}{
+		{"the index digest is signed", func(t *testing.T, repo name.Repository, index, _ v1.Hash) {
+			signLegacy(t, priv, repo, index)
+		}, ""},
+		{"only the child is signed", func(t *testing.T, repo name.Repository, _, child v1.Hash) {
+			signLegacy(t, priv, repo, child)
+		}, "Unsigned"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newRegistry(t, true, nil)
+			amd := image(t, &v1.ConfigFile{Config: v1.Config{Env: []string{"PATH=/usr/bin"}}}, []byte("amd"))
+			index := pushIndex(t, repo.Tag("v1"), indexChild{amd, linux("amd64")})
+			child, err := amd.Digest()
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.sign(t, repo, index, child)
+			r := newResolver(t, Config{PublicKey: pub})
+			got, err := r.Resolve(context.Background(), declared(t, repo.String()+":v1"))
+			if tc.wantR != "" {
+				rejection(t, err, tc.wantR, "carries no signature")
+				return
+			}
+			if err != nil || !got.Verified || got.Image != repo.String()+"@"+index.String() {
+				t.Errorf("Resolve = %+v, %v; want Verified on the index digest %s", got, err, index)
+			}
+		})
+	}
+}
+
 func TestResolveSignatureRejections(t *testing.T) {
 	priv, pub := testKeys(t)
 	other, err := ecdsa.GenerateKey(pub.Curve, rand.Reader)
@@ -1214,6 +1321,41 @@ func TestResolveSignatureRejections(t *testing.T) {
 			}
 			pushReferrer(t, repo, subjectOf(t, repo.Tag("v1")), "application/vnd.dev.sigstore.bundle.v0.3+json",
 				messageSignatureBundle(t, priv, wrong))
+			return d
+		}, pub, "SignatureInvalid", "none of which verifies"},
+		// A signature the operator made for another image, copied under
+		// this image's .sig tag: the key verifies, the digest must not.
+		{"legacy by the operator key naming another digest", func(t *testing.T, repo name.Repository) v1.Hash {
+			signed := push(t, repo.Tag("signed"), image(t, nil, []byte("old")))
+			d := push(t, repo.Tag("v1"), image(t, nil, []byte("new")))
+			signLegacyNaming(t, priv, repo, d, signed)
+			return d
+		}, pub, "SignatureInvalid", "carries 1 signature(s)"},
+		// The right message digest, signed by someone else: the digest
+		// check passes, so only the signature check can refuse it.
+		{"message signature over the image digest by another key", func(t *testing.T, repo name.Repository) v1.Hash {
+			d := push(t, repo.Tag("v1"), image(t, nil, []byte("k")))
+			pushReferrer(t, repo, subjectOf(t, repo.Tag("v1")), bundleType, messageSignatureBundle(t, other, d))
+			return d
+		}, pub, "SignatureInvalid", "none of which verifies"},
+		{"message signature with a corrupted signature", func(t *testing.T, repo name.Repository) v1.Hash {
+			d := push(t, repo.Tag("v1"), image(t, nil, []byte("c")))
+			var b map[string]any
+			if err := json.Unmarshal(messageSignatureBundle(t, priv, d), &b); err != nil {
+				t.Fatal(err)
+			}
+			ms := b["messageSignature"].(map[string]any)
+			sig, err := base64.StdEncoding.DecodeString(ms["signature"].(string))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sig[len(sig)-1] ^= 0xff
+			ms["signature"] = sig
+			raw, err := json.Marshal(b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pushReferrer(t, repo, subjectOf(t, repo.Tag("v1")), bundleType, raw)
 			return d
 		}, pub, "SignatureInvalid", "none of which verifies"},
 	}

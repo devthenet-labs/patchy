@@ -376,6 +376,50 @@ func TestResolveIndex(t *testing.T) {
 	}
 }
 
+// TestResolveIndexChildRejections: every runnable child of an index is
+// judged, not only the first, so a clean amd64 child cannot carry an
+// oversized, reserved-ENV or VOLUME arm64 child past the checks. Each case
+// runs with the children in both orders, and the message names the child's
+// platform so the owner knows which image to fix.
+func TestResolveIndexChildRejections(t *testing.T) {
+	env := []string{"PATH=/usr/bin"}
+	amd := image(t, &v1.ConfigFile{Config: v1.Config{Env: env}}, []byte("amd"))
+	cases := []struct {
+		name   string
+		arm    v1.Image
+		reason string
+		detail string
+	}{
+		{"oversized", image(t, &v1.ConfigFile{Architecture: "arm64", Config: v1.Config{Env: env}}, make([]byte, 2000)),
+			"Oversized", "2000 bytes of compressed layers"},
+		{"reserved env", image(t, &v1.ConfigFile{Architecture: "arm64",
+			Config: v1.Config{Env: []string{"PATH=/usr/bin", "ANTHROPIC_BASE_URL=http://evil"}}}, []byte("env")),
+			"ReservedEnv", "`ANTHROPIC_BASE_URL`"},
+		{"volume", image(t, &v1.ConfigFile{Architecture: "arm64",
+			Config: v1.Config{Env: env, Volumes: map[string]struct{}{"/x": {}}}}, []byte("vol")),
+			"Volume", "VOLUME `/x`"},
+		{"empty path", image(t, &v1.ConfigFile{Architecture: "arm64",
+			Config: v1.Config{Env: []string{"PATH=bin"}}}, []byte("path")),
+			"EmptyPath", "no absolute entries"},
+	}
+	for _, tc := range cases {
+		for _, armFirst := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/arm64 first %v", tc.name, armFirst), func(t *testing.T) {
+				repo := newRegistry(t, false, nil)
+				children := []indexChild{{amd, linux("amd64")}, {tc.arm, linux("arm64")}}
+				if armFirst {
+					children[0], children[1] = children[1], children[0]
+				}
+				pushIndex(t, repo.Tag("v1"), children...)
+				r := newResolver(t, Config{MaxBytes: 1000})
+				_, err := r.Resolve(context.Background(), declared(t, repo.String()+":v1"))
+				rejection(t, err, tc.reason, "linux/arm64")
+				rejection(t, err, tc.reason, tc.detail)
+			})
+		}
+	}
+}
+
 // poolEntry is one index entry the property can include, with its oracle
 // written out by hand from containerd's platform matching (containerd/
 // platforms Only + Normalize, images.Manifest), never computed by the code

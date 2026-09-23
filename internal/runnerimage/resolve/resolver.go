@@ -356,11 +356,7 @@ func describePlatform(p *v1.Platform) string {
 	if p == nil {
 		return "no platform"
 	}
-	s := p.OS + "/" + p.Architecture
-	if p.Variant != "" {
-		s += "/" + p.Variant
-	}
-	return "platform " + s
+	return "platform " + platformName(*p)
 }
 
 // checkChild fetches one manifest by digest and applies the size, platform,
@@ -407,16 +403,28 @@ func (r *Resolver) checkChild(ctx context.Context, repo name.Repository, c child
 		volumes = append(volumes, path)
 	}
 	if err := runnerimage.CheckVolumes(volumes); err != nil {
-		return nil, labeled("Volume", err)
+		return nil, inChild(labeled("Volume", err), c)
 	}
 	if err := runnerimage.CheckEnv(cf.Config.Env, r.cfg.ReservedEnv); err != nil {
-		return nil, labeled("ReservedEnv", err)
+		return nil, inChild(labeled("ReservedEnv", err), c)
 	}
 	searchPath, err := runnerimage.SanitizePath(cf.Config.Env)
 	if err != nil {
-		return nil, labeled("EmptyPath", err)
+		return nil, inChild(labeled("EmptyPath", err), c)
 	}
 	return searchPath, nil
+}
+
+// inChild names the index child a pure check's rejection came from, so the
+// owner knows which platform's image to fix; a single manifest's rejection
+// passes through.
+func inChild(err error, c child) error {
+	var rej *runnerimage.Rejection
+	if c.platform == nil || !errors.As(err, &rej) {
+		return err
+	}
+	return &runnerimage.Rejection{Reason: rej.Reason,
+		Message: rej.Message + " (in the " + platformName(*c.platform) + " manifest)"}
 }
 
 // platformSuffix names an index child's platform in a message.
@@ -424,11 +432,16 @@ func platformSuffix(p *v1.Platform) string {
 	if p == nil {
 		return ""
 	}
-	s := " (" + p.OS + "/" + p.Architecture
+	return " (" + platformName(*p) + ")"
+}
+
+// platformName spells a platform as os/arch[/variant].
+func platformName(p v1.Platform) string {
+	s := p.OS + "/" + p.Architecture
 	if p.Variant != "" {
 		s += "/" + p.Variant
 	}
-	return s + ")"
+	return s
 }
 
 // labeled stamps reason onto a pure check's Rejection; any other error

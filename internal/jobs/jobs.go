@@ -731,7 +731,19 @@ func init() {
 	for _, name := range proxyEnv {
 		reservedEnv[name] = true
 	}
+	for _, name := range gitRedirectEnv {
+		reservedEnv[name] = true
+	}
 }
+
+// gitRedirectEnv are the variables that point git at a different
+// repository, work tree, index or object store. They cannot join scrubEnv:
+// Kubernetes can set a variable but never unset it, and git reads an empty
+// value of any of these as a broken path, not as absent, so blanking them
+// would fail every git call agent-runner makes. They are reserved instead,
+// which keeps them out of Config.Env and, through ReservedEnvNames, gets an
+// image whose ENV sets one refused at resolution with a readable reason.
+var gitRedirectEnv = []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"}
 
 // proxyEnv are the proxy variables in both cases (curl and Go honour the
 // lowercase forms): reserved against Config.Env and blanked on a
@@ -743,8 +755,8 @@ var proxyEnv = []string{
 }
 
 // ReservedEnvNames returns every name Create owns, sorted: the credential
-// channels, the per-Job PATCHY_* vars, the gateway names and the proxy
-// variables. source-controller passes it to runnerimage.CheckEnv as the
+// channels, the per-Job PATCHY_* vars, the gateway names, the proxy
+// variables and git's repository redirections. source-controller passes it to runnerimage.CheckEnv as the
 // set an image's ENV may not name, so resolve-time rejection and the
 // Job's own reservations are one list.
 func ReservedEnvNames() []string {
@@ -754,7 +766,9 @@ func ReservedEnvNames() []string {
 // scrubEnv are the names blanked, with an explicit empty value, in the
 // agent container of a repository-image Job: an explicit container env
 // overrides image ENV, so this is the backstop for whatever the resolver's
-// reserved-ENV check did not know. Shell startup hooks (the runner execs the
+// reserved-ENV check did not know. It is a list of known redirection
+// points, not an enumeration of everything an image's ENV can influence,
+// and only names whose empty value means "unset" may join it. Shell startup hooks (the runner execs the
 // CLI without a shell, but the CLI's own shell tool does not), the dynamic
 // loader's injection points (agent-runner is static; claude is not), the
 // interpreters' startup files, git's config and helper redirections, and

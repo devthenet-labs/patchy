@@ -7,6 +7,8 @@ import (
 	"context"
 	"maps"
 	"math/rand"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -681,6 +683,64 @@ func TestPropertyNoDuplicateEnv(t *testing.T) {
 				}
 				seen[e.Name] = true
 			}
+		}
+	}
+}
+
+// TestGitRedirectionsReservedNotBlanked: the variables that point git at a
+// different repository, work tree, index or object store cannot be
+// neutralised in the pod — Kubernetes can set a variable but never unset
+// it, and git reads an empty GIT_DIR, GIT_WORK_TREE, GIT_OBJECT_DIRECTORY,
+// GIT_COMMON_DIR or GIT_INDEX_FILE as a (broken) value, not as absent. So
+// they are reserved instead: an image whose ENV sets one is refused at
+// resolution (the list runnerimage.CheckEnv is handed), and the operator's
+// Config.Env cannot set one either. Blanking them would break every git
+// call agent-runner makes.
+func TestGitRedirectionsReservedNotBlanked(t *testing.T) {
+	reserved := map[string]bool{}
+	for _, name := range ReservedEnvNames() {
+		reserved[name] = true
+	}
+	for _, name := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+		"GIT_COMMON_DIR"} {
+		if !reserved[name] {
+			t.Errorf("ReservedEnvNames() lacks %s", name)
+		}
+		if err := runnerimage.CheckEnv([]string{name + "=/opt/elsewhere"}, reserved); err == nil {
+			t.Errorf("an image ENV setting %s passes the resolver's check", name)
+		}
+		if slices.Contains(scrubEnv, name) {
+			t.Errorf("scrubEnv blanks %s, which breaks git", name)
+		}
+	}
+}
+
+// TestScrubbedGitNamesNeutralWhenEmpty guards the other direction: every
+// git variable the pod blanks must behave, empty, exactly as if unset, or
+// the backstop breaks the agent's own git calls. Runs the real git binary.
+func TestScrubbedGitNamesNeutralWhenEmpty(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH:", err)
+	}
+	repo := t.TempDir()
+	gitIn := func(extra ...string) (string, error) {
+		cmd := exec.Command("git", "status", "--porcelain")
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), extra...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	init := exec.Command("git", "init", "-q")
+	init.Dir = repo
+	if out, err := init.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	for _, name := range scrubEnv {
+		if !strings.HasPrefix(name, "GIT_") {
+			continue
+		}
+		if out, err := gitIn(name + "="); err != nil || out != "" {
+			t.Errorf("git status with %s empty = (%q, %v), want a clean, silent success", name, out, err)
 		}
 	}
 }

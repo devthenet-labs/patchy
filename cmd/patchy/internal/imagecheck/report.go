@@ -22,21 +22,23 @@ const (
 )
 
 // The checks, in the order a report lists them: the static ones source-
-// controller applies, then the sandbox run.
+// controller applies, then the sandbox run: the runner image it takes
+// agent-runner and claude from, once, then its per-platform checks.
 const (
-	CheckReference = "reference"
-	CheckAllowlist = "allowlist"
-	CheckResolve   = "resolve"
-	CheckPlatform  = "platform"
-	CheckSize      = "size"
-	CheckVolume    = "volume"
-	CheckEnv       = "env"
-	CheckPath      = "path"
-	CheckSignature = "signature"
-	CheckRunner    = "runner"
-	CheckPreflight = "preflight"
-	CheckBash      = "bash"
-	CheckGit       = "git"
+	CheckReference   = "reference"
+	CheckAllowlist   = "allowlist"
+	CheckResolve     = "resolve"
+	CheckPlatform    = "platform"
+	CheckSize        = "size"
+	CheckVolume      = "volume"
+	CheckEnv         = "env"
+	CheckPath        = "path"
+	CheckSignature   = "signature"
+	CheckRunnerImage = "runner-image"
+	CheckRunner      = "runner"
+	CheckPreflight   = "preflight"
+	CheckBash        = "bash"
+	CheckGit         = "git"
 )
 
 // Check is one line of a report.
@@ -74,8 +76,9 @@ type Report struct {
 	// /patchy/bin; empty when it could not be derived.
 	SearchPath []string `json:"searchPath,omitempty"`
 	// RunnerImage is the trusted image the sandbox run took agent-runner and
-	// claude from; empty without a sandbox run.
-	RunnerImage string `json:"runnerImage,omitempty"`
+	// claude from, with the digest it ran at; nil without a sandbox run or
+	// when none could be chosen.
+	RunnerImage *RunnerImage `json:"runnerImage,omitempty"`
 	// Checks lists every check, in order.
 	Checks []Check `json:"checks"`
 }

@@ -250,39 +250,57 @@ func TestPreflightFailureEmitsImageIncompatible(t *testing.T) {
 }
 
 // TestPreflightPinsInjectedCLI: after a clean preflight the stage runs the
-// injected CLI by absolute path, and the three checks ran in order first.
+// injected CLI by absolute path, and the three checks ran in order first —
+// in both stages, the remediation one above all, since it is the stage
+// that produces the changeset.
 func TestPreflightPinsInjectedCLI(t *testing.T) {
-	ws := newWorkspace(t)
-	var out bytes.Buffer
-	cfg := newConfig(t, ws, &out)
-	cfg.BinDir = injectedFakeCLI(t)
-	ok := step{ws: ws, result: runner.Result{Elapsed: time.Millisecond}}
-	fx := &fakeExec{steps: []step{ok, ok, ok,
-		{ws: ws, stdout: streamSuccess, writes: map[string]string{"reports/investigation.md": goodInvestigation}},
-	}}
+	for _, phase := range []Phase{PhaseInvestigate, PhaseRemediate} {
+		t.Run(string(phase), func(t *testing.T) {
+			var out bytes.Buffer
+			cfg, ws := remediateConfig(t, goodInvestigation, &out)
+			cfg.Phase = phase
+			cfg.BinDir = injectedFakeCLI(t)
+			stage := step{ws: ws, stdout: streamSuccess,
+				writes: map[string]string{"reports/investigation.md": goodInvestigation}}
+			if phase == PhaseRemediate {
+				stage = step{ws: ws, stdout: streamSuccess,
+					writes:    map[string]string{"reports/remediation.md": goodRemediation, "commit.sh": commitScript},
+					repoWrite: map[string]string{"app.js": "escaped();\n"},
+				}
+			}
+			ok := step{ws: ws, result: runner.Result{Elapsed: time.Millisecond}}
+			fx := &fakeExec{steps: []step{ok, ok, ok, stage}}
 
-	if err := New(cfg, fx).Run(context.Background()); err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	evs := events(t, out.String())
-	if len(evs) != 1 || evs[0].Investigation.Outcome != envelope.OutcomeOK {
-		t.Fatalf("events = %+v, want one ok investigation", evs)
-	}
-	if len(fx.specs) != 4 {
-		t.Fatalf("executor saw %d commands, want 3 preflight checks and the stage", len(fx.specs))
-	}
-	injected := filepath.Join(cfg.BinDir, "cat")
-	wantArgv := [][]string{{injected, "--version"}, {"git", "--version"}, {"bash", "-c", "true"}}
-	for i, want := range wantArgv {
-		if got := fx.specs[i].Argv; !slices.Equal(got, want) {
-			t.Errorf("preflight command %d = %v, want %v", i, got, want)
-		}
-		if fx.specs[i].Dir != ws {
-			t.Errorf("preflight command %d ran in %q, want the workspace", i, fx.specs[i].Dir)
-		}
-	}
-	if got := fx.specs[3].Argv[0]; got != injected {
-		t.Errorf("stage argv[0] = %q, want the injected CLI %q", got, injected)
+			if err := New(cfg, fx).Run(context.Background()); err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			evs := events(t, out.String())
+			if len(evs) != 1 {
+				t.Fatalf("events = %+v, want one", evs)
+			}
+			if phase == PhaseInvestigate && evs[0].Investigation.Outcome != envelope.OutcomeOK {
+				t.Fatalf("investigation = %+v, want ok", evs[0].Investigation)
+			}
+			if phase == PhaseRemediate && (evs[0].Remediation.Outcome != envelope.OutcomeOK || !evs[0].Remediation.Success) {
+				t.Fatalf("remediation = %+v, want a successful ok", evs[0].Remediation)
+			}
+			if len(fx.specs) != 4 {
+				t.Fatalf("executor saw %d commands, want 3 preflight checks and the stage", len(fx.specs))
+			}
+			injected := filepath.Join(cfg.BinDir, "cat")
+			wantArgv := [][]string{{injected, "--version"}, {"git", "--version"}, {"bash", "-c", "true"}}
+			for i, want := range wantArgv {
+				if got := fx.specs[i].Argv; !slices.Equal(got, want) {
+					t.Errorf("preflight command %d = %v, want %v", i, got, want)
+				}
+				if fx.specs[i].Dir != ws {
+					t.Errorf("preflight command %d ran in %q, want the workspace", i, fx.specs[i].Dir)
+				}
+			}
+			if got := fx.specs[3].Argv[0]; got != injected {
+				t.Errorf("stage argv[0] = %q, want the injected CLI %q", got, injected)
+			}
+		})
 	}
 }
 

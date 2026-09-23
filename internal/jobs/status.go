@@ -6,6 +6,7 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -23,6 +24,9 @@ type Status struct {
 	Failed    int32
 	// Done means the Job reached a terminal condition (Complete or Failed).
 	Done bool
+	// Created is when the Job was created: the start of the grace a
+	// collector gives a repository-image pod to pull its image.
+	Created time.Time
 	// Waiting is the agent container's waiting reason from the pod
 	// (ImagePullBackOff, ErrImagePull, InvalidImageName,
 	// CreateContainerConfigError, PodInitializing, ...), empty once it has
@@ -78,6 +82,7 @@ func statusOf(job *batchv1.Job) Status {
 		Active:            job.Status.Active,
 		Succeeded:         job.Status.Succeeded,
 		Failed:            job.Status.Failed,
+		Created:           job.CreationTimestamp.Time,
 		RunnerImageSource: v1alpha1.RunnerImageSourceDefault,
 	}
 	if src := job.Annotations[annotationRunnerImageSource]; src == v1alpha1.RunnerImageSourceRepository {

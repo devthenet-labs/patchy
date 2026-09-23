@@ -607,6 +607,23 @@ func TestStatus(t *testing.T) {
 	}
 }
 
+// TestStatusCreated: the Job's creation time rides on its Status, so a
+// collector can time the pull grace of a repository-image pod from it.
+func TestStatusCreated(t *testing.T) {
+	created := metav1.NewTime(time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC))
+	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name: "j", Namespace: "patchy-agents", CreationTimestamp: created,
+	}}
+	c := New(fake.NewClientset(job), testConfig(), nil)
+	got, err := c.Status(context.Background(), "j")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !got.Created.Equal(created.Time) {
+		t.Errorf("Created = %v, want %v", got.Created, created.Time)
+	}
+}
+
 func TestStatusNotFound(t *testing.T) {
 	c := New(fake.NewClientset(), testConfig(), nil)
 	if _, err := c.Status(context.Background(), "missing"); err == nil {

@@ -75,6 +75,9 @@ expect default 'select(.metadata.name == "patchy-repository-image-key") | .kind'
 expect default 'select(.kind == "ServiceAccount" and .metadata.name == "patchy-agent") | .imagePullSecrets' "null"
 expect default 'select(.kind == "Secret") | .metadata.name' ""
 expect default 'select(.kind == "Deployment") | .spec.template.spec.volumes[].name | select(. == "registry" or . == "repository-image-key")' ""
+expect default 'select(.kind == "NetworkPolicy" and .metadata.name == "patchy-source-controller") | .spec.egress[].to[].ipBlock.cidr | select(. != null)' ""
+render default-cilium --set agent.networkPolicy.mode=cilium
+expect default-cilium 'select(.metadata.name == "patchy-source-controller-cloud-credentials") | .kind' ""
 
 # ---- feature on: keys on the right controllers ------------------------------
 render on -f "$fixtures/repository-images.yaml"
@@ -128,6 +131,17 @@ render on-no-secret -f "$fixtures/repository-images.yaml" \
 expect on-no-secret 'select(.kind == "ServiceAccount" and .metadata.name == "patchy-agent") | .imagePullSecrets' null
 cm on-no-secret source-controller DOCKER_CONFIG null
 expect on-no-secret "$src | .volumes[] | select(.name == \"registry\") | .name" ""
+
+# ---- feature on: the EKS Pod Identity agent for source-controller -----------
+srcnp='select(.kind == "NetworkPolicy" and .metadata.name == "patchy-source-controller") | .spec.egress[] | select(.to[].ipBlock.cidr == "169.254.170.23/32")'
+expect on "$srcnp | .to[].ipBlock.cidr" "169.254.170.23/32
+fd00:ec2::23/128"
+expect on "$srcnp | .ports[] | .protocol + \"/\" + (.port | tostring)" "TCP/80"
+render on-cilium -f "$fixtures/repository-images.yaml" --set agent.networkPolicy.mode=cilium --set agent.networkPolicy.broadEgress=auto
+expect on-cilium 'select(.kind == "CiliumNetworkPolicy" and .metadata.name == "patchy-source-controller-cloud-credentials") | .spec.egress[0].toEntities[0] + " " + .spec.egress[0].toPorts[0].ports[0].port' \
+  "host 80"
+expect on-cilium 'select(.kind == "CiliumNetworkPolicy" and .metadata.name == "patchy-source-controller-cloud-credentials") | .spec.endpointSelector.matchLabels["app.kubernetes.io/name"]' \
+  source-controller
 
 # ---- feature on: the other values reach their keys --------------------------
 render on-tuned -f "$fixtures/repository-images.yaml" \

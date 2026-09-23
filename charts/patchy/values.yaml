@@ -237,6 +237,8 @@ sourceController:
         port: 9790
         nodePort: null
         annotations: {}
+    # With agent.repositoryImages.enabled the policy also admits the EKS Pod
+    # Identity agent, for resolving declared images in ECR (see there).
     networkPolicy:
         create: true
 
@@ -803,6 +805,14 @@ agent:
     # enforce NetworkPolicy (EKS Auto Mode does not by default): every
     # repository-image Job probes that before untrusted code runs and fails
     # SandboxUnenforced when it does not.
+    #
+    # With it enabled, source-controller's NetworkPolicy also admits the EKS
+    # Pod Identity agent (169.254.170.23:80, fd00:ec2::23 on IPv6), so an
+    # image in ECR resolves through a Pod Identity association on the
+    # source-controller ServiceAccount (IRSA — annotate
+    # sourceController.serviceAccount with eks.amazonaws.com/role-arn — needs
+    # nothing extra); under mode cilium a CiliumNetworkPolicy grants the
+    # node-local endpoint instead. Nodes pull ECR images with their own role.
     repositoryImages:
         enabled: false
         # Registry path prefixes a declared image must sit under, e.g.

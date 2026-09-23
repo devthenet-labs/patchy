@@ -1207,6 +1207,84 @@
                 "ssePingInterval": {
                     "$ref": "#/definitions/duration"
                 },
+                "limits": {
+                    "type": "object",
+                    "description": "Broker-side enforcement (the egress-broker's limit flags); 0 or empty keeps the binary's default, which is off unless noted",
+                    "additionalProperties": false,
+                    "properties": {
+                        "requestsPerPod": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Requests one agent pod may make in its lifetime"
+                        },
+                        "concurrentPerPod": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "In-flight requests one agent pod may hold"
+                        },
+                        "concurrencyWait": {
+                            "type": "string",
+                            "description": "How long a request over concurrentPerPod waits for a slot (Go duration; empty is the binary's default, negative refuses at once)",
+                            "pattern": "^(-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+|0)?$"
+                        },
+                        "tokensPerPod": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Tokens (input, cache creation, cache read, output) one agent pod may consume"
+                        },
+                        "tokensPerHour": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Broker-wide trailing-hour token ceiling"
+                        },
+                        "maxTokensCeiling": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Largest max_tokens a request may set"
+                        },
+                        "modelAllowlist": {
+                            "type": "array",
+                            "description": "Model ids pods may name; empty admits every model",
+                            "items": {
+                                "type": "string",
+                                "minLength": 1
+                            }
+                        },
+                        "betaDenylist": {
+                            "type": "array",
+                            "description": "anthropic-beta glob patterns to strip; empty keeps the built-in list, [none] strips nothing",
+                            "items": {
+                                "type": "string",
+                                "minLength": 1
+                            }
+                        },
+                        "maxAnthropicRequestBytes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Largest buffered request body on the anthropic, vertex and foundry routes; 0 is the binary's default"
+                        },
+                        "maxRequestBytes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Largest request body on the payload-signing bedrock route; 0 is the binary's default"
+                        },
+                        "preauthRequestsPerSecond": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Per-source-IP request rate admitted before authentication"
+                        },
+                        "preauthBurst": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Per-source-IP burst and in-flight cap before authentication"
+                        },
+                        "tokenReviewsPerSecond": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Broker-wide TokenReview rate"
+                        }
+                    }
+                },
                 "anthropicSecret": {
                     "type": "string",
                     "description": "Secret (release namespace) holding the Anthropic API key under api-key; the broker is its only consumer"

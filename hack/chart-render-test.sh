@@ -76,6 +76,12 @@ expect default 'select(.kind == "ServiceAccount" and .metadata.name == "patchy-a
 expect default 'select(.kind == "Secret") | .metadata.name' ""
 expect default 'select(.kind == "Deployment") | .spec.template.spec.volumes[].name | select(. == "registry" or . == "repository-image-key")' ""
 expect default 'select(.kind == "NetworkPolicy" and .metadata.name == "patchy-source-controller") | .spec.egress[].to[].ipBlock.cidr | select(. != null)' ""
+for key in PATCHY_REQUESTS_PER_POD PATCHY_CONCURRENT_PER_POD PATCHY_CONCURRENCY_WAIT PATCHY_TOKENS_PER_POD \
+  PATCHY_TOKENS_PER_HOUR PATCHY_MAX_TOKENS_CEILING PATCHY_MODEL_ALLOWLIST PATCHY_BETA_DENYLIST \
+  PATCHY_MAX_ANTHROPIC_REQUEST_BYTES PATCHY_MAX_REQUEST_BYTES PATCHY_PREAUTH_REQUESTS_PER_SECOND \
+  PATCHY_PREAUTH_BURST PATCHY_TOKEN_REVIEWS_PER_SECOND; do
+  cm default egress-broker "$key" null
+done
 render default-cilium --set agent.networkPolicy.mode=cilium
 expect default-cilium 'select(.metadata.name == "patchy-source-controller-cloud-credentials") | .kind' ""
 
@@ -189,6 +195,28 @@ expect guard-egress-fixed-gke 'select(.kind == "NetworkPolicy" and .metadata.nam
 render guard-kill-switch -f "$f" --set agent.repositoryImages.enabled=false --set agent.networkPolicy.broadEgress=auto \
   --set-json 'agent.repositoryImages.registries=[]' --set agent.repositoryImages.pullSecret=
 cm guard-kill-switch source-controller PATCHY_REPOSITORY_IMAGES null
+
+# ---- egress broker limits ---------------------------------------------------
+render limits -f "$fixtures/broker-limits.yaml"
+cm limits egress-broker PATCHY_REQUESTS_PER_POD 2000
+cm limits egress-broker PATCHY_CONCURRENT_PER_POD 4
+cm limits egress-broker PATCHY_CONCURRENCY_WAIT -1s
+cm limits egress-broker PATCHY_TOKENS_PER_POD 30000000
+cm limits egress-broker PATCHY_TOKENS_PER_HOUR 100000000
+cm limits egress-broker PATCHY_MAX_TOKENS_CEILING 64000
+cm limits egress-broker PATCHY_MODEL_ALLOWLIST anthropic/claude-sonnet-5,anthropic/claude-opus-5
+cm limits egress-broker PATCHY_BETA_DENYLIST none
+cm limits egress-broker PATCHY_MAX_ANTHROPIC_REQUEST_BYTES 4194304
+cm limits egress-broker PATCHY_MAX_REQUEST_BYTES 20971520
+cm limits egress-broker PATCHY_PREAUTH_REQUESTS_PER_SECOND 2.5
+cm limits egress-broker PATCHY_PREAUTH_BURST 100
+cm limits egress-broker PATCHY_TOKEN_REVIEWS_PER_SECOND 20
+render limits-extra -f "$fixtures/broker-limits.yaml" --set egressBroker.config.extra.PATCHY_TOKENS_PER_POD=7
+cm limits-extra egress-broker PATCHY_TOKENS_PER_POD 7
+if [ "$(get default 'select(.kind == "Deployment" and .metadata.name == "patchy-egress-broker") | .spec.template.metadata.annotations["checksum/config"]')" = \
+  "$(get limits 'select(.kind == "Deployment" and .metadata.name == "patchy-egress-broker") | .spec.template.metadata.annotations["checksum/config"]')" ]; then
+  fail "limits: the broker's checksum/config did not change, so an upgrade would not roll it"
+fi
 
 if [ "$failures" -gt 0 ]; then
   echo "chart-render-test: $failures assertion(s) failed" >&2

@@ -581,11 +581,55 @@ egressBroker:
     image: {}
     config:
         # Extra PATCHY_* keys for the broker only (e.g. PATCHY_BEDROCK_BASE_URL,
-        # PATCHY_FOUNDRY_BASE_URL, PATCHY_MAX_REQUEST_BYTES).
+        # PATCHY_FOUNDRY_BASE_URL, PATCHY_VERDICT_TTL); wins over anything the
+        # chart derives, `limits` below included.
         extra: {}
     # Idle keep-alive period for streamed model responses; long thinking
     # pauses otherwise let intermediaries close the connection.
     ssePingInterval: 30s
+    # What a pod may ask of the model API and how much, enforced broker-side
+    # before any upstream call. Every value defaults to the binary's own
+    # default (0 or empty is off, or the built-in value where noted), and an
+    # unset value renders nothing. Size these before enabling
+    # agent.repositoryImages: under a repository image the in-pod budget is
+    # advisory and these are the enforced bound on spend. The broker's audit
+    # line reports per-pod totals to size them from; evaluation Jobs share the
+    # same per-pod limits, so size for the longest legitimate evaluation.
+    limits:
+        # Requests one agent pod may make in its lifetime.
+        requestsPerPod: 0
+        # In-flight requests one agent pod may hold.
+        concurrentPerPod: 0
+        # How long a request over concurrentPerPod waits for one of the pod's
+        # slots (a Go duration; empty is the binary's 2s, negative refuses at
+        # once).
+        concurrencyWait: ""
+        # Tokens (input, cache creation, cache read, output) one pod may
+        # consume.
+        tokensPerPod: 0
+        # Broker-wide trailing-hour token ceiling.
+        tokensPerHour: 0
+        # Largest max_tokens a request may set.
+        maxTokensCeiling: 0
+        # Model ids pods may name (canonical or wire form; dated variants and
+        # the claude-haiku helper family are always admitted). Empty admits
+        # every model.
+        modelAllowlist: []
+        # anthropic-beta glob patterns to strip. Empty keeps the built-in
+        # list (mcp-client-*, web-fetch-*, code-execution-*, files-api-*,
+        # context-1m-*); [none] strips nothing.
+        betaDenylist: []
+        # Largest request body, in bytes, on the routes whose bodies are
+        # buffered for inspection (anthropic, vertex, foundry; 0 is 2 MiB)
+        # and on the payload-signing bedrock route (0 is 10 MiB).
+        maxAnthropicRequestBytes: 0
+        maxRequestBytes: 0
+        # Pre-authentication: the per-source-IP request rate, and its burst
+        # and in-flight cap.
+        preauthRequestsPerSecond: 0
+        preauthBurst: 0
+        # Broker-wide TokenReview rate, with a short queue.
+        tokenReviewsPerSecond: 0
     # Secret (RELEASE namespace — the broker is its only consumer) holding
     # the Anthropic credential under the `api-key` key. Used when the
     # provider is anthropic. NOTE the migration: this Secret previously

@@ -62,6 +62,35 @@ metadata:
 {{- $_ := set $data "PATCHY_FOUNDRY_AUTH" "entra" }}
 {{- end }}
 {{- end }}
+{{- /*
+egressBroker.limits: each flag is rendered only when its value is set, so an
+unset block leaves the binary's own default (off, or the built-in value)
+and the rendered ConfigMap unchanged. The config.extra maps below still win.
+*/}}
+{{- $limits := $vals.limits | default dict }}
+{{- range $key, $env := dict
+    "requestsPerPod" "PATCHY_REQUESTS_PER_POD"
+    "concurrentPerPod" "PATCHY_CONCURRENT_PER_POD"
+    "concurrencyWait" "PATCHY_CONCURRENCY_WAIT"
+    "tokensPerPod" "PATCHY_TOKENS_PER_POD"
+    "tokensPerHour" "PATCHY_TOKENS_PER_HOUR"
+    "maxTokensCeiling" "PATCHY_MAX_TOKENS_CEILING"
+    "maxAnthropicRequestBytes" "PATCHY_MAX_ANTHROPIC_REQUEST_BYTES"
+    "maxRequestBytes" "PATCHY_MAX_REQUEST_BYTES"
+    "preauthRequestsPerSecond" "PATCHY_PREAUTH_REQUESTS_PER_SECOND"
+    "preauthBurst" "PATCHY_PREAUTH_BURST"
+    "tokenReviewsPerSecond" "PATCHY_TOKEN_REVIEWS_PER_SECOND"
+}}
+{{- with index $limits $key }}
+{{- $_ := set $data $env . }}
+{{- end }}
+{{- end }}
+{{- with $limits.modelAllowlist }}
+{{- $_ := set $data "PATCHY_MODEL_ALLOWLIST" (join "," .) }}
+{{- end }}
+{{- with $limits.betaDenylist }}
+{{- $_ := set $data "PATCHY_BETA_DENYLIST" (join "," .) }}
+{{- end }}
 {{- range $k, $v := .Values.config.extra }}
 {{- $_ := set $data $k $v }}
 {{- end }}
@@ -81,7 +110,14 @@ metadata:
     {{- end }}
 data:
     {{- range $k, $v := $data }}
-    {{ $k }}: {{ $v | toString | quote }}
+    {{- /* Integral floats render as integers, as in configmap.yaml: a large
+           values.yaml number (tokensPerHour: 10000000) otherwise renders as
+           "1e+07", which the broker's integer flags reject. */ -}}
+    {{- $s := $v | toString }}
+    {{- if and (kindIs "float64" $v) (eq $v (floor $v)) }}
+    {{- $s = int64 $v | toString }}
+    {{- end }}
+    {{ $k }}: {{ $s | quote }}
     {{- end }}
 ---
 # TokenReview is cluster-scoped, so the one grant needs a ClusterRole.

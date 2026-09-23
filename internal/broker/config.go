@@ -33,6 +33,9 @@ const (
 	// other route. Every route buffers, so the body can be inspected before
 	// it is forwarded.
 	DefaultMaxAnthropicRequestBytes = 2 << 20
+	// DefaultConcurrencyWait is how long a request over the per-pod in-flight
+	// cap waits for a slot before it is refused.
+	DefaultConcurrencyWait = 2 * time.Second
 )
 
 // DefaultBetaDenylist is the anthropic-beta entries stripped when
@@ -88,6 +91,13 @@ type Limits struct {
 	RequestsPerPod int64
 	// ConcurrentPerPod caps a pod's in-flight requests.
 	ConcurrentPerPod int64
+	// ConcurrencyWait is how long a request refused only by ConcurrentPerPod
+	// waits for one of the pod's slots to free before it is refused. A
+	// caller can hold its whole response before the broker has released the
+	// slot that served it, so a client sending back to back would otherwise
+	// be refused for a slot that is about to free. It is not a limit: 0
+	// takes DefaultConcurrencyWait, negative refuses at once.
+	ConcurrencyWait time.Duration
 	// TokensPerPod caps the tokens (input, cache creation, cache read and
 	// output; the request-size estimate for a cut or usage-less response)
 	// charged to one pod.
@@ -168,6 +178,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.MaxAnthropicRequestBytes <= 0 {
 		c.MaxAnthropicRequestBytes = DefaultMaxAnthropicRequestBytes
+	}
+	if c.Limits.ConcurrencyWait == 0 {
+		c.Limits.ConcurrencyWait = DefaultConcurrencyWait
 	}
 	if len(c.BetaDenylist) == 0 && !c.DisableBetaDenylist {
 		c.BetaDenylist = slices.Clone(DefaultBetaDenylist)

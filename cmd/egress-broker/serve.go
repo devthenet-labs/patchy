@@ -50,6 +50,9 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	// behaves as before; the chart sizes them.
 	f.Int("requests-per-pod", 0, "requests one agent pod may make in its lifetime; 0 disables")
 	f.Int("concurrent-per-pod", 0, "in-flight requests one agent pod may hold; 0 disables")
+	f.Duration("concurrency-wait", broker.DefaultConcurrencyWait,
+		"how long a request over --concurrent-per-pod waits for one of the pod's slots to free before it is "+
+			"refused; 0 takes the default, negative refuses at once")
 	f.Int("tokens-per-pod", 0,
 		"tokens (input, cache creation, cache read, output) one agent pod may consume; 0 disables")
 	f.Int("tokens-per-hour", 0, "broker-wide trailing-hour token ceiling; 0 disables")
@@ -256,6 +259,7 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		Limits: broker.Limits{
 			RequestsPerPod:   int64(opts.Int("requests-per-pod")),
 			ConcurrentPerPod: int64(opts.Int("concurrent-per-pod")),
+			ConcurrencyWait:  opts.Duration("concurrency-wait"),
 			TokensPerPod:     int64(opts.Int("tokens-per-pod")),
 			TokensPerHour:    int64(opts.Int("tokens-per-hour")),
 			MaxTokensCeiling: int64(opts.Int("max-tokens-ceiling")),

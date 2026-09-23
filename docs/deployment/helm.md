@@ -233,12 +233,33 @@ aws eks create-pod-identity-association --cluster-name <cluster> --namespace <re
 ```
 
 IRSA works as well (annotate `sourceController.serviceAccount` with `eks.amazonaws.com/role-arn`). Artifact Registry
-resolves through GKE Workload Identity on the same ServiceAccount; Dataplane V2 always admits the metadata server, and
-on other CNIs `sourceController.networkPolicy.extraEgress` can add `169.254.169.254/32` on TCP 80. For any other
-registry set `pullSecret`: source-controller mounts that Secret's `.dockerconfigjson` key as `config.json` under
-`DOCKER_CONFIG`, and the agent ServiceAccount lists it in `imagePullSecrets`. The kubelet reads pull Secrets from the
-pod's own namespace, so a Secret of the same name must also exist in `agent.namespace`: set `pullSecretData` to have the
-chart render it in both namespaces, or create both yourself. The mount is optional, so a missing release-namespace
+resolves through GKE Workload Identity on the same ServiceAccount, which fetches its token from the GKE metadata server.
+source-controller's NetworkPolicy admits only DNS and TCP 443/6443, so add the metadata server through
+`sourceController.networkPolicy.extraEgress`: `169.254.169.254/32` on TCP 80 and 8080 on Dataplane V2, and
+`169.254.169.252/32` on TCP 988 and 987 on other GKE clusters
+([GKE: network policy and Workload Identity Federation](https://cloud.google.com/kubernetes-engine/docs/how-to/network-policy#network-policy-and-workload-identity)).
+Without it source-controller cannot authenticate, so every declaration in a private Artifact Registry repository is
+rejected and, under `onReject: default`, runs on the default image.
+
+```yaml
+sourceController:
+  networkPolicy:
+    extraEgress:
+      # Dataplane V2. Other GKE clusters: 169.254.169.252/32 on 988 and 987.
+      - to:
+          - ipBlock:
+              cidr: 169.254.169.254/32
+        ports:
+          - protocol: TCP
+            port: 80
+          - protocol: TCP
+            port: 8080
+```
+
+For any other registry set `pullSecret`: source-controller mounts that Secret's `.dockerconfigjson` key as `config.json`
+under `DOCKER_CONFIG`, and the agent ServiceAccount lists it in `imagePullSecrets`. The kubelet reads pull Secrets from
+the pod's own namespace, so a Secret of the same name must also exist in `agent.namespace`: set `pullSecretData` to have
+the chart render it in both namespaces, or create both yourself. The mount is optional, so a missing release-namespace
 Secret (or one without a `.dockerconfigjson` key) does not stop source-controller: it resolves anonymously, rejects the
 images it cannot read, and picks the credential up once the Secret appears.
 

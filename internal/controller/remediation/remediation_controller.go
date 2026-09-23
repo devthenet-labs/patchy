@@ -666,8 +666,21 @@ func (r *RemediationReconciler) maxChangesetEntries() int {
 // Repository's pinned commit, the entry cap, and whether the
 // repository-image rules apply. A Repository that has vanished leaves the
 // base empty, which refuses the changeset rather than pushing it unchecked.
+//
+// The repository-image rules apply when either this run or the
+// Investigation it acts on ran a repository-declared image. The
+// remediation agent's input is not only the tree: its analysis is the
+// Investigation's report and its parameters are the ones the spawner took
+// from it, and a default-image remediation of a repository-image
+// investigation (a human approved a held verdict, the breaker tripped
+// between the two, or the controllers' flags differ) would otherwise follow
+// that image's instructions exempt from the CI deny. An Investigation that
+// cannot be found cannot vouch for itself, so the stricter rules apply.
 func (r *RemediationReconciler) changesetRules(ctx context.Context, rem *v1alpha1.Remediation) (changesetRules, error) {
-	rules := changesetRules{MaxEntries: r.maxChangesetEntries(), RepositoryImage: ranRepositoryImage(rem)}
+	rules := changesetRules{
+		MaxEntries:      r.maxChangesetEntries(),
+		RepositoryImage: ranRepositoryImage(rem.Status.RunnerImage),
+	}
 	var repo v1alpha1.Repository
 	key := types.NamespacedName{Namespace: rem.Namespace, Name: rem.Spec.RepositoryRef.Name}
 	switch err := r.Get(ctx, key, &repo); {
@@ -676,13 +689,25 @@ func (r *RemediationReconciler) changesetRules(ctx context.Context, rem *v1alpha
 	case !kerrors.IsNotFound(err):
 		return rules, err
 	}
+	if rules.RepositoryImage {
+		return rules, nil
+	}
+	var inv v1alpha1.Investigation
+	key = types.NamespacedName{Namespace: rem.Namespace, Name: rem.Spec.InvestigationRef.Name}
+	switch err := r.Get(ctx, key, &inv); {
+	case err == nil:
+		rules.RepositoryImage = ranRepositoryImage(inv.Status.RunnerImage)
+	case kerrors.IsNotFound(err):
+		rules.RepositoryImage = true
+	default:
+		return rules, err
+	}
 	return rules, nil
 }
 
-// ranRepositoryImage reports whether the Remediation's launch stamp says
-// its pod ran a repository-declared image. A run launched before the stamp
-// existed ran the default image.
-func ranRepositoryImage(rem *v1alpha1.Remediation) bool {
-	ri := rem.Status.RunnerImage
+// ranRepositoryImage reports whether a run's launch stamp says its pod ran
+// a repository-declared image. A run launched before the stamp existed ran
+// the default image.
+func ranRepositoryImage(ri *v1alpha1.RunnerImageRef) bool {
 	return ri != nil && ri.Source == v1alpha1.RunnerImageSourceRepository
 }

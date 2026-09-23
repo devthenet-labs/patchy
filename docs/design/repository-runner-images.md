@@ -452,13 +452,15 @@ evaluation-controller page says so.
 - **Changeset rejected**: the remediation collector validates every changeset before any forge call against what a
   legitimate run always produces: the Repository's pinned `resolvedSHA` as its base, path length and shape (no `..`, no
   absolute paths, nothing under `.git/`, no NUL), and a `100644`/`100755`/`120000` mode with base64 content on every
-  upsert. A repository-image run is also refused what a legitimate diff can contain: more than `--changeset-max-entries`
-  (default 500) entries (upserts plus deletes), a control character in a path, and anything under `.github/workflows/**`
-  or `.github/actions/**`, because a branch in the same repository triggers CI with repository secrets before any human
-  has looked at it. Default-image runs keep those three as they were, so upgrading with the feature off changes nothing
-  observable (a vendored dependency bump legitimately rewrites hundreds of files, and leaving workflows alone also
-  avoids the 422 when the App lacks the `workflows` permission). A rejected changeset fails the attempt
-  `changeset_rejected` with a `LastFailureReason` naming the limit or the path, and zero forge calls are made.
+  upsert. A run held to the repository-image rules (its own stamp or its Investigation's says `repository`, since the
+  remediation acts on that investigation's report) is also refused what a legitimate diff can contain: more than
+  `--changeset-max-entries` (default 500) entries (upserts plus deletes), a control character in a path, and anything
+  under `.github/workflows/**` or `.github/actions/**`, because a branch in the same repository triggers CI with
+  repository secrets before any human has looked at it. Default-image runs keep those three as they were, so upgrading
+  with the feature off changes nothing observable (a vendored dependency bump legitimately rewrites hundreds of files,
+  and leaving workflows alone also avoids the 422 when the App lacks the `workflows` permission). A rejected changeset
+  fails the attempt `changeset_rejected` with a `LastFailureReason` naming the limit or the path, and zero forge calls
+  are made.
 - **Ignore verdict on a repository image**: the Finding goes to `HandedOff`. The phase notice and the sticky comment
   read "the agent recommended ignore; patchy did not dismiss the alert because the run used a repository-declared
   image". Because dismissal write-back (`resolveSource` in `internal/controller/integration/project.go`) fires only on

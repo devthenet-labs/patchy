@@ -42,7 +42,9 @@ type changesetRules struct {
 	Base string
 	// MaxEntries caps upserts plus deletes.
 	MaxEntries int
-	// RepositoryImage applies the repository-image rules.
+	// RepositoryImage applies the repository-image rules: this run, or the
+	// Investigation whose report and parameters it acts on, ran a
+	// repository-declared image.
 	RepositoryImage bool
 }
 
@@ -65,8 +67,9 @@ type changesetRules struct {
 // these changes the outcome of a real changeset, so with repository images
 // off nothing observable changes.
 //
-// A changeset held to the repository-image rules — the image controls the
-// process the changeset came out of — is also refused what a legitimate
+// A changeset held to the repository-image rules — that image controls the
+// process the changeset came out of, or the analysis it followed — is also
+// refused what a legitimate
 // diff can contain but patchy will not push unreviewed from such a run:
 // more than MaxEntries entries (upserts plus deletes), a control character
 // in a path, and any change to CI definitions (.github/workflows,

@@ -395,3 +395,42 @@ func TestRemediationChangesetEntryCapDefaultImage(t *testing.T) {
 		wantRejected(t, fw, rem, f, "501 entries (upserts plus deletes), over the 500-entry limit")
 	})
 }
+
+// TestRemediationChangesetInvestigationImage: the remediation agent acts on
+// the investigation's report and parameters, so a default-image run whose
+// investigation ran a repository image — or whose investigation cannot be
+// found to say otherwise — is held to the repository-image rules: a
+// workflow change is refused with zero forge calls. One whose
+// investigation ran the default image pushes as before.
+func TestRemediationChangesetInvestigationImage(t *testing.T) {
+	workflow := func(cs *envelope.Changeset) {
+		cs.Upserts = append(cs.Upserts, envelope.FileChange{
+			Path: ".github/workflows/ci.yml", Mode: "100644", ContentB64: "eA==",
+		})
+	}
+	revived := []v1alpha1.Phase{v1alpha1.PhaseHandedOff, v1alpha1.PhaseQueued, v1alpha1.PhaseRemediating}
+	t.Run("investigation ran a repository image", func(t *testing.T) {
+		objs := withImage(acceptedImage(), v1alpha1.RunnerImageSourceDefault, revived...)
+		objs[2].(*v1alpha1.Investigation).Status.RunnerImage = &v1alpha1.RunnerImageRef{
+			Image: pinnedImage, Source: v1alpha1.RunnerImageSourceRepository,
+		}
+		fw, rem, f := rejectedOnce(t, objs, workflow)
+		wantRejected(t, fw, rem, f, `".github/workflows/ci.yml" is a CI definition`)
+	})
+	t.Run("investigation not found", func(t *testing.T) {
+		objs := withImage(acceptedImage(), v1alpha1.RunnerImageSourceDefault, revived...)
+		objs = append(objs[:2], objs[3:]...) // no Investigation
+		fw, rem, f := rejectedOnce(t, objs, workflow)
+		wantRejected(t, fw, rem, f, `".github/workflows/ci.yml" is a CI definition`)
+	})
+	t.Run("investigation ran the default image", func(t *testing.T) {
+		objs := withImage(acceptedImage(), v1alpha1.RunnerImageSourceDefault, revived...)
+		objs[2].(*v1alpha1.Investigation).Status.RunnerImage = &v1alpha1.RunnerImageRef{
+			Image: "claude-agent-runner:1", Source: v1alpha1.RunnerImageSourceDefault,
+		}
+		fw, _, f := rejectedOnce(t, objs, workflow)
+		if len(fw.pushed) != 1 || fw.prCalls != 1 || f.Status.Phase != v1alpha1.PhaseInReview {
+			t.Errorf("pushed/prs/phase = %v/%d/%q, want pushed as before", fw.pushed, fw.prCalls, f.Status.Phase)
+		}
+	})
+}

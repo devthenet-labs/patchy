@@ -35,6 +35,7 @@ spec:
         patchy.bitwisemedia.uk/owner: finding-abc123def0-1-inv-1
         patchy.bitwisemedia.uk/runner-image-source: repository
     spec:
+      automountServiceAccountToken: false
       containers:
       - command:
         - /patchy/bin/agent-runner

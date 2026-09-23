@@ -547,6 +547,14 @@ func (c *Client) buildJob(name string, spec Spec) (*batchv1.Job, error) {
 			},
 		},
 	}
+	if inject {
+		// A repository image is untrusted: refuse the kube-api-access token
+		// in the pod's own spec instead of relying on the ServiceAccount's
+		// automount setting, which an operator overlay could change. The
+		// broker's projected caller token is an explicit volume and is
+		// unaffected. Default Jobs are left byte-identical.
+		job.Spec.Template.Spec.AutomountServiceAccountToken = new(false)
+	}
 	if c.cfg.Deadline > 0 {
 		job.Spec.ActiveDeadlineSeconds = new(int64(c.cfg.Deadline.Seconds()))
 	}

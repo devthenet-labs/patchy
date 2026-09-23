@@ -31,6 +31,14 @@ func credentialFindings(job *batchv1.Job, audience string) []string {
 	for _, ct := range append(append([]corev1.Container{}, pod.InitContainers...), pod.Containers...) {
 		out = append(out, containerCredentialFindings(ct)...)
 	}
+	// The kube-api-access token is added by admission, not written in the
+	// spec, so the volume walk below cannot see it. A repository-image pod
+	// must refuse it in its own spec rather than rely on the ServiceAccount.
+	if job.Spec.Template.Labels[labelRunnerImageSource] == v1alpha1.RunnerImageSourceRepository {
+		if a := pod.AutomountServiceAccountToken; a == nil || *a {
+			out = append(out, "pod does not disable the Kubernetes API token (automountServiceAccountToken)")
+		}
+	}
 	return append(out, volumeCredentialFindings(job, audience)...)
 }
 

@@ -837,6 +837,19 @@ func injectEnv(env []corev1.EnvVar, spec Spec) []corev1.EnvVar {
 	return env
 }
 
+// InjectedEnv is what injectEnv adds to a repository-image Job's agent
+// container over its usual env, for an image whose sanitized search path
+// is searchPath (":"-joined, as Spec.RunnerSearchPath): where the injected
+// binaries are, the controller-owned PATH, git's system config and the
+// CLI's self-updater off, and an explicit empty value for every scrubbed
+// name, gateway name and agent-runner key. The workstation check
+// (`patchy check image --run`) replays it, so a local run of an image sees
+// what the pod's harness would; names the usual env sets are blanked here
+// because a local run has no usual env.
+func InjectedEnv(searchPath string) []corev1.EnvVar {
+	return injectEnv(nil, Spec{RunnerSearchPath: searchPath})
+}
+
 // podPath joins patchy's binary directory with the image's sanitized search
 // path. The Repository status never carries an empty or relative entry
 // (runnerimage.SanitizePath refuses them), but the join drops any anyway;

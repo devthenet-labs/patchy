@@ -751,3 +751,31 @@ func TestScrubbedGitNamesNeutralWhenEmpty(t *testing.T) {
 		}
 	}
 }
+
+// TestInjectedEnvMatchesTheJob: what InjectedEnv hands the workstation
+// check is what a repository-image Job's agent container carries: every
+// value it sets is the pod's, and every name it blanks the pod either
+// blanks too or sets from its usual env.
+func TestInjectedEnvMatchesTheJob(t *testing.T) {
+	envs := envMap(buildJobForTest(t, injectedConfig(), injectedSpec()).Spec.Template.Spec.Containers[0])
+	got := InjectedEnv(repoSearchPath)
+	names := map[string]bool{}
+	for _, e := range got {
+		names[e.Name] = true
+		pod, ok := envs[e.Name]
+		switch {
+		case !ok:
+			t.Errorf("InjectedEnv carries %s, which the Job's agent container lacks", e.Name)
+		case e.Value != "" && pod.Value != e.Value:
+			t.Errorf("InjectedEnv %s = %q, Job %q", e.Name, e.Value, pod.Value)
+		}
+	}
+	for _, want := range []string{"PATH", agentrun.BinDirEnv, "GIT_CONFIG_NOSYSTEM", "BASH_ENV", "LD_PRELOAD"} {
+		if !names[want] {
+			t.Errorf("InjectedEnv lacks %s", want)
+		}
+	}
+	if len(names) != len(got) {
+		t.Errorf("InjectedEnv repeats a name: %v", got)
+	}
+}

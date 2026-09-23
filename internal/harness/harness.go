@@ -102,6 +102,19 @@ type BudgetReporter interface {
 	Exhausted(stdout []byte) bool
 }
 
+// TerminalErrorReporter is the optional capability of reading the error a run
+// ended on off the CLI's own terminal event. It reports only what the CLI
+// itself said ended the run — never the model's text or a tool's output,
+// which carry whatever the repository holds — so a caller matching a
+// contract message against it (the egress broker's limit prefix) cannot
+// have the outcome chosen by a quote of that message in the workspace, or
+// by an error the run recovered from before dying of something else.
+type TerminalErrorReporter interface {
+	// TerminalError returns the error text the CLI's terminal event
+	// reported, or "" when the run did not end in an error.
+	TerminalError(stdout []byte) string
+}
+
 // UsageScanner is the optional capability of reading token usage off the live
 // output stream; it powers the caller's output-token budget kill switch.
 type UsageScanner interface {

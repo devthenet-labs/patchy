@@ -328,6 +328,30 @@ func (c *Claude) Exhausted(stdout []byte) bool {
 	return found && result.IsError && exhaustedSubtypes[result.Subtype]
 }
 
+// TerminalError returns the error the terminal result event reported: its
+// errors, and the result text of a run that ended on an API error — the
+// CLI relays a model API error as a synthetic assistant message and
+// repeats its text as the result of an is_error run (subtype "success",
+// api_error_status set). Earlier events are never consulted: they hold
+// model and tool content, and an error the run survived is not what ended
+// it. "" when the run did not end in an error or has no result event.
+func (c *Claude) TerminalError(stdout []byte) string {
+	result, found := scanEvents(stdout)
+	if !found || !result.IsError {
+		return ""
+	}
+	var parts []string
+	for _, e := range result.Errors {
+		if e = strings.TrimSpace(e); e != "" {
+			parts = append(parts, e)
+		}
+	}
+	if r := strings.TrimSpace(result.Result); r != "" {
+		parts = append(parts, r)
+	}
+	return strings.Join(parts, "; ")
+}
+
 // scanStreamUsage reads the output-token count off one live stream line. Only
 // assistant events carry message.usage; the result event's top-level usage
 // (and every other event) reports ok=false so a budget accumulator never

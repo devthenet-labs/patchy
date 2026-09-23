@@ -314,25 +314,42 @@ func TestPinCLI(t *testing.T) {
 	}
 }
 
+// streamBrokerLimit is what claude 2.1.280 printed (trimmed of fields
+// nothing reads) when the egress broker answered its first request 429 at a
+// per-pod limit: a synthetic assistant message the CLI flags as an API
+// error, then the terminal result carrying the same text.
+const streamBrokerLimit = `{"type":"system","subtype":"init","session_id":"d267e741-0839-4a0b-98de-58c91facde4f"}` + "\n" +
+	`{"type":"assistant","message":{"id":"a7406e26-4a34-44b7-b694-ac641a2dec2b","model":"<synthetic>",` +
+	`"role":"assistant","stop_reason":"stop_sequence","type":"message","usage":{"input_tokens":0,"output_tokens":0},` +
+	`"content":[{"type":"text","text":"API Error: Request rejected (429) · egress broker: per-pod limit: ` +
+	`tokens per pod (400000) reached"}]},"parent_tool_use_id":null,` +
+	`"session_id":"d267e741-0839-4a0b-98de-58c91facde4f","error":"rate_limit","is_api_error_message":true}` + "\n" +
+	`{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"terminal_reason":"api_error",` +
+	`"num_turns":1,"result":"API Error: Request rejected (429) · egress broker: per-pod limit: tokens per pod ` +
+	`(400000) reached","session_id":"d267e741-0839-4a0b-98de-58c91facde4f","total_cost_usd":0}`
+
 // TestStageOutcomeBrokerLimit: a run the egress broker cut off at a per-pod
-// limit ends budget_exceeded wherever the broker's message surfaced.
+// limit ends budget_exceeded when the broker's message is what ended it —
+// the CLI's terminal error, the harness's reason, or the CLI's stderr — and
+// never because the prefix appears somewhere else in the stream. Tool
+// results and the model's own text carry whatever the repository holds
+// (patchy's own source quotes the prefix), and a limit relayed earlier in a
+// run that then died of something else is not what ended it.
 func TestStageOutcomeBrokerLimit(t *testing.T) {
 	limit := provider.LimitMessagePrefix + ": tokens_per_pod 400000 exceeded"
 	errorResult := func(errs string) string {
 		return `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"",` +
 			`"errors":[` + errs + `]}`
 	}
+	unrelated := errorResult(`"API Error: 500 upstream exploded"`)
 	tests := []struct {
 		name string
 		res  runner.Result
 		want envelope.Outcome
 	}{
-		{"limit in the result errors", runner.Result{Stdout: []byte(errorResult(`"API Error: 429 ` + limit + `"`))},
+		{"the CLI's terminal API error (claude 2.1.280)", runner.Result{ExitCode: 1, Stdout: []byte(streamBrokerLimit)},
 			envelope.OutcomeBudgetExceeded},
-		{"limit relayed as an assistant message",
-			runner.Result{Stdout: []byte(`{"type":"assistant","message":{"content":[{"type":"text",` +
-				`"text":"API Error: 429 {\"type\":\"error\",\"error\":{\"message\":\"` + limit + `\"}}"}]}}` + "\n" +
-				errorResult(`"boom"`))},
+		{"limit in the result errors", runner.Result{Stdout: []byte(errorResult(`"API Error: 429 ` + limit + `"`))},
 			envelope.OutcomeBudgetExceeded},
 		{"limit on stderr", runner.Result{ExitCode: 1, StderrTail: "429 " + limit},
 			envelope.OutcomeBudgetExceeded},
@@ -342,6 +359,20 @@ func TestStageOutcomeBrokerLimit(t *testing.T) {
 		{"a limit mentioned by a successful run is not a failure",
 			runner.Result{Stdout: []byte(streamSuccess + "\n" + limit)},
 			envelope.OutcomeOK},
+		{"a limit quoted in a tool result, then an unrelated terminal error",
+			runner.Result{ExitCode: 1, Stdout: []byte(`{"type":"user","message":{"role":"user","content":[` +
+				`{"type":"tool_result","tool_use_id":"t1","content":"const LimitMessagePrefix = \"` + limit + `\""}]}}` +
+				"\n" + unrelated)},
+			envelope.OutcomeRuntimeError},
+		{"a limit in the model's own text, then an unrelated terminal error",
+			runner.Result{ExitCode: 1, Stdout: []byte(`{"type":"assistant","message":{"content":[{"type":"text",` +
+				`"text":"The broker says \"` + limit + `\" when a pod overspends."}]}}` + "\n" + unrelated)},
+			envelope.OutcomeRuntimeError},
+		{"a stale limit relayed earlier, then an unrelated terminal error",
+			runner.Result{ExitCode: 1, Stdout: []byte(`{"type":"assistant","message":{"model":"<synthetic>",` +
+				`"content":[{"type":"text","text":"API Error: Request rejected (429) · ` + limit + `"}]},` +
+				`"error":"rate_limit","is_api_error_message":true}` + "\n" + errorResult(`"boom"`))},
+			envelope.OutcomeRuntimeError},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -349,8 +380,12 @@ func TestStageOutcomeBrokerLimit(t *testing.T) {
 			if outcome != tt.want {
 				t.Errorf("stageOutcome = (%q, %q), want %q", outcome, detail, tt.want)
 			}
-			if tt.want == envelope.OutcomeBudgetExceeded && !strings.Contains(detail, provider.LimitMessagePrefix) {
+			carries := strings.Contains(detail, provider.LimitMessagePrefix)
+			if tt.want == envelope.OutcomeBudgetExceeded && !carries {
 				t.Errorf("detail = %q, want it to carry the broker's message", detail)
+			}
+			if tt.want == envelope.OutcomeRuntimeError && carries {
+				t.Errorf("detail = %q quotes text that was not the broker's terminal answer", detail)
 			}
 		})
 	}

@@ -620,9 +620,13 @@ func (a *Agent) fillStage(st *envelope.Stage, h harness.Harness, res runner.Resu
 // exceeded rather than a generic runtime error — it names the cause, and it
 // is the same outcome the runner's own kill switch raises. So is a run the
 // egress broker cut off at one of its per-pod limits: the broker answers
-// 429 with a message opening with provider.LimitMessagePrefix, and a CLI
-// failure carrying that text anywhere in its output is the broker's kill
-// switch doing the runner's job from outside the pod. A runtime error
+// 429 with a message opening with provider.LimitMessagePrefix, and a run
+// that ended on that answer is the broker's kill switch doing the runner's
+// job from outside the pod. Only what the harness parsed as the run's
+// terminal failure (its reason and, where it can tell, the CLI's terminal
+// error) and the CLI's stderr are searched for it — never the raw stream,
+// whose tool results and model text carry whatever the repository holds,
+// and whose earlier errors may not be what ended the run. A runtime error
 // carries the process's exit status and scrubbed stderr tail (runEvidence);
 // secrets are the credential values to scrub from it.
 func stageOutcome(h harness.Harness, res runner.Result, runErr error, secrets []string) (envelope.Outcome, string) {
@@ -637,7 +641,11 @@ func stageOutcome(h harness.Harness, res runner.Result, runErr error, secrets []
 			return envelope.OutcomeBudgetExceeded, msg
 		}
 		detail := msg + runEvidence(res, secrets)
-		if limit := brokerLimitMessage(res, msg); limit != "" {
+		var terminal string
+		if r, ok := h.(harness.TerminalErrorReporter); ok {
+			terminal = r.TerminalError(res.Stdout)
+		}
+		if limit := brokerLimitMessage(msg, terminal, res.StderrTail); limit != "" {
 			if !strings.Contains(detail, limit) {
 				detail += " (" + limit + ")"
 			}
@@ -656,14 +664,13 @@ const (
 	limitMessageStops       = "\\\"}\n"
 )
 
-// brokerLimitMessage returns the egress broker's per-pod limit message when
-// a failed run carries it — in the harness's reason, in the stderr tail, or
-// in the stream itself, where the claude CLI relays an API error as an
-// assistant message before its error result — and "" otherwise. The
-// excerpt runs from the prefix to the end of the message, cut at a quote,
-// escape, brace or newline so a JSON-embedded message comes out clean.
-func brokerLimitMessage(res runner.Result, msg string) string {
-	for _, text := range []string{msg, res.StderrTail, string(res.Stdout)} {
+// brokerLimitMessage returns the egress broker's per-pod limit message from
+// the first of texts that carries it — the harness's reason, the CLI's
+// terminal error, the stderr tail — and "" otherwise. The excerpt runs from
+// the prefix to the end of the message, cut at a quote, escape, brace or
+// newline so a JSON-embedded message comes out clean.
+func brokerLimitMessage(texts ...string) string {
+	for _, text := range texts {
 		i := strings.Index(text, provider.LimitMessagePrefix)
 		if i < 0 {
 			continue

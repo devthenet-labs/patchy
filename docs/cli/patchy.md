@@ -31,6 +31,7 @@ Run `patchy can-i` to see your grants.
 * [patchy backfill](patchy_backfill.md)	 - Backfill an integration's pre-existing open alerts into findings
 * [patchy browse](patchy_browse.md)	 - Browse to a resource's page in a browser
 * [patchy can-i](patchy_can-i.md)	 - Show which actions your RBAC allows
+* [patchy check](patchy_check.md)	 - Check an artifact the way patchy will judge it, without a cluster
 * [patchy completion](patchy_completion.md)	 - Generate the autocompletion script for the specified shell
 * [patchy describe](patchy_describe.md)	 - Show the full detail of one resource
 * [patchy dev](patchy_dev.md)	 - Local test harnesses for generic-integration authors

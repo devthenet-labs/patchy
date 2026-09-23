@@ -80,8 +80,19 @@ importing file, and `/` is the only ancestor of `/workspace/repo` the pod does n
 
 ## Trying an image locally
 
-Run the image the way the pod does before pushing it. Docker mounts a `--tmpfs` `noexec` by default, while the pod's
-emptyDirs allow execution (`go test` runs its test binaries from `/tmp`), hence `exec`:
+`patchy check image` runs the checks source-controller runs, and with `--run` the agent's own preflight in a local
+docker container shaped like the pod, including the injected claude CLI:
+
+```sh
+patchy check image ghcr.io/your-org/your-repo-agent:1 --run
+```
+
+It prints one PASS, FAIL or SKIP line per check. The registry checks need the image pushed (a scratch tag or a local
+registry will do); `--run` also works on an image that is only in your local docker. See the
+[CLI tour](../cli.md#checking-an-agent-image) for the flags.
+
+To go further, run the image the way the pod does before pushing it. Docker mounts a `--tmpfs` `noexec` by default,
+while the pod's emptyDirs allow execution (`go test` runs its test binaries from `/tmp`), hence `exec`:
 
 ```sh
 docker run --rm --user 65532:65532 --read-only --network none --cap-drop ALL \

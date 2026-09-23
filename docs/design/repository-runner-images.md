@@ -810,10 +810,11 @@ behalf, with the reasoning stated. The fourth is an amendment recorded the same 
 6. **Two additions for repository owners** (2026-09-23): a published base image,
    `ghcr.io/devthenet-labs/patchy/agent-base`, that already satisfies the sandbox's constraints (glibc, uid 65532,
    caches under writable paths, no reserved ENV or VOLUME), with example Go, Python and Node images under
-   `examples/agent-images/`; and a `patchy image check <ref>` CLI command that runs the resolution checks and a local
-   preflight against an image before it is pushed. Same-account ECR is the recommended registry: application CI pushes
-   to `patchy/app-envs/<app>` through GitHub OIDC, source-controller resolves through an EKS Pod Identity scoped to that
-   prefix, and nodes pull with their existing ECR permissions.
+   `examples/agent-images/`; and a `patchy check image <ref>` CLI command (verb then noun, as the rest of the CLI) that
+   runs the resolution checks, reporting every verdict rather than the first, and with `--run` the agent's preflight in
+   a local docker sandbox shaped like the pod, against an image before it is declared. Same-account ECR is the
+   recommended registry: application CI pushes to `patchy/app-envs/<app>` through GitHub OIDC, source-controller
+   resolves through an EKS Pod Identity scoped to that prefix, and nodes pull with their existing ECR permissions.
 
 ## Open questions
 

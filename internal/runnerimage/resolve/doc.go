@@ -40,4 +40,10 @@
 // A verdict is cached by pinned reference for a bounded time so per-Finding
 // Repositories on the same image do not repeat the checks; the HEAD that
 // resolves a tag is never cached.
+//
+// Resolve and Inspect share one walk over the checks (Report). Resolve
+// stops at the first rejection, which is what source-controller records;
+// Inspect, for the workstation check (patchy check image), judges every
+// check and reports each verdict, bypassing the cache. Report.Err is the
+// verdict Resolve returns, so the two cannot disagree about an image.
 package resolve

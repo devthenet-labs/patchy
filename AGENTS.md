@@ -66,9 +66,11 @@ Ten binaries, one module. "Not monolithic" means separate binaries/deployments w
   caller's own kubeconfig, no channel through any controller. get/describe/review/browse/can-i plus the five
   action verbs. Writes SPEC only, same as status-server; enforcement of the custom verbs for direct API
   writes is the ValidatingAdmissionPolicy in `deploy/kustomize/base/admission-policy.yaml`, NOT the CLI's
-  own SelfSubjectAccessReview (that is ergonomics). Two cluster-free command groups ride along: `dev` (the
-  generic-integration test harness) and `mirror` (vendored chart/artifact mirroring over `internal/mirror`;
-  kubeconfig flags inert, git never touched). Builds for windows too, and ships a `kubectl-patchy`
+  own SelfSubjectAccessReview (that is ergonomics). Three cluster-free commands ride along: `dev` (the
+  generic-integration test harness), `mirror` (vendored chart/artifact mirroring over `internal/mirror`;
+  kubeconfig flags inert, git never touched) and `check image` (source-controller's runner-image checks through
+  `resolve.Inspect`, plus `--run`: `agent-runner preflight` in a local docker shaped like the agent pod; engine in
+  `cmd/patchy/internal/imagecheck`). Builds for windows too, and ships a `kubectl-patchy`
   alias. Ships no container image: it is distributed as its own `patchy-cli` release archive (separate from
   the cluster binaries' `patchy` archive) and as a Homebrew cask in bitwise-media-group/homebrew-tap.
 

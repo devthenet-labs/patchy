@@ -151,6 +151,13 @@ func (r *RepositoryReconciler) resolveRunnerImage(
 	}
 	decl, err := r.declaration(key)
 	if err != nil {
+		if !runnerimage.IsRejection(err) {
+			// The stored archive cannot be read: the artifact, not the
+			// declaration, is at fault. Drop it so the retry downloads it
+			// again instead of re-reading the same bytes forever.
+			r.Artifacts.Delete(key)
+			return nil, err
+		}
 		return nil, rejected("InvalidDeclaration", "", runnerimage.AgentYAMLPath, err)
 	}
 	switch decl.Outcome {

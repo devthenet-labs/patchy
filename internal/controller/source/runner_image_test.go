@@ -526,3 +526,39 @@ func TestRunnerImageUndeclaredTreeReadOnce(t *testing.T) {
 		t.Errorf("tarball downloads = %d, resolver calls = %d; want 1 and 0", gh.tarballCalls, len(fr.calls))
 	}
 }
+
+// TestRunnerImageUnreadableArtifactRefetched: a stored tarball that is not a
+// readable archive (an auth proxy's HTML page served as 200) is the
+// artifact's fault, not the declaration's: it is dropped, so the retry
+// downloads it again instead of re-reading the same bytes forever.
+func TestRunnerImageUnreadableArtifactRefetched(t *testing.T) {
+	gh := &fakeForgeClient{defaultBranch: "main", headSHA: "abc123", tarball: "<html>proxy login</html>"}
+	fr := &fakeResolver{}
+	r, c := imageHarness(t, gh, fr)
+
+	if _, err := reconcileErr(t, r); err == nil || !strings.Contains(err.Error(), "gzip") {
+		t.Fatalf("Reconcile = %v, want the unreadable-archive error for backoff", err)
+	}
+	repo := getRepo(t, c)
+	ready := condition(t, repo, v1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != v1alpha1.ReasonRunnerImageResolveFailed {
+		t.Errorf("Ready = %+v, want False/RunnerImageResolveFailed", ready)
+	}
+	if condition(t, repo, v1alpha1.ConditionStalled) != nil {
+		t.Error("an unreadable artifact must not stall")
+	}
+	if _, ok := r.Artifacts.Get("patchy/" + repoName); ok {
+		t.Error("the unreadable artifact is still stored, so the retry would re-read it")
+	}
+
+	gh.tarball = tarball(t, map[string]string{runnerimage.AgentYAMLPath: yamlDecl})
+	reconcile(t, r)
+	repo = getRepo(t, c)
+	if gh.tarballCalls != 2 {
+		t.Errorf("tarball downloads = %d, want 2 (the retry re-fetches)", gh.tarballCalls)
+	}
+	if repo.Status.RunnerImage == nil || repo.Status.RunnerImage.Image == "" ||
+		!meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionReady) {
+		t.Errorf("status after the re-fetch = %+v, want Ready with the pin", repo.Status)
+	}
+}

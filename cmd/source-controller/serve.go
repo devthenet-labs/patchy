@@ -62,8 +62,9 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 		"PEM public key every declared image must be cosign-signed with (required unless --repository-image-allow-unsigned)")
 	f.Bool("repository-image-allow-unsigned", false,
 		"admit declared images without a signature (explicit opt-out; never the default)")
-	f.String("repository-image-on-reject", source.OnRejectHandoff,
-		"what a rejected declaration does to the finding: handoff (stall for a human) or default (run the default image)")
+	f.String("repository-image-on-reject", source.OnRejectDefault,
+		"what a rejected declaration does to the finding: default (run it on the default image, recording why) "+
+			"or handoff (stall the Repository so the finding waits for a human)")
 	return cmd
 }
 

@@ -23,10 +23,12 @@ import (
 // The onReject policies: what a rejected declaration does to the Repository.
 const (
 	// OnRejectHandoff stalls the Repository, so the gate parks the finding
-	// for a human; the default.
+	// for a human. It is what an empty RunnerImages.OnReject means.
 	OnRejectHandoff = "handoff"
 	// OnRejectDefault records the rejection and leaves the Repository Ready,
-	// so the finding runs on the default image with no human step.
+	// so the finding runs on the default image with no human step. The
+	// --repository-image-on-reject default: a rejected declaration falls
+	// back rather than parking the finding.
 	OnRejectDefault = "default"
 )
 

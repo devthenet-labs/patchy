@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/bitwise-media-group/patchy/internal/cli"
+	"github.com/bitwise-media-group/patchy/internal/controller/source"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/runnerimage"
 )
@@ -87,6 +89,48 @@ func TestRunnerImagesRejectJobReservedEnv(t *testing.T) {
 			var rej *runnerimage.Rejection
 			if !errors.As(err, &rej) || rej.Reason != "ReservedEnv" || !strings.Contains(rej.Message, "`"+env+"`") {
 				t.Errorf("Resolve with ENV %s = %v, want a ReservedEnv rejection naming it", env, err)
+			}
+		})
+	}
+}
+
+// TestRunnerImagesOnReject pins --repository-image-on-reject: unset, a
+// rejected declaration falls back to the default image rather than parking
+// the finding (decision 5 of docs/design/repository-runner-images.md); both
+// named policies pass through, from the flag or from the PATCHY_* variable
+// the chart renders; anything else fails startup.
+func TestRunnerImagesOnReject(t *testing.T) {
+	on := []string{"--repository-images", "--repository-image-registries", "ghcr.io/org/",
+		"--repository-image-allow-unsigned"}
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		env     string
+		want    string
+		wantErr bool
+	}{
+		{name: "unset", want: source.OnRejectDefault},
+		{name: "default", args: []string{"--repository-image-on-reject", "default"}, want: source.OnRejectDefault},
+		{name: "handoff", args: []string{"--repository-image-on-reject", "handoff"}, want: source.OnRejectHandoff},
+		{name: "env handoff", env: "handoff", want: source.OnRejectHandoff},
+		{name: "unknown", args: []string{"--repository-image-on-reject", "park"}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.env != "" {
+				t.Setenv("PATCHY_REPOSITORY_IMAGE_ON_REJECT", tc.env)
+			}
+			ri, err := runnerImages(serveOpts(t, slices.Concat(on, tc.args)...))
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "repository-image-on-reject") {
+					t.Fatalf("runnerImages = %v, %v; want a repository-image-on-reject error", ri, err)
+				}
+				return
+			}
+			if err != nil || ri == nil {
+				t.Fatalf("runnerImages = %v, %v", ri, err)
+			}
+			if ri.OnReject != tc.want {
+				t.Errorf("OnReject = %q, want %q", ri.OnReject, tc.want)
 			}
 		})
 	}

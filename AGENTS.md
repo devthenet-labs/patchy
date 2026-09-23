@@ -25,7 +25,9 @@ Ten binaries, one module. "Not monolithic" means separate binaries/deployments w
   integrations' resolver endpoints.
 - `cmd/source-controller` — `Forge` + `Repository` reconcilers: validates forge credentials, pins
   each Repository's head SHA once, downloads the tarball archive at that SHA (pure HTTP, no git binary), and
-  serves it from the artifact endpoint (`:9790`) agent pods fetch credential-lessly.
+  serves it from the artifact endpoint (`:9790`) agent pods fetch credential-lessly. With
+  `--repository-images` on, it also reads the tree's runner-image declaration out of that stored tarball and
+  pins the image to a digest exactly once beside the SHA (`status.runnerImage`, its only writer).
 - `cmd/context-controller` — runs the enhancer chain (CMDB placeholder + the Cloud Asset Inventory lookup, whose
   config is the `cloudAssetInventory` block on the `google-cloud` Integration, + the AWS and Azure resource-tags
   lookups, whose configs are the `resourceTags` blocks on the `aws` and `azure` Integrations, + the generic HTTP
@@ -186,7 +188,14 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   `end`). `evalresults` is the per-unit results ConfigMap store (transcriptstore's sibling).
 - `ghpush` — replays the agent's changeset through the GitHub Git Data API (blob → tree → commit → ref); the
   only place a write credential is exercised. No git binary anywhere controller-side.
-- `mirror` — the engine behind `patchy mirror` (CLI-only; no controller consumes it): vendored mirroring of
+- `runnerimage` (+ `runnerimage/resolve`) — repository-declared agent runner images. The parent is the pure
+  core (declaration files out of a tar.gz stream, `.patchy/agent.yaml` and the devcontainer.json fallback with
+  precedence, reference grammar and strict digests, the allowlist `Policy`, PATH/ENV/VOLUME checks, the
+  `Resolver` seam and `Rejection`); `resolve` is the go-containerregistry implementation source-controller
+  wires in (one HEAD then digest-only calls, index enumeration, host-selected keychain, in-process cosign
+  verification in bundle and legacy forms, a digest-keyed verdict cache). No Kubernetes types in either.
+- `mirror` — the engine behind `patchy mirror` (CLI-only, except `imageref`, which `runnerimage` also builds
+  on; no controller consumes the rest): vendored mirroring of
   upstream helm charts and OCI artifacts into one or more platform registries (mirror.yaml lists them; every
   entry publishes to all, lock files record targets per registry name, and each registry may carry its own
   wholesale `signing` override — `sync --registry` restricts a run). One concern per subpackage: `spec` (the

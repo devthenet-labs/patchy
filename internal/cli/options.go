@@ -112,3 +112,6 @@ func (o *Options) StringList(key string) []string {
 	}
 	return out
 }
+
+// Bool reads an extra controller-specific boolean value.
+func (o *Options) Bool(key string) bool { return o.viper.GetBool(key) }

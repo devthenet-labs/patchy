@@ -178,12 +178,13 @@ human has read it.
 
 `RepositoryReconciler.Reconcile` (`internal/controller/source/repository_controller.go`) gains one block after the
 artifact fetch, guarded exactly like the SHA: `if r.Images != nil && repo.Status.RunnerImage == nil`. The status write
-is split in two so that resolution never costs a re-download: the first update persists `ResolvedSHA`, `Forge` and
-`Artifact` with `Ready=False` / `RunnerImageResolving`; the second, after resolution, writes `RunnerImage` and
-`Ready=True`. A restart between the two finds the artifact on disk and resumes at resolution; a restart after the second
-carries the pointer through untouched, so a moved tag can never change the environment between investigation and
-remediation of one finding. `RunnerImage` has one writer, and `stall(reason)` carries the artifact through so a rejected
-Repository still has a tree to run on.
+is split in two so that a transient registry failure never costs a re-download: the first update persists `ResolvedSHA`,
+`Forge` and `Artifact` with `Ready=False` / `RunnerImageResolving`; the second, after resolution, writes `RunnerImage`
+and `Ready=True`. The artifact store indexes tarballs in memory only (they are reproducible), so a restart between the
+two re-downloads the tarball at the persisted `ResolvedSHA` (the same tree) and resumes at resolution; a restart after
+the second carries the pointer through untouched, so a moved tag can never change the environment between investigation
+and remediation of one finding. `RunnerImage` has one writer, and `stall(reason)` carries the artifact through so a
+rejected Repository still has a tree to run on.
 
 Steps, in a new pure package `internal/runnerimage` plus an `ocireg`-backed resolver:
 
@@ -199,15 +200,19 @@ Steps, in a new pure package `internal/runnerimage` plus an `ocireg`-backed reso
    the HEAD is skipped. Either way the resolver builds `<repo>@sha256:<digest>` and passes only that reference to every
    subsequent call (`ocireg` gains `ConfigFile(ctx, ref)` beside `Manifest` and `Platforms`), so nothing after this step
    can observe a tag move. The client authenticates with a host-selected keychain: the ECR credential helper (IRSA or
-   Pod Identity, the path context-controller already uses) for `*.amazonaws.com`, `google.Keychain` for Artifact
-   Registry, the mounted dockerconfigjson for everything else, anonymous last. A 401 or 403 here is deterministic
-   (`RunnerImageRejected`: "registry denied access to `<ref>`; configure pullSecret or a cloud credential"), never retry
-   backoff.
+   Pod Identity, the path context-controller already uses) for `*.amazonaws.com`, Application Default Credentials for
+   Artifact Registry (cached only on success: ggcr's `google.Keychain` keeps anonymous for the process lifetime when the
+   first lookup fails), the mounted dockerconfigjson for everything else, anonymous last. A cloud credential failure is
+   transient backoff, never anonymous. A 401 or 403 here is deterministic (`RunnerImageRejected`: "registry denied
+   access to `<ref>`; configure pullSecret or a cloud credential"), never retry backoff.
 4. Enumerate what would actually run. If the resolved object is an image index, the `linux/amd64` and `linux/arm64`
    children are enumerated by their own digests and each is checked in step 5; the image is rejected unless every child
    passes with an identical sanitized PATH, and the recorded digest is the index digest (what cosign signs and the
-   kubelet pulls). If it is a single-platform manifest, os/arch are read from its config and must be linux with one of
-   those two architectures.
+   kubelet pulls). Children are judged the way containerd picks one (`containerd/platforms` normalization): every
+   spelling of those platforms (`x86_64`, `aarch64`, upper case, an empty OS) is checked, and an index that leaves a
+   node an unchecked fallback (`linux/386` with no `linux/amd64` entry, `linux/arm/*` with no `linux/arm64` entry, an
+   entry with no platform unless both architectures have one, a nested index) is rejected. If it is a single-platform
+   manifest, os/arch are read from its config and must be linux with one of those two architectures.
 5. Per child: `crane.Manifest` sums compressed layers against `maxBytes`; `ConfigFile` fetches the config, whose `Env`
    is rejected if it names anything in `reservedEnv` union `provider.GatewayEnvNames`, anything with the prefix
    `PATCHY_`, `ANTHROPIC_`, `CLAUDE_` or `CLAUDE_CODE_`, or `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY` in
@@ -460,7 +465,8 @@ evaluation-controller page says so.
 - **Kill switch flipped mid-finding**: the next Job uses the default image, annotated so; the verdict-hold decision for
   an attempt already launched is unchanged because it reads the Investigation's stamp; documented as an emergency
   control.
-- **source-controller restart**: artifact re-used from disk, manifest not re-read once pinned, image unchanged.
+- **source-controller restart**: artifact re-downloaded at the pinned SHA (the store's tarball index is in memory),
+  manifest not re-read once pinned, image unchanged.
 
 `onReject: handoff | default` (default `handoff`) ships together with a sticky tracking-issue comment
 (`<!-- patchy:runner-image -->`, the existing `findSticky` mechanism in `internal/controller/integration/project.go`,

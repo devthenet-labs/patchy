@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
+	"time"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -44,8 +46,26 @@ type RepositoryReconciler struct {
 	// ClientFor returns the forge API client for a resolution; nil uses the
 	// Forges store (tests substitute a fake).
 	ClientFor func(ctx context.Context, res *forge.Resolved) (forgeClient, error)
+	// Images resolves the repository-declared runner image beside the SHA,
+	// exactly once per Repository; nil disables the feature (the kill
+	// switch) and leaves the Job shape untouched.
+	Images *RunnerImages
+	// Now is the clock seam; nil means time.Now.
+	Now func() time.Time
 	// Log receives reconcile diagnostics; nil discards.
 	Log *slog.Logger
+
+	// undeclared maps an artifact key to the digest of a stored tree already
+	// read and found to declare no runner image (see knownUndeclared).
+	undeclaredMu sync.Mutex
+	undeclared   map[string]string
+}
+
+func (r *RepositoryReconciler) now() time.Time {
+	if r.Now == nil {
+		return time.Now()
+	}
+	return r.Now()
 }
 
 // clientFor resolves the API-client seam.
@@ -63,12 +83,14 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if kerrors.IsNotFound(err) {
 			// The object is gone; the artifact is local state keyed by name.
 			r.Artifacts.Delete(req.String())
+			r.forgetDeclaration(req.String())
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
 	if !repo.DeletionTimestamp.IsZero() {
 		r.Artifacts.Delete(req.String())
+		r.forgetDeclaration(req.String())
 		return ctrl.Result{}, nil
 	}
 
@@ -98,24 +120,33 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	info, ok := r.Artifacts.Get(req.String())
+	fetched := false
 	if !ok || repo.Status.Artifact == nil || repo.Status.Artifact.Digest != info.Digest {
 		if info, err = r.fetch(ctx, gh, res, sha, req.String()); err != nil {
 			var tooBig *tooLargeError
 			if errors.As(err, &tooBig) {
-				return ctrl.Result{}, r.stall(ctx, &repo, sha, tooBig)
+				return ctrl.Result{}, r.stall(ctx, &repo, sha, "ArtifactTooLarge", tooBig)
 			}
 			return ctrl.Result{}, r.fail(ctx, &repo, "FetchFailed", err)
 		}
+		fetched = true
 	}
 
-	now := metav1.Now()
+	fetchedAt := r.fetchedAt(&repo, fetched)
 	repo.Status.ResolvedSHA = sha
 	repo.Status.Forge = &v1alpha1.LocalObjectReference{Name: res.Forge.Name}
 	repo.Status.Artifact = &v1alpha1.Artifact{
 		URL:           info.URL,
 		Digest:        info.Digest,
 		SizeBytes:     info.Size,
-		LastFetchedAt: &now,
+		LastFetchedAt: &fetchedAt,
+	}
+	// Pin the runner image exactly once, beside the SHA, with the artifact
+	// already in hand so resolution never costs a re-download.
+	if r.Images != nil {
+		if result, done, err := r.pinRunnerImage(ctx, &repo, sha, req.String()); done {
+			return result, err
+		}
 	}
 	meta.SetStatusCondition(&repo.Status.Conditions, metav1.Condition{
 		Type:               v1alpha1.ConditionReady,
@@ -131,11 +162,27 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		return ctrl.Result{}, err
 	}
-	r.log().LogAttrs(ctx, slog.LevelInfo, "repository artifact ready",
+	attrs := []slog.Attr{
 		slog.String("repository", req.String()),
 		slog.String("sha", sha),
-		slog.Int64("bytes", info.Size))
+		slog.Int64("bytes", info.Size),
+	}
+	if ri := repo.Status.RunnerImage; ri != nil {
+		attrs = append(attrs, slog.String("runner_image", ri.Image), slog.String("runner_image_manifest", ri.Manifest))
+	}
+	r.log().LogAttrs(ctx, slog.LevelInfo, "repository artifact ready", attrs...)
 	return ctrl.Result{}, nil
+}
+
+// fetchedAt is the artifact's LastFetchedAt: now when this pass downloaded
+// it, otherwise what the status already records. Re-stamping it on every
+// pass would make each status write a real change, whose watch event
+// re-queues the Repository.
+func (r *RepositoryReconciler) fetchedAt(repo *v1alpha1.Repository, fetched bool) metav1.Time {
+	if !fetched && repo.Status.Artifact != nil && repo.Status.Artifact.LastFetchedAt != nil {
+		return *repo.Status.Artifact.LastFetchedAt
+	}
+	return metav1.NewTime(r.now())
 }
 
 // tooLargeError marks a tarball over the cap — a stall, not a retry.
@@ -185,7 +232,7 @@ func (r *RepositoryReconciler) fail(ctx context.Context, repo *v1alpha1.Reposito
 		Type:               v1alpha1.ConditionReady,
 		Status:             metav1.ConditionFalse,
 		Reason:             reason,
-		Message:            cause.Error(),
+		Message:            truncate(cause.Error()),
 		ObservedGeneration: repo.Generation,
 	})
 	repo.Status.ObservedGeneration = repo.Generation
@@ -202,21 +249,25 @@ func (r *RepositoryReconciler) fail(ctx context.Context, repo *v1alpha1.Reposito
 	return cause
 }
 
-// stall records the Stalled condition for an over-cap artifact; only a spec
-// change re-queues.
-func (r *RepositoryReconciler) stall(ctx context.Context, repo *v1alpha1.Repository, sha string, cause error) error {
+// stall records the Stalled condition with the reason (an over-cap artifact,
+// a rejected runner image); only a spec change re-queues. Whatever the
+// caller has put on the status is carried through, so a rejected runner
+// image keeps its artifact and a revived finding still has a tree to run on.
+func (r *RepositoryReconciler) stall(
+	ctx context.Context, repo *v1alpha1.Repository, sha, reason string, cause error,
+) error {
 	repo.Status.ResolvedSHA = sha
 	meta.SetStatusCondition(&repo.Status.Conditions, metav1.Condition{
 		Type:               v1alpha1.ConditionStalled,
 		Status:             metav1.ConditionTrue,
-		Reason:             "ArtifactTooLarge",
-		Message:            cause.Error(),
+		Reason:             reason,
+		Message:            truncate(cause.Error()),
 		ObservedGeneration: repo.Generation,
 	})
 	meta.SetStatusCondition(&repo.Status.Conditions, metav1.Condition{
 		Type:               v1alpha1.ConditionReady,
 		Status:             metav1.ConditionFalse,
-		Reason:             "ArtifactTooLarge",
+		Reason:             reason,
 		ObservedGeneration: repo.Generation,
 	})
 	repo.Status.ObservedGeneration = repo.Generation

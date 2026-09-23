@@ -4,7 +4,9 @@
 package remediation
 
 import (
+	"encoding/base64"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -21,6 +23,11 @@ const DefaultChangesetMaxEntries = 500
 // maxChangesetPathBytes bounds one path, PATH_MAX on Linux: far past any
 // real repository's, well short of what the forge's API would choke on.
 const maxChangesetPathBytes = 4096
+
+// fileModes are the git modes a changeset may carry (envelope.FileChange
+// Mode): regular, executable and symlink — all the pod's git diff emits,
+// and all a blob tree entry can be at the forge.
+var fileModes = []string{"100644", "100755", "120000"}
 
 // ciDirs are the directories GitHub runs as CI with the repository's
 // secrets on any branch pushed to it, before a human has reviewed anything.
@@ -45,11 +52,15 @@ type changesetRules struct {
 // so another base would push the branch onto a tree nobody reviewed — a
 // fork's head carrying its own workflows, say — and a changeset diffed
 // against one tree but pushed onto another silently reverts whatever
-// differs. Every changeset is also held to the entry cap and to paths git
+// differs. Every changeset is also held to the entry cap, to paths git
 // itself could have produced (relative, no empty, "." or ".." component,
 // nothing inside .git, valid UTF-8 without control characters, bounded
-// length) — none of which a legitimate run ever trips, since the pod builds
-// the changeset from a git diff. A run on a repository-declared image is
+// length), and to upserts the forge can take (a regular, executable or
+// symlink mode, base64 content) — the last two are otherwise refused by the
+// forge on every retry, after a write token is minted and, for a mode,
+// after every blob is created, while the run holds its slot. None of these
+// is tripped by a legitimate run, since the pod builds the changeset from a
+// git diff. A run on a repository-declared image is
 // also refused any change to CI definitions (.github/workflows, .github/
 // actions, or .github itself replaced): a patchy branch in the same
 // repository triggers CI with its secrets before a human has looked, and
@@ -78,6 +89,9 @@ func validateChangeset(cs *envelope.Changeset, rules changesetRules) error {
 	}
 	for _, up := range cs.Upserts {
 		if err := check(up.Path); err != nil {
+			return err
+		}
+		if err := checkChangesetUpsert(up); err != nil {
 			return err
 		}
 	}
@@ -114,6 +128,19 @@ func checkChangesetPath(p string) error {
 		case strings.EqualFold(seg, ".git"):
 			return fmt.Errorf("changeset path %q is inside .git", p)
 		}
+	}
+	return nil
+}
+
+// checkChangesetUpsert refuses an upsert the forge would refuse on every
+// attempt: a mode no blob can have, or content that does not decode.
+func checkChangesetUpsert(up envelope.FileChange) error {
+	if !slices.Contains(fileModes, up.Mode) {
+		return fmt.Errorf("changeset path %q has mode %.16q, not one of %s",
+			up.Path, up.Mode, strings.Join(fileModes, ", "))
+	}
+	if _, err := base64.StdEncoding.DecodeString(up.ContentB64); err != nil {
+		return fmt.Errorf("changeset path %q content is not base64: %w", up.Path, err)
 	}
 	return nil
 }

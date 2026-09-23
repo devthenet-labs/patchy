@@ -110,6 +110,47 @@ func TestValidateChangesetBase(t *testing.T) {
 	}
 }
 
+// TestValidateChangesetUpserts: an upsert must carry a mode a blob can
+// have and content that decodes, on any run.
+func TestValidateChangesetUpserts(t *testing.T) {
+	tests := []struct {
+		name    string
+		fc      envelope.FileChange
+		wantErr string
+	}{
+		{"regular", envelope.FileChange{Path: "a", Mode: "100644", ContentB64: "eA=="}, ""},
+		{"executable", envelope.FileChange{Path: "a", Mode: "100755", ContentB64: "IyEvYmluL3No"}, ""},
+		{"symlink", envelope.FileChange{Path: "a", Mode: "120000", ContentB64: "Yg=="}, ""},
+		{"empty file", envelope.FileChange{Path: "a", Mode: "100644", ContentB64: ""}, ""},
+		{"unknown mode", envelope.FileChange{Path: "a", Mode: "999999", ContentB64: "eA=="}, `has mode "999999"`},
+		{"tree mode", envelope.FileChange{Path: "a", Mode: "040000", ContentB64: "eA=="}, `has mode "040000"`},
+		{"gitlink mode", envelope.FileChange{Path: "a", Mode: "160000", ContentB64: "eA=="}, `has mode "160000"`},
+		{"no mode", envelope.FileChange{Path: "a", Mode: "", ContentB64: "eA=="}, `has mode ""`},
+		{"not base64", envelope.FileChange{Path: "a", Mode: "100644", ContentB64: "not base64!"},
+			`"a" content is not base64`},
+		{"unpadded", envelope.FileChange{Path: "a", Mode: "100644", ContentB64: "eA"}, `"a" content is not base64`},
+		{"URL alphabet", envelope.FileChange{Path: "a", Mode: "100644", ContentB64: "-_-_"},
+			`"a" content is not base64`},
+	}
+	for _, tt := range tests {
+		for image, repoImg := range map[string]bool{"default": false, "repository": true} {
+			t.Run(tt.name+"/"+image, func(t *testing.T) {
+				cs := &envelope.Changeset{BaseSHA: "abc123", Upserts: []envelope.FileChange{tt.fc}}
+				err := validateChangeset(cs, changesetRules{Base: "abc123", MaxEntries: 3, RepositoryImage: repoImg})
+				if tt.wantErr == "" {
+					if err != nil {
+						t.Errorf("validateChangeset = %v, want nil", err)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("validateChangeset = %v, want an error containing %q", err, tt.wantErr)
+				}
+			})
+		}
+	}
+}
+
 // genPath builds a slash-joined path from segments drawn over an alphabet
 // that includes the separator's troublemakers ('.', upper case, space), so
 // the generator reaches "..", ".git", ".GitHub" and empty components.

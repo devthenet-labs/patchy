@@ -336,3 +336,33 @@ func TestRemediationChangesetForgedBase(t *testing.T) {
 		})
 	}
 }
+
+// TestRemediationChangesetUnpushable: a mode the envelope does not allow,
+// or content that is not base64, fails at the forge on every retry — after
+// a write token is minted and, for the mode, after every blob is created.
+// Both are refused as changeset_rejected with zero forge calls instead of
+// being retried as a transient push error.
+func TestRemediationChangesetUnpushable(t *testing.T) {
+	tests := []struct {
+		name string
+		fc   envelope.FileChange
+		want string
+	}{
+		{"unknown mode", envelope.FileChange{Path: "b.go", Mode: "999999", ContentB64: "eA=="},
+			`"b.go" has mode "999999"`},
+		{"tree mode", envelope.FileChange{Path: "b", Mode: "040000", ContentB64: "eA=="},
+			`"b" has mode "040000"`},
+		{"undecodable content", envelope.FileChange{Path: "b.go", Mode: "100644", ContentB64: "not base64!"},
+			`"b.go" content is not base64`},
+	}
+	for _, tt := range tests {
+		for _, source := range []string{v1alpha1.RunnerImageSourceRepository, v1alpha1.RunnerImageSourceDefault} {
+			t.Run(tt.name+"/"+source, func(t *testing.T) {
+				fw, rem, f := rejectedOnce(t, withImage(acceptedImage(), source), func(cs *envelope.Changeset) {
+					cs.Upserts = append(cs.Upserts, tt.fc)
+				})
+				wantRejected(t, fw, rem, f, tt.want)
+			})
+		}
+	}
+}

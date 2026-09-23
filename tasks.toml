@@ -78,10 +78,12 @@ run = "./hack/envtest.sh"
 # from what was on disk before. The baseline is a `git stash create` snapshot
 # of the working tree (HEAD when clean), not HEAD itself, so uncommitted API
 # edits whose manifests were already regenerated do not count as drift.
+# `|| true`: git stash create can exit non-zero on a clean tree, and under
+# errexit that killed the step before codegen ran on already-tidy branches.
 [codegen-check]
 description = "fail when deepcopy/CRD manifests are stale against api/v1alpha1"
 dir = "{{cwd}}"
-run = 'snap=$(git stash create); mise run codegen && git diff --exit-code "${snap:-HEAD}" -- api deploy charts'
+run = 'snap=$(git stash create || true); mise run codegen && git diff --exit-code "${snap:-HEAD}" -- api deploy charts'
 
 # Status page SPA: built into internal/web/ui/dist and embedded into the
 # status-server binary via -tags withui (hack/build.sh). dist/ is git-ignored

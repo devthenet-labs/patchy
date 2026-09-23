@@ -15,4 +15,11 @@
 // and scheduling priority, and the verdict routing
 // (Queued / AwaitingApproval / Dismissed / HandedOff / Failed, with retry
 // reverts to Enhanced while attempts remain).
+//
+// With --repository-images on, a launch runs the Repository's pinned
+// repository-declared image when internal/runnerguard allows it and records
+// the image the Job client says ran; an ignore verdict from such a run is
+// held in HandedOff rather than dismissed, keyed on that launch-time stamp.
+// A Repository stalled on a rejected declaration parks its finding with
+// source-controller's message.
 package investigation

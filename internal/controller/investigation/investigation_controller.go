@@ -27,6 +27,7 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/envelope"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/priority"
+	"github.com/bitwise-media-group/patchy/internal/runnerguard"
 	"github.com/bitwise-media-group/patchy/internal/schedule"
 	"github.com/bitwise-media-group/patchy/internal/stats"
 	"github.com/bitwise-media-group/patchy/internal/templates"
@@ -47,8 +48,8 @@ const schedulerRequest = "\x00scheduler"
 const defaultCalibrationTimeout = 5 * time.Second
 
 // Runner is the slice of the jobs client this controller needs. Create
-// also returns the runner image the Job actually runs; the launch records
-// it once it copies the Repository's pin under the repository-images flag.
+// also returns the runner image the Job actually runs, which the launch
+// records beside the JobRef and verdict routing later reads.
 type Runner interface {
 	Create(ctx context.Context, spec jobs.Spec) (string, v1alpha1.RunnerImageRef, error)
 	Result(ctx context.Context, jobName string) (jobs.RunOutput, error)
@@ -78,6 +79,10 @@ type InvestigationReconciler struct {
 	// them so its pod runs the harness its runner image was built for.
 	InvestigateHarness string
 	InvestigateModel   string
+	// Images decides whether a launch runs the Repository's pinned
+	// repository-declared image (the --repository-images kill switch and
+	// the sandbox breaker); the zero value never does.
+	Images runnerguard.Guard
 	// Now is the clock seam; nil means time.Now.
 	Now func() time.Time
 	// calibrationTimeout is the deadline seam for the advisory rollup read;
@@ -213,7 +218,7 @@ func (r *InvestigationReconciler) launch(ctx context.Context, inv *v1alpha1.Inve
 	if fnd.Spec.Repository != nil {
 		repoName = fnd.Spec.Repository.Name
 	}
-	jobName, _, err := r.Runner.Create(ctx, jobs.Spec{
+	spec := jobs.Spec{
 		Repo:           repoName,
 		Attempt:        int(inv.Spec.Attempt),
 		Phase:          "investigate",
@@ -227,17 +232,25 @@ func (r *InvestigationReconciler) launch(ctx context.Context, inv *v1alpha1.Inve
 		ArtifactURL:    repo.Status.Artifact.URL,
 		ArtifactDigest: repo.Status.Artifact.Digest,
 		Calibration:    r.calibration(ctx, repoName),
-	})
+	}
+	if skipped := r.Images.Pin(&spec, &repo, &fnd); skipped != "" {
+		r.log().LogAttrs(ctx, slog.LevelInfo, "not running the repository-declared runner image",
+			slog.String("investigation", inv.Name), slog.String("reason", skipped))
+	}
+	jobName, image, err := r.Runner.Create(ctx, spec)
 	if err != nil {
 		return fmt.Errorf("launch investigation job: %w", err)
 	}
 
+	// The image is recorded from what Create returned, never from the
+	// Repository's pin: it is the stamp verdict routing keys on.
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var cur v1alpha1.Investigation
 		if err := r.Get(ctx, client.ObjectKeyFromObject(inv), &cur); err != nil {
 			return client.IgnoreNotFound(err)
 		}
 		cur.Status.JobRef = &v1alpha1.JobReference{Namespace: jobNamespace(jobName), Name: jobName}
+		cur.Status.RunnerImage = &image
 		return r.Status().Update(ctx, &cur)
 	})
 }
@@ -261,8 +274,20 @@ func (r *InvestigationReconciler) collect(ctx context.Context, inv *v1alpha1.Inv
 		}
 		return ctrl.Result{}, err
 	}
+	// A repository-image Job's prepare init refused to hand over: there is
+	// no log to read, and the cluster cannot sandbox a repository image.
+	if runnerguard.SandboxRefused(st) {
+		return ctrl.Result{}, r.sandboxRefused(ctx, inv)
+	}
 	if !st.Done {
-		return ctrl.Result{}, nil // the Job watch re-queues us on completion
+		// A default-image Job waits for the Job watch, as it always has; a
+		// repository-image one is looked at again while its pod may be stuck
+		// pulling, which never mutates the Job.
+		requeue, pullFailure := runnerguard.Pending(st, r.now())
+		if pullFailure != "" {
+			return ctrl.Result{}, r.pullFailed(ctx, inv, pullFailure)
+		}
+		return ctrl.Result{RequeueAfter: requeue}, nil
 	}
 
 	out, err := r.Runner.Result(ctx, inv.Status.JobRef.Name)
@@ -279,6 +304,45 @@ func (r *InvestigationReconciler) collect(ctx context.Context, inv *v1alpha1.Inv
 		log.FromContext(ctx).Error(err, "persist transcript", "investigation", inv.Name)
 	}
 	return ctrl.Result{}, r.apply(ctx, inv, out.Events, ref)
+}
+
+// sandboxRefused ends a run whose sandbox probe found NetworkPolicy
+// unenforced: the breaker trips, so every later launch in this process runs
+// the default image, and the finding goes back for another attempt without
+// this one counting against MaxAttempts — the run is marked
+// SandboxRefused, which fail() subtracts, and the next one runs on the
+// default image, so the retry cannot loop.
+func (r *InvestigationReconciler) sandboxRefused(ctx context.Context, inv *v1alpha1.Investigation) error {
+	r.Images.Breaker.Trip(ctx, inv.Status.JobRef.Name, inv.Spec.FindingRef.Name)
+	var fnd v1alpha1.Finding
+	key := types.NamespacedName{Namespace: inv.Namespace, Name: inv.Spec.FindingRef.Name}
+	if err := r.Get(ctx, key, &fnd); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	result := &envelope.Investigation{Stage: agentresult.FailedStage(nil, "aborted", runnerguard.SandboxReason)}
+	if err := r.stampChild(ctx, inv, result, v1alpha1.RunFailed, nil, true); err != nil {
+		return err
+	}
+	return r.release(ctx, &fnd, v1alpha1.PhaseEnhanced, runnerguard.SandboxReason)
+}
+
+// pullFailed ends a run whose repository-declared image cannot be pulled
+// and never will be, then deletes the Job so its pod stops retrying the
+// registry until the deadline.
+func (r *InvestigationReconciler) pullFailed(ctx context.Context, inv *v1alpha1.Investigation, detail string) error {
+	var fnd v1alpha1.Finding
+	key := types.NamespacedName{Namespace: inv.Namespace, Name: inv.Spec.FindingRef.Name}
+	if err := r.Get(ctx, key, &fnd); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if err := r.fail(ctx, inv, &fnd, "aborted", detail, nil, nil); err != nil {
+		return err
+	}
+	if err := r.Runner.Delete(ctx, inv.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
+		r.log().LogAttrs(ctx, slog.LevelWarn, "delete agent job after pull failure",
+			slog.String("job", inv.Status.JobRef.Name), slog.Any("error", err))
+	}
+	return nil
 }
 
 // invGVK identifies the owner reference a transcript carries.
@@ -326,12 +390,12 @@ func (r *InvestigationReconciler) apply(
 	}
 
 	// Stamp the child (single writer: this controller).
-	if err := r.stampChild(ctx, inv, result, v1alpha1.RunComplete, transcript); err != nil {
+	if err := r.stampChild(ctx, inv, result, v1alpha1.RunComplete, transcript, false); err != nil {
 		return err
 	}
 
-	// Route the finding.
-	to, priorityLevel, holds := r.route(&fnd, result)
+	// Route the finding, on the run's own launch-time image stamp.
+	to, priorityLevel, holds := r.route(&fnd, inv, result)
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var cur v1alpha1.Finding
 		if err := r.Get(ctx, key, &cur); err != nil {
@@ -349,6 +413,7 @@ func (r *InvestigationReconciler) apply(
 			AwaitApproval:  len(holds) > 0,
 			HoldReasons:    holds,
 			Estimate:       estimateOf(result),
+			RunnerImage:    inv.Status.RunnerImage.DeepCopy(),
 			CompletedAt:    timePtr(r.now()),
 		}
 		cur.Status.Investigation = summary
@@ -373,12 +438,23 @@ func (r *InvestigationReconciler) apply(
 // the display priority level, and every reason the remediation must wait for
 // a human. A non-empty reason set is exactly what sends the finding to
 // AwaitingApproval.
+//
+// An ignore verdict from a run on a repository-declared image is held for a
+// human (HandedOff) instead of dismissing the finding: that image controls
+// the process the verdict came out of, and dismissal writes back to the
+// scanner of record with no human gate. The decision reads the
+// Investigation's own launch-time stamp — what the Job client said the pod
+// ran — never controller configuration now, so a kill-switch flip between
+// launch and collect cannot change it.
 func (r *InvestigationReconciler) route(
-	fnd *v1alpha1.Finding, result *envelope.Investigation,
+	fnd *v1alpha1.Finding, inv *v1alpha1.Investigation, result *envelope.Investigation,
 ) (v1alpha1.Phase, v1alpha1.Level, []v1alpha1.HoldReason) {
 	level := v1alpha1.Level(result.Priority)
 	switch v1alpha1.Recommendation(result.Recommendation) {
 	case v1alpha1.RecommendationIgnore:
+		if ranRepositoryImage(inv) {
+			return v1alpha1.PhaseHandedOff, level, nil
+		}
 		return v1alpha1.PhaseDismissed, level, nil
 	case v1alpha1.RecommendationManual:
 		return v1alpha1.PhaseHandedOff, level, nil
@@ -399,6 +475,14 @@ func (r *InvestigationReconciler) route(
 	default:
 		return v1alpha1.PhaseHandedOff, level, nil
 	}
+}
+
+// ranRepositoryImage reports whether the Investigation's launch stamp says
+// its pod ran a repository-declared image. A run launched before the stamp
+// existed ran the default image.
+func ranRepositoryImage(inv *v1alpha1.Investigation) bool {
+	ri := inv.Status.RunnerImage
+	return ri != nil && ri.Source == v1alpha1.RunnerImageSourceRepository
 }
 
 // holdReasons maps the runner's hold vocabulary onto the API's. The runner
@@ -503,12 +587,19 @@ func estimateOf(result *envelope.Investigation) *v1alpha1.AgentEstimate {
 // far enough to emit one; its accounting is preserved rather than discarded,
 // so a failed run still lands its harness, model, turns, tokens and cost on
 // the child and in the rollups. Nil for a run that produced no event at all.
+// Attempts the sandbox probe refused are not counted toward MaxAttempts.
 func (r *InvestigationReconciler) fail(
 	ctx context.Context, inv *v1alpha1.Investigation, fnd *v1alpha1.Finding,
 	outcome, detail string, reported *envelope.Stage, transcript *v1alpha1.TranscriptRef,
 ) error {
+	// Counted before the child is stamped: an error here leaves it Running
+	// for the next reconcile instead of Failed with the finding unreleased.
+	consumed, err := r.consumedAttempts(ctx, inv)
+	if err != nil {
+		return err
+	}
 	result := &envelope.Investigation{Stage: agentresult.FailedStage(reported, outcome, detail)}
-	if err := r.stampChild(ctx, inv, result, v1alpha1.RunFailed, transcript); err != nil {
+	if err := r.stampChild(ctx, inv, result, v1alpha1.RunFailed, transcript, false); err != nil {
 		return err
 	}
 	maxAttempts := r.MaxAttempts
@@ -516,9 +607,35 @@ func (r *InvestigationReconciler) fail(
 		maxAttempts = 2
 	}
 	to := v1alpha1.PhaseEnhanced
-	if inv.Spec.Attempt >= maxAttempts {
+	if consumed >= maxAttempts {
 		to = v1alpha1.PhaseFailed
 	}
+	return r.release(ctx, fnd, to, outcome+": "+detail)
+}
+
+// consumedAttempts is inv's attempt number less the finding's earlier
+// attempts the sandbox probe refused: their agent never ran.
+func (r *InvestigationReconciler) consumedAttempts(ctx context.Context, inv *v1alpha1.Investigation) (int32, error) {
+	var siblings v1alpha1.InvestigationList
+	if err := r.List(ctx, &siblings, client.InNamespace(inv.Namespace),
+		client.MatchingLabels{v1alpha1.LabelFinding: inv.Spec.FindingRef.Name}); err != nil {
+		return 0, fmt.Errorf("count refused attempts: %w", err)
+	}
+	consumed := inv.Spec.Attempt
+	for i := range siblings.Items {
+		sib := &siblings.Items[i]
+		if sib.Spec.FindingRef.UID == inv.Spec.FindingRef.UID && sib.Spec.Attempt < inv.Spec.Attempt &&
+			runnerguard.Refused(sib.Status.Conditions) {
+			consumed--
+		}
+	}
+	return consumed, nil
+}
+
+// release moves a finding whose run failed out of Investigating to phase
+// to, recording why.
+func (r *InvestigationReconciler) release(ctx context.Context, fnd *v1alpha1.Finding, to v1alpha1.Phase,
+	reason string) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var cur v1alpha1.Finding
 		if err := r.Get(ctx, client.ObjectKeyFromObject(fnd), &cur); err != nil {
@@ -531,15 +648,16 @@ func (r *InvestigationReconciler) fail(
 			return err
 		}
 		cur.Status.ActiveRun = nil
-		cur.Status.LastFailureReason = agentresult.TruncateDetail(outcome + ": " + detail)
+		cur.Status.LastFailureReason = agentresult.TruncateDetail(reason)
 		return r.Status().Update(ctx, &cur)
 	})
 }
 
-// stampChild writes the run result onto the Investigation.
+// stampChild writes the run result onto the Investigation; refused also
+// marks it SandboxRefused.
 func (r *InvestigationReconciler) stampChild(
 	ctx context.Context, inv *v1alpha1.Investigation, result *envelope.Investigation,
-	phase v1alpha1.RunPhase, transcript *v1alpha1.TranscriptRef,
+	phase v1alpha1.RunPhase, transcript *v1alpha1.TranscriptRef, refused bool,
 ) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var cur v1alpha1.Investigation
@@ -578,6 +696,9 @@ func (r *InvestigationReconciler) stampChild(
 			Message:            result.Detail,
 			ObservedGeneration: cur.Generation,
 		})
+		if refused {
+			meta.SetStatusCondition(&cur.Status.Conditions, runnerguard.RefusedCondition(cur.Generation))
+		}
 		return r.Status().Update(ctx, &cur)
 	})
 }
@@ -657,4 +778,11 @@ func (r *InvestigationReconciler) now() time.Time {
 		return time.Now()
 	}
 	return r.Now()
+}
+
+func (r *InvestigationReconciler) log() *slog.Logger {
+	if r.Log == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return r.Log
 }

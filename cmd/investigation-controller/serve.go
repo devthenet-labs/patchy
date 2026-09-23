@@ -20,6 +20,7 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/kube"
 	"github.com/bitwise-media-group/patchy/internal/runnercfg"
+	"github.com/bitwise-media-group/patchy/internal/runnerguard"
 	"github.com/bitwise-media-group/patchy/internal/schedule"
 	"github.com/bitwise-media-group/patchy/internal/telemetry"
 	"github.com/bitwise-media-group/patchy/internal/version"
@@ -48,6 +49,7 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.String("agent-namespace", "patchy-agents", "namespace the agent Jobs run in")
 	f.String("agent-service-account", "patchy-agent", "service account for the agent Jobs")
 	runnercfg.RegisterFlags(f)
+	runnercfg.RegisterRepositoryImageFlags(f)
 	f.Duration("job-deadline", time.Hour, "activeDeadlineSeconds for an agent Job")
 	f.Duration("job-ttl", time.Hour, "ttlSecondsAfterFinished for a finished agent Job")
 	f.String("model-allowlist", "anthropic/claude-sonnet-5,anthropic/claude-opus-5",
@@ -111,6 +113,10 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	if err != nil {
 		return err
 	}
+	repositoryImages, ephemeralStorage, err := runnercfg.RepositoryImages(opts)
+	if err != nil {
+		return err
+	}
 
 	mgr, err := kube.NewManager(kube.Options{
 		Kubeconfig:              opts.String("kubeconfig"),
@@ -156,6 +162,9 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		Runners:        runners,
 		Env:            agentEnv(opts),
 		BrokerAudience: opts.String("broker-token-audience"),
+
+		EphemeralStorage:      ephemeralStorage,
+		AllowRepositoryImages: repositoryImages,
 	}, log)
 
 	gate := &investigation.GateReconciler{
@@ -188,7 +197,11 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		},
 		InvestigateHarness: investigateHarness,
 		InvestigateModel:   investigateModel,
-		Log:                log,
+		Images: runnerguard.Guard{
+			Enabled: repositoryImages,
+			Breaker: runnerguard.NewBreaker("investigation-controller", log),
+		},
+		Log: log,
 	}
 	if err := inv.SetupWithManager(mgr); err != nil {
 		return err
@@ -196,7 +209,8 @@ func serve(ctx context.Context, opts *cli.Options) error {
 
 	log.LogAttrs(ctx, slog.LevelInfo, "investigation-controller starting",
 		slog.String("namespace", namespace),
-		slog.Int("max_concurrent", opts.Int("max-concurrent-investigations")))
+		slog.Int("max_concurrent", opts.Int("max-concurrent-investigations")),
+		slog.Bool("repository_images", repositoryImages))
 
 	if err := mgr.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err

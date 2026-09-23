@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/agentresult"
 	"github.com/bitwise-media-group/patchy/internal/forge"
 )
 
@@ -157,7 +158,17 @@ func (r *GateReconciler) ensureRepository(ctx context.Context, fnd *v1alpha1.Fin
 	if err != nil {
 		return false, err
 	}
-	if meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionStalled) {
+	if stalled := meta.FindStatusCondition(repo.Status.Conditions, v1alpha1.ConditionStalled); stalled != nil &&
+		stalled.Status == metav1.ConditionTrue {
+		// A rejected runner-image declaration (under onReject handoff): the
+		// finding goes to a human with source-controller's own explanation.
+		// Under onReject default the rejection is recorded but the
+		// Repository stays Ready, so the finding never reaches here and runs
+		// on the default image.
+		if stalled.Reason == v1alpha1.ReasonRunnerImageRejected {
+			return false, r.park(ctx, fnd, v1alpha1.ReasonRunnerImageRejected,
+				agentresult.TruncateDetail(stalled.Message), true)
+		}
 		// Oversized artifact: a human must intervene.
 		return false, r.park(ctx, fnd, "ArtifactStalled",
 			"repository artifact exceeds the size cap", true)

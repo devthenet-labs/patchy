@@ -22,6 +22,7 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/kube"
 	"github.com/bitwise-media-group/patchy/internal/priority"
 	"github.com/bitwise-media-group/patchy/internal/runnercfg"
+	"github.com/bitwise-media-group/patchy/internal/runnerguard"
 	"github.com/bitwise-media-group/patchy/internal/schedule"
 	"github.com/bitwise-media-group/patchy/internal/telemetry"
 	"github.com/bitwise-media-group/patchy/internal/version"
@@ -55,6 +56,7 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.String("agent-namespace", "patchy-agents", "namespace the agent Jobs run in")
 	f.String("agent-service-account", "patchy-agent", "service account for the agent Jobs")
 	runnercfg.RegisterFlags(f)
+	runnercfg.RegisterRepositoryImageFlags(f)
 	f.Duration("job-deadline", time.Hour, "activeDeadlineSeconds for an agent Job")
 	f.Duration("job-ttl", time.Hour, "ttlSecondsAfterFinished for a finished agent Job")
 
@@ -71,6 +73,9 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 		"most agent turns a human approval can grant")
 	f.Int("remediate-manual-token-budget", 1200000,
 		"most output tokens a human approval can grant")
+	f.Int("changeset-max-entries", remediation.DefaultChangesetMaxEntries,
+		"most files (upserts plus deletes) a changeset from a repository-image run may touch before it is "+
+			"rejected without any forge call")
 	return cmd
 }
 
@@ -111,6 +116,13 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	runners, err := runnercfg.Runners(opts)
 	if err != nil {
 		return err
+	}
+	repositoryImages, ephemeralStorage, err := runnercfg.RepositoryImages(opts)
+	if err != nil {
+		return err
+	}
+	if opts.Int("changeset-max-entries") <= 0 {
+		return errors.New("--changeset-max-entries must be positive")
 	}
 
 	mgr, err := kube.NewManager(kube.Options{
@@ -153,6 +165,9 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		Runners:        runners,
 		Env:            agentEnv(opts),
 		BrokerAudience: opts.String("broker-token-audience"),
+
+		EphemeralStorage:      ephemeralStorage,
+		AllowRepositoryImages: repositoryImages,
 	}, log)
 
 	forges := forge.NewStore(mgr.GetAPIReader())
@@ -191,7 +206,12 @@ func serve(ctx context.Context, opts *cli.Options) error {
 			Cap:      int32(opts.Int("priority-aging-cap")),
 		},
 		Enabled: enabled,
-		Log:     log,
+		Images: runnerguard.Guard{
+			Enabled: repositoryImages,
+			Breaker: runnerguard.NewBreaker("remediation-controller", log),
+		},
+		MaxChangesetEntries: opts.Int("changeset-max-entries"),
+		Log:                 log,
 	}
 	if err := rem.SetupWithManager(mgr); err != nil {
 		return err
@@ -209,7 +229,8 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	log.LogAttrs(ctx, slog.LevelInfo, "remediation-controller starting",
 		slog.String("namespace", namespace),
 		slog.Int("max_concurrent", opts.Int("max-concurrent-remediations")),
-		slog.Duration("finding_ttl", opts.Duration("finding-ttl")))
+		slog.Duration("finding_ttl", opts.Duration("finding-ttl")),
+		slog.Bool("repository_images", repositoryImages))
 
 	if err := mgr.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err

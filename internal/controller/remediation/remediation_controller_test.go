@@ -373,26 +373,40 @@ func TestSpawnerRespawnsAfterSettledCompleteChild(t *testing.T) {
 	}
 }
 
-// fakeCRRunner fakes the jobs seam.
+// fakeCRRunner fakes the jobs seam. Like the real client with repository
+// images allowed, Create reports a repository image exactly when the Spec
+// asks for one. status, when set, replaces the done-derived Status.
 type fakeCRRunner struct {
 	created []jobs.Spec
 	done    bool
 	events  []envelope.Event
 	turns   []transcript.Turn
+	status  *jobs.Status
+	results int
+	deleted []string
 }
 
 func (f *fakeCRRunner) Create(_ context.Context, spec jobs.Spec) (string, v1alpha1.RunnerImageRef, error) {
 	f.created = append(f.created, spec)
+	if spec.RunnerImage != "" {
+		return "job-rem-1", v1alpha1.RunnerImageRef{
+			Image: spec.RunnerImage, Source: v1alpha1.RunnerImageSourceRepository, Manifest: spec.RunnerImageManifest,
+		}, nil
+	}
 	return "job-rem-1", v1alpha1.RunnerImageRef{
 		Image: "claude-agent-runner:1", Source: v1alpha1.RunnerImageSourceDefault,
 	}, nil
 }
 
 func (f *fakeCRRunner) Result(context.Context, string) (jobs.RunOutput, error) {
+	f.results++
 	return jobs.RunOutput{Events: f.events, Turns: f.turns}, nil
 }
 
 func (f *fakeCRRunner) Status(context.Context, string) (jobs.Status, error) {
+	if f.status != nil {
+		return *f.status, nil
+	}
 	st := jobs.Status{Done: f.done}
 	if f.done {
 		st.Succeeded = 1
@@ -400,7 +414,10 @@ func (f *fakeCRRunner) Status(context.Context, string) (jobs.Status, error) {
 	return st, nil
 }
 
-func (f *fakeCRRunner) Delete(context.Context, string) error { return nil }
+func (f *fakeCRRunner) Delete(_ context.Context, name string) error {
+	f.deleted = append(f.deleted, name)
+	return nil
+}
 
 // fakeForge records pushes and PRs.
 type fakeForge struct {

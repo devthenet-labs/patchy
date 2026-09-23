@@ -46,6 +46,7 @@ nav = [
     { "Forges" = [
       { "GitHub" = "integrations/forges/github.md" },
     ] },
+    { "Agent images" = "integrations/agent-images.md" },
   ] },
   { "Configuration" = [
     { "Overview" = "configuration/index.md" },

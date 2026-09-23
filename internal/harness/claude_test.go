@@ -243,3 +243,42 @@ func derefInt(p *int) int {
 	}
 	return *p
 }
+
+// TestClaudeTerminalError: only the terminal result event of a run that
+// ended in an error is reported — its errors, and the result text the CLI
+// repeats an API error in — never the model's text or a tool's output
+// earlier in the stream.
+func TestClaudeTerminalError(t *testing.T) {
+	var _ TerminalErrorReporter = NewClaude()
+	const apiError = "API Error: Request rejected (429) · egress broker: per-pod limit: tokens per pod (400000) reached"
+	// What claude 2.1.280 printed for a 429 on its first request (trimmed).
+	captured := `{"type":"system","subtype":"init","session_id":"s"}` + "\n" +
+		`{"type":"assistant","message":{"model":"<synthetic>","role":"assistant",` +
+		`"content":[{"type":"text","text":"` + apiError + `"}]},"error":"rate_limit","is_api_error_message":true}` + "\n" +
+		`{"type":"result","subtype":"success","is_error":true,"api_error_status":429,` +
+		`"terminal_reason":"api_error","num_turns":1,"result":"` + apiError + `","session_id":"s"}`
+	quoted := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"` +
+		`egress broker: per-pod limit"}]}}` + "\n" +
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"egress broker: per-pod limit"}]}}` + "\n"
+	tests := []struct {
+		name   string
+		stdout string
+		want   string
+	}{
+		{"an API error the run ended on", captured, apiError},
+		{"execution errors", `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"",` +
+			`"errors":[" first ","","second"]}`, "first; second"},
+		{"content earlier in the stream is never read",
+			quoted + `{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["boom"]}`, "boom"},
+		{"a successful run", quoted + `{"type":"result","subtype":"success","is_error":false,"result":"done"}`, ""},
+		{"no result event", quoted, ""},
+		{"empty output", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NewClaude().TerminalError([]byte(tt.stdout)); got != tt.want {
+				t.Errorf("TerminalError = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

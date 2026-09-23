@@ -39,7 +39,7 @@ func createJob(t *testing.T, cfg Config, spec Spec) *batchv1.Job {
 	t.Helper()
 	cs := fake.NewClientset()
 	c := New(cs, cfg, nil)
-	name, err := c.Create(context.Background(), spec)
+	name, _, err := c.Create(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -305,4 +305,11 @@ func TestBrokeredEvalDeadlinePastTokenCap(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "24h") {
 		t.Fatalf("CreateEval error = %v, want the 24h projection-cap rejection", err)
 	}
+}
+
+// TestGoldenBrokeredJob is the byte-identity proof for the brokered claude
+// shape: the projected caller token, the gateway env and the placeholder,
+// and nothing repository-image shaped.
+func TestGoldenBrokeredJob(t *testing.T) {
+	goldenJob(t, "job_brokered", buildJobForTest(t, brokeredConfig(), testSpec()))
 }

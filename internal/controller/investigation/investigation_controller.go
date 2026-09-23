@@ -46,9 +46,11 @@ const schedulerRequest = "\x00scheduler"
 // costs the launch a moment rather than the controller its only worker.
 const defaultCalibrationTimeout = 5 * time.Second
 
-// Runner is the slice of the jobs client this controller needs.
+// Runner is the slice of the jobs client this controller needs. Create
+// also returns the runner image the Job actually runs; the launch records
+// it once it copies the Repository's pin under the repository-images flag.
 type Runner interface {
-	Create(ctx context.Context, spec jobs.Spec) (string, error)
+	Create(ctx context.Context, spec jobs.Spec) (string, v1alpha1.RunnerImageRef, error)
 	Result(ctx context.Context, jobName string) (jobs.RunOutput, error)
 	Status(ctx context.Context, jobName string) (jobs.Status, error)
 	Delete(ctx context.Context, jobName string) error
@@ -211,7 +213,7 @@ func (r *InvestigationReconciler) launch(ctx context.Context, inv *v1alpha1.Inve
 	if fnd.Spec.Repository != nil {
 		repoName = fnd.Spec.Repository.Name
 	}
-	jobName, err := r.Runner.Create(ctx, jobs.Spec{
+	jobName, _, err := r.Runner.Create(ctx, jobs.Spec{
 		Repo:           repoName,
 		Attempt:        int(inv.Spec.Attempt),
 		Phase:          "investigate",

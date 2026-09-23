@@ -1,0 +1,112 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+
+# Agent base image: what application teams build FROM to make the agent image
+# their repository declares in .patchy/agent.yaml. Guide:
+# docs/integrations/agent-images.md; worked examples: examples/agent-images/.
+# It carries no patchy binary. When a repository image runs, the trusted
+# prepare init copies agent-runner and the claude CLI into a read-only
+# /patchy/bin and the agent container runs with
+# PATH=/patchy/bin:<this image's PATH> (internal/jobs).
+# This image supplies the runtime around them, shaped for the sandbox the pod
+# enforces whatever the image says:
+#
+#   - uid/gid 65532, read-only root filesystem, all capabilities dropped, no
+#     privilege escalation: the image's USER and ENTRYPOINT are ignored;
+#   - HOME=/workspace (set by the Job) and /tmp are the only writable paths,
+#     both emptyDirs; the repository is checked out at /workspace/repo;
+#   - no network except the egress broker, so every toolchain and dependency
+#     has to be baked in at build time.
+#
+# source-controller rejects an image whose ENV names a reserved variable
+# (HOME, PATCHY_*, ANTHROPIC_*, CLAUDE_*, the gateway and credential names,
+# proxies, git's repository redirections), that declares a VOLUME, or whose
+# PATH has no absolute entry. Every ENV below stays inside that contract, and
+# an image built FROM this one has to as well.
+#
+# Built by GoReleaser (`dockers_v2` id agent-base in .goreleaser.yaml) for
+# linux/amd64 and linux/arm64; nothing is copied from the build context.
+
+# The same pinned wolfi-base as the runner images: glibc is the one hard
+# requirement, because the injected claude CLI is a glibc binary and cannot
+# run on musl (Alpine). The digest is the pin; renovate bumps it.
+FROM cgr.dev/chainguard/wolfi-base:latest@sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d
+
+# bash: the claude CLI's shell tool refuses busybox sh, and patchy's preflight
+# checks for it. git: agent-runner diffs the agent's changes with it.
+# ca-certificates: update-ca-certificates, so a derived image can add a
+# private CA (the bundle itself ships in wolfi-base). coreutils, diffutils,
+# findutils, gnutar, grep, gzip, sed: the GNU tools build scripts and test
+# suites assume, in place of busybox's partial applets. make: the most common
+# build entry point. Versions float with the pinned base; the digest is the
+# pin.
+# hadolint ignore=DL3018
+RUN apk add --no-cache \
+      bash \
+      ca-certificates \
+      coreutils \
+      diffutils \
+      findutils \
+      git \
+      gnutar \
+      grep \
+      gzip \
+      make \
+      sed
+
+# wolfi-base names uid 65532 "nonroot"; rename that one account to patchy
+# rather than adding a second uid-65532 entry, which would make name lookups
+# depend on file order. Its home is /workspace, the HOME the Job sets, so tools
+# that ask getpwuid() instead of reading $HOME land in the same writable
+# place. /workspace is created and owned by 65532 so a bare `docker run` has a
+# usable home; in the pod the workspace emptyDir is mounted over it.
+RUN sed -i 's|^nonroot:x:65532:65532:.*$|patchy:x:65532:65532:patchy agent:/workspace:/bin/bash|' /etc/passwd \
+  && sed -i 's|^nonroot:x:65532:|patchy:x:65532:|' /etc/group \
+  && sed -i 's|^nonroot:|patchy:|' /etc/shadow \
+  && rm -rf /home/nonroot \
+  && install -d -o 65532 -g 65532 -m 0755 /workspace \
+  && grep -q '^patchy:x:65532:65532:' /etc/passwd \
+  && grep -q '^patchy:x:65532:' /etc/group
+
+# An explicit, all-absolute PATH. source-controller records it (dropping empty
+# and relative entries) and the pod runs with /patchy/bin in front of it;
+# setting it here keeps it stable across base image bumps. Derived images
+# prepend their toolchain directories (ENV PATH=/usr/local/go/bin:${PATH}).
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Caches under /tmp: an emptyDir in the pod and a --tmpfs locally, so writable
+# in every sandbox shape whatever HOME is, and outside the repository, so no
+# cache file ends up in the agent's changeset. Go's build cache and pip's
+# cache, among most other tools, derive their directory from XDG_CACHE_HOME.
+# Configuration and state stay under HOME, which the Job makes writable.
+ENV XDG_CACHE_HOME=/tmp/.cache
+
+# Temporary files (go test binaries, compiler scratch) go to the writable
+# emptyDir. /tmp is the default already; saying so documents the contract.
+ENV TMPDIR=/tmp
+
+# UTF-8 for tools that consult the locale. glibc's C.UTF-8 is built in, so no
+# locale package is needed.
+ENV LANG=C.UTF-8
+
+# Metadata for the registry page. A derived image inherits these labels, so it
+# should set its own source and description (the examples do).
+LABEL org.opencontainers.image.title="patchy agent-base" \
+      org.opencontainers.image.description="Base image for repository-declared patchy agent images: glibc (wolfi), bash, git and core build tools, uid 65532, caches under /tmp. Extend it with your toolchain and dependencies." \
+      org.opencontainers.image.source="https://github.com/devthenet-labs/patchy" \
+      org.opencontainers.image.url="https://github.com/devthenet-labs/patchy/tree/main/examples/agent-images" \
+      org.opencontainers.image.documentation="https://devthenet-labs.github.io/patchy/integrations/agent-images/" \
+      org.opencontainers.image.vendor="devthenet-labs" \
+      org.opencontainers.image.licenses="MIT"
+
+# The pod's working directory is the image's unless the Job sets one; match
+# the runner images.
+WORKDIR /workspace
+
+# The pod forces uid 65532 regardless; declaring it keeps a local `docker run`
+# honest and reminds derived images to switch back after `USER root` installs.
+USER 65532:65532
+
+# No ENTRYPOINT: the agent container runs /patchy/bin/agent-runner by absolute
+# path. The CMD only serves an interactive `docker run -it`.
+CMD ["/bin/bash"]

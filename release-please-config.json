@@ -13,6 +13,9 @@
                 { "type": "generic", "path": "charts/patchy/Chart.yaml" },
                 { "type": "generic", "path": "charts/patchy-config/Chart.yaml" },
                 { "type": "generic", "path": "pyproject.toml" },
+                { "type": "generic", "path": "examples/agent-images/go/Dockerfile" },
+                { "type": "generic", "path": "examples/agent-images/node/Dockerfile" },
+                { "type": "generic", "path": "examples/agent-images/python/Dockerfile" },
                 {
                     "type": "toml",
                     "path": "uv.lock",

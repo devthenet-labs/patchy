@@ -31,7 +31,7 @@ const scopeName = "github.com/bitwise-media-group/patchy/internal/runner"
 // touch os/exec; this package executes them, so callers can fake execution
 // entirely.
 type CommandSpec struct {
-	Argv []string // Argv[0] is replaced with the resolved CLI path before exec
+	Argv []string // Argv[0] is the CLI, resolved on PATH by exec unless already absolute
 	Dir  string   // workspace the agent runs in
 	Env  []string // extras appended to os.Environ()
 }

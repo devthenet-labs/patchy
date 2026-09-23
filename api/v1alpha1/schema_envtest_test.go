@@ -292,7 +292,7 @@ func TestSchemaValidation(t *testing.T) {
 		testRepositoryRunnerImageSchema(ctx, t, c)
 	})
 
-	t.Run("run status runner image source is an enum", func(t *testing.T) {
+	t.Run("run status runner image is enum-checked and round-trips on every carrier", func(t *testing.T) {
 		testRunStatusRunnerImageSchema(ctx, t, c)
 	})
 
@@ -365,35 +365,108 @@ func testRepositoryRunnerImageSchema(ctx context.Context, t *testing.T, c client
 	if !reflect.DeepEqual(got.Status.RunnerImage, rejected) {
 		t.Errorf("status.runnerImage (rejected) = %+v, want %+v", got.Status.RunnerImage, rejected)
 	}
+
 }
 
-// testRunStatusRunnerImageSchema exercises the RunnerImageRef source enum on
-// a run's status: an unknown source is rejected, a legal record round-trips.
+// testRunStatusRunnerImageSchema exercises the RunnerImageRef schema on
+// every status that carries one: the Investigation and Remediation run
+// statuses and the Finding's investigation mirror. Each record is written
+// through the status subresource and the read-back is compared against the
+// value that was written (never against the update's own response), so a
+// field the generated schema prunes fails here.
 func testRunStatusRunnerImageSchema(ctx context.Context, t *testing.T, c client.Client) {
 	t.Helper()
-	inv := &patchyv1.Investigation{}
-	if err := c.Get(ctx, client.ObjectKey{Name: "finding-abc123-1-inv-1", Namespace: "default"}, inv); err != nil {
-		t.Fatalf("Get(investigation) = %v", err)
+	want := func() *patchyv1.RunnerImageRef {
+		return &patchyv1.RunnerImageRef{
+			Image:    "ghcr.io/acme/go-agent-env@sha256:" + strings.Repeat("a", 64),
+			Source:   patchyv1.RunnerImageSourceRepository,
+			Manifest: ".devcontainer/devcontainer.json",
+		}
 	}
-	inv.Status.RunnerImage = &patchyv1.RunnerImageRef{
-		Image:  "ghcr.io/acme/go-agent-env@sha256:" + strings.Repeat("a", 64),
-		Source: "bogus",
-	}
-	if err := c.Status().Update(ctx, inv); err == nil {
-		t.Error("Status().Update(runnerImage.source=bogus) = nil, want enum rejection")
-	}
-	inv.Status.RunnerImage.Source = patchyv1.RunnerImageSourceRepository
-	inv.Status.RunnerImage.Manifest = ".devcontainer/devcontainer.json"
-	if err := c.Status().Update(ctx, inv); err != nil {
-		t.Fatalf("Status().Update(runnerImage.source=repository) = %v, want nil", err)
-	}
-	got := &patchyv1.Investigation{}
-	if err := c.Get(ctx, client.ObjectKeyFromObject(inv), got); err != nil {
-		t.Fatalf("Get(investigation) = %v", err)
-	}
-	if !reflect.DeepEqual(got.Status.RunnerImage, inv.Status.RunnerImage) {
-		t.Errorf("status.runnerImage = %+v, want %+v", got.Status.RunnerImage, inv.Status.RunnerImage)
-	}
+
+	t.Run("investigation", func(t *testing.T) {
+		inv := &patchyv1.Investigation{}
+		if err := c.Get(ctx, client.ObjectKey{Name: "finding-abc123-1-inv-1", Namespace: "default"}, inv); err != nil {
+			t.Fatalf("Get(investigation) = %v", err)
+		}
+		inv.Status.RunnerImage = want()
+		inv.Status.RunnerImage.Source = "bogus"
+		if err := c.Status().Update(ctx, inv); err == nil {
+			t.Error("Status().Update(runnerImage.source=bogus) = nil, want enum rejection")
+		}
+		inv.Status.RunnerImage = want()
+		if err := c.Status().Update(ctx, inv); err != nil {
+			t.Fatalf("Status().Update(runnerImage.source=repository) = %v, want nil", err)
+		}
+		got := &patchyv1.Investigation{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(inv), got); err != nil {
+			t.Fatalf("Get(investigation) = %v", err)
+		}
+		if !reflect.DeepEqual(got.Status.RunnerImage, want()) {
+			t.Errorf("status.runnerImage = %+v, want %+v", got.Status.RunnerImage, want())
+		}
+	})
+
+	t.Run("remediation", func(t *testing.T) {
+		rem := &patchyv1.Remediation{
+			ObjectMeta: metav1.ObjectMeta{Name: "finding-abc123-1-rem-1", Namespace: "default"},
+			Spec: patchyv1.RemediationSpec{
+				FindingRef:       patchyv1.ObjectReference{Name: "finding-abc123-1"},
+				InvestigationRef: patchyv1.ObjectReference{Name: "finding-abc123-1-inv-1"},
+				RepositoryRef:    patchyv1.LocalObjectReference{Name: "finding-abc123-1-src"},
+				Attempt:          1,
+			},
+		}
+		if err := c.Create(ctx, rem); err != nil {
+			t.Fatalf("Create(remediation) = %v, want nil", err)
+		}
+		rem.Status.RunnerImage = want()
+		rem.Status.RunnerImage.Source = "bogus"
+		if err := c.Status().Update(ctx, rem); err == nil {
+			t.Error("Status().Update(runnerImage.source=bogus) = nil, want enum rejection")
+		}
+		rem.Status.RunnerImage = want()
+		if err := c.Status().Update(ctx, rem); err != nil {
+			t.Fatalf("Status().Update(runnerImage) = %v, want nil", err)
+		}
+		got := &patchyv1.Remediation{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(rem), got); err != nil {
+			t.Fatalf("Get(remediation) = %v", err)
+		}
+		if !reflect.DeepEqual(got.Status.RunnerImage, want()) {
+			t.Errorf("status.runnerImage = %+v, want %+v", got.Status.RunnerImage, want())
+		}
+	})
+
+	t.Run("finding investigation mirror", func(t *testing.T) {
+		f := &patchyv1.Finding{}
+		if err := c.Get(ctx, client.ObjectKey{Name: "finding-abc123-1", Namespace: "default"}, f); err != nil {
+			t.Fatalf("Get(finding) = %v", err)
+		}
+		f.Status.Investigation = &patchyv1.InvestigationSummary{
+			Name:        "finding-abc123-1-inv-1",
+			Attempt:     1,
+			RunnerImage: want(),
+		}
+		f.Status.Investigation.RunnerImage.Source = "bogus"
+		if err := c.Status().Update(ctx, f); err == nil {
+			t.Error("Status().Update(investigation.runnerImage.source=bogus) = nil, want enum rejection")
+		}
+		f.Status.Investigation.RunnerImage = want()
+		if err := c.Status().Update(ctx, f); err != nil {
+			t.Fatalf("Status().Update(investigation.runnerImage) = %v, want nil", err)
+		}
+		got := &patchyv1.Finding{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(f), got); err != nil {
+			t.Fatalf("Get(finding) = %v", err)
+		}
+		if got.Status.Investigation == nil {
+			t.Fatal("status.investigation = nil after update, want the summary")
+		}
+		if !reflect.DeepEqual(got.Status.Investigation.RunnerImage, want()) {
+			t.Errorf("status.investigation.runnerImage = %+v, want %+v", got.Status.Investigation.RunnerImage, want())
+		}
+	})
 }
 
 // evalUnitPlan is a minimal valid UnitPlan for schema tests.

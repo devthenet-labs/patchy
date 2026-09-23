@@ -352,12 +352,16 @@ func (r *RemediationReconciler) collect(ctx context.Context, rem *v1alpha1.Remed
 // sandboxRefused ends a run whose sandbox probe found NetworkPolicy
 // unenforced: the breaker trips, so every later launch in this process runs
 // the default image, and the finding goes back to the queue without this
-// attempt counting against MaxAttempts — the next one runs on the default
-// image, so the retry cannot loop.
+// attempt counting against MaxAttempts — the run is marked SandboxRefused,
+// which fail() subtracts, and the next one runs on the default image, so
+// the retry cannot loop.
 func (r *RemediationReconciler) sandboxRefused(ctx context.Context, rem *v1alpha1.Remediation) error {
 	r.Images.Breaker.Trip(ctx, rem.Status.JobRef.Name, rem.Spec.FindingRef.Name)
 	result := &envelope.Remediation{Stage: agentresult.FailedStage(nil, "aborted", runnerguard.SandboxReason)}
-	if err := r.stampChild(ctx, rem, result, v1alpha1.RunFailed, nil, nil); err != nil {
+	refused := func(cur *v1alpha1.Remediation) {
+		meta.SetStatusCondition(&cur.Status.Conditions, runnerguard.RefusedCondition(cur.Generation))
+	}
+	if err := r.stampChild(ctx, rem, result, v1alpha1.RunFailed, nil, refused); err != nil {
 		return err
 	}
 	return r.finishFinding(ctx, rem, result, v1alpha1.PhaseQueued, runnerguard.SandboxReason)
@@ -495,11 +499,18 @@ func stageOf(result *envelope.Remediation) *envelope.Stage {
 // stage when it emitted one; its accounting survives the failure so the run's
 // turns, tokens and cost still reach the child and the rollups — a failed run
 // spent real money, and the estimate-against-actual averages depend on it
-// being counted. Nil when no event arrived at all.
+// being counted. Nil when no event arrived at all. Attempts the sandbox
+// probe refused are not counted toward MaxAttempts.
 func (r *RemediationReconciler) fail(
 	ctx context.Context, rem *v1alpha1.Remediation, outcome, detail string, reported *envelope.Stage,
 	transcript *v1alpha1.TranscriptRef,
 ) error {
+	// Counted before the child is stamped: an error here leaves it Running
+	// for the next reconcile instead of Failed with the finding unreleased.
+	consumed, err := r.consumedAttempts(ctx, rem)
+	if err != nil {
+		return err
+	}
 	result := &envelope.Remediation{Stage: agentresult.FailedStage(reported, outcome, detail)}
 	if err := r.stampChild(ctx, rem, result, v1alpha1.RunFailed, transcript, nil); err != nil {
 		return err
@@ -509,10 +520,29 @@ func (r *RemediationReconciler) fail(
 		maxAttempts = 2
 	}
 	to := v1alpha1.PhaseQueued
-	if rem.Spec.Attempt >= maxAttempts {
+	if consumed >= maxAttempts {
 		to = v1alpha1.PhaseFailed
 	}
 	return r.finishFinding(ctx, rem, result, to, outcome+": "+detail)
+}
+
+// consumedAttempts is rem's attempt number less the finding's earlier
+// attempts the sandbox probe refused: their agent never ran.
+func (r *RemediationReconciler) consumedAttempts(ctx context.Context, rem *v1alpha1.Remediation) (int32, error) {
+	var siblings v1alpha1.RemediationList
+	if err := r.List(ctx, &siblings, client.InNamespace(rem.Namespace),
+		client.MatchingLabels{v1alpha1.LabelFinding: rem.Spec.FindingRef.Name}); err != nil {
+		return 0, fmt.Errorf("count refused attempts: %w", err)
+	}
+	consumed := rem.Spec.Attempt
+	for i := range siblings.Items {
+		sib := &siblings.Items[i]
+		if sib.Spec.FindingRef.UID == rem.Spec.FindingRef.UID && sib.Spec.Attempt < rem.Spec.Attempt &&
+			runnerguard.Refused(sib.Status.Conditions) {
+			consumed--
+		}
+	}
+	return consumed, nil
 }
 
 // finishFinding applies the post-run phase and summary to the finding.

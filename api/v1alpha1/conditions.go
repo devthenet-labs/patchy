@@ -35,6 +35,12 @@ const (
 	// ConditionUnitsCreated marks an Evaluation whose child EvaluationUnits
 	// all exist.
 	ConditionUnitsCreated = "UnitsCreated"
+	// ConditionSandboxRefused marks a failed Investigation/Remediation whose
+	// repository-image Job the sandbox probe refused (its prepare init
+	// exited 78): the agent never ran, so the attempt does not count toward
+	// MaxAttempts. The collector sets it from the init's exit code alone,
+	// never from anything the pod printed, so a run cannot claim it.
+	ConditionSandboxRefused = "SandboxRefused"
 
 	// Per-scope rollup markers. A scope's finalizer is removed only when its
 	// condition is True and deletion is underway — remaining finalizers show

@@ -7,6 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 )
@@ -140,6 +143,25 @@ const (
 		"(prepare exited 78): NetworkPolicy is not enforced, so repository-declared runner images " +
 		"are refused until the controller restarts"
 )
+
+// RefusedCondition is the condition a collector sets on a run whose Job
+// SandboxRefused judged refused; the run's attempt then does not count
+// toward MaxAttempts.
+func RefusedCondition(generation int64) metav1.Condition {
+	return metav1.Condition{
+		Type:               v1alpha1.ConditionSandboxRefused,
+		Status:             metav1.ConditionTrue,
+		Reason:             SandboxUnenforced,
+		Message:            SandboxReason,
+		ObservedGeneration: generation,
+	}
+}
+
+// Refused reports whether a run's conditions record that the sandbox probe
+// refused it (RefusedCondition), so its attempt is not counted.
+func Refused(conds []metav1.Condition) bool {
+	return meta.IsStatusConditionTrue(conds, v1alpha1.ConditionSandboxRefused)
+}
 
 // SandboxRefused reports whether a repository-image Job's prepare init
 // exited with jobs.ExitSandboxUnenforced: the probe found egress open, the

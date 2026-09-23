@@ -309,8 +309,9 @@ func (r *InvestigationReconciler) collect(ctx context.Context, inv *v1alpha1.Inv
 // sandboxRefused ends a run whose sandbox probe found NetworkPolicy
 // unenforced: the breaker trips, so every later launch in this process runs
 // the default image, and the finding goes back for another attempt without
-// this one counting against MaxAttempts — the next one runs on the default
-// image, so the retry cannot loop.
+// this one counting against MaxAttempts — the run is marked
+// SandboxRefused, which fail() subtracts, and the next one runs on the
+// default image, so the retry cannot loop.
 func (r *InvestigationReconciler) sandboxRefused(ctx context.Context, inv *v1alpha1.Investigation) error {
 	r.Images.Breaker.Trip(ctx, inv.Status.JobRef.Name, inv.Spec.FindingRef.Name)
 	var fnd v1alpha1.Finding
@@ -319,7 +320,7 @@ func (r *InvestigationReconciler) sandboxRefused(ctx context.Context, inv *v1alp
 		return client.IgnoreNotFound(err)
 	}
 	result := &envelope.Investigation{Stage: agentresult.FailedStage(nil, "aborted", runnerguard.SandboxReason)}
-	if err := r.stampChild(ctx, inv, result, v1alpha1.RunFailed, nil); err != nil {
+	if err := r.stampChild(ctx, inv, result, v1alpha1.RunFailed, nil, true); err != nil {
 		return err
 	}
 	return r.release(ctx, &fnd, v1alpha1.PhaseEnhanced, runnerguard.SandboxReason)
@@ -389,7 +390,7 @@ func (r *InvestigationReconciler) apply(
 	}
 
 	// Stamp the child (single writer: this controller).
-	if err := r.stampChild(ctx, inv, result, v1alpha1.RunComplete, transcript); err != nil {
+	if err := r.stampChild(ctx, inv, result, v1alpha1.RunComplete, transcript, false); err != nil {
 		return err
 	}
 
@@ -586,12 +587,19 @@ func estimateOf(result *envelope.Investigation) *v1alpha1.AgentEstimate {
 // far enough to emit one; its accounting is preserved rather than discarded,
 // so a failed run still lands its harness, model, turns, tokens and cost on
 // the child and in the rollups. Nil for a run that produced no event at all.
+// Attempts the sandbox probe refused are not counted toward MaxAttempts.
 func (r *InvestigationReconciler) fail(
 	ctx context.Context, inv *v1alpha1.Investigation, fnd *v1alpha1.Finding,
 	outcome, detail string, reported *envelope.Stage, transcript *v1alpha1.TranscriptRef,
 ) error {
+	// Counted before the child is stamped: an error here leaves it Running
+	// for the next reconcile instead of Failed with the finding unreleased.
+	consumed, err := r.consumedAttempts(ctx, inv)
+	if err != nil {
+		return err
+	}
 	result := &envelope.Investigation{Stage: agentresult.FailedStage(reported, outcome, detail)}
-	if err := r.stampChild(ctx, inv, result, v1alpha1.RunFailed, transcript); err != nil {
+	if err := r.stampChild(ctx, inv, result, v1alpha1.RunFailed, transcript, false); err != nil {
 		return err
 	}
 	maxAttempts := r.MaxAttempts
@@ -599,10 +607,29 @@ func (r *InvestigationReconciler) fail(
 		maxAttempts = 2
 	}
 	to := v1alpha1.PhaseEnhanced
-	if inv.Spec.Attempt >= maxAttempts {
+	if consumed >= maxAttempts {
 		to = v1alpha1.PhaseFailed
 	}
 	return r.release(ctx, fnd, to, outcome+": "+detail)
+}
+
+// consumedAttempts is inv's attempt number less the finding's earlier
+// attempts the sandbox probe refused: their agent never ran.
+func (r *InvestigationReconciler) consumedAttempts(ctx context.Context, inv *v1alpha1.Investigation) (int32, error) {
+	var siblings v1alpha1.InvestigationList
+	if err := r.List(ctx, &siblings, client.InNamespace(inv.Namespace),
+		client.MatchingLabels{v1alpha1.LabelFinding: inv.Spec.FindingRef.Name}); err != nil {
+		return 0, fmt.Errorf("count refused attempts: %w", err)
+	}
+	consumed := inv.Spec.Attempt
+	for i := range siblings.Items {
+		sib := &siblings.Items[i]
+		if sib.Spec.FindingRef.UID == inv.Spec.FindingRef.UID && sib.Spec.Attempt < inv.Spec.Attempt &&
+			runnerguard.Refused(sib.Status.Conditions) {
+			consumed--
+		}
+	}
+	return consumed, nil
 }
 
 // release moves a finding whose run failed out of Investigating to phase
@@ -626,10 +653,11 @@ func (r *InvestigationReconciler) release(ctx context.Context, fnd *v1alpha1.Fin
 	})
 }
 
-// stampChild writes the run result onto the Investigation.
+// stampChild writes the run result onto the Investigation; refused also
+// marks it SandboxRefused.
 func (r *InvestigationReconciler) stampChild(
 	ctx context.Context, inv *v1alpha1.Investigation, result *envelope.Investigation,
-	phase v1alpha1.RunPhase, transcript *v1alpha1.TranscriptRef,
+	phase v1alpha1.RunPhase, transcript *v1alpha1.TranscriptRef, refused bool,
 ) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var cur v1alpha1.Investigation
@@ -668,6 +696,9 @@ func (r *InvestigationReconciler) stampChild(
 			Message:            result.Detail,
 			ObservedGeneration: cur.Generation,
 		})
+		if refused {
+			meta.SetStatusCondition(&cur.Status.Conditions, runnerguard.RefusedCondition(cur.Generation))
+		}
 		return r.Status().Update(ctx, &cur)
 	})
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -206,8 +207,9 @@ func TestRemediationSandboxRefused(t *testing.T) {
 	if runner.results != 0 || len(fw.pushed) != 0 || fw.prCalls != 0 {
 		t.Errorf("results/pushed/prs = %d/%v/%d, want none", runner.results, fw.pushed, fw.prCalls)
 	}
-	if rem := getRem(t, c); rem.Status.Phase != v1alpha1.RunFailed {
-		t.Errorf("run = %q, want Failed", rem.Status.Phase)
+	if rem := getRem(t, c); rem.Status.Phase != v1alpha1.RunFailed ||
+		!meta.IsStatusConditionTrue(rem.Status.Conditions, v1alpha1.ConditionSandboxRefused) {
+		t.Errorf("run = %q conditions %+v, want Failed and SandboxRefused", rem.Status.Phase, rem.Status.Conditions)
 	}
 	f := findingNow(t, c)
 	if f.Status.Phase != v1alpha1.PhaseQueued {
@@ -433,4 +435,73 @@ func TestRemediationChangesetInvestigationImage(t *testing.T) {
 			t.Errorf("pushed/prs/phase = %v/%d/%q, want pushed as before", fw.pushed, fw.prCalls, f.Status.Phase)
 		}
 	})
+}
+
+// TestRemediationSandboxRefusalConsumesNoAttempt: a refused attempt does
+// not count toward MaxAttempts. Attempt 1 is refused by the sandbox probe;
+// attempt 2 (on the default image) fails for an ordinary reason and is —
+// with MaxAttempts 2 — the first real attempt, so the finding is queued
+// again, not exhausted. A refusal the pod merely claims in its own output
+// is an ordinary failure and does count.
+func TestRemediationSandboxRefusalConsumesNoAttempt(t *testing.T) {
+	exit := int32(jobs.ExitSandboxUnenforced)
+	claimed := crdRemediationEvent(false)
+	claimed[0].Remediation.Stage = envelope.Stage{
+		Outcome: envelope.Outcome(runnerguard.SandboxUnenforced), Detail: runnerguard.SandboxReason,
+	}
+	tests := []struct {
+		name      string
+		attempt1  fakeCRRunner
+		wantAfter v1alpha1.Phase
+	}{
+		{"refused by the probe", fakeCRRunner{status: &jobs.Status{
+			Failed: 1, Done: true, InitExitCode: &exit, RunnerImageSource: v1alpha1.RunnerImageSourceRepository,
+		}}, v1alpha1.PhaseQueued},
+		{"refusal claimed in the pod's output", fakeCRRunner{done: true, events: claimed}, v1alpha1.PhaseFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &tt.attempt1
+			r, c := newRemediation(t, runner, &fakeForge{},
+				withImage(acceptedImage(), v1alpha1.RunnerImageSourceRepository)...)
+			r.Images = runnerguard.Guard{Enabled: true, Breaker: runnerguard.NewBreaker("test", nil)}
+			remReconcile(t, r)
+			if got := findingNow(t, c).Status.Phase; got != v1alpha1.PhaseQueued {
+				t.Fatalf("after attempt 1 phase = %q, want Queued", got)
+			}
+
+			// The spawner opens attempt 2 and the scheduler grants it.
+			rem2 := runningRemediation()[1].(*v1alpha1.Remediation)
+			rem2.Name, rem2.Spec.Attempt = "finding-aa-1-rem-2", 2
+			status := v1alpha1.RemediationStatus{
+				Phase: v1alpha1.RunRunning, JobRef: &v1alpha1.JobReference{Name: "job-rem-2"},
+				RunnerImage: &v1alpha1.RunnerImageRef{
+					Image: "claude-agent-runner:1", Source: v1alpha1.RunnerImageSourceDefault,
+				},
+			}
+			if err := c.Create(t.Context(), rem2); err != nil {
+				t.Fatalf("Create attempt 2: %v", err)
+			}
+			rem2.Status = status
+			if err := c.Status().Update(t.Context(), rem2); err != nil {
+				t.Fatalf("stamp attempt 2: %v", err)
+			}
+			f := findingNow(t, c)
+			if err := v1alpha1.SetPhase(f, v1alpha1.PhaseRemediating, crdClock); err != nil {
+				t.Fatal(err)
+			}
+			f.Status.Attempts.Remediation = 2
+			if err := c.Status().Update(t.Context(), f); err != nil {
+				t.Fatalf("grant attempt 2: %v", err)
+			}
+
+			runner.status, runner.done = nil, true
+			runner.events = []envelope.Event{{V: envelope.Version, Type: envelope.TypeFatal, Error: "claude exited 1"}}
+			remOnce(t, r, "finding-aa-1-rem-2")
+			if f := findingNow(t, c); f.Status.Phase != tt.wantAfter {
+				t.Errorf("after attempt 2 phase = %q (%s), want %q", f.Status.Phase, f.Status.LastFailureReason,
+					tt.wantAfter)
+			}
+		})
+	}
 }

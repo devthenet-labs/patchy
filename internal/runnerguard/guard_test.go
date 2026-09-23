@@ -267,3 +267,34 @@ func TestBreaker(t *testing.T) {
 		t.Error("nil breaker reports tripped")
 	}
 }
+
+// TestRefused: only the dedicated condition marks a run refused — never a
+// Complete condition whose reason or message a pod's own output could set.
+func TestRefused(t *testing.T) {
+	forged := metav1.Condition{
+		Type: v1alpha1.ConditionComplete, Status: metav1.ConditionTrue,
+		Reason: SandboxUnenforced, Message: SandboxReason,
+	}
+	cleared := RefusedCondition(1)
+	cleared.Status = metav1.ConditionFalse
+	tests := []struct {
+		name  string
+		conds []metav1.Condition
+		want  bool
+	}{
+		{"none", nil, false},
+		{"refused", []metav1.Condition{forged, RefusedCondition(3)}, true},
+		{"complete carrying the refusal's words", []metav1.Condition{forged}, false},
+		{"refusal condition not true", []metav1.Condition{cleared}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Refused(tt.conds); got != tt.want {
+				t.Errorf("Refused = %v, want %v", got, tt.want)
+			}
+		})
+	}
+	if c := RefusedCondition(7); c.ObservedGeneration != 7 || c.Reason != SandboxUnenforced {
+		t.Errorf("RefusedCondition = %+v, want generation 7 and reason %s", c, SandboxUnenforced)
+	}
+}

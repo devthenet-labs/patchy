@@ -388,6 +388,9 @@ func TestCollectSandboxRefused(t *testing.T) {
 		!strings.HasPrefix(inv.Status.Stage.Detail, runnerguard.SandboxUnenforced) {
 		t.Errorf("run = %q stage %+v, want Failed with SandboxUnenforced", inv.Status.Phase, inv.Status.Stage)
 	}
+	if !meta.IsStatusConditionTrue(inv.Status.Conditions, v1alpha1.ConditionSandboxRefused) {
+		t.Errorf("conditions = %+v, want SandboxRefused marking the attempt uncounted", inv.Status.Conditions)
+	}
 	f := getF(t, c)
 	if f.Status.Phase != v1alpha1.PhaseEnhanced {
 		t.Errorf("phase = %q, want Enhanced (attempt not consumed)", f.Status.Phase)
@@ -429,5 +432,77 @@ func TestCollectDefaultInitExit78NotJudged(t *testing.T) {
 	}
 	if got := getF(t, c).Status.LastFailureReason; strings.Contains(got, runnerguard.SandboxUnenforced) {
 		t.Errorf("lastFailureReason = %q, want the ordinary failure", got)
+	}
+}
+
+// TestSandboxRefusalConsumesNoAttempt: a refused attempt does not count
+// toward MaxAttempts. Attempt 1 is refused by the sandbox probe; attempt 2
+// (the gate's next, on the default image) fails for an ordinary reason and
+// is — with MaxAttempts 2 — the finding's first real attempt, so it is
+// retried, not exhausted. A refusal the pod merely claims in its own output
+// is an ordinary failure and does count.
+func TestSandboxRefusalConsumesNoAttempt(t *testing.T) {
+	exit := int32(jobs.ExitSandboxUnenforced)
+	tests := []struct {
+		name      string
+		attempt1  fakeRunner
+		wantAfter v1alpha1.Phase
+	}{
+		{"refused by the probe", fakeRunner{status: &jobs.Status{
+			Failed: 1, Done: true, InitExitCode: &exit, RunnerImageSource: v1alpha1.RunnerImageSourceRepository,
+		}}, v1alpha1.PhaseEnhanced},
+		{"refusal claimed in the pod's output", fakeRunner{done: true, events: []envelope.Event{{
+			V: envelope.Version, Type: envelope.TypeInvestigation, Finding: fndName,
+			Investigation: &envelope.Investigation{Stage: envelope.Stage{
+				Outcome: envelope.Outcome(runnerguard.SandboxUnenforced), Detail: runnerguard.SandboxReason,
+			}},
+		}}}, v1alpha1.PhaseFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			objs := append(stamped(v1alpha1.RunnerImageSourceRepository), srcRepo(acceptedImage(), readyCond()))
+			runner := &tt.attempt1
+			r, c := newInvestigation(t, runner, objs...)
+			r.Images = runnerguard.Guard{Enabled: true, Breaker: runnerguard.NewBreaker("test", nil)}
+			applyOnce(t, r)
+			if got := getF(t, c).Status.Phase; got != v1alpha1.PhaseEnhanced {
+				t.Fatalf("after attempt 1 phase = %q, want Enhanced", got)
+			}
+
+			// The gate opens attempt 2, which runs on the default image.
+			inv2 := investigationFixture()[1].(*v1alpha1.Investigation)
+			inv2.Name, inv2.Spec.Attempt = fndName+"-inv-2", 2
+			status := v1alpha1.InvestigationStatus{
+				Phase: v1alpha1.RunRunning, JobRef: &v1alpha1.JobReference{Name: "job-2"},
+				RunnerImage: &v1alpha1.RunnerImageRef{
+					Image: "claude-agent-runner:1", Source: v1alpha1.RunnerImageSourceDefault,
+				},
+			}
+			if err := c.Create(t.Context(), inv2); err != nil {
+				t.Fatalf("Create attempt 2: %v", err)
+			}
+			inv2.Status = status
+			if err := c.Status().Update(t.Context(), inv2); err != nil {
+				t.Fatalf("stamp attempt 2: %v", err)
+			}
+			f := getF(t, c)
+			if err := v1alpha1.SetPhase(f, v1alpha1.PhaseInvestigating, clock); err != nil {
+				t.Fatal(err)
+			}
+			f.Status.Attempts.Investigation = 2
+			if err := c.Status().Update(t.Context(), f); err != nil {
+				t.Fatalf("open attempt 2: %v", err)
+			}
+
+			runner.status, runner.done = nil, true
+			runner.events = []envelope.Event{{V: envelope.Version, Type: envelope.TypeFatal, Error: "claude exited 1"}}
+			if _, err := r.Reconcile(t.Context(), reqFor(fndName+"-inv-2")); err != nil {
+				t.Fatalf("Reconcile attempt 2: %v", err)
+			}
+			if f := getF(t, c); f.Status.Phase != tt.wantAfter {
+				t.Errorf("after attempt 2 phase = %q (%s), want %q", f.Status.Phase, f.Status.LastFailureReason,
+					tt.wantAfter)
+			}
+		})
 	}
 }

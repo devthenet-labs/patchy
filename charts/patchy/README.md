@@ -172,6 +172,22 @@ The genuinely shared settings stay global:
   Secrets (`anthropicSecret` + `anthropicAuth`, `foundrySecret`), `ssePingInterval`, and — for bedrock/vertex/entra —
   the `serviceAccount.annotations`/`podLabels` workload-identity attachment point, with `networkPolicy.extraEgress` for
   the cloud metadata side channels.
+- `egressBroker.limits.*` — what the broker enforces per pod and broker-wide before any upstream call: `requestsPerPod`,
+  `concurrentPerPod` + `concurrencyWait`, `tokensPerPod`, `tokensPerHour`, `maxTokensCeiling`, `modelAllowlist`,
+  `betaDenylist`, `maxAnthropicRequestBytes`, `maxRequestBytes`, and the pre-authentication `preauthRequestsPerSecond`,
+  `preauthBurst` and `tokenReviewsPerSecond`. Each defaults to the binary's own default (off, or its built-in value) and
+  renders only when set; `egressBroker.config.extra` still wins. Size them before enabling repository images, under
+  which the in-pod budget is advisory.
+- `agent.repositoryImages.*` — off by default: lets a watched repository name the image its claude agent runs in
+  (`.patchy/agent.yaml`, or the `image` of `.devcontainer/devcontainer.json`). `registries` (the allowlist of
+  `host/path/` prefixes), `cosignPublicKey` (or `allowUnsigned: true`) and `ephemeralStorage` (the disk wall on every
+  agent Job) are required when `enabled`; `maxBytes`, `onReject` (`default` runs a rejected declaration on the default
+  image, `handoff` parks the finding), `changesetMaxEntries`, and `pullSecret`/`pullSecretData` (a dockerconfigjson
+  Secret for registries other than ECR or Artifact Registry; the kubelet needs a same-named copy in `agent.namespace`,
+  and `pullSecretData` renders both) tune it. Enabling it fails the render while the agent egress is broad — set
+  `agent.networkPolicy.broadEgress: never` under `mode: none` or `istio` — and adds the EKS Pod Identity agent to
+  source-controller's NetworkPolicy, so an ECR allowlist needs only a Pod Identity association on the source-controller
+  ServiceAccount. See [Helm charts](../../docs/deployment/helm.md#repository-runner-images) in the docs.
 - `agent.networkPolicy.*` — the sandbox policies (above).
 - `commonLabels` / `commonAnnotations` — stamped on every object the chart renders (annotations reach the pods too;
   per-object annotations win key-by-key).

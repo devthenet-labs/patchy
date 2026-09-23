@@ -19,7 +19,13 @@ failure.
 
 With --run, the image is also run the way the agent pod runs it, on your local
 docker: agent-runner and the claude CLI are copied out of the claude runner
-image released with this CLI (--runner-image to override), and the image runs
+image released with this CLI or, for a development build, which has none, the
+newest release in the registry (the highest vX.Y.Z tag, never latest), pinned
+to the digest its tag names there now, so no stale local copy of the tag stands
+in for it; --runner-image overrides it and is used as given (a tag as your
+local docker has it). The runner-image line names the image and digest used;
+when none can be chosen (the registry is unreachable, say) it fails, the rest
+of the run is skipped, and --runner-image is the way on. The image runs
 as uid 65532 with a read-only root filesystem, no network, no capabilities, no
 privilege escalation, bounded processes, memory and CPU, sized executable tmpfs
 mounts at /tmp and /workspace, the two binaries read-only at /patchy/bin,
@@ -62,7 +68,7 @@ patchy check image <reference> [flags]
   -h, --help                  help for image
       --max-bytes int         largest compressed layer total per platform, as the operator's --repository-image-max-bytes (default 4294967296)
       --run                   also run the image the way the agent pod does, on the local docker
-      --runner-image string   claude runner image to take agent-runner and claude from with --run (default: the one released with this CLI)
+      --runner-image string   claude runner image to take agent-runner and claude from with --run, used as given (default: the one released with this CLI, or the newest release for a development build, pinned to its digest)
 ```
 
 ### Options inherited from parent commands

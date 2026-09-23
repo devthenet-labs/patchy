@@ -5,10 +5,14 @@ package runnercfg
 
 import (
 	"encoding/json"
+	"math/rand"
 	"os"
+	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"testing/quick"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -466,5 +470,122 @@ func TestRepositoryImages(t *testing.T) {
 				t.Errorf("RepositoryImages = (%v, %q), want (%v, %q)", enabled, storage, tt.wantEnabled, tt.wantStorage)
 			}
 		})
+	}
+}
+
+// chartEphemeralStoragePattern reads the pattern the chart's values schema
+// puts on agent.repositoryImages.ephemeralStorage.
+func chartEphemeralStoragePattern(t *testing.T) *regexp.Regexp {
+	t.Helper()
+	raw, err := os.ReadFile(chartSecretEnvEnum)
+	if err != nil {
+		t.Fatalf("read chart schema: %v", err)
+	}
+	var doc struct {
+		Properties struct {
+			Agent struct {
+				Properties struct {
+					RepositoryImages struct {
+						Properties struct {
+							EphemeralStorage struct {
+								Pattern string `json:"pattern"`
+							} `json:"ephemeralStorage"`
+						} `json:"properties"`
+					} `json:"repositoryImages"`
+				} `json:"properties"`
+			} `json:"agent"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse chart schema: %v", err)
+	}
+	pattern := doc.Properties.Agent.Properties.RepositoryImages.Properties.EphemeralStorage.Pattern
+	if pattern == "" {
+		t.Fatalf("%s: no ephemeralStorage pattern found — did the schema shape change?", chartSecretEnvEnum)
+	}
+	// helm validates schema patterns with Go's regexp (santhosh-tekuri
+	// jsonschema's default engine), so this is the same dialect.
+	return regexp.MustCompile(pattern)
+}
+
+// genQuantity returns a candidate ephemeral-storage value: a number form
+// and a suffix, each drawn from valid and near-miss spellings, or a short
+// run of quantity characters.
+func genQuantity(r *rand.Rand) string {
+	if r.Intn(3) == 0 {
+		const alphabet = "0123456789.+-eEinumkKMGTPi xB"
+		b := make([]byte, 1+r.Intn(6))
+		for i := range b {
+			b[i] = alphabet[r.Intn(len(alphabet))]
+		}
+		return string(b)
+	}
+	numbers := []string{"8", "20", "1.5", ".5", "5.", "08", "0", "+8", "-8", "1.5.5", ".", "", " 8"}
+	suffixes := []string{"", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "k", "M", "G", "T", "P", "E", "m", "n", "u",
+		"K", "GB", "gi", "e3", "E3", "e", "i", " ", "Gi "}
+	return numbers[r.Intn(len(numbers))] + suffixes[r.Intn(len(suffixes))]
+}
+
+// TestChartEphemeralStoragePatternIsSound: the chart renders
+// agent.repositoryImages.ephemeralStorage into PATCHY_AGENT_EPHEMERAL_STORAGE
+// for both job controllers, and RepositoryImages refuses a quantity that does
+// not parse — at startup, where under the chart's Recreate strategy it
+// replaces a running controller with a crash-looping one. So every value the
+// schema's pattern admits must be one RepositoryImages accepts, read from the
+// environment exactly as the chart delivers it; and the sizes operators write
+// must be admitted, or the pattern is merely strict.
+func TestChartEphemeralStoragePatternIsSound(t *testing.T) {
+	re := chartEphemeralStoragePattern(t)
+	accept := func(q string) error {
+		t.Setenv("PATCHY_AGENT_EPHEMERAL_STORAGE", q)
+		o := cli.NewOptions()
+		cmd := &cobra.Command{Use: "test", RunE: func(*cobra.Command, []string) error { return nil }}
+		o.Bind(cmd)
+		RegisterRepositoryImageFlags(cmd.Flags())
+		cmd.SetArgs([]string{"--repository-images"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		if err := o.Load(cmd); err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		_, _, err := RepositoryImages(o)
+		return err
+	}
+
+	for _, q := range []string{"8Gi", "20Gi", "512Mi", "1.5Gi", "1Ti", "8G", "100M", "500000k"} {
+		if !re.MatchString(q) {
+			t.Errorf("pattern %s refuses %q, a size operators write", re, q)
+		}
+		if err := accept(q); err != nil {
+			t.Errorf("RepositoryImages refuses %q: %v", q, err)
+		}
+	}
+
+	admitted := 0
+	cfg := &quick.Config{
+		MaxCount: 1000,
+		Rand:     rand.New(rand.NewSource(20260923)),
+		Values: func(args []reflect.Value, r *rand.Rand) {
+			args[0] = reflect.ValueOf(genQuantity(r))
+		},
+	}
+	sound := func(q string) bool {
+		// The empty string is the schema's "unset"; the render-time guard,
+		// not the pattern, refuses it when the block is enabled.
+		if q == "" || !re.MatchString(q) {
+			return true
+		}
+		admitted++
+		if err := accept(q); err != nil {
+			t.Logf("pattern admits %q, RepositoryImages refuses it: %v", q, err)
+			return false
+		}
+		return true
+	}
+	if err := quick.Check(sound, cfg); err != nil {
+		t.Error(err)
+	} else if admitted < 100 {
+		t.Errorf("only %d generated values matched the pattern; the property is near-vacuous", admitted)
 	}
 }

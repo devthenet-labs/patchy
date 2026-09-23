@@ -16,6 +16,12 @@
 # The data is assembled as a dict so the extra maps (config.extra, then
 # <controller>.config.extra) can override any derived key without rendering
 # it twice.
+#
+# agent.repositoryImages, when enabled, adds the repository-image keys to the
+# source-, investigation- and remediation-controller data, plus the cosign
+# public key ConfigMap source-controller mounts (last in this file). Its
+# render-time guards run here, because this file always renders.
+{{- include "patchy.repositoryImagesGuard" . }}
 {{- range $c := list
     (dict "name" "integration-controller" "vals" .Values.integrationController)
     (dict "name" "source-controller" "vals" .Values.sourceController)
@@ -74,6 +80,26 @@ starts.
 {{- $_ := set $data "PATCHY_ARTIFACT_INTERNAL_ADDR" ":9791" }}
 {{- $_ := set $data "PATCHY_WORKSPACE_RETENTION" $root.Values.evaluationController.workspaceRetention }}
 {{- end }}
+{{- $ri := $root.Values.agent.repositoryImages | default dict }}
+{{- if $ri.enabled }}
+{{/*
+Repository-declared runner images: source-controller reads the declaration
+out of the pinned tarball and resolves it under this policy. The cosign key
+and the registry credential are files (mounted by deployments.yaml); only
+their paths are config.
+*/}}
+{{- $_ := set $data "PATCHY_REPOSITORY_IMAGES" "true" }}
+{{- $_ := set $data "PATCHY_REPOSITORY_IMAGE_REGISTRIES" (join "," $ri.registries) }}
+{{- $_ := set $data "PATCHY_REPOSITORY_IMAGE_MAX_BYTES" $ri.maxBytes }}
+{{- $_ := set $data "PATCHY_REPOSITORY_IMAGE_ON_REJECT" ($ri.onReject | default "default") }}
+{{- $_ := set $data "PATCHY_REPOSITORY_IMAGE_ALLOW_UNSIGNED" ($ri.allowUnsigned | default false) }}
+{{- if $ri.cosignPublicKey }}
+{{- $_ := set $data "PATCHY_REPOSITORY_IMAGE_COSIGN_KEY_FILE" "/etc/patchy/repository-image/cosign.pub" }}
+{{- end }}
+{{- if $ri.pullSecret }}
+{{- $_ := set $data "DOCKER_CONFIG" "/etc/patchy/registry" }}
+{{- end }}
+{{- end }}
 {{- else if or (eq $c.name "investigation-controller") (eq $c.name "remediation-controller") }}
 {{/*
 The job-controller block, shared by both: how the agent Jobs run, and the
@@ -131,6 +157,19 @@ namespace for claude anymore.
 {{- $_ := set $data "PATCHY_REMEDIATE_MODEL" $root.Values.agent.remediate.model }}
 {{- $_ := set $data "PATCHY_REMEDIATE_TIMEOUT" $root.Values.agent.remediate.timeout }}
 {{- end }}
+{{- $ri := $root.Values.agent.repositoryImages | default dict }}
+{{- if $ri.enabled }}
+{{/*
+Both job controllers run a Repository's pinned image only while this is on,
+and put the ephemeral-storage wall on every agent Job; the changeset entry
+cap is remediation's alone.
+*/}}
+{{- $_ := set $data "PATCHY_REPOSITORY_IMAGES" "true" }}
+{{- $_ := set $data "PATCHY_AGENT_EPHEMERAL_STORAGE" $ri.ephemeralStorage }}
+{{- if eq $c.name "remediation-controller" }}
+{{- $_ := set $data "PATCHY_CHANGESET_MAX_ENTRIES" $ri.changesetMaxEntries }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{/*
 The global egress proxy (spec.proxy on a Forge/GitHub Integration overrides
@@ -184,4 +223,25 @@ data:
     {{- end }}
     {{ $k }}: {{ $s | quote }}
     {{- end }}
+{{- end }}
+{{- $ri := .Values.agent.repositoryImages | default dict }}
+{{- if and $ri.enabled $ri.cosignPublicKey }}
+---
+# The public key every repository-declared image must be cosign-signed with,
+# mounted into source-controller at /etc/patchy/repository-image/cosign.pub
+# (PATCHY_REPOSITORY_IMAGE_COSIGN_KEY_FILE). A public key, so a ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: {{ include "patchy.fullname" . }}-repository-image-key
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" "source-controller") | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" .) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+data:
+    cosign.pub: |
+        {{- $ri.cosignPublicKey | trim | nindent 8 }}
 {{- end }}

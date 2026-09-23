@@ -74,7 +74,13 @@ func newCheckImageCmd(opts *Options) *cobra.Command {
 			"failure.\n\n" +
 			"With --run, the image is also run the way the agent pod runs it, on your local\n" +
 			"docker: agent-runner and the claude CLI are copied out of the claude runner\n" +
-			"image released with this CLI (--runner-image to override), and the image runs\n" +
+			"image released with this CLI or, for a development build, which has none, the\n" +
+			"newest release in the registry (the highest vX.Y.Z tag, never latest), pinned\n" +
+			"to the digest its tag names there now, so no stale local copy of the tag stands\n" +
+			"in for it; --runner-image overrides it and is used as given (a tag as your\n" +
+			"local docker has it). The runner-image line names the image and digest used;\n" +
+			"when none can be chosen (the registry is unreachable, say) it fails, the rest\n" +
+			"of the run is skipped, and --runner-image is the way on. The image runs\n" +
 			"as uid 65532 with a read-only root filesystem, no network, no capabilities, no\n" +
 			"privilege escalation, bounded processes, memory and CPU, sized executable tmpfs\n" +
 			"mounts at /tmp and /workspace, the two binaries read-only at /patchy/bin,\n" +
@@ -101,7 +107,11 @@ func newCheckImageCmd(opts *Options) *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: noFileCompletion,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCheckImage(cmd.Context(), opts, f, args[0], imagecheck.ExecCommander{})
+			return runCheckImage(cmd.Context(), opts, f, args[0], checkImageDeps{
+				docker:   imagecheck.ExecCommander{},
+				registry: imagecheck.RemoteRegistry{Keychain: authn.DefaultKeychain},
+				version:  version.Version,
+			})
 		},
 	}
 	fl := cmd.Flags()
@@ -114,17 +124,27 @@ func newCheckImageCmd(opts *Options) *cobra.Command {
 		"largest compressed layer total per platform, as the operator's --repository-image-max-bytes")
 	fl.BoolVar(&f.run, "run", false, "also run the image the way the agent pod does, on the local docker")
 	fl.StringVar(&f.runnerImage, "runner-image", "",
-		"claude runner image to take agent-runner and claude from with --run "+
-			"(default: the one released with this CLI)")
+		"claude runner image to take agent-runner and claude from with --run, used as given "+
+			"(default: the one released with this CLI, or the newest release for a development build, "+
+			"pinned to its digest)")
 	_ = cmd.RegisterFlagCompletionFunc("allow", noFileCompletion)
 	_ = cmd.RegisterFlagCompletionFunc("runner-image", noFileCompletion)
 	return cmd
 }
 
+// checkImageDeps is what `check image` reaches beyond its arguments: the
+// docker CLI, the registry the default runner image is chosen from, and the
+// CLI's own version, which decides that choice. Tests fake all three.
+type checkImageDeps struct {
+	docker   imagecheck.Commander
+	registry imagecheck.Registry
+	version  string
+}
+
 // runCheckImage runs the checks and renders the report; any failed check
 // makes the command fail.
 func runCheckImage(ctx context.Context, opts *Options, f *checkImageFlags, reference string,
-	docker imagecheck.Commander) error {
+	deps checkImageDeps) error {
 	format, err := printer.ParseFormat(opts.Output)
 	if err != nil {
 		return errUsage(err)
@@ -158,11 +178,8 @@ func runCheckImage(ctx context.Context, opts *Options, f *checkImageFlags, refer
 		return err
 	}
 	if f.run {
-		report.RunnerImage = f.runnerImage
-		if report.RunnerImage == "" {
-			report.RunnerImage = imagecheck.DefaultRunnerImage(version.Version)
-		}
-		report.Checks = append(report.Checks, sandbox(ctx, opts, report, docker)...)
+		checks := sandbox(ctx, opts, &report, f.runnerImage, deps)
+		report.Checks = append(report.Checks, checks...)
 	}
 
 	if err := renderCheckImage(opts, report, format); err != nil {
@@ -175,9 +192,11 @@ func runCheckImage(ctx context.Context, opts *Options, f *checkImageFlags, refer
 }
 
 // sandbox runs the image on the local docker, unless the static checks
-// already say the pod could never run it.
-func sandbox(ctx context.Context, opts *Options, report imagecheck.Report,
-	docker imagecheck.Commander) []imagecheck.Check {
+// already say the pod could never run it: first the runner-image check,
+// choosing the image agent-runner and claude come from (recorded on the
+// report), then the per-platform checks, skipped when there is none.
+func sandbox(ctx context.Context, opts *Options, report *imagecheck.Report, runnerImage string,
+	deps checkImageDeps) []imagecheck.Check {
 	image := report.Image
 	for _, c := range report.Checks {
 		switch {
@@ -192,23 +211,31 @@ func sandbox(ctx context.Context, opts *Options, report imagecheck.Report,
 		// still have it, which is how an image is tried before it is pushed.
 		image = report.Reference
 	}
+	chooseCtx, cancel := context.WithTimeout(ctx, staticCheckTimeout)
+	runner, chosen := imagecheck.ChooseRunner(chooseCtx, deps.registry, runnerImage, deps.version)
+	cancel()
+	report.RunnerImage = runner
+	checks := []imagecheck.Check{chosen}
+	if runner == nil {
+		return append(checks, imagecheck.SkipSandbox("there is no runner image to take agent-runner and claude from")...)
+	}
 	var platforms []string
 	for _, p := range report.Platforms {
 		platforms = append(platforms, p.Platform)
 	}
 	dir, err := sandboxDir()
 	if err != nil {
-		return imagecheck.SkipSandbox("no directory for the runner binaries: " + err.Error())
+		return append(checks, imagecheck.SkipSandbox("no directory for the runner binaries: "+err.Error())...)
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
-	return imagecheck.Sandbox(ctx, docker, imagecheck.SandboxConfig{
+	return append(checks, imagecheck.Sandbox(ctx, deps.docker, imagecheck.SandboxConfig{
 		Image:       image,
 		SearchPath:  report.SearchPath,
 		Platforms:   platforms,
-		RunnerImage: report.RunnerImage,
+		RunnerImage: runner.Image(),
 		BinDir:      dir,
 		Progress:    func(msg string) { notef(opts.ErrOut, "patchy: %s\n", msg) },
-	})
+	})...)
 }
 
 // sandboxDir makes the directory the runner binaries are copied into and

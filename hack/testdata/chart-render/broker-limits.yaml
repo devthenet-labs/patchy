@@ -1,0 +1,24 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# chart-render-test fixture: every egressBroker.limits value set, including
+# integers large enough that a naive float rendering would print them in
+# scientific notation.
+egressBroker:
+    limits:
+        requestsPerPod: 2000
+        concurrentPerPod: 4
+        concurrencyWait: -1s
+        tokensPerPod: 30000000
+        tokensPerHour: 100000000
+        maxTokensCeiling: 64000
+        modelAllowlist:
+            - anthropic/claude-sonnet-5
+            - anthropic/claude-opus-5
+        betaDenylist:
+            - none
+        maxAnthropicRequestBytes: 4194304
+        maxRequestBytes: 20971520
+        preauthRequestsPerSecond: 2.5
+        preauthBurst: 100
+        tokenReviewsPerSecond: 20

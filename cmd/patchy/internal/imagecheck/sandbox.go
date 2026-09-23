@@ -19,10 +19,6 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/runnerimage"
 )
 
-// RunnerImageRepository is where the release publishes the claude runner
-// image, the trusted donor of agent-runner and the claude CLI.
-const RunnerImageRepository = "ghcr.io/devthenet-labs/patchy/claude-agent-runner"
-
 // The sandbox's fixed shape: where the Job's prepare init copies the
 // binaries from and to, the uid every patchy container runs as, and the
 // pod's two writable emptyDirs.
@@ -56,17 +52,6 @@ var injected = []string{"agent-runner", "claude"}
 // it, which for a toolchain image of a few GiB takes minutes; the checks
 // themselves take seconds, and agent-runner bounds each preflight command.
 const runTimeout = 15 * time.Minute
-
-// DefaultRunnerImage is the claude runner image released with the given CLI
-// version, "latest" for a development build: the agent-runner in it speaks
-// the preflight subcommand this CLI drives.
-func DefaultRunnerImage(version string) string {
-	v := strings.TrimPrefix(version, "v")
-	if major, _, ok := strings.Cut(v, "."); !ok || major == "" || strings.Trim(major, "0123456789") != "" {
-		return RunnerImageRepository + ":latest"
-	}
-	return RunnerImageRepository + ":v" + v
-}
 
 // Result is how one command ended.
 type Result struct {

@@ -1207,6 +1207,84 @@
                 "ssePingInterval": {
                     "$ref": "#/definitions/duration"
                 },
+                "limits": {
+                    "type": "object",
+                    "description": "Broker-side enforcement (the egress-broker's limit flags); 0 or empty keeps the binary's default, which is off unless noted",
+                    "additionalProperties": false,
+                    "properties": {
+                        "requestsPerPod": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Requests one agent pod may make in its lifetime"
+                        },
+                        "concurrentPerPod": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "In-flight requests one agent pod may hold"
+                        },
+                        "concurrencyWait": {
+                            "type": "string",
+                            "description": "How long a request over concurrentPerPod waits for a slot (Go duration; empty is the binary's default, negative refuses at once)",
+                            "pattern": "^(-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+|0)?$"
+                        },
+                        "tokensPerPod": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Tokens (input, cache creation, cache read, output) one agent pod may consume"
+                        },
+                        "tokensPerHour": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Broker-wide trailing-hour token ceiling"
+                        },
+                        "maxTokensCeiling": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Largest max_tokens a request may set"
+                        },
+                        "modelAllowlist": {
+                            "type": "array",
+                            "description": "Model ids pods may name; empty admits every model",
+                            "items": {
+                                "type": "string",
+                                "minLength": 1
+                            }
+                        },
+                        "betaDenylist": {
+                            "type": "array",
+                            "description": "anthropic-beta glob patterns to strip; empty keeps the built-in list, [none] strips nothing",
+                            "items": {
+                                "type": "string",
+                                "minLength": 1
+                            }
+                        },
+                        "maxAnthropicRequestBytes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Largest buffered request body on the anthropic, vertex and foundry routes; 0 is the binary's default"
+                        },
+                        "maxRequestBytes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Largest request body on the payload-signing bedrock route; 0 is the binary's default"
+                        },
+                        "preauthRequestsPerSecond": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Per-source-IP request rate admitted before authentication"
+                        },
+                        "preauthBurst": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Per-source-IP burst and in-flight cap before authentication"
+                        },
+                        "tokenReviewsPerSecond": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Broker-wide TokenReview rate"
+                        }
+                    }
+                },
                 "anthropicSecret": {
                     "type": "string",
                     "description": "Secret (release namespace) holding the Anthropic API key under api-key; the broker is its only consumer"
@@ -1298,6 +1376,68 @@
                     "type": "object",
                     "additionalProperties": {
                         "$ref": "#/definitions/agentRunner"
+                    }
+                },
+                "repositoryImages": {
+                    "type": "object",
+                    "description": "Repository-declared runner images: a watched repository names the image its claude agent runs in; off by default, and enabling it fails the render unless the required values are set and the agent egress is narrow",
+                    "additionalProperties": false,
+                    "required": [
+                        "enabled"
+                    ],
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "The kill switch; false renders none of the keys below"
+                        },
+                        "registries": {
+                            "type": "array",
+                            "description": "Registry path prefixes (host/path/) a declared image must sit under; required when enabled",
+                            "items": {
+                                "type": "string",
+                                "description": "host[:port]/segment[/segment...][/]: at least one path segment, no tag, digest, glob, comma or whitespace (source-controller refuses such an entry at startup)",
+                                "pattern": "^[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._-]+)+/?$"
+                            }
+                        },
+                        "cosignPublicKey": {
+                            "type": "string",
+                            "description": "PEM public key every declared image must be cosign-signed with; required when enabled unless allowUnsigned"
+                        },
+                        "allowUnsigned": {
+                            "type": "boolean",
+                            "description": "Admit unsigned images (explicit opt-out of signature verification)"
+                        },
+                        "maxBytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Largest compressed layer total of one platform of a declared image, in bytes"
+                        },
+                        "onReject": {
+                            "type": "string",
+                            "enum": [
+                                "default",
+                                "handoff"
+                            ],
+                            "description": "What a rejected declaration does to the finding: run it on the default image (default) or park it for a human (handoff)"
+                        },
+                        "ephemeralStorage": {
+                            "type": "string",
+                            "description": "Ephemeral-storage request and limit on both agent containers, an unsigned quantity with an optional binary (Ki..Ei) or decimal (k, M..E) suffix such as 8Gi; required when enabled",
+                            "pattern": "^(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([KMGTPE]i|[numkMGTPE])?)?$"
+                        },
+                        "changesetMaxEntries": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Most files a changeset from a repository-image run may touch"
+                        },
+                        "pullSecret": {
+                            "type": "string",
+                            "description": "dockerconfigjson Secret (release namespace) source-controller resolves declared images with, mounted optional; also listed in the agent ServiceAccount's imagePullSecrets"
+                        },
+                        "pullSecretData": {
+                            "type": "string",
+                            "description": "The .dockerconfigjson content (JSON, not base64) rendered as the pullSecret Secret in both the release namespace and agent.namespace"
+                        }
                     }
                 },
                 "networkPolicy": {

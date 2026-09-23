@@ -195,11 +195,19 @@ func TestRunnersCredentialWiring(t *testing.T) {
 	if !claude.Brokered || claude.Secret != "" || claude.SecretEnv != "" {
 		t.Errorf("claude runner = %+v, want brokered with no Secret channel", claude)
 	}
+	// Only the brokered claude runner may run a repository-declared image;
+	// codex holds a real credential in-pod and never injects.
+	if want := []string{"agent-runner", "claude"}; !slices.Equal(claude.Inject, want) {
+		t.Errorf("claude Inject = %v, want %v", claude.Inject, want)
+	}
 	if got := claude.Env["ANTHROPIC_BASE_URL"]; got != "http://broker:8080/anthropic" {
 		t.Errorf("claude ANTHROPIC_BASE_URL = %q, want the broker's anthropic route", got)
 	}
 
 	codex := runners["codex"]
+	if codex.Inject != nil {
+		t.Errorf("codex Inject = %v, want nil (a credential-holding runner never injects)", codex.Inject)
+	}
 	want := map[string]string{
 		"image":     "codex:1",
 		"secret":    "chatgpt-workspace",
@@ -385,6 +393,77 @@ func TestSecretEnvFlagsMatchAcceptedChannels(t *testing.T) {
 			}
 			if !accepts(tt.harness, flag.DefValue) {
 				t.Errorf("default %q is not an accepted channel %v", flag.DefValue, envKeys(tt.harness))
+			}
+		})
+	}
+}
+
+// TestEvolveRunnersNeverInject: evaluation Jobs have no pinned tree to read a
+// declaration from and always run their harness's image, so the evolve
+// fleet's brokered claude runner, unlike the finding one, injects nothing.
+func TestEvolveRunnersNeverInject(t *testing.T) {
+	o := cli.NewOptions()
+	cmd := &cobra.Command{Use: "test", RunE: func(*cobra.Command, []string) error { return nil }}
+	o.Bind(cmd)
+	RegisterEvolveFlags(cmd.Flags())
+	cmd.SetArgs([]string{"--evolve-claude-image", "evolve-claude:1", "--broker-url", "http://broker:8080"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if err := o.Load(cmd); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	runners, err := EvolveRunners(o)
+	if err != nil {
+		t.Fatalf("EvolveRunners: %v", err)
+	}
+	if claude := runners["claude"]; !claude.Brokered || claude.Inject != nil {
+		t.Errorf("evolve claude runner = %+v, want brokered with no Inject", claude)
+	}
+}
+
+// TestRepositoryImages: the kill switch defaults off with no ephemeral
+// storage (every Job exactly as before), and turning it on without the
+// wall on disk, or with a quantity that does not parse, fails startup.
+func TestRepositoryImages(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		wantEnabled bool
+		wantStorage string
+		wantErr     string
+	}{
+		{"defaults", nil, false, "", ""},
+		{"storage alone", []string{"--agent-ephemeral-storage", "8Gi"}, false, "8Gi", ""},
+		{"enabled with storage", []string{"--repository-images", "--agent-ephemeral-storage", "8Gi"}, true, "8Gi", ""},
+		{"enabled without storage", []string{"--repository-images"}, false, "", "--agent-ephemeral-storage is required"},
+		{"bad quantity", []string{"--agent-ephemeral-storage", "lots"}, false, "", "--agent-ephemeral-storage \"lots\""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			o := cli.NewOptions()
+			cmd := &cobra.Command{Use: "test", RunE: func(*cobra.Command, []string) error { return nil }}
+			o.Bind(cmd)
+			RegisterRepositoryImageFlags(cmd.Flags())
+			cmd.SetArgs(tt.args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if err := o.Load(cmd); err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			enabled, storage, err := RepositoryImages(o)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("RepositoryImages err = %v, want one containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("RepositoryImages: %v", err)
+			}
+			if enabled != tt.wantEnabled || storage != tt.wantStorage {
+				t.Errorf("RepositoryImages = (%v, %q), want (%v, %q)", enabled, storage, tt.wantEnabled, tt.wantStorage)
 			}
 		})
 	}

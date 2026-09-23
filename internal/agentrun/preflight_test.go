@@ -6,6 +6,7 @@ package agentrun
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -405,6 +406,68 @@ func TestStageOutcomeBrokerLimit(t *testing.T) {
 			}
 			if tt.want == envelope.OutcomeRuntimeError && carries {
 				t.Errorf("detail = %q quotes text that was not the broker's terminal answer", detail)
+			}
+		})
+	}
+}
+
+// TestPreflightMain pins the subcommand's contract with the workstation
+// check: the verdict line on out, 0 for a compatible image,
+// ExitPreflightFailed for an incompatible one, and a different status,
+// logged, when no verdict could be reached.
+func TestPreflightMain(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		bin      map[string]string
+		path     map[string]string
+		noBinDir bool
+		want     int
+		out      string
+		log      string
+	}{
+		{name: "compatible image", bin: map[string]string{"claude": "exit 0"},
+			path: map[string]string{"git": "exit 0", "bash": "exit 0"}, want: 0, out: "preflight passed"},
+		{name: "named harness", args: []string{"claude"}, bin: map[string]string{"claude": "exit 0"},
+			path: map[string]string{"git": "exit 0", "bash": "exit 0"}, want: 0, out: "/claude --version`"},
+		{name: "no bash", bin: map[string]string{"claude": "exit 0"}, path: map[string]string{"git": "exit 0"},
+			want: ExitPreflightFailed, out: "preflight: `bash -c true` could not start"},
+		{name: "claude not injected", path: map[string]string{"git": "exit 0", "bash": "exit 0"},
+			want: ExitPreflightFailed, out: "preflight: no claude binary in"},
+		{name: "no bin dir", noBinDir: true, want: exitPreflightMisconfigured, log: BinDirEnv + " is required"},
+		{name: "unknown harness", args: []string{"nope"}, want: exitPreflightMisconfigured,
+			log: `unknown harness \"nope\"`},
+		{name: "too many arguments", args: []string{"claude", "extra"}, want: exitPreflightMisconfigured,
+			log: "usage: agent-runner preflight [harness]"},
+	}
+	if ExitPreflightFailed == 0 || ExitPreflightFailed == exitPreflightMisconfigured {
+		t.Fatal("the incompatible verdict must be distinguishable from success and from no verdict")
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			binDir, pathDir := t.TempDir(), t.TempDir()
+			for name, body := range tt.bin {
+				writeTool(t, binDir, name, body)
+			}
+			for name, body := range tt.path {
+				writeTool(t, pathDir, name, body)
+			}
+			t.Setenv("PATH", pathDir)
+			env := map[string]string{BinDirEnv: binDir, "PATCHY_WORKSPACE": t.TempDir()}
+			if tt.noBinDir {
+				delete(env, BinDirEnv)
+			}
+			var out, log bytes.Buffer
+			got := PreflightMain(context.Background(), tt.args, func(k string) string { return env[k] },
+				&runner.Exec{}, &out, slog.New(slog.NewTextHandler(&log, nil)))
+			if got != tt.want {
+				t.Errorf("PreflightMain = %d, want %d (out %q, log %q)", got, tt.want, out.String(), log.String())
+			}
+			if !strings.Contains(out.String(), tt.out) {
+				t.Errorf("out = %q, want it to mention %q", out.String(), tt.out)
+			}
+			if !strings.Contains(log.String(), tt.log) {
+				t.Errorf("log = %q, want it to mention %q", log.String(), tt.log)
 			}
 		})
 	}

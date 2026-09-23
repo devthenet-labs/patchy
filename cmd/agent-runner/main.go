@@ -10,7 +10,11 @@
 // runs the negative-connectivity check the trusted prepare init container
 // performs before a repository-declared image gets to run anything, and
 // exits sandboxprobe.ExitUnenforced when egress is still open at the end of
-// the window.
+// the window. Invoked as `agent-runner preflight [harness]`
+// (agentrun.PreflightCommand) it runs only the preflight a stage runs first
+// on a repository-declared image, prints the verdict on stdout and exits
+// agentrun.ExitPreflightFailed when the image cannot run the harness; the
+// workstation check `patchy check image --run` drives it.
 package main
 
 import (
@@ -28,19 +32,25 @@ import (
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := run(ctx, os.Args, os.Getenv, os.Stderr)
+	code := run(ctx, os.Args, os.Getenv, os.Stdout, os.Stderr)
 	stop()
 	os.Exit(code)
 }
 
 // run is the process: args and the environment in, diagnostics to stderr
-// (stdout is reserved for the envelope event stream the controller parses),
-// the exit status out.
-func run(ctx context.Context, args []string, getenv func(string) string, stderr io.Writer) int {
+// (a stage's stdout is reserved for the envelope event stream the
+// controller parses; the preflight subcommand prints its verdict there
+// instead), the exit status out.
+func run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 
-	if len(args) > 1 && args[1] == sandboxprobe.Command {
-		return sandboxprobe.Main(ctx, getenv, log)
+	if len(args) > 1 {
+		switch args[1] {
+		case sandboxprobe.Command:
+			return sandboxprobe.Main(ctx, getenv, log)
+		case agentrun.PreflightCommand:
+			return agentrun.PreflightMain(ctx, args[2:], getenv, &runner.Exec{}, stdout, log)
+		}
 	}
 
 	cfg, err := agentrun.FromEnv(getenv)

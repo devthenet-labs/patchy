@@ -14,7 +14,10 @@
 // the forge write seam (internal/forge + internal/ghpush — the only holder
 // of a forge write credential) and opens the pull request; on failure it
 // re-queues or exhausts the finding. Merging stays human; the merge webhook
-// (integration-controller) completes the finding.
+// (integration-controller) completes the finding. Every changeset is
+// validated before the first forge call (entry cap, path shape, and on a
+// repository-declared image no CI definitions); a refusal fails the attempt
+// changeset_rejected.
 //
 // The binary also hosts internal/controller/rollup — the all-time
 // statistics aggregation and the finding TTL.

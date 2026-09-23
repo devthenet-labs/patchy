@@ -336,7 +336,8 @@ func TestPinCLI(t *testing.T) {
 // nothing reads) when the egress broker answered its first request 429 at a
 // per-pod limit: a synthetic assistant message the CLI flags as an API
 // error, then the terminal result carrying the same text.
-const streamBrokerLimit = `{"type":"system","subtype":"init","session_id":"d267e741-0839-4a0b-98de-58c91facde4f"}` + "\n" +
+const streamBrokerLimit = `{"type":"system","subtype":"init",` +
+	`"session_id":"d267e741-0839-4a0b-98de-58c91facde4f"}` + "\n" +
 	`{"type":"assistant","message":{"id":"a7406e26-4a34-44b7-b694-ac641a2dec2b","model":"<synthetic>",` +
 	`"role":"assistant","stop_reason":"stop_sequence","type":"message","usage":{"input_tokens":0,"output_tokens":0},` +
 	`"content":[{"type":"text","text":"API Error: Request rejected (429) · egress broker: per-pod limit: ` +

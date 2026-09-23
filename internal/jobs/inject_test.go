@@ -233,7 +233,8 @@ func TestInjectedPrepareContainer(t *testing.T) {
 		t.Errorf("prepare script does not end with the probe:\n%s", script)
 	}
 	lines := strings.Split(strings.TrimSpace(script), "\n")
-	if got, want := strings.Fields(lines[len(lines)-1]), []string{"/usr/local/bin/agent-runner", sandboxprobe.Command}; !slices.Equal(got, want) {
+	got, want := strings.Fields(lines[len(lines)-1]), []string{"/usr/local/bin/agent-runner", sandboxprobe.Command}
+	if !slices.Equal(got, want) {
 		t.Errorf("probe invocation = %q, want %q", got, want)
 	}
 	if !strings.HasPrefix(script, "set -eu\n") {

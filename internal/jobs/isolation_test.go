@@ -29,31 +29,42 @@ func credentialFindings(job *batchv1.Job, audience string) []string {
 	var out []string
 	pod := job.Spec.Template.Spec
 	for _, ct := range append(append([]corev1.Container{}, pod.InitContainers...), pod.Containers...) {
-		for _, e := range ct.Env {
-			if e.ValueFrom != nil {
-				out = append(out, fmt.Sprintf("%s: env %s is sourced from %+v", ct.Name, e.Name, *e.ValueFrom))
-			}
-			if !credentialChannelEnv[e.Name] || e.Value == "" {
-				continue
-			}
-			if e.Name == provider.PlaceholderAuthEnv && e.Value == provider.PlaceholderAuthToken {
-				continue
-			}
-			out = append(out, fmt.Sprintf("%s: credential channel %s = %q", ct.Name, e.Name, e.Value))
+		out = append(out, containerCredentialFindings(ct)...)
+	}
+	return append(out, volumeCredentialFindings(job, audience)...)
+}
+
+// containerCredentialFindings is credentialFindings for one container's env
+// and, for the agent container, its mounts.
+func containerCredentialFindings(ct corev1.Container) []string {
+	var out []string
+	for _, e := range ct.Env {
+		if e.ValueFrom != nil {
+			out = append(out, fmt.Sprintf("%s: env %s is sourced from %+v", ct.Name, e.Name, *e.ValueFrom))
 		}
-		if len(ct.EnvFrom) > 0 {
-			out = append(out, fmt.Sprintf("%s: envFrom %+v", ct.Name, ct.EnvFrom))
-		}
-		if ct.Name != agentContainerName {
+		if !credentialChannelEnv[e.Name] || e.Value == "" {
 			continue
 		}
-		for _, m := range ct.VolumeMounts {
-			if m.Name == volInput {
-				out = append(out, "agent: mounts the per-Job Secret")
-			}
+		if e.Name == provider.PlaceholderAuthEnv && e.Value == provider.PlaceholderAuthToken {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s: credential channel %s = %q", ct.Name, e.Name, e.Value))
+	}
+	if len(ct.EnvFrom) > 0 {
+		out = append(out, fmt.Sprintf("%s: envFrom %+v", ct.Name, ct.EnvFrom))
+	}
+	for _, m := range ct.VolumeMounts {
+		if ct.Name == agentContainerName && m.Name == volInput {
+			out = append(out, "agent: mounts the per-Job Secret")
 		}
 	}
-	for _, v := range pod.Volumes {
+	return out
+}
+
+// volumeCredentialFindings is credentialFindings for the pod's volumes.
+func volumeCredentialFindings(job *batchv1.Job, audience string) []string {
+	var out []string
+	for _, v := range job.Spec.Template.Spec.Volumes {
 		switch {
 		case v.EmptyDir != nil:
 		case v.Secret != nil:

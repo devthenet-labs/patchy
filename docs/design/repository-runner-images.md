@@ -325,11 +325,10 @@ covers the whole config surface without a hand-kept list; the proxy variables jo
 env overrides image ENV, so this is the backstop for names the resolver did not know. Git's repository redirections
 (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_COMMON_DIR`) cannot be blanked, because git
 reads an empty value as a broken path and Kubernetes cannot unset a variable, so they join `reservedEnv` instead and an
-image that sets one is refused at resolution. `agent-runner` is `CGO_ENABLED=0`
-(`.goreleaser.yaml`), so `LD_PRELOAD` cannot reach it. `agent-runner` resolves the harness CLI under `$PATCHY_BIN_DIR`
-alone (`harness.AvailableIn`, never falling back to PATH) during preflight and runs the stage by that absolute path
-(`pinCLI`). `git`, `sh` and `bash` come from the image by contract. Both containers carry the ephemeral-storage request
-and limit.
+image that sets one is refused at resolution. `agent-runner` is `CGO_ENABLED=0` (`.goreleaser.yaml`), so `LD_PRELOAD`
+cannot reach it. `agent-runner` resolves the harness CLI under `$PATCHY_BIN_DIR` alone (`harness.AvailableIn`, never
+falling back to PATH) during preflight and runs the stage by that absolute path (`pinCLI`). `git`, `sh` and `bash` come
+from the image by contract. Both containers carry the ephemeral-storage request and limit.
 
 Preflight: before the stage, `agent-runner` runs `$PATCHY_BIN_DIR/claude --version`, `git --version` and `bash -c true`;
 failure emits a terminal event with the new `envelope.OutcomeImageIncompatible` (`image_incompatible`) and the detail,

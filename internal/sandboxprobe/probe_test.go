@@ -225,20 +225,7 @@ func TestRunPropertyVerdictFollowsFirstConfirmedRun(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		e := 0
-		for r := confirmRounds; r <= rounds && e == 0; r++ {
-			run := true
-			for k := r - confirmRounds + 1; k <= r; k++ {
-				run = run && !isOpen(k)
-			}
-			if run {
-				e = r
-			}
-		}
-		u := steps
-		for !isOpen(u) {
-			u++
-		}
+		e, u := verdictRounds(isOpen, steps, rounds)
 		if e > 0 && e < u {
 			enforced++
 			return res.Enforced && res.Rounds == e && res.Open == nil &&
@@ -255,6 +242,25 @@ func TestRunPropertyVerdictFollowsFirstConfirmedRun(t *testing.T) {
 	if enforced == 0 || unenforced == 0 {
 		t.Errorf("generator reached enforced=%d unenforced=%d, want both", enforced, unenforced)
 	}
+}
+
+// verdictRounds is the property's oracle: e is the first round completing
+// confirmRounds consecutive blocked rounds (0 if none within rounds), u the
+// first round at or past the window's last round, steps, in which a target
+// answers (rounds past the pattern always answer, so u exists).
+func verdictRounds(isOpen func(round int) bool, steps, rounds int) (e, u int) {
+	for r := confirmRounds; r <= rounds && e == 0; r++ {
+		run := true
+		for k := r - confirmRounds + 1; k <= r; k++ {
+			run = run && !isOpen(k)
+		}
+		if run {
+			e = r
+		}
+	}
+	for u = steps; !isOpen(u); u++ {
+	}
+	return e, u
 }
 
 func TestRunCancelled(t *testing.T) {
@@ -456,7 +462,7 @@ func TestFromEnvRequiresAPIServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromEnv: %v", err)
 	}
-	var addrs []string
+	addrs := make([]string, 0, len(p.Targets))
 	for _, target := range p.Targets {
 		addrs = append(addrs, target.Addr)
 	}

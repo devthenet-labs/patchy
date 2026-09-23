@@ -30,6 +30,7 @@ func newTransport() *http.Transport {
 type route struct {
 	name     string
 	upstream Upstream
+	surface  surface
 	proxy    *httputil.ReverseProxy
 }
 
@@ -39,12 +40,17 @@ type route struct {
 // not see, and the credential transport attaches the real credential last —
 // so nothing caller-controlled can survive into the authenticated request.
 func newRoute(name string, u Upstream, log *slog.Logger) *route {
-	rt := &route{name: name, upstream: u}
+	rt := &route{name: name, upstream: u, surface: surfaceFor(name, u)}
 	rt.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(u.Target)
 			pr.Out.Host = u.Target.Host
 			stripCallerHeaders(pr.Out.Header)
+			// Ask for an unencoded response: the usage scanner reads the
+			// bytes as they stream, and a caller-negotiated gzip or br body
+			// would blind it. Setting the header also stops the transport
+			// adding its own gzip.
+			pr.Out.Header.Set("Accept-Encoding", "identity")
 		},
 		Transport:     credentialTransport{next: newTransport(), cred: u.Credential},
 		FlushInterval: -1, // stream: flush every write immediately
@@ -91,23 +97,30 @@ func (t credentialTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return t.next.RoundTrip(req)
 }
 
-// bufferBody reads the whole request body into memory (bounded) so a signing
-// credential can hash the payload. It reports whether the body fit.
-func bufferBody(r *http.Request, limit int64) (bool, error) {
+// bufferBody reads the whole request body into memory (bounded) so it can be
+// inspected and, on a signing route, hashed. It returns the bytes and
+// whether the body fit; the request is left re-readable either way it fit.
+func bufferBody(r *http.Request, limit int64) ([]byte, bool, error) {
 	if r.Body == nil {
-		return true, nil
+		return nil, true, nil
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
-		return true, err
+		return nil, true, err
 	}
 	if int64(len(body)) > limit {
-		return false, nil
+		return nil, false, nil
 	}
+	setBody(r, body)
+	return body, true, nil
+}
+
+// setBody makes body the request's re-readable body, as a signing
+// credential needs it.
+func setBody(r *http.Request, body []byte) {
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
-	return true, nil
 }
 
 // writeAPIError emits an Anthropic-style JSON error envelope, which is what

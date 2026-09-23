@@ -19,14 +19,17 @@ const vertexScope = "https://www.googleapis.com/auth/cloud-platform"
 // Vertex is the GCP Vertex AI route: attach an OAuth bearer from Application
 // Default Credentials (GKE Workload Identity in-cluster) and forward. The
 // token source caches and refreshes; each request reads the current token.
-func Vertex(ctx context.Context, target *url.URL) (Upstream, error) {
+// The route admits only requests naming project and location.
+func Vertex(ctx context.Context, target *url.URL, project, location string) (Upstream, error) {
 	ts, err := google.DefaultTokenSource(ctx, vertexScope)
 	if err != nil {
 		return Upstream{}, fmt.Errorf("broker: google default credentials: %w", err)
 	}
 	ts = oauth2.ReuseTokenSource(nil, ts)
 	return Upstream{
-		Target: target,
+		Target:   target,
+		Project:  project,
+		Location: location,
 		Credential: func(_ context.Context, req *http.Request) error {
 			tok, err := ts.Token()
 			if err != nil {

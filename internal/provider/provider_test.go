@@ -279,3 +279,42 @@ func TestModelMapCodec(t *testing.T) {
 		t.Error("empty canonical id accepted")
 	}
 }
+
+func TestBareModelID(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"claude-sonnet-5", "claude-sonnet-5"},
+		{" Claude-Sonnet-5 ", "claude-sonnet-5"},
+		{"anthropic/claude-sonnet-5", "claude-sonnet-5"},
+		{"anthropic.claude-sonnet-5-v1:0", "claude-sonnet-5-v1:0"},
+		{"us.anthropic.claude-sonnet-5-v1:0", "claude-sonnet-5-v1:0"},
+		{"global.anthropic.claude-sonnet-5-v1:0", "claude-sonnet-5-v1:0"},
+		{"us-gov.anthropic.claude-sonnet-5-v1:0", "claude-sonnet-5-v1:0"},
+		{"apac.anthropic.claude-opus-5-20260401-v1:0", "claude-opus-5-20260401-v1:0"},
+		{"xx.anthropic.claude-sonnet-5", "xx.anthropic.claude-sonnet-5"},
+		{"claude-sonnet-5@20260514", "claude-sonnet-5@20260514"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := BareModelID(tt.in); got != tt.want {
+			t.Errorf("BareModelID(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestBedrockPrefixesNormalize: every id EffectiveModelMap derives for
+// bedrock normalizes back to the vendor id, so the broker's allowlist
+// admits what the controllers configure.
+func TestBedrockPrefixesNormalize(t *testing.T) {
+	for _, region := range []string{"us-east-1", "eu-west-1", "ap-northeast-1"} {
+		prefix, err := bedrockPrefix(Config{Region: region})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(BedrockGeoPrefixes, prefix) {
+			t.Errorf("derived prefix %q for %s is not in BedrockGeoPrefixes", prefix, region)
+		}
+		if got := BareModelID(prefix + ".anthropic.claude-sonnet-5"); got != "claude-sonnet-5" {
+			t.Errorf("%s: BareModelID = %q", region, got)
+		}
+	}
+}

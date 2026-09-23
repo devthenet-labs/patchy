@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -42,6 +43,27 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.String("agent-service-account", "patchy-agent", "the only service account the broker answers to")
 	f.Int("max-request-bytes", broker.DefaultMaxRequestBytes,
 		"largest request body a payload-signing route (bedrock) accepts")
+	f.Int("max-anthropic-request-bytes", broker.DefaultMaxAnthropicRequestBytes,
+		"largest request body every other route accepts (bodies are buffered for inspection)")
+
+	// Enforcement: every limit is off at zero, so an unconfigured broker
+	// behaves as before; the chart sizes them.
+	f.Int("requests-per-pod", 0, "requests one agent pod may make in its lifetime; 0 disables")
+	f.Int("concurrent-per-pod", 0, "in-flight requests one agent pod may hold; 0 disables")
+	f.Int("tokens-per-pod", 0,
+		"tokens (input, cache creation, cache read, output) one agent pod may consume; 0 disables")
+	f.Int("tokens-per-hour", 0, "broker-wide trailing-hour token ceiling; 0 disables")
+	f.Int("max-tokens-ceiling", 0, "largest max_tokens a request may set; 0 disables")
+	f.String("model-allowlist", "",
+		"comma-separated model ids pods may name (canonical or wire form; dated variants and the "+
+			"claude-haiku helper family are admitted); empty admits every model")
+	f.String("beta-denylist", "",
+		"comma-separated anthropic-beta glob patterns to strip; empty uses the built-in list "+
+			"(mcp-client-*, web-fetch-*, code-execution-*, files-api-*, context-1m-*), 'none' strips nothing")
+	f.Float64("preauth-requests-per-second", 0,
+		"per-source-IP request rate admitted before authentication; 0 disables")
+	f.Int("preauth-burst", 0, "per-source-IP burst and in-flight cap before authentication")
+	f.Float64("token-reviews-per-second", 0, "broker-wide TokenReview rate, with a short queue; 0 disables")
 
 	// A route exists iff its identifying flag is set; at least one must be.
 	f.String("anthropic-api-key-file", "",
@@ -52,7 +74,9 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.String("bedrock-region", "", "AWS region for Bedrock SigV4 signing; set to enable the bedrock route")
 	f.String("bedrock-base-url", "",
 		"Bedrock runtime base URL (default: https://bedrock-runtime.<bedrock-region>.amazonaws.com)")
-	f.String("vertex-region", "", "GCP region for Vertex AI; set to enable the vertex route")
+	f.String("vertex-region", "",
+		"GCP region for Vertex AI, and the only location the route admits; set to enable the vertex route")
+	f.String("vertex-project", "", "the only GCP project the vertex route admits; required with --vertex-region")
 	f.String("vertex-base-url", "",
 		"Vertex AI base URL (default: https://<vertex-region>-aiplatform.googleapis.com)")
 	f.String("foundry-resource", "", "Microsoft Foundry resource name; set to enable the foundry route")
@@ -138,6 +162,10 @@ func vertexUpstream(ctx context.Context, opts *cli.Options) (*broker.Upstream, e
 	if region == "" {
 		return nil, nil
 	}
+	project := opts.String("vertex-project")
+	if project == "" {
+		return nil, errors.New("--vertex-region requires --vertex-project: the route admits one project only")
+	}
 	raw := opts.String("vertex-base-url")
 	if raw == "" {
 		raw = fmt.Sprintf("https://%s-aiplatform.googleapis.com", region)
@@ -146,7 +174,7 @@ func vertexUpstream(ctx context.Context, opts *cli.Options) (*broker.Upstream, e
 	if err != nil {
 		return nil, err
 	}
-	up, err := broker.Vertex(ctx, target)
+	up, err := broker.Vertex(ctx, target, project, region)
 	if err != nil {
 		return nil, err
 	}
@@ -210,14 +238,35 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	if err != nil {
 		return err
 	}
+	// --beta-denylist: empty keeps the engine's built-in list, "none" strips
+	// nothing, anything else is the operator's own patterns.
+	betas := opts.StringList("beta-denylist")
+	disableBetas := len(betas) == 1 && strings.EqualFold(betas[0], "none")
+	if disableBetas {
+		betas = nil
+	}
 	srv, err := broker.New(cs, broker.Config{
-		Audience:            opts.String("token-audience"),
-		AgentNamespace:      opts.String("agent-namespace"),
-		AgentServiceAccount: opts.String("agent-service-account"),
-		VerdictTTL:          opts.Duration("verdict-ttl"),
-		PingInterval:        opts.Duration("sse-ping-interval"),
-		MaxRequestBytes:     int64(opts.Int("max-request-bytes")),
-		Upstreams:           routes,
+		Audience:                 opts.String("token-audience"),
+		AgentNamespace:           opts.String("agent-namespace"),
+		AgentServiceAccount:      opts.String("agent-service-account"),
+		VerdictTTL:               opts.Duration("verdict-ttl"),
+		PingInterval:             opts.Duration("sse-ping-interval"),
+		MaxRequestBytes:          int64(opts.Int("max-request-bytes")),
+		MaxAnthropicRequestBytes: int64(opts.Int("max-anthropic-request-bytes")),
+		Limits: broker.Limits{
+			RequestsPerPod:   int64(opts.Int("requests-per-pod")),
+			ConcurrentPerPod: int64(opts.Int("concurrent-per-pod")),
+			TokensPerPod:     int64(opts.Int("tokens-per-pod")),
+			TokensPerHour:    int64(opts.Int("tokens-per-hour")),
+			MaxTokensCeiling: int64(opts.Int("max-tokens-ceiling")),
+			ModelAllowlist:   opts.StringList("model-allowlist"),
+		},
+		BetaDenylist:             betas,
+		DisableBetaDenylist:      disableBetas,
+		PreauthRequestsPerSecond: opts.Float("preauth-requests-per-second"),
+		PreauthBurst:             opts.Int("preauth-burst"),
+		TokenReviewsPerSecond:    opts.Float("token-reviews-per-second"),
+		Upstreams:                routes,
 	}, log)
 	if err != nil {
 		return err

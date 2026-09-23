@@ -52,6 +52,7 @@ metadata:
 {{- $_ := set $data "PATCHY_BEDROCK_REGION" (required "agent.runners.claude.provider.region is required for bedrock" $provider.region) }}
 {{- else if eq $providerName "vertex" }}
 {{- $_ := set $data "PATCHY_VERTEX_REGION" (required "agent.runners.claude.provider.region is required for vertex" $provider.region) }}
+{{- $_ := set $data "PATCHY_VERTEX_PROJECT" (required "agent.runners.claude.provider.projectID is required for vertex" $provider.projectID) }}
 {{- else if eq $providerName "foundry" }}
 {{- $_ := set $data "PATCHY_FOUNDRY_RESOURCE" (required "agent.runners.claude.provider.resource is required for foundry" $provider.resource) }}
 {{- if $vals.foundrySecret }}

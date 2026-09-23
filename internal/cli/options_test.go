@@ -5,6 +5,7 @@ package cli
 
 import (
 	"log/slog"
+	"slices"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -92,6 +93,35 @@ func TestLogLevel(t *testing.T) {
 			}
 			if err == nil && o.LogLevel.Level() != tt.want {
 				t.Errorf("LogLevel = %v, want %v", o.LogLevel.Level(), tt.want)
+			}
+		})
+	}
+}
+
+func TestStringList(t *testing.T) {
+	tests := []struct {
+		env  string
+		want []string
+	}{
+		{"", nil},
+		{" , ,", nil},
+		{"a", []string{"a"}},
+		{" a , b,,c ", []string{"a", "b", "c"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.env, func(t *testing.T) {
+			t.Setenv("PATCHY_ITEMS", tt.env)
+			o, cmd := newBound(t)
+			cmd.Flags().String("items", "", "a comma-separated list")
+			cmd.SetArgs(nil)
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if err := o.Load(cmd); err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := o.StringList("items"); !slices.Equal(got, tt.want) {
+				t.Errorf("StringList = %q, want %q", got, tt.want)
 			}
 		})
 	}

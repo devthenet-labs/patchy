@@ -757,8 +757,8 @@ Accepted findings of the 2026-09-22 review and where each one now lives:
 
 ## Decisions
 
-Recorded 2026-09-22. The user decided the first and third; the second was made on the user's behalf, with the reasoning
-stated. The fourth is an amendment recorded the same day, after implementation began.
+Recorded 2026-09-22 and 2026-09-23. The user decided the first, third and fifth; the second was made on the user's
+behalf, with the reasoning stated. The fourth is an amendment recorded the same day, after implementation began.
 
 1. **devcontainer.json fallback is in v1.** `.patchy/agent.yaml` `image` wins; if the file is absent,
    `.devcontainer/devcontainer.json` is consulted and only its top-level string `image` is honoured, parsed as JSONC by
@@ -782,6 +782,27 @@ stated. The fourth is an amendment recorded the same day, after implementation b
    or policy is a rejection subject to `onReject`. `runnerimage.Declare` keeps the two apart in its result type
    (`OutcomeNotApplicable` is a value; a rejection is a `*Rejection` error). Reason: a devcontainer was not written for
    patchy, and parking every finding on repositories with build-based devcontainers would be a regression from today.
+
+5. **Trimmed scope for the first release** (2026-09-23, decided by the user after a review of whether the design was
+   over-built for a single-operator deployment where the operator also owns every watched repository). Phases 1 to 6
+   ship as designed; they were written or in review when this was decided and their guardrails cost nothing when
+   repository images are off. The remaining work is cut to what makes the feature easy to use: phase 5 as designed;
+   phase 7 limited to the `agent.repositoryImages` values, the allowlist, `pullSecret`/`pullSecretData`, the broker
+   limit flags and the broad-egress guard; phase 8 limited to the sticky tracking-issue comment for rejected,
+   not-applicable and incompatible images, `onReject` defaulting to `default` (fall back to the default runner image
+   rather than parking the finding), the declaring file in `patchy describe`, and the operator and repository-owner
+   documentation. Review scales to risk: one reviewer per pull request, adversarial verification only for
+   security-relevant or high-severity findings, and a live regression run on `devthenet-dev` after each merge wave.
+   Deferred until a real need appears: the startup canary, per-Forge changeset path deny-lists, per-route usage parsing
+   for bedrock, vertex and foundry, and any further hardening of signature verification. Reason: the parts that decide
+   whether the feature is pleasant to use are the feedback and the fallback, not further supply-chain controls.
+6. **Two additions for repository owners** (2026-09-23): a published base image,
+   `ghcr.io/devthenet-labs/patchy/agent-base`, that already satisfies the sandbox's constraints (glibc, uid 65532,
+   caches under writable paths, no reserved ENV or VOLUME), with example Go, Python and Node images under
+   `examples/agent-images/`; and a `patchy image check <ref>` CLI command that runs the resolution checks and a local
+   preflight against an image before it is pushed. Same-account ECR is the recommended registry: application CI pushes
+   to `patchy/app-envs/<app>` through GitHub OIDC, source-controller resolves through an EKS Pod Identity scoped to that
+   prefix, and nodes pull with their existing ECR permissions.
 
 ## Open questions
 

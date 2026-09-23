@@ -76,7 +76,7 @@ func envReconciler(t *testing.T, gh *fakeForgeClient) (*RepositoryReconciler, cl
 		Forges:    forge.NewStore(c),
 		Artifacts: store,
 		ClientFor: func(context.Context, *forge.Resolved) (forgeClient, error) { return gh, nil },
-		Images:    &RunnerImages{Policy: policy, Resolver: &fakeResolver{}},
+		Images:    &RunnerImages{Policy: policy, Resolver: &fakeResolver{}, OnReject: OnRejectHandoff},
 	}
 	return r, c
 }

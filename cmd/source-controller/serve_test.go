@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/bitwise-media-group/patchy/internal/cli"
+	"github.com/bitwise-media-group/patchy/internal/controller/source"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/runnerimage"
 )
@@ -87,6 +88,42 @@ func TestRunnerImagesRejectJobReservedEnv(t *testing.T) {
 			var rej *runnerimage.Rejection
 			if !errors.As(err, &rej) || rej.Reason != "ReservedEnv" || !strings.Contains(rej.Message, "`"+env+"`") {
 				t.Errorf("Resolve with ENV %s = %v, want a ReservedEnv rejection naming it", env, err)
+			}
+		})
+	}
+}
+
+// TestRunnerImagesOnRejectFlag: a rejected declaration falls back to the
+// default image unless the operator asks for a hand-off, and a policy that
+// is neither fails startup rather than silently picking one.
+func TestRunnerImagesOnRejectFlag(t *testing.T) {
+	base := []string{"--repository-images", "--repository-image-registries", "ghcr.io/acme/",
+		"--repository-image-allow-unsigned"}
+	cases := []struct {
+		name    string
+		args    []string
+		want    string
+		wantErr bool
+	}{
+		{"unset means default", nil, source.OnRejectDefault, false},
+		{"explicit default", []string{"--repository-image-on-reject", "default"}, source.OnRejectDefault, false},
+		{"explicit handoff", []string{"--repository-image-on-reject", "handoff"}, source.OnRejectHandoff, false},
+		{"unknown policy", []string{"--repository-image-on-reject", "park"}, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ri, err := runnerImages(serveOpts(t, append(append([]string{}, base...), tc.args...)...))
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "repository-image-on-reject") {
+					t.Fatalf("runnerImages = %+v, %v; want a repository-image-on-reject error", ri, err)
+				}
+				return
+			}
+			if err != nil || ri == nil {
+				t.Fatalf("runnerImages = %+v, %v", ri, err)
+			}
+			if ri.OnReject != tc.want {
+				t.Errorf("OnReject = %q, want %q", ri.OnReject, tc.want)
 			}
 		})
 	}

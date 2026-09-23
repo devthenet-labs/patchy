@@ -23,10 +23,12 @@ import (
 // The onReject policies: what a rejected declaration does to the Repository.
 const (
 	// OnRejectHandoff stalls the Repository, so the gate parks the finding
-	// for a human; the default.
+	// for a human.
 	OnRejectHandoff = "handoff"
 	// OnRejectDefault records the rejection and leaves the Repository Ready,
-	// so the finding runs on the default image with no human step.
+	// so the finding runs on the default image with no human step; the
+	// default. The rejection still reaches the repository owner, as the
+	// tracking issue's runner-image comment, so falling back is never silent.
 	OnRejectDefault = "default"
 )
 
@@ -49,7 +51,7 @@ type RunnerImages struct {
 	Policy runnerimage.Policy
 	// Resolver pins a declared reference to a digest and checks it.
 	Resolver runnerimage.Resolver
-	// OnReject is OnRejectHandoff or OnRejectDefault; empty means handoff.
+	// OnReject is OnRejectHandoff or OnRejectDefault; empty means default.
 	OnReject string
 	// ResolveTimeout bounds one resolution's registry traffic; <= 0 means
 	// DefaultResolveTimeout.
@@ -57,7 +59,7 @@ type RunnerImages struct {
 }
 
 // handoff reports whether a rejection stalls the Repository.
-func (i *RunnerImages) handoff() bool { return i.OnReject != OnRejectDefault }
+func (i *RunnerImages) handoff() bool { return i.OnReject == OnRejectHandoff }
 
 // resolveTimeout is ResolveTimeout with its default applied.
 func (i *RunnerImages) resolveTimeout() time.Duration {

@@ -62,8 +62,8 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 		"PEM public key every declared image must be cosign-signed with (required unless --repository-image-allow-unsigned)")
 	f.Bool("repository-image-allow-unsigned", false,
 		"admit declared images without a signature (explicit opt-out; never the default)")
-	f.String("repository-image-on-reject", source.OnRejectHandoff,
-		"what a rejected declaration does to the finding: handoff (stall for a human) or default (run the default image)")
+	f.String("repository-image-on-reject", source.OnRejectDefault,
+		"what a rejected declaration does to the finding: default (run the default image) or handoff (park it for a human)")
 	return cmd
 }
 
@@ -81,7 +81,7 @@ func runnerImages(opts *cli.Options) (*source.RunnerImages, error) {
 	}
 	onReject := opts.String("repository-image-on-reject")
 	if onReject != source.OnRejectHandoff && onReject != source.OnRejectDefault {
-		return nil, fmt.Errorf("repository-image-on-reject: %q is not handoff or default", onReject)
+		return nil, fmt.Errorf("repository-image-on-reject: %q is not default or handoff", onReject)
 	}
 	cfg := resolve.Config{
 		MaxBytes:      int64(opts.Int("repository-image-max-bytes")),

@@ -21,14 +21,16 @@ With --run, the image is also run the way the agent pod runs it, on your local
 docker: agent-runner and the claude CLI are copied out of the claude runner
 image released with this CLI (--runner-image to override), and the image runs
 as uid 65532 with a read-only root filesystem, no network, no capabilities, no
-privilege escalation, executable tmpfs mounts at /tmp and /workspace, the two
-binaries read-only at /patchy/bin, PATH=/patchy/bin:<the image's PATH> and the
-rest of the pod's environment. In it, agent-runner's own preflight (the check a
-stage runs before its first model call: claude --version, git --version and
-bash -c true) runs, then bash -c true and git --version on their own. Without a
-docker CLI the run is skipped, not failed. An image that exists only in your
-local docker store fails the registry checks but still runs; to check both
-before publishing, push it to a scratch tag or a local registry.
+privilege escalation, bounded processes, memory and CPU, sized executable tmpfs
+mounts at /tmp and /workspace, the two binaries read-only at /patchy/bin,
+PATH=/patchy/bin:<the image's PATH> and the rest of the pod's environment; each
+container is removed when its run ends, even an interrupted one. In it,
+agent-runner's own preflight (the check a stage runs before its first model
+call: claude --version, git --version and bash -c true) runs, then bash -c true
+and git --version on their own. Without a docker CLI the run is skipped, not
+failed. An image that exists only in your local docker store fails the registry
+checks but still runs; to check both before publishing, push it to a scratch
+tag or a local registry.
 
 Each check prints one line: PASS, FAIL or SKIP, the check, and the reason.
 -o json or -o yaml prints the whole report as data instead. The exit status is

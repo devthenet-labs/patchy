@@ -5,6 +5,7 @@ package imagecheck
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -31,6 +32,21 @@ const (
 	sandboxUser  = "65532:65532"
 	workspaceDir = "/workspace"
 )
+
+// The sandbox's resource bounds. The pod's own are the operator's Job
+// configuration, which a workstation cannot know, so these are the CLI's:
+// ample for the three commands a check runs, and small enough that an image
+// whose bash or git forks or allocates without end cannot take the docker
+// host down with it.
+const (
+	sandboxPids      = "512"
+	sandboxMemory    = "2g"
+	sandboxCPUs      = "1"
+	sandboxTmpfsSize = "512m"
+)
+
+// removeTimeout bounds the forced removal of a container the sandbox made.
+const removeTimeout = 30 * time.Second
 
 // injected are the binaries the claude runner contributes to a
 // repository-image Job (runnercfg's Inject for claude).
@@ -147,9 +163,14 @@ func Sandbox(ctx context.Context, cmd Commander, cfg SandboxConfig) []Check {
 	r.add(CheckRunner, Pass, reason)
 
 	run := func(entrypoint string, args ...string) (Result, error) {
+		// Interrupting a run (Ctrl-C, runTimeout) kills the docker client,
+		// not the container, so every run is named and removed by name.
+		name := "patchy-check-" + strings.ToLower(rand.Text())
+		defer removeContainer(ctx, cmd, name)
 		ctx, cancel := context.WithTimeout(ctx, runTimeout)
 		defer cancel()
-		return cmd.Run(ctx, "docker", sandboxArgs(cfg.Image, platform, cfg.BinDir, searchPath, entrypoint, args)...)
+		return cmd.Run(ctx, "docker",
+			sandboxArgs(name, cfg.Image, platform, cfg.BinDir, searchPath, entrypoint, args)...)
 	}
 
 	progress(fmt.Sprintf("running agent-runner %s in %s (%s)", agentrun.PreflightCommand, cfg.Image, platform))
@@ -255,12 +276,7 @@ func extract(ctx context.Context, cmd Commander, runnerImage, platform, binDir s
 		return fmt.Errorf("could not create a container from %s: %w", runnerImage, err)
 	}
 	id = strings.TrimSpace(id)
-	defer func() {
-		// The run may have been interrupted; the container must go anyway.
-		rmCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancel()
-		_, _ = cmd.Run(rmCtx, "docker", "rm", "--force", id)
-	}()
+	defer removeContainer(ctx, cmd, id)
 	for _, bin := range injected {
 		if _, err := docker(ctx, cmd, "cp", id+":"+toolsBinDir+"/"+bin, filepath.Join(binDir, bin)); err != nil {
 			return fmt.Errorf("could not copy %s out of %s: %w", bin, runnerImage, err)
@@ -269,22 +285,36 @@ func extract(ctx context.Context, cmd Commander, runnerImage, platform, binDir s
 	return nil
 }
 
+// removeContainer force-removes a container the sandbox made, on a context
+// of its own: the run it follows may have been interrupted, and the
+// container must go anyway.
+func removeContainer(ctx context.Context, cmd Commander, container string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), removeTimeout)
+	defer cancel()
+	_, _ = cmd.Run(ctx, "docker", "rm", "--force", container)
+}
+
 // sandboxArgs is the docker run of one command in the emulated agent
-// container (quiet, so a pull's progress never becomes the line a failure
-// is explained by): the pod's security context (uid 65532, read-only root, all
-// capabilities dropped, no privilege escalation; docker's default seccomp
-// profile stands in for RuntimeDefault), no network at all (the pod reaches
-// only DNS, the artifact server and the broker, none of which a check
-// needs), the two emptyDirs as executable tmpfs mounts, the binaries
-// read-only at /patchy/bin, the image's ENTRYPOINT replaced as the Job's
-// Command replaces it, and the agent container's environment.
-func sandboxArgs(image, platform, binDir string, searchPath []string, entrypoint string, args []string) []string {
+// container, named so it can be removed however the run ends (quiet, so a
+// pull's progress never becomes the line a failure is explained by): the
+// pod's security context (uid 65532, read-only root, all capabilities
+// dropped, no privilege escalation; docker's default seccomp profile stands
+// in for RuntimeDefault), bounded processes, memory and CPU, no network at
+// all (the pod reaches only DNS, the artifact server and the broker, none
+// of which a check needs), the two emptyDirs as sized executable tmpfs
+// mounts, the binaries read-only at /patchy/bin, the image's ENTRYPOINT
+// replaced as the Job's Command replaces it, and the agent container's
+// environment.
+func sandboxArgs(name, image, platform, binDir string, searchPath []string, entrypoint string,
+	args []string) []string {
+	tmpfs := ":exec,mode=1777,size=" + sandboxTmpfsSize
 	out := []string{
-		"run", "--rm", "--quiet", "--platform", platform,
+		"run", "--rm", "--quiet", "--name", name, "--platform", platform,
 		"--user", sandboxUser, "--read-only", "--network", "none",
 		"--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-		"--tmpfs", "/tmp:exec,mode=1777",
-		"--tmpfs", workspaceDir + ":exec,mode=1777",
+		"--pids-limit", sandboxPids, "--memory", sandboxMemory, "--cpus", sandboxCPUs,
+		"--tmpfs", "/tmp" + tmpfs,
+		"--tmpfs", workspaceDir + tmpfs,
 		"--mount", "type=bind,source=" + binDir + ",target=" + patchyBinDir + ",readonly",
 		"--workdir", workspaceDir,
 		"--env", "HOME=" + workspaceDir,

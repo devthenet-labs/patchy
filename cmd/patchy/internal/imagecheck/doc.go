@@ -20,8 +20,10 @@
 // and the claude CLI out of the trusted runner image, as the Job's prepare
 // init does, then runs the image under test as uid 65532 with a read-only
 // root filesystem, no network, no capabilities, no privilege escalation,
-// executable tmpfs mounts for /tmp and /workspace, the binaries mounted
-// read-only at /patchy/bin and the pod's environment (jobs.InjectedEnv),
+// bounded processes, memory and CPU, sized executable tmpfs mounts for /tmp
+// and /workspace, the binaries mounted read-only at /patchy/bin and the
+// pod's environment (jobs.InjectedEnv), in a named container it removes
+// however the run ends,
 // and executes agent-runner's own preflight (`agent-runner preflight`, the
 // check a stage runs before its first model call) plus `bash -c true` and
 // `git --version` on their own. docker is reached only through Commander,

@@ -19,6 +19,12 @@ type fakeDocker struct {
 	missing bool
 	answer  func(args []string) Result
 	calls   [][]string
+	// interrupt, when set, is consulted first: a non-nil error ends that
+	// invocation as an interrupted one (the Commander's error).
+	interrupt func(ctx context.Context, args []string) error
+	// rmCtxErrs records, per `docker rm`, whether its context was already
+	// done when it was issued.
+	rmCtxErrs []error
 }
 
 func (f *fakeDocker) LookPath(file string) (string, error) {
@@ -28,12 +34,28 @@ func (f *fakeDocker) LookPath(file string) (string, error) {
 	return "/usr/local/bin/" + file, nil
 }
 
-func (f *fakeDocker) Run(_ context.Context, name string, args ...string) (Result, error) {
+func (f *fakeDocker) Run(ctx context.Context, name string, args ...string) (Result, error) {
 	if name != "docker" {
 		return Result{}, errors.New("unexpected command " + name)
 	}
 	f.calls = append(f.calls, args)
+	if args[0] == "rm" {
+		f.rmCtxErrs = append(f.rmCtxErrs, ctx.Err())
+	}
+	if f.interrupt != nil {
+		if err := f.interrupt(ctx, args); err != nil {
+			return Result{}, err
+		}
+	}
 	return f.answer(args), nil
+}
+
+// flagValue is the value that follows flag in a docker invocation.
+func flagValue(args []string, flag string) string {
+	if i := slices.Index(args, flag); i >= 0 && i+1 < len(args) {
+		return args[i+1]
+	}
+	return ""
 }
 
 // runs returns the recorded docker run invocations.
@@ -146,8 +168,8 @@ func TestSandboxRunsThePodShape(t *testing.T) {
 	joined := " " + strings.Join(runs[0], " ") + " "
 	for _, want := range []string{
 		" --rm ", " --platform linux/arm64 ", " --user 65532:65532 ", " --read-only ", " --network none ",
-		" --cap-drop ALL ", " --security-opt no-new-privileges ", " --tmpfs /tmp:exec,mode=1777 ",
-		" --tmpfs /workspace:exec,mode=1777 ",
+		" --cap-drop ALL ", " --security-opt no-new-privileges ", " --tmpfs /tmp:exec,mode=1777,size=512m ",
+		" --tmpfs /workspace:exec,mode=1777,size=512m ", " --pids-limit 512 ", " --memory 2g ", " --cpus 1 ",
 		" --mount type=bind,source=/tmp/patchy-bin,target=/patchy/bin,readonly ",
 		" --workdir /workspace ", " --env HOME=/workspace ",
 		" --env PATH=/patchy/bin:/usr/local/go/bin:/usr/bin ",
@@ -240,6 +262,74 @@ func TestSandboxOutcomes(t *testing.T) {
 				t.Error("docker run was never invoked")
 			}
 		})
+	}
+}
+
+// TestSandboxRemovesItsContainers: every container of the image under test
+// is named and force-removed once its run ends, even when the run was
+// interrupted (Ctrl-C, or the run timeout), because killing the docker
+// client leaves the container running on the daemon.
+func TestSandboxRemovesItsContainers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d := healthyDocker(nil)
+	d.interrupt = func(_ context.Context, args []string) error {
+		if args[0] == "run" && entrypoint(args) == "git" {
+			cancel() // the user pressed Ctrl-C while git hung
+			return context.Canceled
+		}
+		return nil
+	}
+	checks := Sandbox(ctx, d, sandboxConfig())
+	if got := checkLine(checks); got != "runner=PASS preflight=PASS bash=PASS git=FAIL" {
+		t.Fatalf("checks = %s\n%+v", got, checks)
+	}
+	seen := map[string]bool{}
+	for _, run := range d.runs() {
+		name := flagValue(run, "--name")
+		if name == "" || seen[name] {
+			t.Fatalf("docker run of %s has no unique --name (%q)", entrypoint(run), name)
+		}
+		seen[name] = true
+		if !slices.ContainsFunc(d.calls, func(c []string) bool { return slices.Equal(c, []string{"rm", "--force", name}) }) {
+			t.Errorf("container %s was never removed; calls %v", name, d.calls)
+		}
+	}
+	for i, err := range d.rmCtxErrs {
+		if err != nil {
+			t.Errorf("docker rm %d was issued on a context already done (%v), so it could never run", i, err)
+		}
+	}
+}
+
+// TestSandboxBoundsTheContainer: the image under test runs with bounded
+// processes, memory, CPU and tmpfs, so a hostile bash or git cannot fork-
+// bomb or exhaust the docker host.
+func TestSandboxBoundsTheContainer(t *testing.T) {
+	d := healthyDocker(nil)
+	Sandbox(context.Background(), d, sandboxConfig())
+	runs := d.runs()
+	if len(runs) == 0 {
+		t.Fatal("docker run was never invoked")
+	}
+	for _, run := range runs {
+		for _, flag := range []string{"--pids-limit", "--memory", "--cpus"} {
+			if flagValue(run, flag) == "" {
+				t.Errorf("docker run of %s lacks %s", entrypoint(run), flag)
+			}
+		}
+		tmpfs := 0
+		for i, a := range run {
+			if a == "--tmpfs" && i+1 < len(run) {
+				tmpfs++
+				if !strings.Contains(run[i+1], ",size=") {
+					t.Errorf("docker run of %s: tmpfs %s has no size", entrypoint(run), run[i+1])
+				}
+			}
+		}
+		if tmpfs != 2 {
+			t.Errorf("docker run of %s has %d tmpfs mounts, want /tmp and /workspace", entrypoint(run), tmpfs)
+		}
 	}
 }
 

@@ -282,7 +282,8 @@ patchy check image ghcr.io/acme/shop-agent:1 --run                             #
 signature line is skipped, because source-controller admits an unverified image only when the operator allows unsigned
 images. Registry credentials are your own docker credentials. `--run` needs a local docker: it copies `agent-runner` and
 the claude CLI out of the claude runner image released with this CLI (`--runner-image` overrides it) and runs the image
-the way the agent pod does, with uid 65532, a read-only root filesystem, no network and no capabilities, then runs the
+the way the agent pod does, with uid 65532, a read-only root filesystem, no network, no capabilities and bounded
+processes, memory and CPU, then runs the
 preflight a stage runs before its first model call, followed by `bash -c true` and `git --version`. Each check prints
 one line (PASS, FAIL or SKIP, then the reason); `-o json` prints the report as data, and the exit status is non-zero
 when any check fails.

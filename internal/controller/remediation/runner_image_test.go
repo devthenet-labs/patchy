@@ -286,3 +286,53 @@ func TestRemediationChangesetRejected(t *testing.T) {
 		})
 	}
 }
+
+// rejectedOnce runs one collect of a successful remediation carrying cs and
+// reports the forge calls it made and where the run and finding ended.
+func rejectedOnce(t *testing.T, objs []client.Object, cs func(*envelope.Changeset)) (
+	*fakeForge, *v1alpha1.Remediation, *v1alpha1.Finding,
+) {
+	t.Helper()
+	events := crdRemediationEvent(true)
+	cs(events[0].Remediation.Changeset)
+	runner := &fakeCRRunner{done: true, events: events}
+	fw := &fakeForge{}
+	r, c := newRemediation(t, runner, fw, objs...)
+	remReconcile(t, r)
+	return fw, getRem(t, c), findingNow(t, c)
+}
+
+// wantRejected asserts a changeset_rejected run with zero forge calls whose
+// failure reason contains want.
+func wantRejected(t *testing.T, fw *fakeForge, rem *v1alpha1.Remediation, f *v1alpha1.Finding, want string) {
+	t.Helper()
+	if len(fw.pushed) != 0 || fw.prCalls != 0 {
+		t.Fatalf("pushed/prs = %v/%d, want zero forge calls", fw.pushed, fw.prCalls)
+	}
+	if rem.Status.Phase != v1alpha1.RunFailed || rem.Status.Stage == nil ||
+		rem.Status.Stage.Outcome != string(envelope.OutcomeChangesetRejected) {
+		t.Errorf("run = %q stage %+v, want Failed / changeset_rejected", rem.Status.Phase, rem.Status.Stage)
+	}
+	if !strings.HasPrefix(f.Status.LastFailureReason, "changeset_rejected: ") ||
+		!strings.Contains(f.Status.LastFailureReason, want) {
+		t.Errorf("lastFailureReason = %q, want changeset_rejected naming %q", f.Status.LastFailureReason, want)
+	}
+}
+
+// TestRemediationChangesetForgedBase: the changeset's base is the pod's
+// word, and the push parents it and builds the tree on it. A base other
+// than the Repository's pinned commit is refused before any forge call on
+// every run: a repository image could otherwise point patchy's branch at a
+// fork's head carrying its own workflows, and a changeset diffed against
+// one tree and pushed onto another would silently revert whatever differs.
+func TestRemediationChangesetForgedBase(t *testing.T) {
+	forged := "f00df00df00df00df00df00df00df00df00df00d"
+	for _, source := range []string{v1alpha1.RunnerImageSourceRepository, v1alpha1.RunnerImageSourceDefault} {
+		t.Run(source, func(t *testing.T) {
+			fw, rem, f := rejectedOnce(t, withImage(acceptedImage(), source), func(cs *envelope.Changeset) {
+				cs.BaseSHA = forged
+			})
+			wantRejected(t, fw, rem, f, "is not the repository's pinned commit")
+		})
+	}
+}

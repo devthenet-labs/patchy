@@ -409,7 +409,11 @@ func (r *RemediationReconciler) succeed(
 	}
 	// Validate before any forge call: the changeset is the pod's output,
 	// and on a repository-declared image the pod's process is the image's.
-	if err := validateChangeset(result.Changeset, r.maxChangesetEntries(), ranRepositoryImage(rem)); err != nil {
+	rules, err := r.changesetRules(ctx, rem)
+	if err != nil {
+		return err
+	}
+	if err := validateChangeset(result.Changeset, rules); err != nil {
 		return r.fail(ctx, rem, string(envelope.OutcomeChangesetRejected), err.Error(), &result.Stage, transcript)
 	}
 	branch := "patchy/" + fnd.Name
@@ -655,6 +659,23 @@ func (r *RemediationReconciler) maxChangesetEntries() int {
 		return DefaultChangesetMaxEntries
 	}
 	return r.MaxChangesetEntries
+}
+
+// changesetRules gathers what rem's changeset is validated against: the
+// Repository's pinned commit, the entry cap, and whether the
+// repository-image rules apply. A Repository that has vanished leaves the
+// base empty, which refuses the changeset rather than pushing it unchecked.
+func (r *RemediationReconciler) changesetRules(ctx context.Context, rem *v1alpha1.Remediation) (changesetRules, error) {
+	rules := changesetRules{MaxEntries: r.maxChangesetEntries(), RepositoryImage: ranRepositoryImage(rem)}
+	var repo v1alpha1.Repository
+	key := types.NamespacedName{Namespace: rem.Namespace, Name: rem.Spec.RepositoryRef.Name}
+	switch err := r.Get(ctx, key, &repo); {
+	case err == nil:
+		rules.Base = repo.Status.ResolvedSHA
+	case !kerrors.IsNotFound(err):
+		return rules, err
+	}
+	return rules, nil
 }
 
 // ranRepositoryImage reports whether the Remediation's launch stamp says

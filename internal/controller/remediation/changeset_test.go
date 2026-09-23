@@ -34,7 +34,7 @@ func TestValidateChangeset(t *testing.T) {
 		{"ordinary fix", changesetOf("cmd/main.go", "go.sum", "docs/SECURITY.md"), true, "", true},
 		{"dotfiles are fine", changesetOf(".gitignore", ".github/dependabot.yml", ".githooks/pre-commit"), true, "", true},
 		{"at the cap", changesetOf("a", "b", "c"), false, "", true},
-		{"deletes count toward the cap", &envelope.Changeset{
+		{"deletes count toward the cap", &envelope.Changeset{BaseSHA: "abc123",
 			Upserts: changesetOf("a", "b").Upserts, Deletes: []string{"c", "d"}}, false, "4 entries", false},
 		{"empty path", changesetOf(""), false, "empty path", false},
 		{"absolute", changesetOf("/etc/passwd"), false, "is absolute", false},
@@ -59,7 +59,7 @@ func TestValidateChangeset(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateChangeset(tt.cs, 3, tt.repoImg)
+			err := validateChangeset(tt.cs, changesetRules{Base: "abc123", MaxEntries: 3, RepositoryImage: tt.repoImg})
 			if tt.wantPass {
 				if err != nil {
 					t.Errorf("validateChangeset = %v, want nil", err)
@@ -70,6 +70,43 @@ func TestValidateChangeset(t *testing.T) {
 				t.Errorf("validateChangeset = %v, want an error containing %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestValidateChangesetBase: the base must be the pinned commit, on any
+// run, and an unknown pin refuses rather than waves the changeset through.
+func TestValidateChangesetBase(t *testing.T) {
+	tests := []struct {
+		name    string
+		base    string
+		pinned  string
+		wantErr string
+	}{
+		{"the pinned commit", "abc123", "abc123", ""},
+		{"another commit", "f00d", "abc123", `changeset base "f00d" is not the repository's pinned commit "abc123"`},
+		{"no base at all", "", "abc123", `changeset base "" is not the repository's pinned commit`},
+		{"the pin unknown", "abc123", "", "pinned commit is unknown"},
+		{"the pin unknown and no base", "", "", "pinned commit is unknown"},
+		{"an overlong base is bounded in the message", strings.Repeat("f", 5000), "abc123",
+			strings.Repeat("f", 64) + `" is not`},
+	}
+	for _, tt := range tests {
+		for image, repoImg := range map[string]bool{"default": false, "repository": true} {
+			t.Run(tt.name+"/"+image, func(t *testing.T) {
+				cs := changesetOf("a.go")
+				cs.BaseSHA = tt.base
+				err := validateChangeset(cs, changesetRules{Base: tt.pinned, MaxEntries: 3, RepositoryImage: repoImg})
+				if tt.wantErr == "" {
+					if err != nil {
+						t.Errorf("validateChangeset = %v, want nil", err)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("validateChangeset = %v, want an error containing %q", err, tt.wantErr)
+				}
+			})
+		}
 	}
 }
 
@@ -112,7 +149,9 @@ func pathConfig(seed int64) *quick.Config {
 // beyond the default is exactly the CI definitions.
 func TestValidateChangesetProperties(t *testing.T) {
 	accepted := func(p string, repoImg bool) bool {
-		return validateChangeset(changesetOf(p), DefaultChangesetMaxEntries, repoImg) == nil
+		return validateChangeset(changesetOf(p), changesetRules{
+			Base: "abc123", MaxEntries: DefaultChangesetMaxEntries, RepositoryImage: repoImg,
+		}) == nil
 	}
 	contained := func(p string) bool {
 		if !accepted(p, false) {
@@ -156,14 +195,14 @@ func TestValidateChangesetEntryCapProperty(t *testing.T) {
 		},
 	}
 	capped := func(upserts, deletes, maxEntries int) bool {
-		cs := &envelope.Changeset{}
+		cs := &envelope.Changeset{BaseSHA: "abc123"}
 		for i := range upserts {
 			cs.Upserts = append(cs.Upserts, envelope.FileChange{Path: "src/f" + strings.Repeat("x", i%7), Mode: "100644"})
 		}
 		for range deletes {
 			cs.Deletes = append(cs.Deletes, "old/file")
 		}
-		err := validateChangeset(cs, maxEntries, true)
+		err := validateChangeset(cs, changesetRules{Base: "abc123", MaxEntries: maxEntries, RepositoryImage: true})
 		return (err == nil) == (upserts+deletes <= maxEntries)
 	}
 	if err := quick.Check(capped, cfg); err != nil {

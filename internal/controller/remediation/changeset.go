@@ -26,9 +26,26 @@ const maxChangesetPathBytes = 4096
 // secrets on any branch pushed to it, before a human has reviewed anything.
 var ciDirs = []string{".github/workflows", ".github/actions"}
 
+// changesetRules is what one remediation's changeset is validated against.
+type changesetRules struct {
+	// Base is the Repository's pinned commit (status.resolvedSHA): the one
+	// base a legitimate run reports, since the pod was handed it. Empty
+	// when it cannot be read, which no changeset matches.
+	Base string
+	// MaxEntries caps upserts plus deletes.
+	MaxEntries int
+	// RepositoryImage applies the repository-image rules.
+	RepositoryImage bool
+}
+
 // validateChangeset checks a remediation changeset before the controller
 // makes any forge call with it, returning an error naming the limit or the
-// path it breaks. Every changeset is held to the entry cap and to paths git
+// path it breaks. Every changeset must be based on the Repository's pinned
+// commit: the push builds its tree on and parents the base the pod reports,
+// so another base would push the branch onto a tree nobody reviewed — a
+// fork's head carrying its own workflows, say — and a changeset diffed
+// against one tree but pushed onto another silently reverts whatever
+// differs. Every changeset is also held to the entry cap and to paths git
 // itself could have produced (relative, no empty, "." or ".." component,
 // nothing inside .git, valid UTF-8 without control characters, bounded
 // length) — none of which a legitimate run ever trips, since the pod builds
@@ -39,15 +56,21 @@ var ciDirs = []string{".github/workflows", ".github/actions"}
 // that image controls the process the changeset came out of. Default-image
 // runs are left as they were, which also spares them the forge's refusal
 // when the App lacks the workflows permission.
-func validateChangeset(cs *envelope.Changeset, maxEntries int, repositoryImage bool) error {
-	if n := len(cs.Upserts) + len(cs.Deletes); n > maxEntries {
-		return fmt.Errorf("changeset has %d entries (upserts plus deletes), over the %d-entry limit", n, maxEntries)
+func validateChangeset(cs *envelope.Changeset, rules changesetRules) error {
+	switch {
+	case rules.Base == "":
+		return fmt.Errorf("the repository's pinned commit is unknown, so the changeset's base cannot be checked")
+	case cs.BaseSHA != rules.Base:
+		return fmt.Errorf("changeset base %.64q is not the repository's pinned commit %q", cs.BaseSHA, rules.Base)
+	}
+	if n := len(cs.Upserts) + len(cs.Deletes); n > rules.MaxEntries {
+		return fmt.Errorf("changeset has %d entries (upserts plus deletes), over the %d-entry limit", n, rules.MaxEntries)
 	}
 	check := func(p string) error {
 		if err := checkChangesetPath(p); err != nil {
 			return err
 		}
-		if repositoryImage && ciPath(p) {
+		if rules.RepositoryImage && ciPath(p) {
 			return fmt.Errorf("changeset path %q is a CI definition, which a run on a repository-declared "+
 				"image may not change", p)
 		}

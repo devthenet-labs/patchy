@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/bitwise-media-group/patchy/internal/cli"
+	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/runnerimage"
 )
 
@@ -43,10 +44,11 @@ func serveOpts(t *testing.T, args ...string) *cli.Options {
 }
 
 // TestRunnerImagesRejectJobReservedEnv resolves through the resolver the
-// flags build: an image ENV may not set a name the agent Job reserves for
-// itself (the GitHub tokens the no-GitHub-token invariant keeps out of the
-// pod, the other harnesses' credential channels, HOME), not only the
-// prefixes and gateway names the resolver knows on its own.
+// flags build: an image ENV may not set ANY name the agent Job reserves for
+// itself (jobs.ReservedEnvNames: credential channels, PATCHY_* handoff,
+// gateway and proxy names, git's repository redirections, HOME). It
+// iterates the Job builder's live list, so a newly reserved name is covered
+// without editing this test.
 func TestRunnerImagesRejectJobReservedEnv(t *testing.T) {
 	srv := httptest.NewServer(registry.New(registry.Logger(log.New(io.Discard, "", 0))))
 	t.Cleanup(srv.Close)
@@ -59,8 +61,11 @@ func TestRunnerImagesRejectJobReservedEnv(t *testing.T) {
 	if err != nil || ri == nil {
 		t.Fatalf("runnerImages = %v, %v", ri, err)
 	}
-	for _, env := range []string{"GITHUB_TOKEN", "GH_TOKEN", "COPILOT_GITHUB_TOKEN", "OPENAI_API_KEY",
-		"CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "HOME"} {
+	names := jobs.ReservedEnvNames()
+	if len(names) == 0 {
+		t.Fatal("jobs.ReservedEnvNames is empty")
+	}
+	for _, env := range names {
 		t.Run(env, func(t *testing.T) {
 			ref, err := name.ParseReference(u.Host + "/org/app:" + strings.ToLower(strings.ReplaceAll(env, "_", "-")))
 			if err != nil {

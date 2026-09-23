@@ -21,6 +21,7 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/cli"
 	"github.com/bitwise-media-group/patchy/internal/controller/source"
 	"github.com/bitwise-media-group/patchy/internal/forge"
+	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/kube"
 	"github.com/bitwise-media-group/patchy/internal/runnerimage"
 	"github.com/bitwise-media-group/patchy/internal/runnerimage/resolve"
@@ -85,9 +86,11 @@ func runnerImages(opts *cli.Options) (*source.RunnerImages, error) {
 	cfg := resolve.Config{
 		MaxBytes:      int64(opts.Int("repository-image-max-bytes")),
 		AllowUnsigned: opts.Bool("repository-image-allow-unsigned"),
-		// The Job's own reserved names, beyond the prefixes and gateway
-		// names the resolver refuses on its own.
-		ReservedEnv: runnerimage.JobReservedEnv(),
+		// The Job builder's own reserved names, beyond the prefixes and
+		// gateway names the resolver refuses on its own: one list, so a name
+		// the Job starts reserving is refused at resolve time with no
+		// second copy to keep in step.
+		ReservedEnv: reservedEnvSet(jobs.ReservedEnvNames()),
 		Keychain:    resolve.NewKeychain(),
 	}
 	if path := opts.String("repository-image-cosign-key-file"); path != "" {
@@ -292,4 +295,14 @@ func sweepBlobs(ctx context.Context, store *artifact.Store, retention time.Durat
 			}
 		}
 	}
+}
+
+// reservedEnvSet turns the Job builder's sorted reserved names into the set
+// resolve.Config takes.
+func reservedEnvSet(names []string) map[string]bool {
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		set[n] = true
+	}
+	return set
 }

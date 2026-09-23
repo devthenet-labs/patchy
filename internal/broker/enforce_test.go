@@ -53,7 +53,12 @@ func errorMessage(t *testing.T, body []byte) string {
 }
 
 func post(h http.Handler, path, body string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	return postCtx(context.Background(), h, path, body)
+}
+
+// postCtx is post with the caller's context, for a request that gives up.
+func postCtx(ctx context.Context, h http.Handler, path, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, path, strings.NewReader(body))
 	req.Header.Set(TokenHeader, tok("good"))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -732,6 +737,177 @@ func TestRequestLimits(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 	})
+}
+
+// TestConcurrentPerPodWaitsForRelease: a caller can hold a response while
+// the broker still holds that request's in-flight slot. The reverse proxy
+// hands the response to the caller from a flush-timer goroutine while the
+// handler is still inside ServeHTTP, and the slot is only released when the
+// handler settles. The request the caller sends next must wait for the slot
+// instead of being refused: the claude CLI sends back to back, and a
+// refusal that outlives its retries ends the stage as budget_exceeded.
+func TestConcurrentPerPodWaitsForRelease(t *testing.T) {
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-release
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer up.Close()
+	s := newTestServer(t, Config{
+		Limits:    Limits{ConcurrentPerPod: 1},
+		Upstreams: map[string]Upstream{"anthropic": {Target: mustTarget(t, up.URL)}},
+	}, nil)
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	defer unblock() // before either Close, which wait for the held handlers
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+"/anthropic/v1/messages",
+		strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(TokenHeader, tok("good"))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("first request: status = %d", resp.StatusCode)
+	}
+	// The caller has its 200; the first handler is still inside the proxy,
+	// holding the pod's only slot, until the upstream finishes shortly.
+	time.AfterFunc(50*time.Millisecond, unblock)
+	rec := post(s.Handler(), "/anthropic/v1/messages", `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("request sent after the first response: status = %d, want 200 once the slot frees: %s",
+			rec.Code, rec.Body.String())
+	}
+}
+
+// blockedUpstream is a fake upstream that holds every request until
+// unblock is called; the test's cleanup unblocks it before closing it.
+func blockedUpstream(t *testing.T, hits *atomic.Int64) (srv *httptest.Server, started <-chan struct{},
+	unblock func()) {
+	t.Helper()
+	release, start := make(chan struct{}), make(chan struct{}, 16)
+	var once sync.Once
+	unblock = func() { once.Do(func() { close(release) }) }
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		start <- struct{}{}
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(unblock) // cleanups run last-in first-out: unblock, then close
+	return srv, start, unblock
+}
+
+// holdSlot sends one request through h in the background and returns once
+// the upstream has it, so the pod's slot is held until the upstream is
+// unblocked. The returned channel yields the request's status.
+func holdSlot(t *testing.T, h http.Handler, started <-chan struct{}) <-chan int {
+	t.Helper()
+	done := make(chan int, 1)
+	go func() { done <- post(h, "/anthropic/v1/messages", `{}`).Code }()
+	<-started
+	return done
+}
+
+// TestConcurrencyWaitBounded: the wait for a slot is bounded by
+// ConcurrencyWait, the cap still holds, and a negative wait refuses at once.
+func TestConcurrencyWaitBounded(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		wait     time.Duration
+		min, max time.Duration
+	}{
+		{"waits then refuses", 150 * time.Millisecond, 150 * time.Millisecond, DefaultConcurrencyWait},
+		{"negative refuses at once", -1, 0, DefaultConcurrencyWait / 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var hits atomic.Int64
+			up, started, unblock := blockedUpstream(t, &hits)
+			s := newTestServer(t, Config{
+				Limits:    Limits{ConcurrentPerPod: 1, ConcurrencyWait: tt.wait},
+				Upstreams: map[string]Upstream{"anthropic": {Target: mustTarget(t, up.URL)}},
+			}, nil)
+			h := s.Handler()
+			first := holdSlot(t, h, started)
+
+			start := time.Now()
+			rec := post(h, "/anthropic/v1/messages", `{}`)
+			waited := time.Since(start)
+			if rec.Code != http.StatusTooManyRequests {
+				t.Fatalf("over the cap: status = %d, want 429: %s", rec.Code, rec.Body.String())
+			}
+			msg := errorMessage(t, rec.Body.Bytes())
+			if !strings.HasPrefix(msg, provider.LimitMessagePrefix) || !strings.Contains(msg, "concurrent") {
+				t.Errorf("message = %q", msg)
+			}
+			if waited < tt.min || waited > tt.max {
+				t.Errorf("refused after %v, want between %v and %v", waited, tt.min, tt.max)
+			}
+			if got := hits.Load(); got != 1 {
+				t.Errorf("upstream hits = %d, want only the held request", got)
+			}
+			unblock()
+			if got := <-first; got != http.StatusOK {
+				t.Errorf("held request: status = %d", got)
+			}
+		})
+	}
+}
+
+// TestConcurrencyWaitCancelled: a caller giving up while its request waits
+// for a slot ends the wait promptly, and the abandoned request neither
+// reaches the upstream nor keeps a slot.
+func TestConcurrencyWaitCancelled(t *testing.T) {
+	var hits atomic.Int64
+	up, started, unblock := blockedUpstream(t, &hits)
+	s := newTestServer(t, Config{
+		Limits:    Limits{ConcurrentPerPod: 1, ConcurrencyWait: time.Minute},
+		Upstreams: map[string]Upstream{"anthropic": {Target: mustTarget(t, up.URL)}},
+	}, nil)
+	h := s.Handler()
+	first := holdSlot(t, h, started)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	const after = 50 * time.Millisecond
+	start := time.Now()
+	time.AfterFunc(after, cancel)
+	rec := postCtx(ctx, h, "/anthropic/v1/messages", `{}`)
+	waited := time.Since(start)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("abandoned request: status = %d, want 429: %s", rec.Code, rec.Body.String())
+	}
+	if waited < after || waited > 5*time.Second {
+		t.Errorf("abandoned request returned after %v, want promptly after the cancel at %v", waited, after)
+	}
+
+	unblock()
+	if got := <-first; got != http.StatusOK {
+		t.Fatalf("held request: status = %d", got)
+	}
+	// The slot is free: with a leaked slot this request would wait out its
+	// own deadline and be refused.
+	next, cancelNext := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancelNext()
+	if rec := postCtx(next, h, "/anthropic/v1/messages", `{}`); rec.Code != http.StatusOK {
+		t.Fatalf("request after the abandoned one: status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := hits.Load(); got != 2 {
+		t.Errorf("upstream hits = %d, want 2 (the abandoned request never forwarded)", got)
+	}
+	if got := s.ledger.totals("agent-pod-1").requests; got != 2 {
+		t.Errorf("pod requests = %d, want 2 (the abandoned request is not counted)", got)
+	}
 }
 
 // TestAuditTotals: the audit line carries the model, this request's charge

@@ -246,13 +246,15 @@ func (s *Server) inspectRequest(r *http.Request, rt *route, adm *admission) *rej
 // slot, the pod's token total and the hourly ceiling. A metered request
 // reserves its worst case — the size estimate plus its output bound — under
 // the same lock as the check, so parallel requests cannot all pass before
-// any usage lands; the reservation is returned when the request settles.
-func (s *Server) reserve(_ *http.Request, _ *route, adm *admission) *rejection {
+// any usage lands; the reservation is returned when the request settles. A
+// request over the in-flight cap alone waits briefly for a slot, for as long
+// as its caller does.
+func (s *Server) reserve(r *http.Request, _ *route, adm *admission) *rejection {
 	var worst int64
 	if adm.ep.metered {
 		worst = adm.estimate + adm.outputBound
 	}
-	release, reason := s.ledger.admit(adm.id.pod, worst)
+	release, reason := s.ledger.admit(r.Context(), adm.id.pod, worst)
 	if reason != "" {
 		return &rejection{status: http.StatusTooManyRequests, kind: "rate_limit_error", msg: reason, reason: "limit"}
 	}
@@ -311,6 +313,10 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, rt *route, adm *a
 			}
 			countTokens(r.Context(), rt.name, charged, estimated)
 		}
+		// The caller may already hold the whole response: the reverse proxy
+		// flushes from a timer goroutine while this handler is still inside
+		// ServeHTTP, so the slot frees after the response has gone out. A
+		// request sent straight after waits for it in ledger.admit.
 		adm.release()
 		countRequest(r.Context(), rt.name, "proxied")
 		audit(s.log, r, auditEntry{

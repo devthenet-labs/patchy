@@ -676,3 +676,21 @@ func TestConfigValidation(t *testing.T) {
 		t.Error("relative target accepted")
 	}
 }
+
+// TestConcurrencyWaitDefault: an unset wait takes the default, a negative
+// one (waiting disabled) and an explicit one are kept.
+func TestConcurrencyWaitDefault(t *testing.T) {
+	for _, tt := range []struct{ set, want time.Duration }{
+		{0, DefaultConcurrencyWait},
+		{-1, -1},
+		{5 * time.Second, 5 * time.Second},
+	} {
+		s := newTestServer(t, Config{
+			Limits:    Limits{ConcurrentPerPod: 1, ConcurrencyWait: tt.set},
+			Upstreams: map[string]Upstream{"anthropic": {Target: &url.URL{Scheme: "https", Host: "x"}}},
+		}, nil)
+		if got := s.cfg.Limits.ConcurrencyWait; got != tt.want {
+			t.Errorf("ConcurrencyWait %v: got %v, want %v", tt.set, got, tt.want)
+		}
+	}
+}

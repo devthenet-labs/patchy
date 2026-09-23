@@ -136,10 +136,11 @@ run = "./hack/dev-colima.sh"
 # The helm charts (charts/patchy = the stack, charts/patchy-config = the
 # Integration/Forge CRs) render the same stack as deploy/kustomize and are
 # published to oci://ghcr.io/devthenet-labs/patchy/charts by
-# .github/workflows/helm.yaml on release. This is the local gate: lint plus a
-# render of every component combination the templates branch on, then the
-# render assertions (hack/chart-render-test.sh: which keys reach which
-# controller, the mounts, and the render-time guards).
+# .github/workflows/helm.yaml on release. This is the chart gate, in `make pr`
+# and in CI's helm-lint job: lint plus a render of every component combination
+# the templates branch on, then the render assertions
+# (hack/chart-render-test.sh: which keys reach which controller, the mounts,
+# the render-time guards and the schema's value formats).
 [helm-lint]
 description = "lint and render the helm charts"
 dir = "{{cwd}}"
@@ -192,8 +193,9 @@ run = [
   { task = "docs-build" },
 ]
 
-# The envtest suite (CRD schema assertions) and the codegen drift check run
-# here because the reusable CI workflow runs neither; see [ci] above.
+# The envtest suite (CRD schema assertions), the codegen drift check and the
+# chart gate (helm-lint: lint, renders and the render assertions) run here
+# because the reusable CI workflow runs none of them; see [ci] above.
 [pr]
 description = "full local gate before a pull request"
 run = [
@@ -201,6 +203,7 @@ run = [
   { task = "fmt" },
   { task = "codegen-check" },
   { task = "lint" },
+  { task = "helm-lint" },
   { task = "test" },
   { task = "envtest" },
   { task = "build" },

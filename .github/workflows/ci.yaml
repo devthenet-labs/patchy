@@ -10,7 +10,7 @@
 # at .mise/ (no package.json or .node-version: mise provisions its own Node for
 # the prose linters). The Go version for the product build comes from go.mod.
 # The reusable workflow also runs `make e2e` (opted in below), and the
-# repo-local envtest job covers the one gate it has no slot for.
+# repo-local envtest and helm-lint jobs cover the gates it has no slot for.
 #
 # The reusable workflow is pinned to a full commit SHA (tag in the comment) so a
 # moved tag can never change what runs; Dependabot keeps the pin fresh.
@@ -88,3 +88,33 @@ jobs:
 
             - name: Run envtest
               run: mise run envtest
+
+    # The chart gate: helm lint, a render of every component combination the
+    # templates branch on, and the render assertions (hack/chart-render-test.sh:
+    # which keys reach which controller, the mounts, the render-time guards and
+    # the schema's value formats). The reusable workflow has no slot for it, the
+    # toolchain's lint-helm scans helm/ rather than charts/, and helm.yaml lints
+    # only at release, after the chart has merged. helm and yq come pinned from
+    # mise, set up as in the envtest job above; no Go toolchain is needed.
+    helm-lint:
+        runs-on: ubuntu-latest
+        permissions:
+            # check out the repository
+            contents: read
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false # read-only checkout; don't leave the token in .git/config
+                  submodules: true # the shared toolchain (tasks + pinned tools) at .mise/
+
+            - name: Setup mise
+              uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+              with:
+                  version: v2026.9.1
+                  # sha256 of the linux-x64 mise binary for the version above, from the release's
+                  # SHASUMS256.txt -- the action verifies the extracted binary, not the archive
+                  sha256: c98423c8470d6dc416d9f7036d0646d8ef5ae92ad9186907f8fcc84cbe7db4ea
+
+            - name: Run helm-lint
+              run: mise run helm-lint

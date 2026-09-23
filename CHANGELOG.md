@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.11.8](https://github.com/devthenet-labs/patchy/compare/v0.11.7...v0.11.8) (2026-09-23)
+
+
+### Features
+
+* **chart:** repository runner images, broker limits and Pod Identity egress (phase 7) ([#28](https://github.com/devthenet-labs/patchy/issues/28)) ([f78e0b2](https://github.com/devthenet-labs/patchy/commit/f78e0b222d11f83be2466257a6192d14e13a4794))
+* repository runner images phase 8 — owner feedback, describe, docs ([#27](https://github.com/devthenet-labs/patchy/issues/27)) ([1acd5d7](https://github.com/devthenet-labs/patchy/commit/1acd5d771314a16e3d015e1e9f408dfecf5691bc))
+
+
+### Bug Fixes
+
+* **cli:** resolve a real runner image for check image on dev builds ([#29](https://github.com/devthenet-labs/patchy/issues/29)) ([1a25d17](https://github.com/devthenet-labs/patchy/commit/1a25d1712e4f69bd7d82f13ce542c52beaac3117))
+
 ## [0.11.7](https://github.com/devthenet-labs/patchy/compare/v0.11.6...v0.11.7) (2026-09-23)
 
 

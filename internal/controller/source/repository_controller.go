@@ -232,7 +232,7 @@ func (r *RepositoryReconciler) fail(ctx context.Context, repo *v1alpha1.Reposito
 		Type:               v1alpha1.ConditionReady,
 		Status:             metav1.ConditionFalse,
 		Reason:             reason,
-		Message:            cause.Error(),
+		Message:            truncate(cause.Error()),
 		ObservedGeneration: repo.Generation,
 	})
 	repo.Status.ObservedGeneration = repo.Generation
@@ -261,7 +261,7 @@ func (r *RepositoryReconciler) stall(
 		Type:               v1alpha1.ConditionStalled,
 		Status:             metav1.ConditionTrue,
 		Reason:             reason,
-		Message:            cause.Error(),
+		Message:            truncate(cause.Error()),
 		ObservedGeneration: repo.Generation,
 	})
 	meta.SetStatusCondition(&repo.Status.Conditions, metav1.Condition{

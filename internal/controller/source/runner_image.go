@@ -29,7 +29,10 @@ const (
 	OnRejectDefault = "default"
 )
 
-// maxMessageBytes is the CRD's cap on status.runnerImage.message.
+// maxMessageBytes is the CRD's cap on status.runnerImage.message. Condition
+// messages are held to it too: they quote the committer-controlled
+// declaration, and the CRD refuses a condition message over 32768 bytes by
+// failing the whole status write.
 const maxMessageBytes = 4096
 
 // RunnerImages is the repository-declared runner image configuration. A nil
@@ -60,10 +63,12 @@ func (e *imageRejection) Error() string { return e.cause.Message }
 func (e *imageRejection) Unwrap() error { return e.cause }
 
 // status is the record a rejection leaves: no image, the reason and the
-// message the Stalled condition also carries.
+// message the Stalled condition also carries. The declared reference is
+// bounded like the message, since a rejected one can be anything the
+// declaration file held.
 func (e *imageRejection) status(now metav1.Time) *v1alpha1.RunnerImage {
 	return &v1alpha1.RunnerImage{
-		Declared:   e.declared,
+		Declared:   truncate(e.declared),
 		Manifest:   e.manifest,
 		Rejected:   e.reason,
 		Message:    truncate(e.cause.Message),
@@ -255,7 +260,7 @@ func (r *RepositoryReconciler) resolving(
 		Type:               v1alpha1.ConditionReady,
 		Status:             metav1.ConditionFalse,
 		Reason:             v1alpha1.ReasonRunnerImageResolving,
-		Message:            fmt.Sprintf("resolving runner image `%s` declared in `%s`", decl.Image, decl.Manifest),
+		Message:            truncate(fmt.Sprintf("resolving runner image `%s` declared in `%s`", decl.Image, decl.Manifest)),
 		ObservedGeneration: repo.Generation,
 	})
 	meta.RemoveStatusCondition(&repo.Status.Conditions, v1alpha1.ConditionStalled)
@@ -263,7 +268,7 @@ func (r *RepositoryReconciler) resolving(
 	return r.Status().Update(ctx, repo)
 }
 
-// truncate bounds a message to the CRD's field cap, on a rune boundary.
+// truncate bounds a message to maxMessageBytes, on a rune boundary.
 func truncate(s string) string {
 	if len(s) <= maxMessageBytes {
 		return s

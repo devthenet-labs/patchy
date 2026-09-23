@@ -562,3 +562,37 @@ func TestRunnerImageUnreadableArtifactRefetched(t *testing.T) {
 		t.Errorf("status after the re-fetch = %+v, want Ready with the pin", repo.Status)
 	}
 }
+
+// TestRunnerImageLongRejectionFitsTheConditionCap: a rejection message quotes
+// the declaration, which the committer controls (up to 64 KiB). The CRD caps
+// a condition message at 32768 bytes, so an untruncated Stalled message fails
+// the whole status write with 422 and the reconcile retries forever with no
+// reason recorded anywhere.
+func TestRunnerImageLongRejectionFitsTheConditionCap(t *testing.T) {
+	long := "ghcr.io/acme/" + strings.Repeat("a", 40000) + " x"
+	gh := &fakeForgeClient{defaultBranch: "main", headSHA: "abc123",
+		tarball: tarball(t, map[string]string{runnerimage.AgentYAMLPath: "image: '" + long + "'\n"})}
+	r, c := imageHarness(t, gh, &fakeResolver{})
+
+	reconcile(t, r)
+
+	repo := getRepo(t, c)
+	stalled := condition(t, repo, v1alpha1.ConditionStalled)
+	if stalled == nil || stalled.Reason != v1alpha1.ReasonRunnerImageRejected {
+		t.Fatalf("Stalled = %+v, want RunnerImageRejected", stalled)
+	}
+	ri := repo.Status.RunnerImage
+	if ri == nil || ri.Rejected != "InvalidReference" {
+		t.Fatalf("runnerImage = %+v, want the InvalidReference rejection", ri)
+	}
+	for field, got := range map[string]string{
+		"Stalled message": stalled.Message, "runnerImage.message": ri.Message, "runnerImage.declared": ri.Declared,
+	} {
+		if len(got) > maxMessageBytes {
+			t.Errorf("%s is %d bytes, over the %d-byte cap", field, len(got), maxMessageBytes)
+		}
+	}
+	if stalled.Message != ri.Message {
+		t.Errorf("Stalled message %q is not mirrored into runnerImage.message %q", stalled.Message, ri.Message)
+	}
+}

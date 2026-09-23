@@ -15,9 +15,11 @@ import (
 )
 
 // FindingDetail renders everything known about one finding. spend is the
-// cross-attempt total, which lives on the child runs rather than the finding —
-// the caller queries it and passes it in, so this package performs no I/O.
-func FindingDetail(d *printer.Doc, f *v1alpha1.Finding, now time.Time, spend string) {
+// cross-attempt total, which lives on the child runs rather than the finding,
+// and image is the finding's Repository's runner-image record (nil when none
+// was declared or the Repository is gone) — the caller queries both and
+// passes them in, so this package performs no I/O.
+func FindingDetail(d *printer.Doc, f *v1alpha1.Finding, now time.Time, spend string, image *v1alpha1.RunnerImage) {
 	d.Section(fmt.Sprintf("Finding %s", f.Name)).
 		Field("Title", f.Spec.Title).
 		Field("Advisories", strings.Join(f.Spec.Advisories, ", ")).
@@ -77,6 +79,12 @@ func FindingDetail(d *printer.Doc, f *v1alpha1.Finding, now time.Time, spend str
 		d.Fieldf("Running now", "%s %s", ar.Kind, ar.Name)
 	}
 	d.Field("Spend", spend)
+
+	var ran *v1alpha1.RunnerImageRef
+	if inv := f.Status.Investigation; inv != nil {
+		ran = inv.RunnerImage
+	}
+	RunnerImage(d, image, ran, now)
 
 	d.Section("Alerts")
 	for _, a := range f.Spec.Alerts {

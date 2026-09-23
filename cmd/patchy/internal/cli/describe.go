@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/cmd/patchy/internal/kubecfg"
@@ -17,11 +18,17 @@ import (
 
 func newDescribeCmd(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "describe <resource> <name>",
-		Short:   "Show the full detail of one resource",
-		Long:    "Show everything known about one resource: state, timeline, and what can be done to it.",
-		Example: "  patchy describe finding my-finding\n  patchy describe investigation my-finding-inv-1",
-		Args:    cobra.ExactArgs(2),
+		Use:   "describe <resource> <name>",
+		Short: "Show the full detail of one resource",
+		Long: "Show everything known about one resource: state, timeline, and what can be done to it.\n\n" +
+			"A finding and its repository snapshot also show the agent runner image: the file that\n" +
+			"declared it (.patchy/agent.yaml or .devcontainer/devcontainer.json), the digest it was\n" +
+			"pinned to, whether runs use it (source repository) or the default runner image (source\n" +
+			"default), and why a declaration was rejected or not applicable.",
+		Example: "  patchy describe finding my-finding\n" +
+			"  patchy describe investigation my-finding-inv-1\n" +
+			"  patchy describe repository my-finding-src",
+		Args: cobra.ExactArgs(2),
 
 		ValidArgsFunction: nounCompletion,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -67,11 +74,17 @@ func runDescribe(ctx context.Context, opts *Options, noun, name string) error {
 		if err != nil {
 			opts.debugf("could not total spend for %s: %v", typed.Name, err)
 		}
-		render.FindingDetail(d, typed, now(), spend)
+		image, err := findingRunnerImage(callCtx, env, typed)
+		if err != nil {
+			opts.debugf("could not read the runner image of %s: %v", typed.Name, err)
+		}
+		render.FindingDetail(d, typed, now(), spend, image)
 	case *v1alpha1.Investigation:
 		render.InvestigationDetail(d, typed, now())
 	case *v1alpha1.Remediation:
 		render.RemediationDetail(d, typed, now())
+	case *v1alpha1.Repository:
+		render.RepositoryDetail(d, typed, now())
 	default:
 		// Every other kind is configuration, not state: its spec is the
 		// interesting part and YAML shows it better than a bespoke view.
@@ -119,4 +132,23 @@ func findingSpend(ctx context.Context, env *kubecfg.Env, f *v1alpha1.Finding) (s
 	}
 	return fmt.Sprintf("%d in / %d out tokens, $%.4f across %d runs",
 		in, out, cost, len(invs.Items)+len(rems.Items)), nil
+}
+
+// findingRunnerImage reads the runner-image record off the finding's own
+// Repository: the one labelled with the finding and controlled by it, so a
+// snapshot left over from an earlier finding of the same name is never shown.
+// Nil when there is none (nothing declared, no snapshot yet, or it has been
+// collected).
+func findingRunnerImage(ctx context.Context, env *kubecfg.Env, f *v1alpha1.Finding) (*v1alpha1.RunnerImage, error) {
+	var repos v1alpha1.RepositoryList
+	sel := listOptions(env, fmt.Sprintf("%s=%s", v1alpha1.LabelFinding, f.Name))
+	if err := env.Client.List(ctx, &repos, sel...); err != nil {
+		return nil, err
+	}
+	for i := range repos.Items {
+		if owner := metav1.GetControllerOf(&repos.Items[i]); owner != nil && owner.UID == f.UID {
+			return repos.Items[i].Status.RunnerImage, nil
+		}
+	}
+	return nil, nil
 }

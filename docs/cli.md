@@ -141,9 +141,14 @@ mean the same thing on every kind, so those do apply. `-o json` and `-o yaml` gi
 `-o name` gives you fully-qualified references you can pipe back into `kubectl`.
 
 ```sh
-patchy describe finding my-finding               # state, timeline, owners, alerts, runs, spend
+patchy describe finding my-finding               # state, timeline, owners, alerts, runs, spend, runner image
 patchy describe investigation my-finding-inv-1
+patchy describe repository my-finding-src        # pinned commit, artifact, runner image
 ```
+
+With [repository-declared agent images](integrations/agent-images.md) on, a finding and its repository snapshot also
+show the runner image: the file that declared it, the digest it was pinned to, whether the runs used it (`repository`)
+or the default runner image (`default`), and the reason a declaration was rejected or not applicable.
 
 ## Reviewing an agent's work
 

@@ -323,9 +323,10 @@ yet the image's `/usr/local/go/bin` survives), `GIT_CONFIG_NOSYSTEM=1`, and expl
 key that `agentrun.FromEnv` reads and the Job does not set. `agentrun` exports that key list, so the pod-side backstop
 covers the whole config surface without a hand-kept list; the proxy variables join `reservedEnv`. An explicit container
 env overrides image ENV, so this is the backstop for names the resolver did not know. `agent-runner` is `CGO_ENABLED=0`
-(`.goreleaser.yaml`), so `LD_PRELOAD` cannot reach it. `harness.Available` prefers `$PATCHY_BIN_DIR/<cli>` when set, and
-`runner` already replaces `Argv[0]` with the resolved path. `git`, `sh` and `bash` come from the image by contract. Both
-containers carry the ephemeral-storage request and limit.
+(`.goreleaser.yaml`), so `LD_PRELOAD` cannot reach it. `agent-runner` resolves the harness CLI under `$PATCHY_BIN_DIR`
+alone (`harness.AvailableIn`, never falling back to PATH) during preflight and runs the stage by that absolute path
+(`pinCLI`). `git`, `sh` and `bash` come from the image by contract. Both containers carry the ephemeral-storage request
+and limit.
 
 Preflight: before the stage, `agent-runner` runs `$PATCHY_BIN_DIR/claude --version`, `git --version` and `bash -c true`;
 failure emits a terminal event with the new `envelope.OutcomeImageIncompatible` (`image_incompatible`) and the detail,

@@ -548,3 +548,35 @@ func deref32(p *int32) any {
 	}
 	return *p
 }
+
+// TestAgentEnvParsesToBinDir ties the two sides of the pod boundary: the
+// env the Job hands the agent container, read by agent-runner's own
+// parser, puts the injected directory in Config.BinDir on a repository
+// image and nothing there on the default one, so preflight and the CLI pin
+// switch on exactly when the pod was built for them.
+func TestAgentEnvParsesToBinDir(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{"repository image", injectedConfig(), patchyBinDir},
+		{"default image", brokeredConfig(), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agent := buildJobForTest(t, tt.cfg, injectedSpec()).Spec.Template.Spec.Containers[0]
+			env := map[string]string{}
+			for _, e := range agent.Env {
+				env[e.Name] = e.Value
+			}
+			got, err := agentrun.FromEnv(func(k string) string { return env[k] })
+			if err != nil {
+				t.Fatalf("agentrun.FromEnv over the agent env: %v", err)
+			}
+			if got.BinDir != tt.want {
+				t.Errorf("BinDir = %q, want %q", got.BinDir, tt.want)
+			}
+		})
+	}
+}

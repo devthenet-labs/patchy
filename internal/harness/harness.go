@@ -144,21 +144,8 @@ func ByID(id string) (Harness, bool) {
 	return nil, false
 }
 
-// BinDirEnv names the directory patchy's own binaries were injected into
-// when the pod runs a repository-declared image (internal/jobs sets it to
-// /patchy/bin). The trusted prepare step copies the harness CLI there, and
-// Available prefers it over PATH so the CLI that runs is the one patchy
-// supplied rather than whatever the image put first on its PATH.
-const BinDirEnv = "PATCHY_BIN_DIR"
-
-// Available finds the harness's runner binary: under $PATCHY_BIN_DIR first
-// when that is set, then the first of its candidates on PATH.
+// Available finds the first of the harness's runner binaries on PATH.
 func Available(h Harness) (path string, ok bool) {
-	if dir := os.Getenv(BinDirEnv); dir != "" {
-		if p, ok := AvailableIn(h, dir); ok {
-			return p, true
-		}
-	}
 	for _, name := range h.CLI() {
 		if p, err := exec.LookPath(name); err == nil {
 			return p, true
@@ -169,7 +156,9 @@ func Available(h Harness) (path string, ok bool) {
 
 // AvailableIn finds the harness's runner binary under dir alone, never
 // falling back to PATH: an injected CLI that is missing must be reported,
-// not quietly replaced by the image's own.
+// not quietly replaced by the image's own. It is how a pod running a
+// repository-declared image resolves the CLI patchy injected (agentrun's
+// preflight, whose result the stage then runs by absolute path).
 func AvailableIn(h Harness, dir string) (path string, ok bool) {
 	for _, name := range h.CLI() {
 		p := filepath.Join(dir, name)

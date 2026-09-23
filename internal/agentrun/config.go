@@ -68,7 +68,7 @@ type Config struct {
 	ModelMap map[string]string
 	// BinDir is the read-only directory the trusted prepare init copied
 	// patchy's own binaries into when the pod runs a repository-declared
-	// image (PATCHY_BIN_DIR, /patchy/bin); empty on the default runner
+	// image (BinDirEnv, /patchy/bin); empty on the default runner
 	// image. When set, the stage's harness CLI is run from it by absolute
 	// path, after a preflight that proves the image can execute it.
 	BinDir string
@@ -153,6 +153,12 @@ func (c Config) commitScript() string { return filepath.Join(c.Workspace, "commi
 // webhooks resolve the Finding from the head ref).
 func (c Config) branch() string { return "patchy/" + c.Finding }
 
+// BinDirEnv names the directory internal/jobs injects patchy's binaries into
+// on a repository-declared image (/patchy/bin). It is the one definition of
+// the name both sides of the pod boundary use: jobs sets it, FromEnv reads
+// it into Config.BinDir, and preflight resolves the harness CLI there alone.
+const BinDirEnv = "PATCHY_BIN_DIR"
+
 // ConfigEnvKeys returns every PATCHY_* variable FromEnv reads, sorted. It is
 // derived by running the parser against a recording getenv rather than kept
 // by hand, so a new configuration key is covered the day it is added:
@@ -197,7 +203,7 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		}
 	}
 	cfg.BrokerTokenFile = get("BROKER_TOKEN_FILE", "")
-	cfg.BinDir = get("BIN_DIR", "")
+	cfg.BinDir = get(strings.TrimPrefix(BinDirEnv, "PATCHY_"), "")
 
 	var errs []string
 	if raw := get("MODEL_MAP", ""); raw != "" {

@@ -60,22 +60,18 @@ func fakeCLI(t *testing.T, dir string, h Harness) string {
 	return p
 }
 
-func TestAvailablePrefersBinDir(t *testing.T) {
-	dir := t.TempDir()
-	want := fakeCLI(t, dir, NewFake())
-	t.Setenv(BinDirEnv, dir)
+// TestAvailableIgnoresBinDir: Available resolves from PATH and nothing
+// else, even in a pod whose injected binaries sit in PATCHY_BIN_DIR. The
+// injected CLI is resolved by AvailableIn alone (agentrun's preflight, then
+// pinCLI), which never falls back to PATH; an Available that preferred the
+// injected directory but fell back when it was empty would bless exactly
+// the substitution injection exists to prevent.
+func TestAvailableIgnoresBinDir(t *testing.T) {
+	injected := fakeCLI(t, t.TempDir(), NewFake())
+	t.Setenv("PATCHY_BIN_DIR", filepath.Dir(injected))
 	got, ok := Available(NewFake())
-	if !ok || got != want {
-		t.Errorf("Available(fake) with %s = (%q, %v), want the injected %q", BinDirEnv, got, ok, want)
-	}
-}
-
-func TestAvailableFallsBackToPath(t *testing.T) {
-	// An empty bin dir: the PATH copy is found, not nothing.
-	t.Setenv(BinDirEnv, t.TempDir())
-	got, ok := Available(NewFake())
-	if !ok || got == "" || filepath.Dir(got) == os.Getenv(BinDirEnv) {
-		t.Errorf("Available(fake) = (%q, %v), want cat from PATH", got, ok)
+	if !ok || got == "" || got == injected {
+		t.Errorf("Available(fake) = (%q, %v), want cat from PATH, not the injected %q", got, ok, injected)
 	}
 }
 

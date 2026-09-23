@@ -775,7 +775,7 @@ var scrubEnv = append([]string{
 // deterministic.
 func injectEnv(env []corev1.EnvVar, spec Spec) []corev1.EnvVar {
 	env = append(env,
-		corev1.EnvVar{Name: harness.BinDirEnv, Value: patchyBinDir},
+		corev1.EnvVar{Name: agentrun.BinDirEnv, Value: patchyBinDir},
 		corev1.EnvVar{Name: "PATH", Value: podPath(spec.RunnerSearchPath)},
 		corev1.EnvVar{Name: "GIT_CONFIG_NOSYSTEM", Value: "1"},
 		corev1.EnvVar{Name: "DISABLE_AUTOUPDATER", Value: "1"})

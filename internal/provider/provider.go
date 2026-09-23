@@ -20,6 +20,14 @@ import (
 // drift.
 const BrokerTokenHeader = "X-Patchy-Broker-Token"
 
+// LimitMessagePrefix opens the error message of every 429 the egress broker
+// returns for a spend limit it enforces on a pod's behalf (requests, tokens,
+// concurrency, the hourly ceiling, the max_tokens ceiling). The in-pod
+// runtime maps a CLI failure carrying it to budget_exceeded, so the prefix
+// is a contract between the two sides and is defined here for the same
+// reason BrokerTokenHeader is.
+const LimitMessagePrefix = "egress broker: per-pod limit"
+
 // PlaceholderAuthEnv and PlaceholderAuthToken are the fixed, non-secret auth
 // token internal/jobs sets on every brokered claude pod. The claude CLI
 // (2.1.263 onward) refuses to start — "Not logged in · Please run /login" —
@@ -200,6 +208,34 @@ func EffectiveModelMap(c Config, models []model.Model) (map[string]string, error
 	}
 	maps.Copy(out, c.ModelMap)
 	return out, nil
+}
+
+// BedrockGeoPrefixes are the geography prefixes Bedrock cross-region
+// inference-profile ids carry ("us.anthropic.claude-sonnet-5-v1:0"). Every
+// prefix bedrockPrefix derives is one of them; BareModelID strips any of
+// them, so the broker's allowlist admits exactly the ids this package can
+// produce plus the other published geographies.
+var BedrockGeoPrefixes = []string{"us", "us-gov", "eu", "apac", "jp", "au", "global"}
+
+// BareModelID normalizes a model id as an operator or a request names it to
+// the vendor's bare id, the form model allowlists compare in: lower-cased
+// and trimmed, without a canonical vendor prefix ("anthropic/"), and without
+// a Bedrock "<geo>.anthropic." or "anthropic." prefix. Dated and versioned
+// suffixes are kept; ARNs are the caller's to unwrap first.
+func BareModelID(id string) string {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if _, rest, ok := strings.Cut(id, "/"); ok {
+		id = rest
+	}
+	for _, geo := range BedrockGeoPrefixes {
+		if rest, ok := strings.CutPrefix(id, geo+".anthropic."); ok {
+			return rest
+		}
+	}
+	if rest, ok := strings.CutPrefix(id, "anthropic."); ok {
+		return rest
+	}
+	return id
 }
 
 // bedrockPrefix resolves the inference-profile geo prefix: the operator's

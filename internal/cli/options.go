@@ -100,3 +100,15 @@ func (o *Options) Float(key string) float64 { return o.viper.GetFloat64(key) }
 
 // Int reads an extra controller-specific integer value.
 func (o *Options) Int(key string) int { return o.viper.GetInt(key) }
+
+// StringList reads an extra controller-specific comma-separated value as a
+// list: entries trimmed, empty entries dropped, nil when nothing remains.
+func (o *Options) StringList(key string) []string {
+	var out []string
+	for entry := range strings.SplitSeq(o.String(key), ",") {
+		if entry = strings.TrimSpace(entry); entry != "" {
+			out = append(out, entry)
+		}
+	}
+	return out
+}

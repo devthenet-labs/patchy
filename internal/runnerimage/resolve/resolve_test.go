@@ -176,12 +176,22 @@ type indexChild struct {
 	platform v1.Platform
 }
 
+// bareOS marks an indexChild listed with no platform at all.
+const bareOS = "(no platform)"
+
+// bare is an index entry with no platform.
+func bare(img v1.Image) indexChild { return indexChild{img, v1.Platform{OS: bareOS}} }
+
 func pushIndex(t *testing.T, ref name.Reference, children ...indexChild) v1.Hash {
 	t.Helper()
 	idx := mutate.IndexMediaType(empty.Index, types.OCIImageIndex)
 	for _, c := range children {
-		p := c.platform
-		idx = mutate.AppendManifests(idx, mutate.IndexAddendum{Add: c.img, Descriptor: v1.Descriptor{Platform: &p}})
+		desc := v1.Descriptor{}
+		if c.platform.OS != bareOS {
+			p := c.platform
+			desc.Platform = &p
+		}
+		idx = mutate.AppendManifests(idx, mutate.IndexAddendum{Add: c.img, Descriptor: desc})
 	}
 	if err := remote.WriteIndex(ref, idx); err != nil {
 		t.Fatalf("push index %s: %v", ref, err)
@@ -356,7 +366,9 @@ func TestResolveIndex(t *testing.T) {
 					t.Fatal(err)
 				}
 				fetched := c.blobs[cn.String()] > 0
-				if fetched != runnablePlatform(&ch.platform) {
+				arch := ch.platform.Architecture
+				runnable := ch.platform.OS == "linux" && (arch == "amd64" || arch == "arm64")
+				if fetched != runnable {
 					t.Errorf("config %s (%s/%s) fetched = %v", cn, ch.platform.OS, ch.platform.Architecture, fetched)
 				}
 			}
@@ -364,37 +376,47 @@ func TestResolveIndex(t *testing.T) {
 	}
 }
 
-// TestCheckedConfigsEqualRunnableChildren is the seeded property behind index
-// enumeration: for any mix of platforms in an index, the configs the
-// resolver reads are exactly those of the linux/amd64 and linux/arm64
-// children, and the index is accepted exactly when there is at least one.
-func TestCheckedConfigsEqualRunnableChildren(t *testing.T) {
-	pool := []v1.Platform{
-		linux("amd64"), linux("arm64"), linux("386"), {OS: "linux", Architecture: "arm", Variant: "v7"},
-		{OS: "windows", Architecture: "amd64"}, {OS: "unknown", Architecture: "unknown"},
-		{OS: "darwin", Architecture: "arm64"}, linux("s390x"),
-	}
-	property := func(mask uint8) bool {
+// poolEntry is one index entry the property can include, with its oracle
+// written out by hand from containerd's platform matching (containerd/
+// platforms Only + Normalize, images.Manifest), never computed by the code
+// under test: checked entries are the ones a linux/amd64 or linux/arm64
+// node could run as its own architecture; covers names the architecture
+// whose baseline entry containerd prefers over every fallback on that node;
+// fallback names the node architecture that falls back to the entry when
+// nothing covers it ("any" for an entry with no platform, which a node
+// judges by its config when no platform-tagged entry matches).
+type poolEntry struct {
+	platform v1.Platform
+	bare     bool
+	checked  bool
+	covers   string
+	fallback string
+}
+
+var indexPool = []poolEntry{
+	{platform: linux("amd64"), checked: true, covers: "amd64"},
+	{platform: linux("arm64"), checked: true, covers: "arm64"},
+	{platform: linux("386"), fallback: "amd64"},
+	{platform: v1.Platform{OS: "linux", Architecture: "arm", Variant: "v7"}, fallback: "arm64"},
+	{platform: v1.Platform{OS: "windows", Architecture: "amd64"}},
+	{platform: v1.Platform{OS: "unknown", Architecture: "unknown"}},
+	{platform: v1.Platform{OS: "darwin", Architecture: "arm64"}},
+	{platform: linux("s390x")},
+	{platform: v1.Platform{OS: "", Architecture: "x86_64"}, checked: true, covers: "amd64"},
+	{platform: v1.Platform{OS: "Linux", Architecture: "aarch64"}, checked: true, covers: "arm64"},
+	{platform: v1.Platform{OS: "linux", Architecture: "amd64", Variant: "v3"}, checked: true},
+	{bare: true, fallback: "any"},
+}
+
+// indexPoolProperty is the property behind index enumeration: for the mix
+// of indexPool entries mask selects, an index is accepted exactly when it
+// has a checked entry and no unchecked entry a node could fall back to, and
+// an accepted index had exactly its checked entries' configs read.
+func indexPoolProperty(t *testing.T) func(mask uint16) bool {
+	return func(mask uint16) bool {
 		c := &counter{}
 		repo := newRegistry(t, false, c.wrap)
-		var children []indexChild
-		want := map[string]bool{}
-		for i, p := range pool {
-			if mask&(1<<i) == 0 {
-				continue
-			}
-			img := image(t, &v1.ConfigFile{OS: p.OS, Architecture: p.Architecture, Config: v1.Config{
-				Env: []string{"PATH=/usr/bin"}, Labels: map[string]string{"child": fmt.Sprint(i)},
-			}}, []byte(fmt.Sprint(i)))
-			children = append(children, indexChild{img, p})
-			if runnablePlatform(&p) {
-				cn, err := img.ConfigName()
-				if err != nil {
-					t.Fatal(err)
-				}
-				want[cn.String()] = true
-			}
-		}
+		children, want, accept := poolIndex(t, mask)
 		if len(children) == 0 {
 			return true
 		}
@@ -402,24 +424,233 @@ func TestCheckedConfigsEqualRunnableChildren(t *testing.T) {
 		c.reset(nil)
 		r := newResolver(t, Config{})
 		_, err := r.Resolve(context.Background(), declared(t, repo.String()+":v1"))
+		if (err == nil) != accept {
+			t.Logf("mask %012b: err = %v, want accepted %v", mask, err, accept)
+			return false
+		}
+		if err != nil && !runnerimage.IsRejection(err) {
+			t.Logf("mask %012b: err = %v, want a Rejection", mask, err)
+			return false
+		}
 		got := map[string]bool{}
 		for d := range c.blobs {
 			got[d] = true
 		}
-		if !maps.Equal(got, want) {
-			t.Logf("mask %08b: fetched %v, want %v", mask, got, want)
-			return false
-		}
-		if (err == nil) != (len(want) > 0) {
-			t.Logf("mask %08b: err = %v with %d runnable children", mask, err, len(want))
+		if accept && !maps.Equal(got, want) {
+			t.Logf("mask %012b: fetched %v, want %v", mask, got, want)
 			return false
 		}
 		return true
 	}
-	cfg := &quick.Config{MaxCount: 48, Rand: mrand.New(mrand.NewSource(20260922))}
-	if err := quick.Check(property, cfg); err != nil {
+}
+
+// poolIndex builds the index entries mask selects from indexPool, the
+// configs the resolver must read for them, and whether the index must be
+// accepted, all from the pool's hand-written oracle columns.
+func poolIndex(t *testing.T, mask uint16) (children []indexChild, want map[string]bool, accept bool) {
+	t.Helper()
+	want = map[string]bool{}
+	covered := map[string]bool{}
+	var fallbacks []string
+	for i, e := range indexPool {
+		if mask&(1<<i) == 0 {
+			continue
+		}
+		cfOS, cfArch := e.platform.OS, e.platform.Architecture
+		if e.bare {
+			cfOS, cfArch = "linux", "amd64"
+		}
+		img := image(t, &v1.ConfigFile{OS: cfOS, Architecture: cfArch, Config: v1.Config{
+			Env: []string{"PATH=/usr/bin"}, Labels: map[string]string{"child": fmt.Sprint(i)},
+		}}, []byte(fmt.Sprint(i)))
+		child := indexChild{img, e.platform}
+		if e.bare {
+			child = bare(img)
+		}
+		children = append(children, child)
+		if e.checked {
+			cn, err := img.ConfigName()
+			if err != nil {
+				t.Fatal(err)
+			}
+			want[cn.String()] = true
+		}
+		if e.covers != "" {
+			covered[e.covers] = true
+		}
+		if e.fallback != "" {
+			fallbacks = append(fallbacks, e.fallback)
+		}
+	}
+	reachable := false
+	for _, f := range fallbacks {
+		if f == "any" {
+			reachable = reachable || !covered["amd64"] || !covered["arm64"]
+		} else {
+			reachable = reachable || !covered[f]
+		}
+	}
+	return children, want, len(want) > 0 && !reachable
+}
+
+// TestCheckedConfigsEqualRunnableChildren runs indexPoolProperty seeded.
+func TestCheckedConfigsEqualRunnableChildren(t *testing.T) {
+	cfg := &quick.Config{MaxCount: 96, Rand: mrand.New(mrand.NewSource(20260922))}
+	if err := quick.Check(indexPoolProperty(t), cfg); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestCheckedConfigsCounterexamples pins the masks the property failed on,
+// so they survive a seed change: 0xcf04 (linux/386, x86_64, Linux/aarch64,
+// amd64/v3 and an entry with no platform) was accepted with only part of
+// what containerd could run checked.
+func TestCheckedConfigsCounterexamples(t *testing.T) {
+	for _, mask := range []uint16{0xcf04} {
+		if !indexPoolProperty(t)(mask) {
+			t.Errorf("mask %#04x fails the index property", mask)
+		}
+	}
+}
+
+// TestResolveIndexChildrenContainerdCouldRun pins the entries containerd
+// would pick that an exact linux/amd64|arm64 match misses: other spellings
+// of the architectures (checked like any child), and the fallbacks a node
+// takes when nothing names its own architecture (rejected, since they are
+// never checked). The unchecked child carries a VOLUME and a reserved ENV,
+// so accepting the index would run it unchecked.
+func TestResolveIndexChildrenContainerdCouldRun(t *testing.T) {
+	env := []string{"PATH=/usr/bin"}
+	clean := func(arch string) v1.Image {
+		return image(t, &v1.ConfigFile{Architecture: arch, Config: v1.Config{Env: env}}, []byte("clean-"+arch))
+	}
+	evil := image(t, &v1.ConfigFile{Config: v1.Config{
+		Env:     []string{"PATH=/usr/bin", "ANTHROPIC_BASE_URL=http://evil"},
+		Volumes: map[string]struct{}{"/var/lib/evil": {}},
+	}}, []byte("evil"))
+	amd, arm := clean("amd64"), clean("arm64")
+	cases := []struct {
+		name     string
+		children []indexChild
+		reason   string
+		want     string
+	}{
+		{"x86_64 is amd64", []indexChild{{arm, linux("arm64")}, {evil, v1.Platform{OS: "linux", Architecture: "x86_64"}}},
+			"Volume", "/var/lib/evil"},
+		{"an empty OS is linux", []indexChild{{arm, linux("arm64")}, {evil, v1.Platform{Architecture: "amd64"}}},
+			"Volume", "/var/lib/evil"},
+		{"the OS is case-insensitive",
+			[]indexChild{{arm, linux("arm64")}, {evil, v1.Platform{OS: "Linux", Architecture: "amd64"}}},
+			"Volume", "/var/lib/evil"},
+		{"aarch64 is arm64", []indexChild{{amd, linux("amd64")}, {evil, v1.Platform{OS: "linux", Architecture: "aarch64"}}},
+			"Volume", "/var/lib/evil"},
+		{"386 is an amd64 node's fallback", []indexChild{{arm, linux("arm64")}, {evil, linux("386")}},
+			"UnsupportedPlatform", "linux/386"},
+		{"arm/v7 is an arm64 node's fallback", []indexChild{{amd, linux("amd64")},
+			{evil, v1.Platform{OS: "linux", Architecture: "arm", Variant: "v7"}}},
+			"UnsupportedPlatform", "linux/arm/v7"},
+		{"a variant-only amd64 entry does not cover the fallback",
+			[]indexChild{{amd, v1.Platform{OS: "linux", Architecture: "amd64", Variant: "v3"}}, {arm, linux("arm64")},
+				{evil, linux("386")}},
+			"UnsupportedPlatform", "linux/386"},
+		{"an entry without a platform is judged by its config", []indexChild{{amd, linux("amd64")}, bare(evil)},
+			"UnsupportedPlatform", "no platform"},
+		{"fallbacks behind both architectures never run",
+			[]indexChild{{amd, linux("amd64")}, {arm, linux("arm64")}, {evil, linux("386")},
+				{evil, v1.Platform{OS: "linux", Architecture: "arm", Variant: "v7"}}, bare(evil)},
+			"", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &counter{}
+			repo := newRegistry(t, false, c.wrap)
+			pushIndex(t, repo.Tag("v1"), tc.children...)
+			c.reset(nil)
+			r := newResolver(t, Config{})
+			_, err := r.Resolve(context.Background(), declared(t, repo.String()+":v1"))
+			evilConfig, cerr := evil.ConfigName()
+			if cerr != nil {
+				t.Fatal(cerr)
+			}
+			if tc.reason == "" {
+				if err != nil {
+					t.Fatalf("Resolve: %v", err)
+				}
+				if c.blobs[evilConfig.String()] != 0 {
+					t.Error("read the config of an entry no node would run")
+				}
+				return
+			}
+			rejection(t, err, tc.reason, tc.want)
+		})
+	}
+}
+
+// TestResolveIndexBoundsChildren: every checked child costs a manifest and a
+// config fetch on the single Repository worker, so an index repeating one
+// child is checked once, and one listing more distinct runnable children
+// than any real image needs is refused before any child is fetched.
+func TestResolveIndexBoundsChildren(t *testing.T) {
+	t.Run("a repeated child is checked once", func(t *testing.T) {
+		c := &counter{}
+		repo := newRegistry(t, false, c.wrap)
+		amd := image(t, &v1.ConfigFile{Config: v1.Config{Env: []string{"PATH=/usr/bin"}}}, []byte("amd"))
+		children := make([]indexChild, 200)
+		for i := range children {
+			children[i] = indexChild{img: amd, platform: linux("amd64")}
+		}
+		pushIndex(t, repo.Tag("v1"), children...)
+		c.reset(nil)
+		r := newResolver(t, Config{})
+		if _, err := r.Resolve(context.Background(), declared(t, repo.String()+":v1")); err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+		cn, err := amd.ConfigName()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := c.blobs[cn.String()]; got != 1 {
+			t.Errorf("config fetched %d times, want once", got)
+		}
+	})
+	t.Run("too many distinct children", func(t *testing.T) {
+		c := &counter{}
+		repo := newRegistry(t, false, c.wrap)
+		children := make([]indexChild, 0, 20)
+		for i := range 20 {
+			img := image(t, &v1.ConfigFile{Config: v1.Config{Env: []string{"PATH=/usr/bin"}}}, []byte(fmt.Sprint(i)))
+			children = append(children, indexChild{img: img, platform: linux("amd64")})
+		}
+		pushIndex(t, repo.Tag("v1"), children...)
+		c.reset(nil)
+		r := newResolver(t, Config{})
+		_, err := r.Resolve(context.Background(), declared(t, repo.String()+":v1"))
+		rejection(t, err, "Unsupported", "20 runnable manifests")
+		if len(c.blobs) != 0 {
+			t.Errorf("fetched %d blobs before refusing the index", len(c.blobs))
+		}
+	})
+}
+
+// TestResolveNestedIndexUnderAnotherSpelling: a nested index is refused
+// wherever containerd could reach it, not only under an exact platform.
+func TestResolveNestedIndexUnderAnotherSpelling(t *testing.T) {
+	repo := newRegistry(t, false, nil)
+	inner := mutate.IndexMediaType(empty.Index, types.OCIImageIndex)
+	inner = mutate.AppendManifests(inner, mutate.IndexAddendum{Add: image(t, nil, []byte("x")),
+		Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "amd64"}}})
+	outer := mutate.IndexMediaType(empty.Index, types.OCIImageIndex)
+	outer = mutate.AppendManifests(outer,
+		mutate.IndexAddendum{Add: image(t, &v1.ConfigFile{Architecture: "arm64"}, []byte("a")),
+			Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "arm64"}}},
+		mutate.IndexAddendum{Add: inner,
+			Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: "x86_64"}}})
+	if err := remote.WriteIndex(repo.Tag("v1"), outer); err != nil {
+		t.Fatal(err)
+	}
+	r := newResolver(t, Config{})
+	_, err := r.Resolve(context.Background(), declared(t, repo.String()+":v1"))
+	rejection(t, err, "Unsupported", "nests a")
 }
 
 func TestResolveNestedIndexRejected(t *testing.T) {

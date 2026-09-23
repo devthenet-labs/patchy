@@ -8,13 +8,16 @@
 // The order is what makes pin-once hold. A tag costs exactly one HEAD; from
 // then on every call names the repository by digest, so nothing after that
 // HEAD can observe a tag move, and the recorded reference is the object
-// that was checked. For an image index the linux/amd64 and linux/arm64
-// children are enumerated by their own digests and each one is checked
-// (compressed layer size, os/arch, VOLUME, reserved ENV, PATH); every
-// runnable child must pass with the same sanitized PATH, and the index
-// digest is what is recorded, because that is what cosign signs and the
-// kubelet pulls. A single-platform manifest is checked the same way, with
-// its os/arch read from the config.
+// that was checked. For an image index every child a linux/amd64 or
+// linux/arm64 node could run, judged the way containerd picks one (other
+// spellings of those architectures, an empty OS), is enumerated by its own
+// digest and checked (compressed layer size, os/arch, VOLUME, reserved ENV,
+// PATH); every runnable child must pass with the same sanitized PATH, and
+// the index digest is what is recorded, because that is what cosign signs
+// and the kubelet pulls. An index that leaves a node an unchecked fallback
+// (linux/386, linux/arm/*, an entry with no platform) is rejected. A
+// single-platform manifest is checked the same way, with its os/arch read
+// from the config.
 //
 // Signature verification is in-process with stdlib crypto: the sigstore
 // bundle cosign v3 attaches through the OCI referrers API (with the

@@ -28,6 +28,11 @@ const (
 	DefaultMaxBytes = int64(4) << 30 // 4 GiB
 	// DefaultCacheTTL bounds how long a checked digest's verdict is reused.
 	DefaultCacheTTL = 10 * time.Minute
+	// maxChildren bounds the distinct manifests of one index that are
+	// checked. A real image lists one per architecture (a few per
+	// architecture with variants); every check costs a manifest and a config
+	// fetch on the single Repository worker.
+	maxChildren = 8
 )
 
 // Config configures a Resolver.
@@ -178,10 +183,22 @@ type child struct {
 	platform *v1.Platform
 }
 
-// runnable lists the manifests that would actually run: the linux/amd64 and
-// linux/arm64 entries of an index, or the single manifest itself. Entries of
-// other platforms (and the unknown/unknown attestation manifests) never run
-// and are not checked; an index with no runnable entry is rejected.
+// runnable lists the manifests a linux/amd64 or linux/arm64 node could run,
+// judged the way containerd picks an index child (containerd/platforms Only
+// and Normalize, images.Manifest), or the single manifest itself.
+//
+// Every entry whose normalized platform is linux/amd64 or linux/arm64 (any
+// variant, and any spelling containerd folds into those: x86_64, aarch64,
+// upper case, an empty OS) is enumerated by its own digest, once per digest,
+// and checked. containerd also falls back to a linux/386 entry on an amd64
+// node and a linux/arm/* entry on an arm64 node when no entry names the
+// node's own architecture, and judges an entry with no platform by its
+// config when no platform-tagged entry matches at all. Those are never
+// checked, so an index that leaves one reachable is rejected; entries only
+// other platforms run (windows, the unknown/unknown attestation manifests,
+// s390x, ...) are skipped. An index with no runnable entry, a nested index
+// where a node could reach it, or more than maxChildren distinct runnable
+// children is rejected.
 func runnable(pinned name.Digest, desc *remote.Descriptor) ([]child, error) {
 	switch {
 	case desc.MediaType.IsIndex():
@@ -193,21 +210,48 @@ func runnable(pinned name.Digest, desc *remote.Descriptor) ([]child, error) {
 		if err != nil {
 			return nil, fmt.Errorf("index %s: %w", pinned, err)
 		}
-		var out []child
+		// covered: an architecture with a baseline entry, which containerd
+		// prefers over every fallback on a node of that architecture.
+		covered := map[string]bool{}
 		for _, m := range im.Manifests {
-			if !runnablePlatform(m.Platform) {
+			if m.Platform == nil {
 				continue
+			}
+			if p := normalizePlatform(*m.Platform); p.OS == "linux" && p.Variant == "" {
+				covered[p.Architecture] = true
+			}
+		}
+		var out []child
+		seen := map[v1.Hash]bool{}
+		for _, m := range im.Manifests {
+			switch platformReach(m.Platform, covered) {
+			case reachNever:
+				continue
+			case reachUnchecked:
+				return nil, &runnerimage.Rejection{Reason: "UnsupportedPlatform",
+					Message: fmt.Sprintf("image `%s` lists a manifest with %s, which a node falls back to when no "+
+						"entry names its own architecture; only linux/amd64 and linux/arm64 manifests are checked, so "+
+						"list both or drop it", pinned, describePlatform(m.Platform))}
 			}
 			if !m.MediaType.IsImage() {
 				return nil, &runnerimage.Rejection{Reason: "Unsupported",
-					Message: fmt.Sprintf("image `%s` nests a %s manifest for %s/%s; only image manifests can run",
-						pinned, m.MediaType, m.Platform.OS, m.Platform.Architecture)}
+					Message: fmt.Sprintf("image `%s` nests a %s manifest for %s; only image manifests can run",
+						pinned, m.MediaType, describePlatform(m.Platform))}
 			}
+			if seen[m.Digest] {
+				continue
+			}
+			seen[m.Digest] = true
 			out = append(out, child{digest: m.Digest, platform: m.Platform})
 		}
 		if len(out) == 0 {
 			return nil, &runnerimage.Rejection{Reason: "UnsupportedPlatform",
 				Message: fmt.Sprintf("image `%s` has no linux/amd64 or linux/arm64 manifest", pinned)}
+		}
+		if len(out) > maxChildren {
+			return nil, &runnerimage.Rejection{Reason: "Unsupported",
+				Message: fmt.Sprintf("image `%s` lists %d runnable manifests; at most %d are checked",
+					pinned, len(out), maxChildren)}
 		}
 		return out, nil
 	case desc.MediaType.IsImage():
@@ -218,10 +262,98 @@ func runnable(pinned name.Digest, desc *remote.Descriptor) ([]child, error) {
 	}
 }
 
-// runnablePlatform reports whether an index entry's platform is one the
-// agent pod could be scheduled on.
-func runnablePlatform(p *v1.Platform) bool {
-	return p != nil && p.OS == "linux" && (p.Architecture == "amd64" || p.Architecture == "arm64")
+// reach is whether a linux/amd64 or linux/arm64 node could run an index
+// entry.
+type reach int
+
+const (
+	// reachNever: no such node runs the entry.
+	reachNever reach = iota
+	// reachChecked: the entry names the node's own architecture; it is
+	// enumerated and checked.
+	reachChecked
+	// reachUnchecked: a node could fall back to the entry, which is never
+	// checked.
+	reachUnchecked
+)
+
+// platformReach classifies one index entry given the architectures that
+// have a baseline entry (covered).
+func platformReach(p *v1.Platform, covered map[string]bool) reach {
+	if p == nil {
+		// Judged by its config on a node whose architecture nothing names.
+		if covered["amd64"] && covered["arm64"] {
+			return reachNever
+		}
+		return reachUnchecked
+	}
+	n := normalizePlatform(*p)
+	if n.OS != "linux" {
+		return reachNever
+	}
+	switch n.Architecture {
+	case "amd64", "arm64":
+		return reachChecked
+	case "386":
+		if !covered["amd64"] {
+			return reachUnchecked
+		}
+	case "arm":
+		if !covered["arm64"] {
+			return reachUnchecked
+		}
+	}
+	return reachNever
+}
+
+// normalizePlatform folds a platform the way containerd does before matching
+// (containerd/platforms Normalize): OS, architecture and variant are
+// case-insensitive, an empty OS is the node's own (linux), x86_64, x86-64,
+// aarch64, i386, armhf and armel are spellings of amd64, arm64, 386 and arm,
+// and the baseline variants (amd64 v1, arm64 v8) fold to empty.
+func normalizePlatform(p v1.Platform) v1.Platform {
+	os, arch, variant := strings.ToLower(p.OS), strings.ToLower(p.Architecture), strings.ToLower(p.Variant)
+	if os == "" {
+		os = "linux"
+	}
+	switch arch {
+	case "x86_64", "x86-64", "amd64":
+		arch = "amd64"
+		if variant == "v1" {
+			variant = ""
+		}
+	case "aarch64", "arm64":
+		arch = "arm64"
+		if variant == "8" || variant == "v8" {
+			variant = ""
+		}
+	case "i386":
+		arch, variant = "386", ""
+	case "armhf":
+		arch, variant = "arm", "v7"
+	case "armel":
+		arch, variant = "arm", "v6"
+	}
+	return v1.Platform{OS: os, Architecture: arch, Variant: variant}
+}
+
+// runnableConfig reports whether an image config's os/arch is one the
+// agent pod could run, normalized as containerd does.
+func runnableConfig(cf *v1.ConfigFile) bool {
+	n := normalizePlatform(v1.Platform{OS: cf.OS, Architecture: cf.Architecture})
+	return n.OS == "linux" && (n.Architecture == "amd64" || n.Architecture == "arm64")
+}
+
+// describePlatform names an index entry's platform in a message.
+func describePlatform(p *v1.Platform) string {
+	if p == nil {
+		return "no platform"
+	}
+	s := p.OS + "/" + p.Architecture
+	if p.Variant != "" {
+		s += "/" + p.Variant
+	}
+	return "platform " + s
 }
 
 // checkChild fetches one manifest by digest and applies the size, platform,
@@ -249,7 +381,7 @@ func (r *Resolver) checkChild(ctx context.Context, repo name.Repository, c child
 	if err != nil {
 		return nil, classify(ref.String(), err)
 	}
-	if !runnablePlatform(&v1.Platform{OS: cf.OS, Architecture: cf.Architecture}) {
+	if !runnableConfig(cf) {
 		return nil, &runnerimage.Rejection{Reason: "UnsupportedPlatform",
 			Message: fmt.Sprintf("image `%s` is built for %s/%s; only linux/amd64 and linux/arm64 can run",
 				ref, cf.OS, cf.Architecture)}
@@ -276,7 +408,11 @@ func platformSuffix(p *v1.Platform) string {
 	if p == nil {
 		return ""
 	}
-	return " (" + p.OS + "/" + p.Architecture + ")"
+	s := " (" + p.OS + "/" + p.Architecture
+	if p.Variant != "" {
+		s += "/" + p.Variant
+	}
+	return s + ")"
 }
 
 // labeled stamps reason onto a pure check's Rejection; any other error

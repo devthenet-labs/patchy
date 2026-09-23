@@ -207,8 +207,11 @@ Steps, in a new pure package `internal/runnerimage` plus an `ocireg`-backed reso
 4. Enumerate what would actually run. If the resolved object is an image index, the `linux/amd64` and `linux/arm64`
    children are enumerated by their own digests and each is checked in step 5; the image is rejected unless every child
    passes with an identical sanitized PATH, and the recorded digest is the index digest (what cosign signs and the
-   kubelet pulls). If it is a single-platform manifest, os/arch are read from its config and must be linux with one of
-   those two architectures.
+   kubelet pulls). Children are judged the way containerd picks one (`containerd/platforms` normalization): every
+   spelling of those platforms (`x86_64`, `aarch64`, upper case, an empty OS) is checked, and an index that leaves a
+   node an unchecked fallback (`linux/386` with no `linux/amd64` entry, `linux/arm/*` with no `linux/arm64` entry, an
+   entry with no platform unless both architectures have one, a nested index) is rejected. If it is a single-platform
+   manifest, os/arch are read from its config and must be linux with one of those two architectures.
 5. Per child: `crane.Manifest` sums compressed layers against `maxBytes`; `ConfigFile` fetches the config, whose `Env`
    is rejected if it names anything in `reservedEnv` union `provider.GatewayEnvNames`, anything with the prefix
    `PATCHY_`, `ANTHROPIC_`, `CLAUDE_` or `CLAUDE_CODE_`, or `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY` in

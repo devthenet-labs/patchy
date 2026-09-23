@@ -268,3 +268,55 @@ func TestRepositoryImageMustBeDigestPinned(t *testing.T) {
 		t.Errorf("Create returned %+v, want the tag+digest reference run as recorded", ref)
 	}
 }
+
+// TestRepositoryImageRequiresEphemeralStorage: the ephemeral-storage limit
+// is the threat model's wall on disk, so a repository-image Job without one
+// is refused rather than built with the node's disk as the only bound. A
+// default Job keeps today's optional limit.
+func TestRepositoryImageRequiresEphemeralStorage(t *testing.T) {
+	cfg := injectedConfig()
+	cfg.EphemeralStorage = ""
+	cs := fake.NewClientset()
+	if name, ref, err := New(cs, cfg, nil).Create(context.Background(), injectedSpec()); err == nil {
+		t.Fatalf("Create = (%q, %+v, nil), want a refusal without an ephemeral-storage limit", name, ref)
+	} else if !strings.Contains(err.Error(), "ephemeral-storage") {
+		t.Errorf("Create error = %q, want it to name the missing ephemeral-storage limit", err)
+	}
+	assertNothingCreated(t, cs, cfg.Namespace)
+
+	cfg.AllowRepositoryImages = false
+	if _, ref := createWithRef(t, cfg, injectedSpec()); ref.Source != v1alpha1.RunnerImageSourceDefault {
+		t.Errorf("default Job without ephemeral storage: source %q, want default", ref.Source)
+	}
+}
+
+// TestInjectAlwaysCopiesAgentRunner: the agent container's command is the
+// injected agent-runner by absolute path whatever the runner lists, so the
+// copy list always carries it — first, once — and a runner that names only
+// its CLI still builds a pod that can start.
+func TestInjectAlwaysCopiesAgentRunner(t *testing.T) {
+	tests := []struct {
+		inject []string
+		want   string
+	}{
+		{[]string{"agent-runner", "claude"}, "agent-runner claude"},
+		{[]string{"claude"}, "agent-runner claude"},
+		{[]string{"claude", "agent-runner"}, "agent-runner claude"},
+		{[]string{"agent-runner"}, "agent-runner"},
+	}
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.inject, ","), func(t *testing.T) {
+			cfg := injectedConfig()
+			claude := cfg.Runners["claude"]
+			claude.Inject = tt.inject
+			cfg.Runners["claude"] = claude
+			pod := buildJobForTest(t, cfg, injectedSpec()).Spec.Template.Spec
+			if got := envMap(pod.InitContainers[0])["PATCHY_INJECT"].Value; got != tt.want {
+				t.Errorf("PATCHY_INJECT = %q, want %q", got, tt.want)
+			}
+			if got := pod.Containers[0].Command; len(got) != 1 || got[0] != "/patchy/bin/agent-runner" {
+				t.Errorf("agent command = %v, want the injected agent-runner", got)
+			}
+		})
+	}
+}

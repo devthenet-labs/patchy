@@ -171,7 +171,8 @@ type Runner struct {
 	Env map[string]string
 	// Inject names the binaries this runner image contributes to a Job that
 	// runs a repository-declared image instead: the prepare init copies each
-	// one from toolsBinDir into the patchy-bin volume. Nil means this
+	// one from toolsBinDir into the patchy-bin volume, agent-runner always
+	// among them since the agent container runs it from there. Nil means this
 	// harness never runs a repository image (codex and copilot hold a real
 	// credential in-pod; the fake harness replays fixtures), whatever the
 	// Repository declares. runnercfg sets {"agent-runner", "claude"} for the
@@ -204,7 +205,9 @@ type Config struct {
 	CPURequest, MemoryRequest, CPULimit, MemoryLimit string
 	// EphemeralStorage, when set, is the ephemeral-storage request AND
 	// limit on both containers, so a pod that fills its emptyDirs is
-	// evicted by the kubelet rather than filling the node. Optional.
+	// evicted by the kubelet rather than filling the node. Optional for a
+	// default Job; required for a repository-image one, which Create
+	// refuses without it.
 	EphemeralStorage string
 	// AllowRepositoryImages is the kill switch for repository-declared
 	// runner images: while false (the default) a Spec.RunnerImage is
@@ -438,7 +441,11 @@ func (c *Client) injects(runner Runner, spec Spec) bool {
 // RunnerImageRef Create returns recorded the tag as the reference that ran.
 // The resolver only ever writes a pinned reference, so anything else in
 // Spec.RunnerImage is a bug or a tampered status, not an operator choice.
-func injectionRefusal(harnessID string, runner Runner, spec Spec) error {
+//
+// A missing ephemeral-storage limit is the third: it is the threat model's
+// wall on disk, and without it a hostile image can fill the node's disk
+// through the emptyDirs until the kubelet starts evicting other workloads.
+func (c *Client) injectionRefusal(harnessID string, runner Runner, spec Spec) error {
 	if !runner.Brokered && runner.Secret != "" {
 		return fmt.Errorf("jobs: runner %q injects a model credential (%s from Secret %s) and cannot run a "+
 			"repository-declared image; only a brokered or credential-free runner may Inject",
@@ -448,7 +455,29 @@ func injectionRefusal(harnessID string, runner Runner, spec Spec) error {
 		return fmt.Errorf("jobs: repository-declared image %q is not pinned to a sha256 digest; "+
 			"only a digest reference the resolver pinned may run", spec.RunnerImage)
 	}
+	if c.cfg.EphemeralStorage == "" {
+		return fmt.Errorf("jobs: a repository-declared image needs an ephemeral-storage limit " +
+			"(Config.EphemeralStorage), the wall on the disk its emptyDirs can fill")
+	}
 	return nil
+}
+
+// agentRunnerBin is the binary the agent container runs; on a
+// repository-image Job it is the injected copy, by absolute path.
+const agentRunnerBin = "agent-runner"
+
+// injectedBinaries is the prepare step's copy list: agent-runner first,
+// always — the agent container's command is the injected agent-runner
+// whatever the runner lists — then the runner's other binaries, in order,
+// each once.
+func injectedBinaries(runner Runner) []string {
+	bins := []string{agentRunnerBin}
+	for _, b := range runner.Inject {
+		if !slices.Contains(bins, b) {
+			bins = append(bins, b)
+		}
+	}
+	return bins
 }
 
 // buildSecret holds everything the init container needs: the handoff
@@ -480,7 +509,7 @@ func (c *Client) buildJob(name string, spec Spec) (*batchv1.Job, error) {
 	ann := map[string]string{annotationRepo: spec.Repo}
 	inject := c.injects(runner, spec)
 	if inject {
-		if err := injectionRefusal(spec.Harness, runner, spec); err != nil {
+		if err := c.injectionRefusal(spec.Harness, runner, spec); err != nil {
 			return nil, err
 		}
 		ann[annotationRunnerImage] = spec.RunnerImage
@@ -602,7 +631,7 @@ func (c *Client) prepareContainer(runner Runner, spec Spec, res corev1.ResourceR
 	}
 	if inject {
 		env = append(env,
-			corev1.EnvVar{Name: "PATCHY_INJECT", Value: strings.Join(runner.Inject, " ")},
+			corev1.EnvVar{Name: "PATCHY_INJECT", Value: strings.Join(injectedBinaries(runner), " ")},
 			corev1.EnvVar{Name: sandboxprobe.TimeoutEnv, Value: c.cfg.SandboxProbeTimeout.String()})
 		script += injectScript
 		mounts = append(mounts, corev1.VolumeMount{Name: volPatchyBin, MountPath: patchyBinDir})
@@ -634,9 +663,9 @@ func (c *Client) agentContainer(runner Runner, spec Spec, res corev1.ResourceReq
 	if runner.Brokered {
 		mounts = append(mounts, corev1.VolumeMount{Name: volBrokerToken, MountPath: brokerTokenDir, ReadOnly: true})
 	}
-	image, command, env := runner.Image, []string{"agent-runner"}, c.agentEnv(runner, spec)
+	image, command, env := runner.Image, []string{agentRunnerBin}, c.agentEnv(runner, spec)
 	if inject {
-		image, command = spec.RunnerImage, []string{patchyBinDir + "/agent-runner"}
+		image, command = spec.RunnerImage, []string{patchyBinDir + "/" + agentRunnerBin}
 		env = injectEnv(env, spec)
 		mounts = append(mounts, corev1.VolumeMount{Name: volPatchyBin, MountPath: patchyBinDir, ReadOnly: true})
 	}

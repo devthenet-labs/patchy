@@ -596,3 +596,45 @@ func TestRunnerImageLongRejectionFitsTheConditionCap(t *testing.T) {
 		t.Errorf("Stalled message %q is not mirrored into runnerImage.message %q", stalled.Message, ri.Message)
 	}
 }
+
+// blockingResolver never answers: a registry that accepts the connection and
+// then stalls.
+type blockingResolver struct{}
+
+func (blockingResolver) Resolve(ctx context.Context, _ imageref.Ref) (runnerimage.Resolved, error) {
+	<-ctx.Done()
+	return runnerimage.Resolved{}, ctx.Err()
+}
+
+// TestRunnerImageResolveDeadline: resolution runs on the single Repository
+// worker, so a registry that never answers must cost a bounded, transient
+// failure rather than block every Repository behind it.
+func TestRunnerImageResolveDeadline(t *testing.T) {
+	gh := &fakeForgeClient{defaultBranch: "main", headSHA: "abc123",
+		tarball: tarball(t, map[string]string{runnerimage.AgentYAMLPath: yamlDecl})}
+	r, c := imageHarness(t, gh, &fakeResolver{})
+	r.Images.Resolver = blockingResolver{}
+	r.Images.ResolveTimeout = 50 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := reconcileErr(t, r)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Reconcile = %v, want the deadline as a transient error", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Reconcile still blocked on a registry that never answers")
+	}
+	repo := getRepo(t, c)
+	ready := condition(t, repo, v1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != v1alpha1.ReasonRunnerImageResolveFailed {
+		t.Errorf("Ready = %+v, want False/RunnerImageResolveFailed", ready)
+	}
+	if repo.Status.RunnerImage != nil || condition(t, repo, v1alpha1.ConditionStalled) != nil {
+		t.Errorf("status = %+v, want no pin and no stall on a timeout", repo.Status)
+	}
+}

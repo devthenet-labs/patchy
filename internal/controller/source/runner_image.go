@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -35,6 +36,11 @@ const (
 // failing the whole status write.
 const maxMessageBytes = 4096
 
+// DefaultResolveTimeout bounds one resolution's registry traffic. The
+// Repository controller runs one worker, so a registry that accepts the
+// connection and never answers would otherwise block every Repository.
+const DefaultResolveTimeout = 3 * time.Minute
+
 // RunnerImages is the repository-declared runner image configuration. A nil
 // RepositoryReconciler.Images is the kill switch: no declaration is read
 // and status.runnerImage is never written.
@@ -45,10 +51,21 @@ type RunnerImages struct {
 	Resolver runnerimage.Resolver
 	// OnReject is OnRejectHandoff or OnRejectDefault; empty means handoff.
 	OnReject string
+	// ResolveTimeout bounds one resolution's registry traffic; <= 0 means
+	// DefaultResolveTimeout.
+	ResolveTimeout time.Duration
 }
 
 // handoff reports whether a rejection stalls the Repository.
 func (i *RunnerImages) handoff() bool { return i.OnReject != OnRejectDefault }
+
+// resolveTimeout is ResolveTimeout with its default applied.
+func (i *RunnerImages) resolveTimeout() time.Duration {
+	if i.ResolveTimeout <= 0 {
+		return DefaultResolveTimeout
+	}
+	return i.ResolveTimeout
+}
 
 // imageRejection is a deterministic refusal of the declaration, carrying
 // what status.runnerImage records about it.
@@ -187,10 +204,17 @@ func (r *RepositoryReconciler) resolveRunnerImage(
 	if err := r.resolving(ctx, repo, decl); err != nil {
 		return nil, err
 	}
-	res, err := r.Images.Resolver.Resolve(ctx, ref)
+	timeout := r.Images.resolveTimeout()
+	rctx, cancel := context.WithTimeout(ctx, timeout)
+	res, err := r.Images.Resolver.Resolve(rctx, ref)
+	cancel()
 	if err != nil {
 		if runnerimage.IsRejection(err) {
 			return nil, rejected("Resolve", decl.Image, decl.Manifest, err)
+		}
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return nil, fmt.Errorf("resolve runner image %s: the registry did not answer within %s: %w",
+				decl.Image, timeout, err)
 		}
 		return nil, fmt.Errorf("resolve runner image %s: %w", decl.Image, err)
 	}

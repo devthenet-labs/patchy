@@ -1,0 +1,35 @@
+// Copyright 2026 Bitwise Media Group Ltd.
+// SPDX-License-Identifier: MIT
+
+// Package resolve is the registry-backed runnerimage.Resolver: it turns a
+// declared, allowlisted reference into the digest-pinned, checked image a
+// Job may run, over go-containerregistry.
+//
+// The order is what makes pin-once hold. A tag costs exactly one HEAD; from
+// then on every call names the repository by digest, so nothing after that
+// HEAD can observe a tag move, and the recorded reference is the object
+// that was checked. For an image index the linux/amd64 and linux/arm64
+// children are enumerated by their own digests and each one is checked
+// (compressed layer size, os/arch, VOLUME, reserved ENV, PATH); every
+// runnable child must pass with the same sanitized PATH, and the index
+// digest is what is recorded, because that is what cosign signs and the
+// kubelet pulls. A single-platform manifest is checked the same way, with
+// its os/arch read from the config.
+//
+// Signature verification is in-process with stdlib crypto: the sigstore
+// bundle cosign v3 attaches through the OCI referrers API (with the
+// sha256-<digest> tag fallback) is checked first, then the legacy
+// sha256-<digest>.sig tag with its simple-signing payload. Both must name
+// the recorded digest and verify with the operator's ECDSA key.
+//
+// Registry credentials come from a host-selected keychain (NewKeychain):
+// ECR through the AWS SDK's default credential chain, Artifact Registry and
+// GCR through google.Keychain, everything else through the docker config
+// under DOCKER_CONFIG, anonymous last. A 401, 403 or 404 is a
+// *runnerimage.Rejection; anything else is transient and left to the
+// caller's backoff.
+//
+// A verdict is cached by pinned reference for a bounded time so per-Finding
+// Repositories on the same image do not repeat the checks; the HEAD that
+// resolves a tag is never cached.
+package resolve

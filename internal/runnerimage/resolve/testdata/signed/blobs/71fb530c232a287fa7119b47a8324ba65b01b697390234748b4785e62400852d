@@ -1,0 +1,1 @@
+{"architecture":"amd64","created":"0001-01-01T00:00:00Z","os":"linux","rootfs":{"type":"layers","diff_ids":["sha256:03f8d5a8bd68a8f5a23291781bd22145a836ce21c231ce5c00a907bc03f6ffc1"]},"config":{"Env":["PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin"]}}

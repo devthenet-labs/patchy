@@ -158,7 +158,8 @@ func TestMaxTokensMustBeInteger(t *testing.T) {
 		})
 	}
 	for _, v := range []string{`0`, `8000`} {
-		if rec := post(h, "/anthropic/v1/messages", `{"model":"claude-sonnet-5","max_tokens":`+v+`}`); rec.Code != http.StatusOK {
+		rec := post(h, "/anthropic/v1/messages", `{"model":"claude-sonnet-5","max_tokens":`+v+`}`)
+		if rec.Code != http.StatusOK {
 			t.Fatalf("max_tokens %s: status = %d: %s", v, rec.Code, rec.Body.String())
 		}
 	}

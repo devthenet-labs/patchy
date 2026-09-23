@@ -979,8 +979,18 @@ func subjectOf(t *testing.T, ref name.Reference) v1.Descriptor {
 	return desc.Descriptor
 }
 
-// pushReferrer attaches blob to subject as an OCI artifact of artifactType.
-func pushReferrer(t *testing.T, repo name.Repository, subject v1.Descriptor, artifactType string, blob []byte) {
+// pushReferrer attaches blob to subject as an OCI artifact of artifactType
+// and returns the referrer's digest.
+func pushReferrer(t *testing.T, repo name.Repository, subject v1.Descriptor, artifactType string, blob []byte) v1.Hash {
+	t.Helper()
+	return pushReferrerLayers(t, repo, subject, artifactType, blob, 1)
+}
+
+// pushReferrerLayers attaches an OCI artifact of artifactType to subject
+// whose manifest lists blob n times as a layer, and returns its digest.
+func pushReferrerLayers(t *testing.T, repo name.Repository, subject v1.Descriptor, artifactType string,
+	blob []byte, n int,
+) v1.Hash {
 	t.Helper()
 	emptyBlob := []byte("{}")
 	for _, b := range [][]byte{emptyBlob, blob} {
@@ -995,12 +1005,16 @@ func pushReferrer(t *testing.T, repo name.Repository, subject v1.Descriptor, art
 		}
 		return v1.Descriptor{MediaType: types.MediaType(mt), Size: int64(len(data)), Digest: h}
 	}
+	layers := make([]v1.Descriptor, n)
+	for i := range layers {
+		layers[i] = desc(blob, artifactType)
+	}
 	m := map[string]any{
 		"schemaVersion": 2,
 		"mediaType":     string(types.OCIManifestSchema1),
 		"artifactType":  artifactType,
 		"config":        desc(emptyBlob, "application/vnd.oci.empty.v1+json"),
-		"layers":        []v1.Descriptor{desc(blob, artifactType)},
+		"layers":        layers,
 		"subject":       subject,
 	}
 	raw, err := json.Marshal(m)
@@ -1014,6 +1028,7 @@ func pushReferrer(t *testing.T, repo name.Repository, subject v1.Descriptor, art
 	if err := remote.Put(repo.Digest(h.String()), rawManifest{raw, types.OCIManifestSchema1}); err != nil {
 		t.Fatalf("put referrer: %v", err)
 	}
+	return h
 }
 
 // signLegacy writes the sha256-<digest>.sig tag the way cosign v2 did: one
@@ -1165,6 +1180,159 @@ func TestResolveSignatureRejections(t *testing.T) {
 			r := newResolver(t, Config{PublicKey: tc.key})
 			_, err := r.Resolve(context.Background(), declared(t, repo.String()+":v1"))
 			rejection(t, err, tc.reason, tc.want)
+		})
+	}
+}
+
+// bundleType is the artifact type cosign v3 gives a bundle referrer.
+const bundleType = "application/vnd.dev.sigstore.bundle.v0.3+json"
+
+// TestResolveSignatureSurvivesBrokenReferrers: a referrer is anything anyone
+// with push access attaches, so one that cannot be fetched or read is a
+// candidate that does not verify, never a verdict on the image. Each case
+// carries a valid legacy signature by the operator key (or a valid bundle
+// behind the junk) and must verify.
+func TestResolveSignatureSurvivesBrokenReferrers(t *testing.T) {
+	priv, pub := testKeys(t)
+	cases := []struct {
+		name      string
+		referrers bool
+		setup     func(t *testing.T, repo name.Repository, digest v1.Hash)
+	}{
+		{"a dangling entry in the fallback index", false, func(t *testing.T, repo name.Repository, digest v1.Hash) {
+			ref := pushReferrer(t, repo, subjectOf(t, repo.Tag("v1")), bundleType, []byte(`{"junk":true}`))
+			if err := remote.Delete(repo.Digest(ref.String())); err != nil {
+				t.Fatal(err)
+			}
+			signLegacy(t, priv, repo, digest)
+		}},
+		{"a bundle blob over the size cap", true, func(t *testing.T, repo name.Repository, digest v1.Hash) {
+			pushReferrer(t, repo, subjectOf(t, repo.Tag("v1")), bundleType, make([]byte, 2<<20))
+			signLegacy(t, priv, repo, digest)
+		}},
+		{"an unparseable bundle", true, func(t *testing.T, repo name.Repository, digest v1.Hash) {
+			pushReferrer(t, repo, subjectOf(t, repo.Tag("v1")), bundleType, []byte("not json"))
+			signLegacy(t, priv, repo, digest)
+		}},
+		{"64 non-bundle referrers ahead of a valid bundle", false, func(t *testing.T, repo name.Repository, digest v1.Hash) {
+			subject := subjectOf(t, repo.Tag("v1"))
+			for i := range maxReferrers {
+				pushReferrer(t, repo, subject, "application/vnd.example.sbom+json", fmt.Appendf(nil, `{"sbom":%d}`, i))
+			}
+			pushReferrer(t, repo, subject, bundleType, messageSignatureBundle(t, priv, digest))
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newRegistry(t, tc.referrers, nil)
+			digest := push(t, repo.Tag("v1"), image(t, nil, []byte("signed")))
+			tc.setup(t, repo, digest)
+			r := newResolver(t, Config{PublicKey: pub})
+			got, err := r.Resolve(context.Background(), declared(t, repo.String()+":v1"))
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if !got.Verified {
+				t.Error("Verified = false for an image signed by the operator key")
+			}
+		})
+	}
+}
+
+// TestResolveSignatureBlobsBounded: a referrer may list thousands of
+// bundle-typed layers, and a legacy .sig as many signature layers; each is
+// read (up to 1 MiB) before it is judged, so both are capped per image.
+func TestResolveSignatureBlobsBounded(t *testing.T) {
+	priv, pub := testKeys(t)
+	junk := []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","junk":true}`)
+	junkDigest, _, err := v1.SHA256(strings.NewReader(string(junk)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("bundle layers of one referrer", func(t *testing.T) {
+		c := &counter{}
+		repo := newRegistry(t, true, c.wrap)
+		digest := push(t, repo.Tag("v1"), image(t, nil, []byte("b")))
+		pushReferrerLayers(t, repo, subjectOf(t, repo.Tag("v1")), bundleType, junk, 300)
+		signLegacy(t, priv, repo, digest)
+		c.reset(nil)
+		r := newResolver(t, Config{PublicKey: pub})
+		got, err := r.Resolve(context.Background(), declared(t, repo.String()+":v1"))
+		if err != nil || !got.Verified {
+			t.Fatalf("Resolve = %+v, %v; want Verified by the legacy signature", got, err)
+		}
+		if n := c.blobs[junkDigest.String()]; n > maxBundleLayers {
+			t.Errorf("read the junk bundle %d times, want at most %d", n, maxBundleLayers)
+		}
+	})
+	t.Run("legacy signature layers", func(t *testing.T) {
+		c := &counter{}
+		repo := newRegistry(t, true, c.wrap)
+		digest := push(t, repo.Tag("v1"), image(t, nil, []byte("l")))
+		payload := []byte(`{"critical":{"type":"junk"}}`)
+		payloadDigest, _, err := v1.SHA256(strings.NewReader(string(payload)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		img := mutate.MediaType(empty.Image, types.OCIManifestSchema1)
+		img = mutate.ConfigMediaType(img, types.OCIConfigJSON)
+		for range 300 {
+			if img, err = mutate.Append(img, mutate.Addendum{
+				Layer:       static.NewLayer(payload, "application/vnd.dev.cosign.simplesigning.v1+json"),
+				Annotations: map[string]string{legacySignatureAnnotation: "AAAA"},
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := remote.Write(repo.Tag("sha256-"+digest.Hex+".sig"), img); err != nil {
+			t.Fatal(err)
+		}
+		c.reset(nil)
+		r := newResolver(t, Config{PublicKey: pub})
+		_, err = r.Resolve(context.Background(), declared(t, repo.String()+":v1"))
+		rejection(t, err, "SignatureInvalid", "none of which verifies")
+		if n := c.blobs[payloadDigest.String()]; n > maxLegacySignatures {
+			t.Errorf("read the junk payload %d times, want at most %d", n, maxLegacySignatures)
+		}
+	})
+}
+
+// TestResolveSignatureTransientCandidate: a candidate the registry could
+// not serve (503) might have been the valid signature, so when nothing else
+// verifies the result is transient, never a rejection; when the legacy
+// signature verifies, the image is accepted.
+func TestResolveSignatureTransientCandidate(t *testing.T) {
+	priv, pub := testKeys(t)
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy signature %v", legacy), func(t *testing.T) {
+			var flaky string
+			wrap := func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if flaky != "" && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/manifests/"+flaky) {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						return
+					}
+					next.ServeHTTP(w, r)
+				})
+			}
+			repo := newRegistry(t, true, wrap)
+			digest := push(t, repo.Tag("v1"), image(t, nil, []byte("t")))
+			ref := pushReferrer(t, repo, subjectOf(t, repo.Tag("v1")), bundleType, messageSignatureBundle(t, priv, digest))
+			if legacy {
+				signLegacy(t, priv, repo, digest)
+			}
+			flaky = ref.String()
+			r := newResolver(t, Config{PublicKey: pub})
+			got, err := r.Resolve(context.Background(), declared(t, repo.String()+":v1"))
+			if legacy {
+				if err != nil || !got.Verified {
+					t.Fatalf("Resolve = %+v, %v; want Verified by the legacy signature", got, err)
+				}
+				return
+			}
+			if err == nil || runnerimage.IsRejection(err) {
+				t.Errorf("Resolve = %v, want a transient (non-Rejection) error", err)
+			}
 		})
 	}
 }

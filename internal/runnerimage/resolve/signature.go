@@ -16,11 +16,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 
 	"github.com/bitwise-media-group/patchy/internal/runnerimage"
 )
@@ -43,8 +46,15 @@ const (
 	emptyConfigMediaType = "application/vnd.oci.empty.v1+json"
 	// maxSignatureBytes caps a bundle or payload blob read from the registry.
 	maxSignatureBytes = 1 << 20
-	// maxReferrers bounds how many referrers are examined for a bundle.
+	// maxReferrers bounds how many bundle candidates among the referrers are
+	// examined.
 	maxReferrers = 64
+	// maxBundleLayers bounds the bundle layers read from one referrer;
+	// cosign writes one.
+	maxBundleLayers = 4
+	// maxLegacySignatures bounds the signature layers read from a legacy
+	// sha256-<digest>.sig manifest; cosign appends one per signing.
+	maxLegacySignatures = 32
 )
 
 // ParsePublicKey reads the operator's cosign public key: a PEM-encoded PKIX
@@ -65,74 +75,138 @@ func ParsePublicKey(pemBytes []byte) (*ecdsa.PublicKey, error) {
 	return ec, nil
 }
 
-// errNoSignature reports that a lookup found nothing to verify.
-var errNoSignature = errors.New("no signature")
+// search accumulates what one signature verification saw across both
+// forms.
+type search struct {
+	// examined counts the signature blobs read and judged.
+	examined int
+	// transient is the first lookup the registry or the network failed.
+	transient error
+	// denied is the first lookup the registry refused (401/403).
+	denied error
+}
+
+// lookup records one failed lookup. A candidate is anything anyone with push
+// access attaches, so a deterministic failure (not found, denied, oversized,
+// unparseable) only means that candidate does not verify, never a verdict
+// on the image; a transient one is remembered, since the candidate might
+// have been the valid signature.
+func (s *search) lookup(err error) {
+	var rej *runnerimage.Rejection
+	switch {
+	case transientLookup(err):
+		if s.transient == nil {
+			s.transient = err
+		}
+	case errors.As(err, &rej) && rej.Reason == "AccessDenied":
+		if s.denied == nil {
+			s.denied = err
+		}
+	}
+}
+
+// transientLookup reports whether a failed lookup is the registry or the
+// network failing, worth a retry: a 5xx or 429, a network error, a deadline
+// or a truncated body. Anything else is about the content and deterministic.
+func transientLookup(err error) bool {
+	var te *transport.Error
+	if errors.As(err, &te) {
+		return te.StatusCode >= http.StatusInternalServerError || te.StatusCode == http.StatusTooManyRequests
+	}
+	var ne net.Error
+	return errors.As(err, &ne) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
+		errors.Is(err, io.ErrUnexpectedEOF)
+}
 
 // verifySignature checks that the recorded digest carries a signature by
-// the operator's key, bundle form first, legacy tag second. It returns a
-// *runnerimage.Rejection when nothing verifies and a plain error when the
-// registry could not be asked.
+// the operator's key, bundle form first, legacy tag second; a candidate that
+// cannot be fetched or read is skipped, so one junk or dangling referrer
+// never hides a valid signature. It returns a *runnerimage.Rejection when
+// nothing verifies, and a plain error when a lookup failed transiently and
+// nothing else verified (the failed candidate might have been the one).
 func (r *Resolver) verifySignature(ctx context.Context, repo name.Repository, digest v1.Hash) error {
 	pinned := repo.Digest(digest.String())
-	found := 0
-	n, err := r.verifyBundles(ctx, pinned, digest)
-	if err == nil {
+	var s search
+	if r.verifyBundles(ctx, pinned, digest, &s) || r.verifyLegacy(ctx, repo, digest, &s) {
 		return nil
 	}
-	if !errors.Is(err, errNoSignature) {
-		return err
-	}
-	found += n
-	n, err = r.verifyLegacy(ctx, repo, digest)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, errNoSignature) {
-		return err
-	}
-	found += n
-	if found == 0 {
+	switch {
+	case s.transient != nil:
+		return s.transient
+	case s.examined == 0 && s.denied != nil:
+		return s.denied
+	case s.examined == 0:
 		return &runnerimage.Rejection{Reason: "Unsigned",
 			Message: fmt.Sprintf("image `%s` carries no signature by the operator's cosign key", pinned)}
 	}
 	return &runnerimage.Rejection{Reason: "SignatureInvalid",
 		Message: fmt.Sprintf("image `%s` carries %d signature(s), none of which verifies with the operator's "+
-			"cosign key", pinned, found)}
+			"cosign key", pinned, s.examined)}
 }
 
 // verifyBundles walks the referrers of the pinned digest (the Referrers API,
-// or the sha256-<digest> tag when the registry lacks it) and verifies every
-// sigstore bundle it finds. It returns the number of bundles examined
-// alongside errNoSignature when none verified.
-func (r *Resolver) verifyBundles(ctx context.Context, pinned name.Digest, digest v1.Hash) (int, error) {
+// or the sha256-<digest> tag when the registry lacks it) and verifies the
+// sigstore bundles of up to maxReferrers candidates, reporting whether one
+// verified.
+func (r *Resolver) verifyBundles(ctx context.Context, pinned name.Digest, digest v1.Hash, s *search) bool {
 	idx, err := remote.Referrers(pinned, r.options(ctx)...)
 	if err != nil {
-		return 0, classify(pinned.String(), err)
+		s.lookup(classify(pinned.String(), err))
+		return false
 	}
 	im, err := idx.IndexManifest()
 	if err != nil {
-		return 0, fmt.Errorf("referrers of %s: %w", pinned, err)
+		s.lookup(fmt.Errorf("referrers of %s: %w", pinned, err))
+		return false
 	}
-	found := 0
-	for i, d := range im.Manifests {
-		if i >= maxReferrers {
-			break
-		}
+	candidates := 0
+	for _, d := range im.Manifests {
 		if !bundleCandidate(d) {
 			continue
 		}
-		blobs, err := r.layerBlobs(ctx, pinned.Context().Digest(d.Digest.String()), bundleMediaTypePrefix)
-		if err != nil {
-			return found, err
+		if candidates++; candidates > maxReferrers {
+			break
 		}
-		for _, b := range blobs {
-			found++
-			if verifyBundle(b, r.cfg.PublicKey, digest) == nil {
-				return found, nil
-			}
+		if r.verifyReferrer(ctx, pinned.Context().Digest(d.Digest.String()), digest, s) {
+			return true
 		}
 	}
-	return found, errNoSignature
+	return false
+}
+
+// verifyReferrer reads up to maxBundleLayers sigstore bundle layers of one
+// referrer, judging each as it is read so at most one blob is held at a
+// time, and reports whether one verified.
+func (r *Resolver) verifyReferrer(ctx context.Context, ref name.Digest, digest v1.Hash, s *search) bool {
+	img, err := remote.Image(ref, r.options(ctx)...)
+	if err != nil {
+		s.lookup(classify(ref.String(), err))
+		return false
+	}
+	m, err := img.Manifest()
+	if err != nil {
+		s.lookup(classify(ref.String(), err))
+		return false
+	}
+	read := 0
+	for _, desc := range m.Layers {
+		if !strings.HasPrefix(string(desc.MediaType), bundleMediaTypePrefix) {
+			continue
+		}
+		if read++; read > maxBundleLayers {
+			break
+		}
+		data, err := r.blob(ctx, ref.Context().Digest(desc.Digest.String()))
+		if err != nil {
+			s.lookup(err)
+			continue
+		}
+		s.examined++
+		if verifyBundle(data, r.cfg.PublicKey, digest) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // bundleCandidate reports whether a referrer might hold a bundle. The
@@ -153,63 +227,43 @@ func bundleCandidate(d v1.Descriptor) bool {
 
 // verifyLegacy checks the sha256-<digest>.sig tag: each layer's blob is a
 // simple-signing payload naming the digest, its annotation the signature.
-func (r *Resolver) verifyLegacy(ctx context.Context, repo name.Repository, digest v1.Hash) (int, error) {
+// Up to maxLegacySignatures layers are read, one at a time.
+func (r *Resolver) verifyLegacy(ctx context.Context, repo name.Repository, digest v1.Hash, s *search) bool {
 	tag := repo.Tag(strings.Replace(digest.String(), ":", "-", 1) + ".sig")
 	img, err := remote.Image(tag, r.options(ctx)...)
 	if err != nil {
-		if isStatus(err, 404) {
-			return 0, errNoSignature
+		if !isStatus(err, http.StatusNotFound) {
+			s.lookup(classify(tag.String(), err))
 		}
-		return 0, classify(tag.String(), err)
+		return false
 	}
 	m, err := img.Manifest()
 	if err != nil {
-		if isStatus(err, 404) {
-			return 0, errNoSignature
+		if !isStatus(err, http.StatusNotFound) {
+			s.lookup(classify(tag.String(), err))
 		}
-		return 0, classify(tag.String(), err)
+		return false
 	}
-	found := 0
+	read := 0
 	for _, desc := range m.Layers {
 		sig, ok := desc.Annotations[legacySignatureAnnotation]
 		if !ok {
 			continue
 		}
+		if read++; read > maxLegacySignatures {
+			break
+		}
 		payload, err := r.blob(ctx, repo.Digest(desc.Digest.String()))
 		if err != nil {
-			return found, err
-		}
-		found++
-		if verifyLegacyPayload(payload, sig, r.cfg.PublicKey, digest) == nil {
-			return found, nil
-		}
-	}
-	return found, errNoSignature
-}
-
-// layerBlobs fetches the manifest at ref and returns the contents of every
-// layer whose media type carries prefix.
-func (r *Resolver) layerBlobs(ctx context.Context, ref name.Digest, prefix string) ([][]byte, error) {
-	img, err := remote.Image(ref, r.options(ctx)...)
-	if err != nil {
-		return nil, classify(ref.String(), err)
-	}
-	m, err := img.Manifest()
-	if err != nil {
-		return nil, classify(ref.String(), err)
-	}
-	var out [][]byte
-	for _, desc := range m.Layers {
-		if !strings.HasPrefix(string(desc.MediaType), prefix) {
+			s.lookup(err)
 			continue
 		}
-		data, err := r.blob(ctx, ref.Context().Digest(desc.Digest.String()))
-		if err != nil {
-			return nil, err
+		s.examined++
+		if verifyLegacyPayload(payload, sig, r.cfg.PublicKey, digest) == nil {
+			return true
 		}
-		out = append(out, data)
 	}
-	return out, nil
+	return false
 }
 
 // blob reads one blob by digest, capped at maxSignatureBytes.

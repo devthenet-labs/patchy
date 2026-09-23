@@ -23,7 +23,11 @@
 // bundle cosign v3 attaches through the OCI referrers API (with the
 // sha256-<digest> tag fallback) is checked first, then the legacy
 // sha256-<digest>.sig tag with its simple-signing payload. Both must name
-// the recorded digest and verify with the operator's ECDSA key.
+// the recorded digest and verify with the operator's ECDSA key. Anyone who
+// can push can attach a referrer, so one that cannot be fetched or read is
+// a candidate that does not verify, never a verdict on the image; the
+// candidates, the bundle layers of each and the legacy signature layers are
+// capped and read one blob at a time.
 //
 // Registry credentials come from a host-selected keychain (NewKeychain):
 // ECR through the AWS SDK's default credential chain, Artifact Registry and

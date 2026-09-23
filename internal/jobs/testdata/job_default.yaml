@@ -1,0 +1,154 @@
+metadata:
+  annotations:
+    patchy.bitwisemedia.uk/repo: octo/repo
+  labels:
+    app.kubernetes.io/managed-by: patchy
+    app.kubernetes.io/name: patchy-agent
+    patchy.bitwisemedia.uk/attempt: "1"
+    patchy.bitwisemedia.uk/finding: finding-abc123def0-1
+    patchy.bitwisemedia.uk/harness: claude
+    patchy.bitwisemedia.uk/kind: investigation
+    patchy.bitwisemedia.uk/owner: finding-abc123def0-1-inv-1
+  name: patchy-f41d59eea6-inv-a1
+  namespace: patchy-agents
+spec:
+  activeDeadlineSeconds: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        patchy.bitwisemedia.uk/repo: octo/repo
+      labels:
+        app.kubernetes.io/managed-by: patchy
+        app.kubernetes.io/name: patchy-agent
+        patchy.bitwisemedia.uk/attempt: "1"
+        patchy.bitwisemedia.uk/finding: finding-abc123def0-1
+        patchy.bitwisemedia.uk/harness: claude
+        patchy.bitwisemedia.uk/kind: investigation
+        patchy.bitwisemedia.uk/owner: finding-abc123def0-1-inv-1
+    spec:
+      containers:
+      - command:
+        - agent-runner
+        env:
+        - name: HOME
+          value: /workspace
+        - name: PATCHY_WORKSPACE
+          value: /workspace
+        - name: PATCHY_REPO
+          value: octo/repo
+        - name: PATCHY_PHASE
+          value: investigate
+        - name: PATCHY_FINDING
+          value: finding-abc123def0-1
+        - name: PATCHY_BASE_SHA
+          value: 0123456789abcdef0123456789abcdef01234567
+        - name: PATCHY_INVESTIGATE_HARNESS
+          value: claude
+        - name: PATCHY_INVESTIGATE_MODEL
+          value: anthropic/claude-sonnet-5
+        - name: PATCHY_INVESTIGATE_TIMEOUT
+          value: 15m
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: api-key
+              name: anthropic
+        image: ghcr.io/bitwise-media-group/patchy/claude-agent-runner:1
+        name: agent
+        resources:
+          limits:
+            cpu: "2"
+            memory: 4Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /workspace
+          name: workspace
+        - mountPath: /tmp
+          name: tmp
+      initContainers:
+      - command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          mkdir -p /workspace/repo
+          cd /workspace/repo
+          curl -fsSL --retry 5 --retry-all-errors "$PATCHY_ARTIFACT_URL" -o /tmp/src.tar.gz
+          echo "$PATCHY_ARTIFACT_DIGEST  /tmp/src.tar.gz" | sha256sum -c - >/dev/null
+          tar -xzf /tmp/src.tar.gz --strip-components=1
+          rm -f /tmp/src.tar.gz
+          git init -q
+          git add -A
+          git -c user.name=patchy -c user.email=patchy@invalid commit -qm "base $PATCHY_BASE_SHA"
+          git checkout -q --detach HEAD
+          mkdir -p /workspace/input
+          cp /patchy/input/issue.md /workspace/input/issue.md
+          if [ -f /patchy/input/investigation.md ]; then
+            cp /patchy/input/investigation.md /workspace/input/investigation.md
+          fi
+        env:
+        - name: HOME
+          value: /workspace
+        - name: PATCHY_BASE_SHA
+          value: 0123456789abcdef0123456789abcdef01234567
+        - name: PATCHY_ARTIFACT_URL
+          value: http://patchy-source-controller.patchy.svc.cluster.local:9790/artifacts/deadbeef.tar.gz
+        - name: PATCHY_ARTIFACT_DIGEST
+          value: aa11bb22cc33dd44ee55ff6600112233445566778899aabbccddeeff00112233
+        image: ghcr.io/bitwise-media-group/patchy/claude-agent-runner:1
+        name: prepare
+        resources:
+          limits:
+            cpu: "2"
+            memory: 4Gi
+          requests:
+            cpu: 500m
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - mountPath: /workspace
+          name: workspace
+        - mountPath: /tmp
+          name: tmp
+        - mountPath: /patchy/input
+          name: input
+          readOnly: true
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 65532
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: patchy-agent
+      volumes:
+      - emptyDir: {}
+        name: workspace
+      - emptyDir: {}
+        name: tmp
+      - name: input
+        secret:
+          secretName: patchy-f41d59eea6-inv-a1
+  ttlSecondsAfterFinished: 7200
+status: {}

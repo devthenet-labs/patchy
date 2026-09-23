@@ -306,3 +306,10 @@ func TestBrokeredEvalDeadlinePastTokenCap(t *testing.T) {
 		t.Fatalf("CreateEval error = %v, want the 24h projection-cap rejection", err)
 	}
 }
+
+// TestGoldenBrokeredJob is the byte-identity proof for the brokered claude
+// shape: the projected caller token, the gateway env and the placeholder,
+// and nothing repository-image shaped.
+func TestGoldenBrokeredJob(t *testing.T) {
+	goldenJob(t, "job_brokered", buildJobForTest(t, brokeredConfig(), testSpec()))
+}

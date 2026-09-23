@@ -1,7 +1,7 @@
 <!-- patchy:runner-image -->
 ### Agent runner image
 
-`.patchy/agent.yaml` declares `ghcr.io/acme/go-env:1.26`. patchy pinned it to `ghcr.io/acme/go-env@sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd`, and runs the agent in it with patchy's own tools added under `/patchy/bin`.
+`.patchy/agent.yaml` declares `ghcr.io/acme/go-env:1.26`. patchy pinned it to `ghcr.io/acme/go-env@sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd`. Runs have launched in it, with patchy's own tools added under `/patchy/bin`.
 
 The investigation (attempt 2) stopped before the agent started: the image failed the agent's preflight (`image_incompatible`):
 ```text

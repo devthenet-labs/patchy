@@ -21,12 +21,17 @@ const (
 )
 
 // TestRunnerImageCommentGoldens pins the comment for every outcome a
-// repository owner can meet: an accepted image from either file, a
-// devcontainer.json patchy cannot use, a rejection under each onReject
-// policy, and the two ways a run on an accepted image can end early.
+// repository owner can meet: an accepted image from either file, before and
+// after runs used it or skipped it, a devcontainer.json patchy cannot use, a
+// rejection under each onReject policy, and the two ways a run on an
+// accepted image can end early.
 func TestRunnerImageCommentGoldens(t *testing.T) {
 	accepted := func(manifest, declared string) RunnerImageComment {
 		return RunnerImageComment{Manifest: manifest, Declared: declared, Image: testDigestRef, Verified: true}
+	}
+	used := func(c RunnerImageComment) RunnerImageComment {
+		c.Used = true
+		return c
 	}
 	rejected := RunnerImageComment{
 		Manifest: ".patchy/agent.yaml", Declared: "docker.io/library/golang:1.26",
@@ -36,8 +41,15 @@ func TestRunnerImageCommentGoldens(t *testing.T) {
 		name string
 		c    RunnerImageComment
 	}{
-		{"runner_image_yaml.md", accepted(".patchy/agent.yaml", "ghcr.io/acme/go-env:1.26")},
+		{"runner_image_yaml.md", used(accepted(".patchy/agent.yaml", "ghcr.io/acme/go-env:1.26"))},
+		// No run has launched yet.
 		{"runner_image_devcontainer.md", accepted(".devcontainer/devcontainer.json", "ghcr.io/acme/dev-env:2")},
+		// Runs launched, all on the default runner image.
+		{"runner_image_unused.md", func() RunnerImageComment {
+			c := accepted(".patchy/agent.yaml", "ghcr.io/acme/go-env:1.26")
+			c.Unused = true
+			return c
+		}()},
 		{"runner_image_not_applicable.md", RunnerImageComment{
 			Manifest: ".devcontainer/devcontainer.json", NotApplicable: true, Reason: buildReason,
 		}},
@@ -54,7 +66,7 @@ func TestRunnerImageCommentGoldens(t *testing.T) {
 			Reason: "`.patchy/agent.yaml` has unknown key `build`; `image` is the only key",
 		}},
 		{"runner_image_incompatible.md", func() RunnerImageComment {
-			c := accepted(".patchy/agent.yaml", "ghcr.io/acme/go-env:1.26")
+			c := used(accepted(".patchy/agent.yaml", "ghcr.io/acme/go-env:1.26"))
 			c.Verified = false
 			c.Incompatible = &RunnerImageRun{Stage: "investigation", Attempt: 2,
 				Detail: "preflight: /patchy/bin/claude --version: exit status 127: " +
@@ -63,6 +75,7 @@ func TestRunnerImageCommentGoldens(t *testing.T) {
 		}()},
 		{"runner_image_sandbox.md", func() RunnerImageComment {
 			c := accepted(".patchy/agent.yaml", "ghcr.io/acme/go-env:1.26")
+			c.Unused = true
 			c.SandboxRefused = &RunnerImageRun{Stage: "remediation", Attempt: 1}
 			return c
 		}()},

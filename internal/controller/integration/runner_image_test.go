@@ -302,7 +302,30 @@ func TestProjectRunnerImageOutcomes(t *testing.T) {
 		{"incompatible on the default image", []client.Object{imageRepository(acceptedImage()),
 			imageInvestigation(1, v1alpha1.RunnerImageSourceDefault,
 				&v1alpha1.StageResult{Outcome: "image_incompatible", Detail: "no bash"})}, false,
-			[]string{"declares `ghcr.io/acme/go-env:1.26`"}, []string{"image_incompatible", "no bash"}},
+			[]string{"declares `ghcr.io/acme/go-env:1.26`", "No run has used it"},
+			[]string{"image_incompatible", "no bash", "launched in it"}},
+		// The headline comes from what the runs recorded, not from the pin:
+		// before any run the image is only going to be used, and a run the
+		// job controllers launched on the default image (the breaker tripped
+		// by another finding, repository images off, a revival) means it was
+		// not used at all.
+		{"accepted, no run yet", []client.Object{imageRepository(acceptedImage())}, false,
+			[]string{"The agent will run in it"}, []string{"launched in it", "default runner image"}},
+		{"accepted, run on the image", []client.Object{imageRepository(acceptedImage()),
+			imageInvestigation(1, v1alpha1.RunnerImageSourceRepository, &v1alpha1.StageResult{Outcome: "ok"})}, false,
+			[]string{"Runs have launched in it"}, []string{"will run in it", "default runner image"}},
+		{"accepted, every run on the default image", []client.Object{imageRepository(acceptedImage()),
+			imageInvestigation(1, v1alpha1.RunnerImageSourceDefault, &v1alpha1.StageResult{Outcome: "ok"}),
+			imageInvestigation(2, v1alpha1.RunnerImageSourceDefault, nil)}, false,
+			[]string{"No run has used it", "default runner image instead", "switched repository images off"},
+			[]string{"launched in it", "will run in it", "runs the agent in it"}},
+		// The refused run was stamped repository but never started the agent,
+		// so it does not count as a use; the paragraph below says why.
+		{"accepted, only a refused run", []client.Object{imageRepository(acceptedImage()),
+			imageInvestigation(1, v1alpha1.RunnerImageSourceRepository,
+				&v1alpha1.StageResult{Outcome: "aborted", Detail: "SandboxUnenforced: ..."}, refused)}, false,
+			[]string{"No run has used it", "for the reason below", "`SandboxUnenforced`"},
+			[]string{"launched in it", "switched repository images off"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

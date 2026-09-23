@@ -44,9 +44,10 @@ func RepositoryDetail(d *printer.Doc, repo *v1alpha1.Repository, now time.Time) 
 // not-applicable reason. ran, when given, is what a run actually launched
 // on; its source is then the one shown, since a pinned image may still have
 // been skipped (repository images off in the job controllers, the sandbox
-// breaker tripped, a human revival). Without it the source is the one a
-// launch would pick. Nothing is rendered when nothing was declared and
-// nothing ran.
+// breaker tripped, a human revival). Without it no source is claimed for a
+// pinned image, which is only a request until a run records what it used;
+// a record with no pinned image always runs the default image. Nothing is
+// rendered when nothing was declared and nothing ran.
 func RunnerImage(d *printer.Doc, ri *v1alpha1.RunnerImage, ran *v1alpha1.RunnerImageRef, now time.Time) {
 	d.Section("Runner image")
 	if ri != nil {
@@ -69,7 +70,7 @@ func RunnerImage(d *printer.Doc, ri *v1alpha1.RunnerImage, ran *v1alpha1.RunnerI
 	case ran != nil:
 		d.Field("Source", ran.Source).Field("Ran on", ran.Image)
 	case ri != nil && ri.Image != "":
-		d.Field("Source", v1alpha1.RunnerImageSourceRepository)
+		d.Field("Source", "not recorded yet (runs request the pinned image)")
 	case ri != nil:
 		d.Field("Source", v1alpha1.RunnerImageSourceDefault)
 	}

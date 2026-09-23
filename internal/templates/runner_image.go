@@ -49,6 +49,13 @@ type RunnerImageComment struct {
 	// only a finding with an investigation to remediate from, so a parked
 	// finding stays with a human.
 	Parked bool
+	// Used reports that a run launched in the accepted image; a run the
+	// sandbox probe refused never did.
+	Used bool
+	// Unused reports that runs launched and none used the accepted image:
+	// each ran the default runner image instead. Neither Used nor Unused
+	// means no run has launched yet, so the image is only going to be used.
+	Unused bool
 	// Incompatible is the latest run whose preflight found the image
 	// incompatible (image_incompatible); nil when none did.
 	Incompatible *RunnerImageRun

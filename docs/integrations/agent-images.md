@@ -297,7 +297,10 @@ docker run --rm --user 65532:65532 --read-only --network none --cap-drop ALL \
 Once the finding's repository snapshot is taken, patchy keeps one comment on the finding's tracking issue, headed
 **Agent runner image** and edited in place, whenever the repository declared anything:
 
-- **Used** — which file declared which image, the digest it was pinned to, and whether its signature was verified.
+- **Accepted** — which file declared which image, the digest it was pinned to, whether its signature was verified, and
+  what the runs recorded: that the agent will run in it (before the first run), that runs have launched in it, or that
+  every run so far used the default runner image instead (the operator switched repository images off, the sandbox check
+  refused one, the runner is not claude, or a human revived the finding).
 - **Not applicable** — the devcontainer.json was not used, the exact reason, and that the default runner image ran.
 - **Rejected** — the declared image, the reason label (see [troubleshooting](#troubleshooting)) and the exact message,
   and what patchy did: ran the default runner image (the default), or parked the finding for a human because the

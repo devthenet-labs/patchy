@@ -23,7 +23,11 @@ The agent ran in the default runner image instead, which carries no language too
 
 **How to fix it:** correct the image or `{{ .Manifest }}`, then run {{ code (printf "patchy check image %s" .CheckRef) }}, which runs every check patchy runs and reports each verdict. The [troubleshooting table]({{ .GuideURL }}#troubleshooting) gives the fix for `{{ .Rejected }}`. patchy reads the declaration once per finding, so the fix applies to the next finding on this repository.
 {{- else }}
-`{{ .Manifest }}` declares {{ code .Declared }}. patchy pinned it to {{ code .Image }}{{ if .Verified }}, verified its signature{{ end }}, and runs the agent in it with patchy's own tools added under `/patchy/bin`.
+`{{ .Manifest }}` declares {{ code .Declared }}. patchy pinned it to {{ code .Image }}{{ if .Verified }} and verified its signature{{ end }}.
+{{- if .Used }} Runs have launched in it, with patchy's own tools added under `/patchy/bin`.
+{{- else if .Unused }} No run has used it: each ran in the default runner image instead, which carries no language toolchain{{ if .SandboxRefused }}, for the reason below{{ else }}. That happens when the operator has switched repository images off, when the sandbox check refused a repository image on an earlier run, when the runner is not claude, or once a human has revived the finding{{ end }}.
+{{- else }} The agent will run in it, with patchy's own tools added under `/patchy/bin`.
+{{- end }}
 {{- with .Incompatible }}
 
 The {{ .Stage }} (attempt {{ .Attempt }}) stopped before the agent started: the image failed the agent's preflight (`image_incompatible`):

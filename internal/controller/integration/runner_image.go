@@ -145,8 +145,12 @@ func sandboxRefused(conds []metav1.Condition) bool {
 
 // runnerImageComment maps the Repository's record and the runs onto the
 // comment. The Repository says what was declared and what policy made of
-// it; the runs say what happened when a pod tried the accepted image, and
-// only a run that actually launched on the repository's image counts.
+// it; the runs say whether a pod used the accepted image at all and what
+// happened when one tried it, and only a run that actually launched on the
+// repository's image counts. A pin is only a request: the job controllers
+// may still launch the default image (repository images off there, the
+// sandbox breaker tripped, a runner other than claude, a revival), so the
+// comment never claims the image ran from the pin alone.
 func runnerImageComment(src *v1alpha1.Repository, runs []imageRun) templates.RunnerImageComment {
 	ri := src.Status.RunnerImage
 	c := templates.RunnerImageComment{
@@ -167,18 +171,27 @@ func runnerImageComment(src *v1alpha1.Repository, runs []imageRun) templates.Run
 		c.NotApplicable = true
 		return c
 	}
+	launched := false
 	for _, run := range runs {
-		if run.image == nil || run.image.Source != v1alpha1.RunnerImageSourceRepository {
+		if run.image == nil {
+			continue // not launched yet: nothing recorded what it runs on
+		}
+		launched = true
+		if run.image.Source != v1alpha1.RunnerImageSourceRepository {
 			continue
 		}
 		switch {
 		case run.refused:
 			c.SandboxRefused = &templates.RunnerImageRun{Stage: run.stage, Attempt: run.attempt}
 		case run.result != nil && run.result.Outcome == string(envelope.OutcomeImageIncompatible):
+			c.Used = true
 			c.Incompatible = &templates.RunnerImageRun{
 				Stage: run.stage, Attempt: run.attempt, Detail: run.result.Detail,
 			}
+		default:
+			c.Used = true
 		}
 	}
+	c.Unused = launched && !c.Used
 	return c
 }

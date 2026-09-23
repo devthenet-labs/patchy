@@ -346,6 +346,16 @@ func TestRunnerImageDetail(t *testing.T) {
 			render.FindingDetail(d, f, testClock, "", accepted)
 		}, []string{"**Pinned:** " + testPinned, "**Source:** default",
 			"**Ran on:** ghcr.io/devthenet-labs/patchy/claude-agent-runner:v0.11.7"}, []string{"**Source:** repository"}},
+		// No run has recorded its image yet: the pin is only a request the job
+		// controllers may skip, so no source is claimed for it.
+		{"finding with no run yet", func(d *printer.Doc) {
+			f := &v1alpha1.Finding{
+				ObjectMeta: metav1.ObjectMeta{Name: "fnd-1"},
+				Status:     v1alpha1.FindingStatus{Phase: v1alpha1.PhaseInvestigating},
+			}
+			render.FindingDetail(d, f, testClock, "", accepted)
+		}, []string{"**Pinned:** " + testPinned, "**Source:** not recorded yet (runs request the pinned image)"},
+			[]string{"**Source:** repository", "Ran on"}},
 		{"rejected repository", func(d *printer.Doc) {
 			render.RepositoryDetail(d, &v1alpha1.Repository{
 				ObjectMeta: metav1.ObjectMeta{Name: "fnd-1-src", Labels: map[string]string{v1alpha1.LabelFinding: "fnd-1"}},

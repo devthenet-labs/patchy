@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
@@ -109,37 +108,24 @@ func (r *Resolver) options(ctx context.Context) []remote.Option {
 
 // Resolve implements runnerimage.Resolver: one HEAD pins a tag to a digest
 // (a digest pin skips it), then every check runs on, and the result names,
-// "<repository>@<digest>".
+// "<repository>@<digest>". It stops at the first rejection, in the order
+// Report.Err lists them.
 func (r *Resolver) Resolve(ctx context.Context, ref imageref.Ref) (runnerimage.Resolved, error) {
-	repo, err := name.NewRepository(ref.Repository)
+	repo, hash, pinned, err := r.pin(ctx, ref)
 	if err != nil {
-		return runnerimage.Resolved{}, &runnerimage.Rejection{Reason: "InvalidReference",
-			Message: fmt.Sprintf("image reference `%s` is invalid: %v", ref.String(), err)}
-	}
-	digest := ref.Digest
-	if digest == "" {
-		desc, err := remote.Head(repo.Tag(ref.Tag), r.options(ctx)...)
-		if err != nil {
-			return runnerimage.Resolved{}, classify(ref.String(), err)
-		}
-		digest = desc.Digest.String()
-	}
-	pinned, err := runnerimage.Pin(ref, digest)
-	if err != nil {
-		return runnerimage.Resolved{}, labeled("InvalidDigest", err)
+		return runnerimage.Resolved{}, err
 	}
 	if v, ok := r.cache.get(pinned); ok {
 		return v.resolved, v.err
 	}
-	hash, err := v1.NewHash(digest)
-	if err != nil {
-		return runnerimage.Resolved{}, &runnerimage.Rejection{Reason: "InvalidDigest",
-			Message: fmt.Sprintf("digest `%s` is invalid: %v", digest, err)}
+	rep, err := r.inspect(ctx, repo, hash, pinned, false)
+	if err == nil {
+		err = rep.Err()
 	}
-	resolved, err := r.check(ctx, repo, hash)
-	resolved.Image = pinned
-	if err != nil {
-		resolved = runnerimage.Resolved{}
+	var resolved runnerimage.Resolved
+	if err == nil {
+		resolved = runnerimage.Resolved{Image: pinned, SearchPath: rep.Manifests[0].SearchPath,
+			Verified: rep.SignatureChecked}
 	}
 	if err == nil || runnerimage.IsRejection(err) {
 		r.cache.put(pinned, resolved, err)
@@ -147,40 +133,33 @@ func (r *Resolver) Resolve(ctx context.Context, ref imageref.Ref) (runnerimage.R
 	return resolved, err
 }
 
-// check fetches the pinned manifest, enumerates what would run, checks each
-// child and verifies the signature.
-func (r *Resolver) check(ctx context.Context, repo name.Repository, digest v1.Hash) (runnerimage.Resolved, error) {
-	pinned := repo.Digest(digest.String())
-	desc, err := remote.Get(pinned, r.options(ctx)...)
+// pin resolves ref to the digest every later call names: one HEAD for a
+// tag, none for a digest pin. It returns the repository, the digest and
+// the pinned reference "<repository>@<digest>".
+func (r *Resolver) pin(ctx context.Context, ref imageref.Ref) (name.Repository, v1.Hash, string, error) {
+	repo, err := name.NewRepository(ref.Repository)
 	if err != nil {
-		return runnerimage.Resolved{}, classify(pinned.String(), err)
+		return name.Repository{}, v1.Hash{}, "", &runnerimage.Rejection{Reason: "InvalidReference",
+			Message: fmt.Sprintf("image reference `%s` is invalid: %v", ref.String(), err)}
 	}
-	children, err := runnable(pinned, desc)
-	if err != nil {
-		return runnerimage.Resolved{}, err
-	}
-	var searchPath []string
-	for i, child := range children {
-		sp, err := r.checkChild(ctx, repo, child)
+	digest := ref.Digest
+	if digest == "" {
+		desc, err := remote.Head(repo.Tag(ref.Tag), r.options(ctx)...)
 		if err != nil {
-			return runnerimage.Resolved{}, err
+			return name.Repository{}, v1.Hash{}, "", classify(ref.String(), err)
 		}
-		if i > 0 && !slices.Equal(sp, searchPath) {
-			return runnerimage.Resolved{}, &runnerimage.Rejection{Reason: "PathMismatch",
-				Message: fmt.Sprintf("image `%s` sets a different PATH per platform (`%s` vs `%s`); "+
-					"the pod's search path must not depend on the node architecture",
-					pinned, strings.Join(searchPath, ":"), strings.Join(sp, ":"))}
-		}
-		searchPath = sp
+		digest = desc.Digest.String()
 	}
-	verified := false
-	if !r.cfg.AllowUnsigned {
-		if err := r.verifySignature(ctx, repo, digest); err != nil {
-			return runnerimage.Resolved{}, err
-		}
-		verified = true
+	pinned, err := runnerimage.Pin(ref, digest)
+	if err != nil {
+		return name.Repository{}, v1.Hash{}, "", labeled("InvalidDigest", err)
 	}
-	return runnerimage.Resolved{SearchPath: searchPath, Verified: verified}, nil
+	hash, err := v1.NewHash(digest)
+	if err != nil {
+		return name.Repository{}, v1.Hash{}, "", &runnerimage.Rejection{Reason: "InvalidDigest",
+			Message: fmt.Sprintf("digest `%s` is invalid: %v", digest, err)}
+	}
+	return repo, hash, pinned, nil
 }
 
 // child is one manifest to check: the pinned manifest itself, or an index
@@ -357,62 +336,6 @@ func describePlatform(p *v1.Platform) string {
 		return "no platform"
 	}
 	return "platform " + platformName(*p)
-}
-
-// checkChild fetches one manifest by digest and applies the size, platform,
-// VOLUME, ENV and PATH checks to it, returning the sanitized search path.
-func (r *Resolver) checkChild(ctx context.Context, repo name.Repository, c child) ([]string, error) {
-	ref := repo.Digest(c.digest.String())
-	img, err := remote.Image(ref, r.options(ctx)...)
-	if err != nil {
-		return nil, classify(ref.String(), err)
-	}
-	m, err := img.Manifest()
-	if err != nil {
-		return nil, classify(ref.String(), err)
-	}
-	var size int64
-	for _, l := range m.Layers {
-		size += l.Size
-	}
-	if size > r.cfg.MaxBytes {
-		return nil, &runnerimage.Rejection{Reason: "Oversized",
-			Message: fmt.Sprintf("image `%s`%s has %d bytes of compressed layers; the limit is %d bytes",
-				ref, platformSuffix(c.platform), size, r.cfg.MaxBytes)}
-	}
-	switch {
-	case m.Config.Size <= 0:
-		return nil, &runnerimage.Rejection{Reason: "Unsupported",
-			Message: fmt.Sprintf("image `%s`%s declares no config size", ref, platformSuffix(c.platform))}
-	case m.Config.Size > maxConfigBytes:
-		return nil, &runnerimage.Rejection{Reason: "Oversized",
-			Message: fmt.Sprintf("image `%s`%s has a %d-byte config; the limit is %d bytes",
-				ref, platformSuffix(c.platform), m.Config.Size, maxConfigBytes)}
-	}
-	cf, err := img.ConfigFile()
-	if err != nil {
-		return nil, classify(ref.String(), err)
-	}
-	if !runnableConfig(cf) {
-		return nil, &runnerimage.Rejection{Reason: "UnsupportedPlatform",
-			Message: fmt.Sprintf("image `%s` is built for %s/%s; only linux/amd64 and linux/arm64 can run",
-				ref, cf.OS, cf.Architecture)}
-	}
-	volumes := make([]string, 0, len(cf.Config.Volumes))
-	for path := range cf.Config.Volumes {
-		volumes = append(volumes, path)
-	}
-	if err := runnerimage.CheckVolumes(volumes); err != nil {
-		return nil, inChild(labeled("Volume", err), c)
-	}
-	if err := runnerimage.CheckEnv(cf.Config.Env, r.cfg.ReservedEnv); err != nil {
-		return nil, inChild(labeled("ReservedEnv", err), c)
-	}
-	searchPath, err := runnerimage.SanitizePath(cf.Config.Env)
-	if err != nil {
-		return nil, inChild(labeled("EmptyPath", err), c)
-	}
-	return searchPath, nil
 }
 
 // inChild names the index child a pure check's rejection came from, so the

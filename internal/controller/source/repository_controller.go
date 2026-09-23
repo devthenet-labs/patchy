@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -53,6 +54,11 @@ type RepositoryReconciler struct {
 	Now func() time.Time
 	// Log receives reconcile diagnostics; nil discards.
 	Log *slog.Logger
+
+	// undeclared maps an artifact key to the digest of a stored tree already
+	// read and found to declare no runner image (see knownUndeclared).
+	undeclaredMu sync.Mutex
+	undeclared   map[string]string
 }
 
 func (r *RepositoryReconciler) now() time.Time {
@@ -77,12 +83,14 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if kerrors.IsNotFound(err) {
 			// The object is gone; the artifact is local state keyed by name.
 			r.Artifacts.Delete(req.String())
+			r.forgetDeclaration(req.String())
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
 	if !repo.DeletionTimestamp.IsZero() {
 		r.Artifacts.Delete(req.String())
+		r.forgetDeclaration(req.String())
 		return ctrl.Result{}, nil
 	}
 
@@ -112,6 +120,7 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	info, ok := r.Artifacts.Get(req.String())
+	fetched := false
 	if !ok || repo.Status.Artifact == nil || repo.Status.Artifact.Digest != info.Digest {
 		if info, err = r.fetch(ctx, gh, res, sha, req.String()); err != nil {
 			var tooBig *tooLargeError
@@ -120,21 +129,22 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			}
 			return ctrl.Result{}, r.fail(ctx, &repo, "FetchFailed", err)
 		}
+		fetched = true
 	}
 
-	now := metav1.NewTime(r.now())
+	fetchedAt := r.fetchedAt(&repo, fetched)
 	repo.Status.ResolvedSHA = sha
 	repo.Status.Forge = &v1alpha1.LocalObjectReference{Name: res.Forge.Name}
 	repo.Status.Artifact = &v1alpha1.Artifact{
 		URL:           info.URL,
 		Digest:        info.Digest,
 		SizeBytes:     info.Size,
-		LastFetchedAt: &now,
+		LastFetchedAt: &fetchedAt,
 	}
 	// Pin the runner image exactly once, beside the SHA, with the artifact
 	// already in hand so resolution never costs a re-download.
 	if r.Images != nil {
-		if result, done, err := r.pinRunnerImage(ctx, &repo, sha, req.String(), now); done {
+		if result, done, err := r.pinRunnerImage(ctx, &repo, sha, req.String()); done {
 			return result, err
 		}
 	}
@@ -162,6 +172,17 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 	r.log().LogAttrs(ctx, slog.LevelInfo, "repository artifact ready", attrs...)
 	return ctrl.Result{}, nil
+}
+
+// fetchedAt is the artifact's LastFetchedAt: now when this pass downloaded
+// it, otherwise what the status already records. Re-stamping it on every
+// pass would make each status write a real change, whose watch event
+// re-queues the Repository.
+func (r *RepositoryReconciler) fetchedAt(repo *v1alpha1.Repository, fetched bool) metav1.Time {
+	if !fetched && repo.Status.Artifact != nil && repo.Status.Artifact.LastFetchedAt != nil {
+		return *repo.Status.Artifact.LastFetchedAt
+	}
+	return metav1.NewTime(r.now())
 }
 
 // tooLargeError marks a tarball over the cap — a stall, not a retry.

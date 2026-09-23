@@ -9,10 +9,14 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"os"
+	"path"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -466,5 +470,59 @@ func TestRunnerImageMessageTruncated(t *testing.T) {
 	}
 	if got := truncate("short"); got != "short" {
 		t.Errorf("truncate(short) = %q", got)
+	}
+}
+
+// storedPath is where the store keeps the tarball for the reconciled
+// Repository: dir is the directory the store was built over.
+func storedPath(t *testing.T, r *RepositoryReconciler, dir string) string {
+	t.Helper()
+	info, ok := r.Artifacts.Get("patchy/" + repoName)
+	if !ok {
+		t.Fatal("no stored artifact")
+	}
+	return filepath.Join(dir, path.Base(info.URL))
+}
+
+// TestRunnerImageUndeclaredTreeReadOnce: a tree that declares nothing leaves
+// status.runnerImage nil, so the pin-once guard never closes for it. A later
+// reconcile must neither re-walk the stored archive nor change the status —
+// a walk slower than a second used to re-stamp lastFetchedAt, and the status
+// write re-queued the Repository forever.
+func TestRunnerImageUndeclaredTreeReadOnce(t *testing.T) {
+	gh := &fakeForgeClient{defaultBranch: "main", headSHA: "abc123",
+		tarball: tarball(t, map[string]string{"README.md": "hi"})}
+	fr := &fakeResolver{}
+	r, c := imageHarness(t, gh, fr)
+	dir := t.TempDir()
+	store, err := artifact.NewStore(dir, "http://arts.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Artifacts = store
+	clock := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	r.Now = func() time.Time { return clock }
+
+	reconcile(t, r)
+	before := getRepo(t, c)
+	if before.Status.RunnerImage != nil || !meta.IsStatusConditionTrue(before.Status.Conditions, v1alpha1.ConditionReady) {
+		t.Fatalf("first pass status = %+v, want Ready with no runner image", before.Status)
+	}
+
+	// A second walk would now fail on the archive, and the clock has moved
+	// on as it does when the walk takes longer than a second.
+	if err := os.WriteFile(storedPath(t, r, dir), []byte("not a gzip stream"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(2 * time.Second)
+	if _, err := reconcileErr(t, r); err != nil {
+		t.Fatalf("second reconcile re-read the stored archive: %v", err)
+	}
+	after := getRepo(t, c)
+	if !equality.Semantic.DeepEqual(before.Status, after.Status) {
+		t.Errorf("second reconcile changed the status:\nbefore %+v\nafter  %+v", before.Status, after.Status)
+	}
+	if gh.tarballCalls != 1 || len(fr.calls) != 0 {
+		t.Errorf("tarball downloads = %d, resolver calls = %d; want 1 and 0", gh.tarballCalls, len(fr.calls))
 	}
 }

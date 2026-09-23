@@ -92,7 +92,7 @@ func rejected(stage, declared, manifest string, err error) error {
 // conflict re-queue) and the caller must return its result; otherwise the
 // caller finishes the reconcile with the Ready=True write.
 func (r *RepositoryReconciler) pinRunnerImage(
-	ctx context.Context, repo *v1alpha1.Repository, sha, key string, now metav1.Time,
+	ctx context.Context, repo *v1alpha1.Repository, sha, key string,
 ) (ctrl.Result, bool, error) {
 	if repo.Status.RunnerImage != nil {
 		// Pinned, accepted or rejected: never re-resolved, so a moved tag or
@@ -105,11 +105,13 @@ func (r *RepositoryReconciler) pinRunnerImage(
 		}
 		return ctrl.Result{}, false, nil
 	}
-	ri, err := r.resolveRunnerImage(ctx, repo, key, now)
+	ri, err := r.resolveRunnerImage(ctx, repo, key)
+	// Stamped once resolution has finished, not when the reconcile began.
+	resolvedAt := metav1.NewTime(r.now())
 	var rej *imageRejection
 	switch {
 	case errors.As(err, &rej):
-		repo.Status.RunnerImage = rej.status(now)
+		repo.Status.RunnerImage = rej.status(resolvedAt)
 		r.log().LogAttrs(ctx, slog.LevelWarn, "runner image rejected",
 			slog.String("repository", repo.Name), slog.String("manifest", rej.manifest),
 			slog.String("declared", rej.declared), slog.String("reason", rej.reason),
@@ -123,6 +125,9 @@ func (r *RepositoryReconciler) pinRunnerImage(
 	case err != nil:
 		return ctrl.Result{}, true, r.fail(ctx, repo, v1alpha1.ReasonRunnerImageResolveFailed, err)
 	}
+	if ri != nil {
+		ri.ResolvedAt = &resolvedAt
+	}
 	repo.Status.RunnerImage = ri
 	return ctrl.Result{}, false, nil
 }
@@ -132,21 +137,33 @@ func (r *RepositoryReconciler) pinRunnerImage(
 // pins and checks it. The registry is consulted only after the first status
 // write has persisted the artifact with Ready=False / RunnerImageResolving,
 // so a transient failure or a restart resumes here without a re-download.
-// A *imageRejection is deterministic; any other error is transient.
+// A *imageRejection is deterministic; any other error is transient. The
+// returned record's ResolvedAt is the caller's to stamp.
 func (r *RepositoryReconciler) resolveRunnerImage(
-	ctx context.Context, repo *v1alpha1.Repository, key string, now metav1.Time,
+	ctx context.Context, repo *v1alpha1.Repository, key string,
 ) (*v1alpha1.RunnerImage, error) {
+	digest := ""
+	if repo.Status.Artifact != nil {
+		digest = repo.Status.Artifact.Digest
+	}
+	if r.knownUndeclared(key, digest) {
+		return nil, nil
+	}
 	decl, err := r.declaration(key)
 	if err != nil {
 		return nil, rejected("InvalidDeclaration", "", runnerimage.AgentYAMLPath, err)
 	}
 	switch decl.Outcome {
 	case runnerimage.OutcomeNone:
+		// Nothing is recorded (status.runnerImage stays nil), so the
+		// pin-once guard never closes; remember the tree instead, or every
+		// reconcile would walk the whole archive again.
+		r.rememberUndeclared(key, digest)
 		return nil, nil
 	case runnerimage.OutcomeNotApplicable:
 		// Not a rejection: the file was not written for patchy. The reason
 		// is recorded for the owner and the default image runs.
-		return &v1alpha1.RunnerImage{Manifest: decl.Manifest, Message: truncate(decl.Reason), ResolvedAt: &now}, nil
+		return &v1alpha1.RunnerImage{Manifest: decl.Manifest, Message: truncate(decl.Reason)}, nil
 	}
 	ref, err := runnerimage.ParseDeclared(decl.Image)
 	if err != nil {
@@ -171,8 +188,37 @@ func (r *RepositoryReconciler) resolveRunnerImage(
 		Image:      res.Image,
 		SearchPath: strings.Join(res.SearchPath, ":"),
 		Verified:   res.Verified,
-		ResolvedAt: &now,
 	}, nil
+}
+
+// knownUndeclared reports whether the stored tree under key, at digest, has
+// already been read and found to declare no image.
+func (r *RepositoryReconciler) knownUndeclared(key, digest string) bool {
+	r.undeclaredMu.Lock()
+	defer r.undeclaredMu.Unlock()
+	d, ok := r.undeclared[key]
+	return ok && digest != "" && d == digest
+}
+
+// rememberUndeclared records that the tree under key, at digest, declares
+// no image.
+func (r *RepositoryReconciler) rememberUndeclared(key, digest string) {
+	if digest == "" {
+		return
+	}
+	r.undeclaredMu.Lock()
+	defer r.undeclaredMu.Unlock()
+	if r.undeclared == nil {
+		r.undeclared = make(map[string]string)
+	}
+	r.undeclared[key] = digest
+}
+
+// forgetDeclaration drops what is remembered about key's tree.
+func (r *RepositoryReconciler) forgetDeclaration(key string) {
+	r.undeclaredMu.Lock()
+	defer r.undeclaredMu.Unlock()
+	delete(r.undeclared, key)
 }
 
 // declaration reads the two declaration files out of the stored artifact

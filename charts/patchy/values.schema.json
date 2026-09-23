@@ -1395,7 +1395,8 @@
                             "description": "Registry path prefixes (host/path/) a declared image must sit under; required when enabled",
                             "items": {
                                 "type": "string",
-                                "minLength": 1
+                                "description": "host[:port]/segment[/segment...][/]: at least one path segment, no tag, digest, glob, comma or whitespace (source-controller refuses such an entry at startup)",
+                                "pattern": "^[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._-]+)+/?$"
                             }
                         },
                         "cosignPublicKey": {
@@ -1421,7 +1422,8 @@
                         },
                         "ephemeralStorage": {
                             "type": "string",
-                            "description": "Ephemeral-storage request and limit on both agent containers, a quantity such as 8Gi; required when enabled"
+                            "description": "Ephemeral-storage request and limit on both agent containers, an unsigned quantity with an optional binary (Ki..Ei) or decimal (k, M..E) suffix such as 8Gi; required when enabled",
+                            "pattern": "^(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([KMGTPE]i|[numkMGTPE])?)?$"
                         },
                         "changesetMaxEntries": {
                             "type": "integer",

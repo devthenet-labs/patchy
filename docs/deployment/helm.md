@@ -206,11 +206,16 @@ The render fails, with a message naming the value to set, when the block is enab
 
 - `registries` is empty, `ephemeralStorage` is empty, or `cosignPublicKey` is empty without `allowUnsigned: true` (each
   would otherwise stop a controller at startup);
+- `cosignPublicKey` is set but lacks its `-----BEGIN PUBLIC KEY-----` / `-----END PUBLIC KEY-----` armour;
 - `pullSecretData` is set without `pullSecret`, which names the Secret it renders;
 - `agent.networkPolicy.create` is false, or `agent.networkPolicy.broadEgress` resolves to keeping the base policy's "TCP
   443 to anywhere" rule, which would let a hostile image reach a model API with a key of its own. Under `mode: none` or
   `istio` set `broadEgress: never`. That removes the rule for every runner, so codex and copilot lose their model egress
   and the fleet is brokered-claude only; under `cilium` or `gke`, `auto` already drops the rule.
+
+Whether or not the block is enabled, the values schema refuses a `registries` entry that is not `host[:port]/path` with
+at least one path segment and no tag, digest, glob, comma or whitespace, and an `ephemeralStorage` that is not an
+unsigned quantity such as `8Gi` or `1.5Gi` (the controllers refuse either at startup).
 
 The CNI must also enforce NetworkPolicy, which the chart cannot check (EKS Auto Mode does not by default): every
 repository-image Job probes it before untrusted code runs and fails `SandboxUnenforced` when it is not enforced.

@@ -266,12 +266,22 @@ untrusted images with broad egress:
     the wall on disk a repository image can fill.
   * cosignPublicKey empty without allowUnsigned — source-controller refuses
     to start without a key unless unsigned images are explicitly allowed.
+  * cosignPublicKey without its PEM armour — source-controller parses a set
+    key at startup, allowUnsigned or not. A template cannot parse the DER
+    inside, so a well-armoured but corrupt key still stops it; the armour
+    catches the pasted-the-wrong-thing case.
   * pullSecretData without pullSecret — the rendered Secret needs the name
     both namespaces share.
   * broad agent egress (the design's decision 2): no agent NetworkPolicy at
     all, or a base policy that keeps "TCP 443 to anywhere", would let a
     hostile image reach a model API with a key of its own. A NOTES warning
     is invisible in CI; a failed render is not.
+
+The formats of a registries entry and of ephemeralStorage are
+values.schema.json patterns instead, so helm lint judges them too. Each
+pattern admits only values the binary accepts at startup, pinned by
+TestChartRegistryPatternIsSound (cmd/source-controller) and
+TestChartEphemeralStoragePatternIsSound (internal/runnercfg).
 */}}
 {{- define "patchy.repositoryImagesGuard" -}}
 {{- $ri := .Values.agent.repositoryImages | default dict -}}
@@ -284,6 +294,9 @@ untrusted images with broad egress:
 {{- end -}}
 {{- if and (not $ri.cosignPublicKey) (not $ri.allowUnsigned) -}}
 {{- fail "agent.repositoryImages.enabled requires agent.repositoryImages.cosignPublicKey, the PEM public key declared images must be cosign-signed with; set agent.repositoryImages.allowUnsigned: true to admit unsigned images instead" -}}
+{{- end -}}
+{{- if and $ri.cosignPublicKey (not (and (contains "-----BEGIN PUBLIC KEY-----" $ri.cosignPublicKey) (contains "-----END PUBLIC KEY-----" $ri.cosignPublicKey))) -}}
+{{- fail "agent.repositoryImages.cosignPublicKey is not a PEM public key: set it to the whole cosign.pub that cosign generate-key-pair writes, -----BEGIN PUBLIC KEY----- through -----END PUBLIC KEY----- (source-controller refuses anything else at startup)" -}}
 {{- end -}}
 {{- if not .Values.agent.networkPolicy.create -}}
 {{- fail "agent.repositoryImages.enabled requires the agent sandbox NetworkPolicy, but agent.networkPolicy.create is false: an agent pod would have unrestricted egress. Set agent.networkPolicy.create: true" -}}

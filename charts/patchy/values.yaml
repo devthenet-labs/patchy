@@ -862,9 +862,10 @@ agent:
         # Registry path prefixes a declared image must sit under, e.g.
         # 123456789012.dkr.ecr.us-east-1.amazonaws.com/patchy/ or
         # ghcr.io/my-org/agent-images/. Required when enabled. Each entry
-        # needs a path segment (a bare host is refused at startup), matches on
-        # segment boundaries and takes no globs. Never list a pull-through
-        # cache namespace (.../docker-hub/, .../ecr-public/,
+        # needs a path segment (a bare host fails the render), matches on
+        # segment boundaries and takes no globs, tag, digest, comma or
+        # whitespace. Never list a pull-through cache namespace
+        # (.../docker-hub/, .../ecr-public/,
         # <region>-docker.pkg.dev/<project>/*-remote/): anyone can populate
         # those.
         registries: []
@@ -891,8 +892,9 @@ agent:
         # either way.
         onReject: default
         # Ephemeral-storage request AND limit on both containers of every
-        # agent Job, a quantity such as 8Gi: an image that fills its emptyDirs
-        # is evicted instead of filling the node. Required when enabled.
+        # agent Job, an unsigned quantity such as 8Gi (no exponent form): an
+        # image that fills its emptyDirs is evicted instead of filling the
+        # node. Required when enabled.
         ephemeralStorage: ""
         # Most files (upserts plus deletes) a changeset from a
         # repository-image run may touch before remediation-controller

@@ -44,7 +44,10 @@ func (p Policy) Entries() []string {
 // lowercases references, and index.docker.io becomes docker.io; at least one path segment is required (a host alone
 // would admit every image on a shared registry); no segment may be empty or
 // carry a tag or digest; glob characters and whitespace are refused. The
-// chart mirrors these rules.
+// chart's values schema admits a stricter subset (ASCII host[:port] and
+// segment characters, no comma), so a helm render never hands
+// source-controller an entry this refuses; TestChartRegistryPatternIsSound
+// in cmd/source-controller holds the two together.
 func NormalizeEntry(entry string) (string, error) {
 	if entry == "" {
 		return "", fmt.Errorf("registry allowlist entry is empty")

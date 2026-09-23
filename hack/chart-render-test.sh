@@ -193,8 +193,41 @@ expect_fail "broad egress always" \
 render guard-egress-fixed-gke -f "$f" --set agent.networkPolicy.mode=gke --set agent.networkPolicy.broadEgress=auto
 expect guard-egress-fixed-gke 'select(.kind == "NetworkPolicy" and .metadata.name == "patchy-agents-egress") | .spec.egress[].ports[].port | select(. == 443)' ""
 render guard-kill-switch -f "$f" --set agent.repositoryImages.enabled=false --set agent.networkPolicy.broadEgress=auto \
-  --set-json 'agent.repositoryImages.registries=[]' --set agent.repositoryImages.pullSecret=
+  --set-json 'agent.repositoryImages.registries=[]' --set agent.repositoryImages.pullSecret= \
+  --set agent.repositoryImages.cosignPublicKey=notapem
 cm guard-kill-switch source-controller PATCHY_REPOSITORY_IMAGES null
+
+# ---- malformed values fail the render, not the controller -------------------
+# Each value below renders a ConfigMap source-controller or a job controller
+# refuses at startup (runnerimage.NormalizeEntry, resource.ParseQuantity,
+# resolve.ParsePublicKey); under strategy Recreate that is a crash-loop in
+# place of the running pod. The schema patterns carry the first two, the
+# guard the key's PEM armour.
+for entry in ghcr.io ghcr.io/ docker.io/org/* 'ghcr.io/org?/' 'ghcr.io/[ab]/' ghcr.io//x/ ghcr.io/org/app:1/ \
+  ghcr.io/org/app@sha256:abc 'ghcr.io/org /' ' ' ghcr.io/org/,ghcr.io; do
+  expect_fail "registries entry '$entry'" "agent/repositoryImages/registries/0" \
+    -f "$f" --set-json "agent.repositoryImages.registries=[\"$entry\"]"
+done
+for q in 8GB 8gi '8 Gi' lots; do
+  expect_fail "ephemeralStorage '$q'" "agent/repositoryImages/ephemeralStorage" \
+    -f "$f" --set-json "agent.repositoryImages.ephemeralStorage=\"$q\""
+done
+# Stricter than ParseQuantity on purpose: a sign or an exponent parses, but a
+# negative size fails every agent Job's creation and nobody sizes a disk as 8e9.
+for q in -8Gi +8Gi 8e9; do
+  expect_fail "ephemeralStorage '$q'" "agent/repositoryImages/ephemeralStorage" \
+    -f "$f" --set-json "agent.repositoryImages.ephemeralStorage=\"$q\""
+done
+expect_fail "cosign key without PEM armour" "agent.repositoryImages.cosignPublicKey is not a PEM public key" \
+  -f "$f" --set agent.repositoryImages.cosignPublicKey=notapem
+expect_fail "cosign key alongside allowUnsigned" "agent.repositoryImages.cosignPublicKey is not a PEM public key" \
+  -f "$f" --set agent.repositoryImages.cosignPublicKey=notapem --set agent.repositoryImages.allowUnsigned=true
+render guard-formats-fixed -f "$f" \
+  --set-json 'agent.repositoryImages.registries=["localhost:5000/team","Index.Docker.IO/library/","us-docker.pkg.dev/my-project/agent_images.v2/"]' \
+  --set agent.repositoryImages.ephemeralStorage=1.5Gi
+cm guard-formats-fixed source-controller PATCHY_REPOSITORY_IMAGE_REGISTRIES \
+  localhost:5000/team,Index.Docker.IO/library/,us-docker.pkg.dev/my-project/agent_images.v2/
+cm guard-formats-fixed investigation-controller PATCHY_AGENT_EPHEMERAL_STORAGE 1.5Gi
 
 # ---- egress broker limits ---------------------------------------------------
 render limits -f "$fixtures/broker-limits.yaml"

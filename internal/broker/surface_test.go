@@ -8,6 +8,10 @@ import (
 	"testing"
 )
 
+// testVertex is the project and location the vertex surface is pinned to
+// in these tests.
+var testVertex = Upstream{Project: "proj", Location: "us-east5"}
+
 func TestSurfaceMatch(t *testing.T) {
 	const vertex = "/v1/projects/proj/locations/us-east5/publishers/anthropic/models/"
 	tests := []struct {
@@ -42,6 +46,12 @@ func TestSurfaceMatch(t *testing.T) {
 		{"vertex", http.MethodPost, vertex + "claude-sonnet-5:predict", false, "", false, modelNone},
 		{"vertex", http.MethodPost, "/v1/projects/proj/locations/us-east5/publishers/google/models/g:streamRawPredict",
 			false, "", false, modelNone},
+		{"vertex", http.MethodPost,
+			"/v1/projects/other/locations/us-east5/publishers/anthropic/models/claude-sonnet-5:streamRawPredict",
+			false, "", false, modelNone},
+		{"vertex", http.MethodPost,
+			"/v1/projects/proj/locations/europe-west4/publishers/anthropic/models/claude-sonnet-5:streamRawPredict",
+			false, "", false, modelNone},
 		{"foundry", http.MethodPost, "/v1/messages", true, "", true, modelBody},
 		{"foundry", http.MethodPost, "/anthropic/v1/messages", true, "", true, modelBody},
 		{"foundry", http.MethodGet, "/anthropic/v1/models", true, "", false, modelNone},
@@ -49,7 +59,7 @@ func TestSurfaceMatch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.route+" "+tt.method+" "+tt.path, func(t *testing.T) {
-			ep, id, ok := surfaceFor(tt.route).match(tt.method, tt.path)
+			ep, id, ok := surfaceFor(tt.route, testVertex).match(tt.method, tt.path)
 			if ok != tt.ok {
 				t.Fatalf("matched = %v, want %v", ok, tt.ok)
 			}
@@ -62,7 +72,7 @@ func TestSurfaceMatch(t *testing.T) {
 			}
 		})
 	}
-	if surfaceFor("unknown") != nil {
+	if surfaceFor("unknown", Upstream{}) != nil {
 		t.Error("an unknown route has a surface")
 	}
 }

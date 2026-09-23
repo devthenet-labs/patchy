@@ -40,7 +40,7 @@ type route struct {
 // not see, and the credential transport attaches the real credential last —
 // so nothing caller-controlled can survive into the authenticated request.
 func newRoute(name string, u Upstream, log *slog.Logger) *route {
-	rt := &route{name: name, upstream: u, surface: surfaceFor(name)}
+	rt := &route{name: name, upstream: u, surface: surfaceFor(name, u)}
 	rt.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(u.Target)

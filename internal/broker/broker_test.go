@@ -625,6 +625,21 @@ func TestConfigValidation(t *testing.T) {
 	}, nil); err == nil {
 		t.Error("missing agent identity accepted")
 	}
+	vertexTarget := &url.URL{Scheme: "https", Host: "x"}
+	for _, u := range []Upstream{
+		{Target: vertexTarget},
+		{Target: vertexTarget, Project: "p"},
+		{Target: vertexTarget, Location: "us-east5"},
+		{Target: vertexTarget, Project: "p/../q", Location: "us-east5"},
+		{Target: vertexTarget, Project: "{_}", Location: "us-east5"},
+	} {
+		if _, err := New(fake.NewClientset(), Config{
+			AgentNamespace: testNamespace, AgentServiceAccount: testSA,
+			Upstreams: map[string]Upstream{"vertex": u},
+		}, nil); err == nil {
+			t.Errorf("vertex upstream without a usable project/location accepted: %+v", u)
+		}
+	}
 	if _, err := ParseTarget("not a url"); err == nil {
 		t.Error("relative target accepted")
 	}

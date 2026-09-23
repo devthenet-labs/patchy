@@ -42,8 +42,9 @@ type endpoint struct {
 // surface is a route's endpoint list, matched in order.
 type surface []endpoint
 
-// surfaceFor returns the positive surface of a named route.
-func surfaceFor(name string) surface {
+// surfaceFor returns the positive surface of a named route; u supplies the
+// literal segments a route pins (vertex's project and location).
+func surfaceFor(name string, u Upstream) surface {
 	switch name {
 	case provider.Anthropic:
 		return anthropicSurface("")
@@ -60,7 +61,7 @@ func surfaceFor(name string) surface {
 				metered: true, model: modelPath, body: true},
 		}
 	case provider.Vertex:
-		const models = "/v1/projects/{_}/locations/{_}/publishers/anthropic/models/"
+		models := "/v1/projects/" + u.Project + "/locations/" + u.Location + "/publishers/anthropic/models/"
 		return surface{
 			// Vertex counts tokens through a pseudo-model; it is not an
 			// inference call and names no model to allowlist.

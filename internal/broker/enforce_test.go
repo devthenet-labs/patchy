@@ -69,7 +69,7 @@ func TestSurface(t *testing.T) {
 	s := newTestServer(t, Config{Upstreams: map[string]Upstream{
 		"anthropic": {Target: mustTarget(t, up.URL)},
 		"bedrock":   {Target: mustTarget(t, up.URL), BufferBody: true},
-		"vertex":    {Target: mustTarget(t, up.URL)},
+		"vertex":    {Target: mustTarget(t, up.URL), Project: "p", Location: "us-east5"},
 		"foundry":   {Target: mustTarget(t, up.URL)},
 	}}, nil)
 	h := s.Handler()
@@ -100,6 +100,12 @@ func TestSurface(t *testing.T) {
 		{http.MethodPost, "/vertex/v1/projects/p/locations/us-east5/publishers/anthropic/models/count-tokens:rawPredict",
 			http.StatusOK},
 		{http.MethodPost, "/vertex/v1/projects/p/locations/us-east5/publishers/google/models/gemini:streamRawPredict",
+			http.StatusNotFound},
+		{http.MethodPost,
+			"/vertex/v1/projects/attacker/locations/us-east5/publishers/anthropic/models/claude-sonnet-5:rawPredict",
+			http.StatusNotFound},
+		{http.MethodPost,
+			"/vertex/v1/projects/p/locations/us-central1/publishers/anthropic/models/claude-sonnet-5:rawPredict",
 			http.StatusNotFound},
 		{http.MethodPost, "/vertex/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-5:predict",
 			http.StatusNotFound},
@@ -205,7 +211,7 @@ func TestModelAllowlist(t *testing.T) {
 		Upstreams: map[string]Upstream{
 			"anthropic": {Target: mustTarget(t, up.URL)},
 			"bedrock":   {Target: mustTarget(t, up.URL), BufferBody: true},
-			"vertex":    {Target: mustTarget(t, up.URL)},
+			"vertex":    {Target: mustTarget(t, up.URL), Project: "p", Location: "us-east5"},
 			"foundry":   {Target: mustTarget(t, up.URL)},
 		}}, nil)
 	h := s.Handler()

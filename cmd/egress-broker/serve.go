@@ -75,7 +75,9 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.String("bedrock-region", "", "AWS region for Bedrock SigV4 signing; set to enable the bedrock route")
 	f.String("bedrock-base-url", "",
 		"Bedrock runtime base URL (default: https://bedrock-runtime.<bedrock-region>.amazonaws.com)")
-	f.String("vertex-region", "", "GCP region for Vertex AI; set to enable the vertex route")
+	f.String("vertex-region", "",
+		"GCP region for Vertex AI, and the only location the route admits; set to enable the vertex route")
+	f.String("vertex-project", "", "the only GCP project the vertex route admits; required with --vertex-region")
 	f.String("vertex-base-url", "",
 		"Vertex AI base URL (default: https://<vertex-region>-aiplatform.googleapis.com)")
 	f.String("foundry-resource", "", "Microsoft Foundry resource name; set to enable the foundry route")
@@ -161,6 +163,10 @@ func vertexUpstream(ctx context.Context, opts *cli.Options) (*broker.Upstream, e
 	if region == "" {
 		return nil, nil
 	}
+	project := opts.String("vertex-project")
+	if project == "" {
+		return nil, errors.New("--vertex-region requires --vertex-project: the route admits one project only")
+	}
 	raw := opts.String("vertex-base-url")
 	if raw == "" {
 		raw = fmt.Sprintf("https://%s-aiplatform.googleapis.com", region)
@@ -169,7 +175,7 @@ func vertexUpstream(ctx context.Context, opts *cli.Options) (*broker.Upstream, e
 	if err != nil {
 		return nil, err
 	}
-	up, err := broker.Vertex(ctx, target)
+	up, err := broker.Vertex(ctx, target, project, region)
 	if err != nil {
 		return nil, err
 	}

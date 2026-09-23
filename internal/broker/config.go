@@ -70,6 +70,12 @@ type Upstream struct {
 	// Ready reports whether the route's credential source is usable; readyz
 	// fails while any configured route's is not. Nil means always ready.
 	Ready func(ctx context.Context) error
+	// Project and Location pin the vertex route's surface to one GCP
+	// project and location: the path's projects/{project}/locations/
+	// {location} segments must equal them literally, so a pod cannot bill
+	// or reach another project with the broker's identity. Required on
+	// vertex, unused elsewhere.
+	Project, Location string
 }
 
 // Limits is the spend and capability bound the broker enforces per caller
@@ -179,6 +185,13 @@ func (c Config) validate() error {
 		}
 		if u.Target == nil {
 			return fmt.Errorf("broker: upstream %q has no target URL", name)
+		}
+		if name == provider.Vertex {
+			for field, v := range map[string]string{"project": u.Project, "location": u.Location} {
+				if v == "" || strings.ContainsAny(v, "/{}") {
+					return fmt.Errorf("broker: upstream vertex needs a %s without '/', '{' or '}'", field)
+				}
+			}
 		}
 	}
 	l := c.Limits

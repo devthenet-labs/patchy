@@ -503,20 +503,6 @@ func TestSandboxLocalSearchPath(t *testing.T) {
 	}
 }
 
-func TestDefaultRunnerImage(t *testing.T) {
-	for version, want := range map[string]string{
-		"0.11.6":  RunnerImageRepository + ":v0.11.6",
-		"v0.12.0": RunnerImageRepository + ":v0.12.0",
-		"dev":     RunnerImageRepository + ":latest",
-		"":        RunnerImageRepository + ":latest",
-		"none.1":  RunnerImageRepository + ":latest",
-	} {
-		if got := DefaultRunnerImage(version); got != want {
-			t.Errorf("DefaultRunnerImage(%q) = %q, want %q", version, got, want)
-		}
-	}
-}
-
 func TestRunPlatforms(t *testing.T) {
 	cases := []struct {
 		host      string

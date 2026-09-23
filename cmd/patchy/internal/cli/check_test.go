@@ -27,6 +27,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/types"
+	"sigs.k8s.io/yaml"
 
 	"github.com/bitwise-media-group/patchy/cmd/patchy/internal/imagecheck"
 )
@@ -134,6 +135,36 @@ func (noDocker) Run(context.Context, string, ...string) (imagecheck.Result, erro
 	return imagecheck.Result{}, errors.New("docker is not installed")
 }
 
+// fakeRunnerDigest is the digest fakeRunnerRegistry resolves every tag to.
+var fakeRunnerDigest = "sha256:" + strings.Repeat("d", 64)
+
+// fakeRunnerRegistry is the runner image repository as the registry lists
+// it, or an unreachable registry when err is set.
+type fakeRunnerRegistry struct {
+	tags []string
+	err  error
+}
+
+func (f fakeRunnerRegistry) Tags(context.Context, string) ([]string, error) { return f.tags, f.err }
+
+func (f fakeRunnerRegistry) Digest(context.Context, string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return fakeRunnerDigest, nil
+}
+
+// testDeps are check image's dependencies for a development build of the
+// CLI, whose registry has runner image releases up to v0.11.7, with docker
+// faked by docker.
+func testDeps(docker imagecheck.Commander) checkImageDeps {
+	return checkImageDeps{
+		docker:   docker,
+		registry: fakeRunnerRegistry{tags: []string{"latest", "v0.11.5", "v0.11.7", "v0.12.0-rc.1"}},
+		version:  "dev",
+	}
+}
+
 // TestCheckImageRunWithoutDocker: --run on a workstation without docker
 // skips the sandbox checks, cleanly, and the static verdict stands.
 func TestCheckImageRunWithoutDocker(t *testing.T) {
@@ -141,7 +172,7 @@ func TestCheckImageRunWithoutDocker(t *testing.T) {
 	var out bytes.Buffer
 	opts := &Options{Out: &out, ErrOut: io.Discard, Output: "table"}
 	f := &checkImageFlags{run: true, maxBytes: 1 << 30}
-	if err := runCheckImage(context.Background(), opts, f, good, noDocker{}); err != nil {
+	if err := runCheckImage(context.Background(), opts, f, good, testDeps(noDocker{})); err != nil {
 		t.Fatalf("runCheckImage: %v\n%s", err, out.String())
 	}
 	for _, want := range []string{"SKIP  runner", "SKIP  preflight", "SKIP  bash", "SKIP  git",
@@ -159,7 +190,7 @@ func TestCheckImageRunSkippedForUnrunnablePath(t *testing.T) {
 	var out bytes.Buffer
 	opts := &Options{Out: &out, ErrOut: io.Discard, Output: "table"}
 	f := &checkImageFlags{run: true, maxBytes: 1 << 30}
-	err := runCheckImage(context.Background(), opts, f, bad, noDocker{})
+	err := runCheckImage(context.Background(), opts, f, bad, testDeps(noDocker{}))
 	if err == nil || !strings.Contains(out.String(), "SKIP  preflight  the image's PATH is rejected") {
 		t.Errorf("err = %v, output:\n%s", err, out.String())
 	}
@@ -227,7 +258,8 @@ func TestCheckImageEscapesContainerOutput(t *testing.T) {
 			var out bytes.Buffer
 			opts := &Options{Out: &out, ErrOut: io.Discard, Output: output}
 			f := &checkImageFlags{run: true, maxBytes: 1 << 30, runnerImage: "runner:test"}
-			if err := runCheckImage(context.Background(), opts, f, good, fakeDockerHost{hostileGitOutput}); err != nil {
+			deps := testDeps(fakeDockerHost{hostileGitOutput})
+			if err := runCheckImage(context.Background(), opts, f, good, deps); err != nil {
 				t.Fatalf("runCheckImage: %v\n%s", err, out.String())
 			}
 			for i, r := range out.String() {
@@ -283,7 +315,8 @@ func TestCheckImageRunsEveryPlatform(t *testing.T) {
 	var out bytes.Buffer
 	opts := &Options{Out: &out, ErrOut: io.Discard, Output: "table"}
 	f := &checkImageFlags{run: true, maxBytes: 1 << 30, runnerImage: "runner:test"}
-	if err := runCheckImage(context.Background(), opts, f, ref, fakeDockerHost{"git version 2.51.0\n"}); err != nil {
+	deps := testDeps(fakeDockerHost{"git version 2.51.0\n"})
+	if err := runCheckImage(context.Background(), opts, f, ref, deps); err != nil {
 		t.Fatalf("runCheckImage: %v\n%s", err, out.String())
 	}
 	var sandboxLines []string
@@ -300,8 +333,97 @@ func TestCheckImageRunsEveryPlatform(t *testing.T) {
 	if !slices.Equal(sandboxLines, want) {
 		t.Errorf("sandbox lines = %q, want %q\n%s", sandboxLines, want, out.String())
 	}
-	if !strings.Contains(out.String(), "PASS  runner     linux/arm64  agent-runner and claude from runner:test; the "+
+	if !strings.Contains(out.String(), "PASS  runner        linux/arm64  agent-runner and claude from runner:test; the "+
 		"docker host is not linux/arm64, so it runs emulated") {
 		t.Errorf("the emulated platform's runner line is not marked emulated:\n%s", out.String())
+	}
+}
+
+// recordingDocker is fakeDockerHost, recording every docker invocation.
+type recordingDocker struct {
+	fakeDockerHost
+	calls [][]string
+}
+
+func (r *recordingDocker) Run(ctx context.Context, command string, args ...string) (imagecheck.Result, error) {
+	r.calls = append(r.calls, args)
+	return r.fakeDockerHost.Run(ctx, command, args...)
+}
+
+// TestCheckImageReportsRunnerImage: a development build's --run takes the
+// newest runner image release, never latest; it copies the runner binaries
+// out of it by the digest the registry has for it, never out of a local
+// copy of its tag; and it names the image and the digest on a line of its
+// own in every output.
+func TestCheckImageReportsRunnerImage(t *testing.T) {
+	good, _ := pushCheckImage(t, []string{"PATH=/usr/bin"}, nil)
+	newest := imagecheck.RunnerImageRepository + ":v0.11.7"
+	for _, output := range []string{"table", "json", "yaml"} {
+		t.Run(output, func(t *testing.T) {
+			var out bytes.Buffer
+			opts := &Options{Out: &out, ErrOut: io.Discard, Output: output}
+			f := &checkImageFlags{run: true, maxBytes: 1 << 30}
+			docker := &recordingDocker{fakeDockerHost: fakeDockerHost{"git version 2.51.0\n"}}
+			if err := runCheckImage(context.Background(), opts, f, good, testDeps(docker)); err != nil {
+				t.Fatalf("runCheckImage: %v\n%s", err, out.String())
+			}
+			if output == "table" {
+				want := "PASS  runner-image  " + newest + "@" + fakeRunnerDigest + ", the newest release"
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output lacks %q:\n%s", want, out.String())
+				}
+			} else {
+				var report imagecheck.Report
+				if err := yaml.Unmarshal(out.Bytes(), &report); err != nil {
+					t.Fatalf("output is not a report: %v\n%s", err, out.String())
+				}
+				want := imagecheck.RunnerImage{Reference: newest, Digest: fakeRunnerDigest}
+				if report.RunnerImage == nil || *report.RunnerImage != want {
+					t.Errorf("runnerImage = %+v, want %+v", report.RunnerImage, want)
+				}
+				if !slices.ContainsFunc(report.Checks, func(c imagecheck.Check) bool {
+					return c.Name == imagecheck.CheckRunnerImage && c.Status == imagecheck.Pass &&
+						strings.Contains(c.Reason, newest+"@"+fakeRunnerDigest)
+				}) {
+					t.Errorf("checks lack a PASS %s line naming %s@%s: %+v", imagecheck.CheckRunnerImage, newest,
+						fakeRunnerDigest, report.Checks)
+				}
+			}
+			create := []string{"create", "--quiet", "--platform", "linux/amd64",
+				imagecheck.RunnerImageRepository + "@" + fakeRunnerDigest}
+			if !slices.ContainsFunc(docker.calls, func(c []string) bool { return slices.Equal(c, create) }) {
+				t.Errorf("the runner binaries were not copied out of the runner image by digest; docker calls %q",
+					docker.calls)
+			}
+		})
+	}
+}
+
+// TestCheckImageRunWithoutRunnerImage: a development build that cannot find
+// a released runner image (offline, say) fails the run with a line that
+// says to pass --runner-image, and docker is never asked for whatever its
+// local store holds under a tag.
+func TestCheckImageRunWithoutRunnerImage(t *testing.T) {
+	good, _ := pushCheckImage(t, []string{"PATH=/usr/bin"}, nil)
+	var out bytes.Buffer
+	opts := &Options{Out: &out, ErrOut: io.Discard, Output: "table"}
+	f := &checkImageFlags{run: true, maxBytes: 1 << 30}
+	docker := &recordingDocker{fakeDockerHost: fakeDockerHost{"git version 2.51.0\n"}}
+	deps := testDeps(docker)
+	deps.registry = fakeRunnerRegistry{err: errors.New("dial tcp: lookup ghcr.io: no such host")}
+	err := runCheckImage(context.Background(), opts, f, good, deps)
+	if err == nil || !strings.Contains(err.Error(), "1 check failed") {
+		t.Errorf("runCheckImage = %v, want the runner-image check failed\n%s", err, out.String())
+	}
+	for _, want := range []string{"FAIL  runner-image", "no such host", "pass --runner-image", "SKIP  runner ",
+		"SKIP  preflight", "SKIP  bash", "SKIP  git"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	for _, c := range docker.calls {
+		if c[0] == "create" || c[0] == "run" {
+			t.Errorf("docker %s ran with no runner image chosen: %q", c[0], c)
+		}
 	}
 }

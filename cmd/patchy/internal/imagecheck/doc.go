@@ -31,6 +31,14 @@
 // on their own. docker is reached only through Commander, so the package
 // builds for every target the CLI ships on and tests need no docker at all.
 //
+// ChooseRunner picks that runner image before the sandbox runs, and reports
+// it as a check line of its own, reference and digest: --runner-image as
+// given, otherwise the image released with this CLI's version or, for a
+// development build, the newest vX.Y.Z release in the registry (never
+// latest), each pinned to the digest its tag names there, so a stale local
+// copy of the tag never stands in for it. The registry is reached only
+// through Registry, so tests fake it too.
+//
 // Each check is one Check line, PASS, FAIL or SKIP with a reason, and a
 // sandbox check also names the platform it ran as.
 package imagecheck

@@ -5,10 +5,17 @@
 // ephemeral Job pod: it drives the classification and remediation harness
 // stages against a pre-cloned repository and reports results as an event
 // stream on stdout. It never talks to GitHub.
+//
+// Invoked as `agent-runner sandbox-probe` (sandboxprobe.Command) it instead
+// runs the negative-connectivity check the trusted prepare init container
+// performs before a repository-declared image gets to run anything, and
+// exits sandboxprobe.ExitUnenforced when egress is still open at the end of
+// the window.
 package main
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -16,21 +23,27 @@ import (
 
 	"github.com/bitwise-media-group/patchy/internal/agentrun"
 	"github.com/bitwise-media-group/patchy/internal/runner"
+	"github.com/bitwise-media-group/patchy/internal/sandboxprobe"
 )
 
 func main() {
-	os.Exit(run())
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := run(ctx, os.Args, os.Getenv, os.Stderr)
+	stop()
+	os.Exit(code)
 }
 
-func run() int {
-	// Diagnostics go to stderr; stdout is reserved for the envelope event
-	// stream the controller parses.
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+// run is the process: args and the environment in, diagnostics to stderr
+// (stdout is reserved for the envelope event stream the controller parses),
+// the exit status out.
+func run(ctx context.Context, args []string, getenv func(string) string, stderr io.Writer) int {
+	log := slog.New(slog.NewTextHandler(stderr, nil))
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	if len(args) > 1 && args[1] == sandboxprobe.Command {
+		return sandboxprobe.Main(ctx, getenv, log)
+	}
 
-	cfg, err := agentrun.FromEnv(os.Getenv)
+	cfg, err := agentrun.FromEnv(getenv)
 	if err != nil {
 		log.LogAttrs(ctx, slog.LevelError, "invalid configuration", slog.Any("error", err))
 		return 2

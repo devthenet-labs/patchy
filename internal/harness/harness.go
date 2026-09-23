@@ -4,7 +4,9 @@
 package harness
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/bitwise-media-group/patchy/internal/runner"
 	"github.com/bitwise-media-group/patchy/internal/transcript"
@@ -100,6 +102,19 @@ type BudgetReporter interface {
 	Exhausted(stdout []byte) bool
 }
 
+// TerminalErrorReporter is the optional capability of reading the error a run
+// ended on off the CLI's own terminal event. It reports only what the CLI
+// itself said ended the run — never the model's text or a tool's output,
+// which carry whatever the repository holds — so a caller matching a
+// contract message against it (the egress broker's limit prefix) cannot
+// have the outcome chosen by a quote of that message in the workspace, or
+// by an error the run recovered from before dying of something else.
+type TerminalErrorReporter interface {
+	// TerminalError returns the error text the CLI's terminal event
+	// reported, or "" when the run did not end in an error.
+	TerminalError(stdout []byte) string
+}
+
 // UsageScanner is the optional capability of reading token usage off the live
 // output stream; it powers the caller's output-token budget kill switch.
 type UsageScanner interface {
@@ -146,6 +161,21 @@ func ByID(id string) (Harness, bool) {
 func Available(h Harness) (path string, ok bool) {
 	for _, name := range h.CLI() {
 		if p, err := exec.LookPath(name); err == nil {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// AvailableIn finds the harness's runner binary under dir alone, never
+// falling back to PATH: an injected CLI that is missing must be reported,
+// not quietly replaced by the image's own. It is how a pod running a
+// repository-declared image resolves the CLI patchy injected (agentrun's
+// preflight, whose result the stage then runs by absolute path).
+func AvailableIn(h Harness, dir string) (path string, ok bool) {
+	for _, name := range h.CLI() {
+		p := filepath.Join(dir, name)
+		if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
 			return p, true
 		}
 	}

@@ -87,6 +87,9 @@ type step struct {
 	// budgetLines are streamed to this stage's usage observer, exercising
 	// the token-budget kill switch.
 	budgetLines []string
+	// err, when set, is returned as the executor's error (an unstartable
+	// command) instead of a result.
+	err error
 }
 
 func (f *fakeExec) Run(_ context.Context, spec runner.CommandSpec, _ time.Duration,
@@ -97,6 +100,9 @@ func (f *fakeExec) Run(_ context.Context, spec runner.CommandSpec, _ time.Durati
 	}
 	s := f.steps[0]
 	f.steps = f.steps[1:]
+	if s.err != nil {
+		return runner.Result{}, s.err
+	}
 
 	for path, content := range s.writes {
 		full := filepath.Join(s.ws, path)

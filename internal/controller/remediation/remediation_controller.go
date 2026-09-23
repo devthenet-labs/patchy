@@ -39,7 +39,7 @@ const remSchedulerRequest = "\x00scheduler"
 // engine needs (distinct name: the legacy Runner interface lives in
 // controller.go until the cutover).
 type CRRunner interface {
-	Create(ctx context.Context, spec jobs.Spec) (string, error)
+	Create(ctx context.Context, spec jobs.Spec) (string, v1alpha1.RunnerImageRef, error)
 	Result(ctx context.Context, jobName string) (jobs.RunOutput, error)
 	Status(ctx context.Context, jobName string) (jobs.Status, error)
 	Delete(ctx context.Context, jobName string) error
@@ -239,7 +239,7 @@ func (r *RemediationReconciler) launch(ctx context.Context, rem *v1alpha1.Remedi
 	if fnd.Spec.Repository != nil {
 		repoName = fnd.Spec.Repository.Name
 	}
-	jobName, err := r.Runner.Create(ctx, jobs.Spec{
+	jobName, _, err := r.Runner.Create(ctx, jobs.Spec{
 		Repo:                  repoName,
 		Attempt:               int(rem.Spec.Attempt),
 		Phase:                 "remediate",

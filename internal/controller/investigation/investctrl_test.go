@@ -279,9 +279,11 @@ type fakeRunner struct {
 	turns   []transcript.Turn
 }
 
-func (f *fakeRunner) Create(_ context.Context, spec jobs.Spec) (string, error) {
+func (f *fakeRunner) Create(_ context.Context, spec jobs.Spec) (string, v1alpha1.RunnerImageRef, error) {
 	f.created = append(f.created, spec)
-	return "job-1", nil
+	return "job-1", v1alpha1.RunnerImageRef{
+		Image: "claude-agent-runner:1", Source: v1alpha1.RunnerImageSourceDefault,
+	}, nil
 }
 
 func (f *fakeRunner) Result(context.Context, string) (jobs.RunOutput, error) {

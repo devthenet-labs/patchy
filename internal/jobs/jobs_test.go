@@ -124,12 +124,12 @@ func TestCreateRequiresKindAndFinding(t *testing.T) {
 	c := New(fake.NewClientset(), testConfig(), nil)
 	spec := testSpec()
 	spec.Kind = ""
-	if _, err := c.Create(context.Background(), spec); err == nil {
+	if _, _, err := c.Create(context.Background(), spec); err == nil {
 		t.Error("Create without Kind succeeded, want error")
 	}
 	spec = testSpec()
 	spec.Finding = ""
-	if _, err := c.Create(context.Background(), spec); err == nil {
+	if _, _, err := c.Create(context.Background(), spec); err == nil {
 		t.Error("Create without Finding succeeded, want error")
 	}
 }
@@ -139,7 +139,7 @@ func TestCreateJobShape(t *testing.T) {
 	c := New(cs, testConfig(), nil)
 	spec := testSpec()
 
-	name, err := c.Create(context.Background(), spec)
+	name, _, err := c.Create(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestCreateArtifactPrepare(t *testing.T) {
 	c := New(cs, testConfig(), nil)
 	spec := testSpec()
 
-	name, err := c.Create(context.Background(), spec)
+	name, _, err := c.Create(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestCreateCredentialIsolation(t *testing.T) {
 	c := New(cs, testConfig(), nil)
 	spec := testSpec()
 
-	name, err := c.Create(context.Background(), spec)
+	name, _, err := c.Create(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestCreateAgentEnv(t *testing.T) {
 	c := New(cs, testConfig(), nil)
 	spec := testSpec()
 
-	name, err := c.Create(context.Background(), spec)
+	name, _, err := c.Create(context.Background(), spec)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestCreateAgentEnvOAuthToken(t *testing.T) {
 	cfg.Runners["claude"] = claude
 	c := New(cs, cfg, nil)
 
-	name, err := c.Create(context.Background(), testSpec())
+	name, _, err := c.Create(context.Background(), testSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestCreateRunnerSelection(t *testing.T) {
 			c := New(cs, cfg, nil)
 			spec := testSpec()
 			spec.Harness = tt.harness
-			name, err := c.Create(context.Background(), spec)
+			name, _, err := c.Create(context.Background(), spec)
 			if err != nil {
 				t.Fatalf("Create: %v", err)
 			}
@@ -438,7 +438,7 @@ func TestCreateSecurityContexts(t *testing.T) {
 	cs := fake.NewClientset()
 	c := New(cs, testConfig(), nil)
 
-	name, err := c.Create(context.Background(), testSpec())
+	name, _, err := c.Create(context.Background(), testSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestCreateSecret(t *testing.T) {
 			spec := testSpec()
 			spec.InvestigationMarkdown = tt.investigation
 
-			name, err := c.Create(context.Background(), spec)
+			name, _, err := c.Create(context.Background(), spec)
 			if err != nil {
 				t.Fatalf("Create: %v", err)
 			}
@@ -544,7 +544,7 @@ func TestCreateInvalidResources(t *testing.T) {
 	cfg := testConfig()
 	cfg.CPULimit = "not-a-quantity"
 	c := New(fake.NewClientset(), cfg, nil)
-	if _, err := c.Create(context.Background(), testSpec()); err == nil {
+	if _, _, err := c.Create(context.Background(), testSpec()); err == nil {
 		t.Fatal("Create with invalid resource quantity succeeded, want error")
 	}
 }
@@ -559,7 +559,7 @@ func TestStatus(t *testing.T) {
 		{
 			"active",
 			batchv1.Job{ObjectMeta: base, Status: batchv1.JobStatus{Active: 1}},
-			Status{Active: 1},
+			Status{Active: 1, RunnerImageSource: "default"},
 		},
 		{
 			"complete",
@@ -569,7 +569,7 @@ func TestStatus(t *testing.T) {
 					{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
 				},
 			}},
-			Status{Succeeded: 1, Done: true},
+			Status{Succeeded: 1, Done: true, RunnerImageSource: "default"},
 		},
 		{
 			"failed",
@@ -579,7 +579,7 @@ func TestStatus(t *testing.T) {
 					{Type: batchv1.JobFailed, Status: corev1.ConditionTrue},
 				},
 			}},
-			Status{Failed: 1, Done: true},
+			Status{Failed: 1, Done: true, RunnerImageSource: "default"},
 		},
 		{
 			"false condition is not done",
@@ -589,7 +589,7 @@ func TestStatus(t *testing.T) {
 					{Type: batchv1.JobComplete, Status: corev1.ConditionFalse},
 				},
 			}},
-			Status{Active: 1},
+			Status{Active: 1, RunnerImageSource: "default"},
 		},
 	}
 	for _, tt := range tests {
@@ -617,7 +617,7 @@ func TestStatusNotFound(t *testing.T) {
 func TestDelete(t *testing.T) {
 	cs := fake.NewClientset()
 	c := New(cs, testConfig(), nil)
-	name, err := c.Create(context.Background(), testSpec())
+	name, _, err := c.Create(context.Background(), testSpec())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

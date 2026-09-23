@@ -22,8 +22,11 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/agentrun"
 	"github.com/bitwise-media-group/patchy/internal/harness"
 	"github.com/bitwise-media-group/patchy/internal/provider"
+	"github.com/bitwise-media-group/patchy/internal/runnerimage"
+	"github.com/bitwise-media-group/patchy/internal/sandboxprobe"
 )
 
 // Label keys and values identifying the Jobs patchy owns. The repo
@@ -72,6 +75,35 @@ const (
 // are bound to; must match the broker's --token-audience.
 const DefaultBrokerAudience = "patchy-egress-broker"
 
+// Repository-declared image injection. The trusted prepare init copies
+// patchy's binaries out of the runner image (toolsBinDir, where the
+// Dockerfiles put them) into the patchy-bin emptyDir, which the agent
+// container mounts read-only at patchyBinDir and runs agent-runner from by
+// absolute path. A Job that ran such an image carries the audit annotations
+// (the digest reference that ran, its source, the trusted donor image) and
+// the selectable label; a Job that did not carries none of them.
+const (
+	volPatchyBin = "patchy-bin"
+	patchyBinDir = "/patchy/bin"
+	toolsBinDir  = "/usr/local/bin"
+
+	annotationRunnerImage       = "patchy.bitwisemedia.uk/runner-image"
+	annotationRunnerImageSource = "patchy.bitwisemedia.uk/runner-image-source"
+	annotationToolsImage        = "patchy.bitwisemedia.uk/tools-image"
+	labelRunnerImageSource      = "patchy.bitwisemedia.uk/runner-image-source"
+)
+
+// ExitSandboxUnenforced is the prepare init container's exit status when
+// the sandbox probe found egress still open at the end of its window. The
+// collectors map it to a SandboxUnenforced failure that consumes no attempt.
+const ExitSandboxUnenforced = sandboxprobe.ExitUnenforced
+
+// DefaultSandboxProbeTimeout is how long the probe keeps retrying while
+// egress is open before it declares NetworkPolicy unenforced: long enough
+// for a CNI that attaches a new pod's policy a few seconds late (EKS Auto
+// Mode), short enough not to be the Job's cost.
+const DefaultSandboxProbeTimeout = sandboxprobe.DefaultTimeout
+
 // runAsUser is the fixed non-root UID (distroless "nonroot").
 const runAsUser = 65532
 
@@ -99,6 +131,20 @@ if [ -f /patchy/input/investigation.md ]; then
 fi
 `
 
+// injectScript is appended to prepareScript on a repository-image Job, and
+// only then, so the default Job stays byte-identical. It still runs in the
+// trusted runner image: each binary named in $PATCHY_INJECT is copied from
+// where the Dockerfile put it into the patchy-bin emptyDir (read-only in the
+// agent container), then the sandbox probe runs from the trusted binary,
+// selected by the one subcommand name agent-runner dispatches on. Under
+// set -e a non-zero probe exit ends the script with that status —
+// ExitSandboxUnenforced — before the agent container ever starts.
+const injectScript = `for bin in $PATCHY_INJECT; do
+  cp "` + toolsBinDir + `/$bin" "` + patchyBinDir + `/$bin"
+done
+` + toolsBinDir + `/` + agentRunnerBin + ` ` + sandboxprobe.Command + `
+`
+
 // Runner is one harness's agent-runner deployment surface: the container image
 // bundling that harness's CLI and the Secret its model credential is injected
 // from. A Job picks its Runner by the harness resolved for its model, so a
@@ -124,6 +170,18 @@ type Runner struct {
 	// skip-auth switches, the model map), values only, controller-built.
 	// It wins over Config.Env but can never name a credential channel.
 	Env map[string]string
+	// Inject names the binaries this runner image contributes to a Job that
+	// runs a repository-declared image instead: the prepare init copies each
+	// one from toolsBinDir into the patchy-bin volume, agent-runner always
+	// among them since the agent container runs it from there. Nil means this
+	// harness never runs a repository image (codex and copilot hold a real
+	// credential in-pod; the fake harness replays fixtures), whatever the
+	// Repository declares. runnercfg sets {"agent-runner", "claude"} for the
+	// claude runner, so "claude only" is configuration, not code. A runner
+	// that injects a Secret credential (not Brokered, Secret set) may not
+	// Inject: Create refuses such a Job rather than hand the credential to
+	// the repository's image.
+	Inject []string
 }
 
 // Config configures Job creation.
@@ -146,6 +204,21 @@ type Config struct {
 	BrokerAudience string
 	// Resource strings (Kubernetes quantities), optional.
 	CPURequest, MemoryRequest, CPULimit, MemoryLimit string
+	// EphemeralStorage, when set, is the ephemeral-storage request AND
+	// limit on both containers, so a pod that fills its emptyDirs is
+	// evicted by the kubelet rather than filling the node. Optional for a
+	// default Job; required for a repository-image one, which Create
+	// refuses without it.
+	EphemeralStorage string
+	// AllowRepositoryImages is the kill switch for repository-declared
+	// runner images: while false (the default) a Spec.RunnerImage is
+	// ignored and every Job runs its harness's runner image, so a flip
+	// takes effect at the next Job without touching any CR.
+	AllowRepositoryImages bool
+	// SandboxProbeTimeout is how long a repository-image Job's prepare init
+	// keeps re-probing while egress is open before concluding that
+	// NetworkPolicy is not enforced (default DefaultSandboxProbeTimeout).
+	SandboxProbeTimeout time.Duration
 }
 
 // Spec is one agent Job to create.
@@ -184,6 +257,22 @@ type Spec struct {
 	// omits it. This package deliberately does not know its shape — it is
 	// prompt garnish, not job configuration.
 	Calibration string
+	// RunnerImage is the digest-pinned repository-declared image from the
+	// Repository's status (name@sha256:...), copied by the launching
+	// controller; empty runs the harness's runner image. It is honoured only
+	// when Config.AllowRepositoryImages is on and the runner has binaries to
+	// Inject — otherwise the Job is exactly what it would be without it.
+	// When it is honoured it must carry a sha256 digest; Create refuses a
+	// tag or bare name rather than run and record an unchecked image.
+	RunnerImage string
+	// RunnerSearchPath is that image's sanitized PATH from the Repository's
+	// status (colon-joined absolute entries); the Job prepends its own
+	// binary directory and owns the resulting PATH.
+	RunnerSearchPath string
+	// RunnerImageManifest is the repository-relative path of the file that
+	// declared RunnerImage, echoed on the returned RunnerImageRef so the
+	// tracking issue can name it.
+	RunnerImageManifest string
 }
 
 // Client creates and observes agent Jobs in one namespace. It embeds the
@@ -208,6 +297,9 @@ func New(cs kubernetes.Interface, cfg Config, log *slog.Logger) *Client {
 	cfg.Runners = runners
 	if cfg.BrokerAudience == "" {
 		cfg.BrokerAudience = DefaultBrokerAudience
+	}
+	if cfg.SandboxProbeTimeout <= 0 {
+		cfg.SandboxProbeTimeout = DefaultSandboxProbeTimeout
 	}
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
@@ -238,15 +330,20 @@ func NameFor(finding, kind string, attempt int32) string {
 
 // Create builds and creates the per-Job Secret (the handoff markdown files),
 // then the Job itself, then owner-references the Secret to the Job so it is
-// garbage collected with it. Returns the Job name.
-func (c *Client) Create(ctx context.Context, spec Spec) (string, error) {
+// garbage collected with it. It returns the Job name and the runner image
+// the Job actually runs, read back from the Job's own annotations: Source
+// is repository only when injection happened, and default whenever it did
+// not, for any reason (a non-claude harness, the fake harness, the kill
+// switch, nothing declared) — so what the caller records can never say
+// repository for a pod that ran the default image.
+func (c *Client) Create(ctx context.Context, spec Spec) (string, v1alpha1.RunnerImageRef, error) {
 	if spec.Kind == "" || spec.Finding == "" {
-		return "", fmt.Errorf("jobs: spec requires Kind and Finding")
+		return "", v1alpha1.RunnerImageRef{}, fmt.Errorf("jobs: spec requires Kind and Finding")
 	}
 	name := NameFor(spec.Finding, spec.Kind, int32(spec.Attempt))
 	job, err := c.buildJob(name, spec)
 	if err != nil {
-		return "", err
+		return "", v1alpha1.RunnerImageRef{}, err
 	}
 
 	// Create is idempotent: the Secret and Job contents are deterministic
@@ -259,7 +356,7 @@ func (c *Client) Create(ctx context.Context, spec Spec) (string, error) {
 		secret, err = secrets.Get(ctx, name, metav1.GetOptions{})
 	}
 	if err != nil {
-		return "", fmt.Errorf("jobs: create secret %s: %w", name, err)
+		return "", v1alpha1.RunnerImageRef{}, fmt.Errorf("jobs: create secret %s: %w", name, err)
 	}
 	created, err := c.cs.BatchV1().Jobs(c.cfg.Namespace).Create(ctx, job, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
@@ -267,7 +364,7 @@ func (c *Client) Create(ctx context.Context, spec Spec) (string, error) {
 	}
 	if err != nil {
 		_ = secrets.Delete(ctx, name, metav1.DeleteOptions{})
-		return "", fmt.Errorf("jobs: create job %s: %w", name, err)
+		return "", v1alpha1.RunnerImageRef{}, fmt.Errorf("jobs: create job %s: %w", name, err)
 	}
 	owner := metav1.OwnerReference{
 		APIVersion: "batch/v1",
@@ -279,16 +376,109 @@ func (c *Client) Create(ctx context.Context, spec Spec) (string, error) {
 	if !slices.ContainsFunc(secret.OwnerReferences, func(r metav1.OwnerReference) bool { return r.UID == owner.UID }) {
 		secret.OwnerReferences = append(secret.OwnerReferences, owner)
 		if _, err := secrets.Update(ctx, secret, metav1.UpdateOptions{}); err != nil {
-			return "", fmt.Errorf("jobs: own secret %s: %w", name, err)
+			return "", v1alpha1.RunnerImageRef{}, fmt.Errorf("jobs: own secret %s: %w", name, err)
 		}
 	}
 
+	// Read the image back from the Job that exists — adopted or created —
+	// rather than from what this call built, so a retry that adopts an
+	// earlier launch reports the image that launch actually runs.
+	ref := runnerImageRef(created, spec.RunnerImageManifest)
 	c.log.LogAttrs(ctx, slog.LevelInfo, "created agent job",
 		slog.String("job", name),
 		slog.String("repo", spec.Repo),
 		slog.String("finding", spec.Finding),
-		slog.Int("attempt", spec.Attempt))
-	return name, nil
+		slog.Int("attempt", spec.Attempt),
+		slog.String("runner_image", ref.Image),
+		slog.String("runner_image_source", ref.Source))
+	return name, ref, nil
+}
+
+// runnerImageRef reads the effective runner image off a Job: the audit
+// annotations when it ran a repository-declared image, else the agent
+// container's image with Source default. manifest is echoed only for a
+// repository image.
+func runnerImageRef(job *batchv1.Job, manifest string) v1alpha1.RunnerImageRef {
+	if job.Annotations[annotationRunnerImageSource] == v1alpha1.RunnerImageSourceRepository {
+		return v1alpha1.RunnerImageRef{
+			Image:    job.Annotations[annotationRunnerImage],
+			Source:   v1alpha1.RunnerImageSourceRepository,
+			Manifest: manifest,
+		}
+	}
+	ref := v1alpha1.RunnerImageRef{Source: v1alpha1.RunnerImageSourceDefault}
+	for _, ct := range job.Spec.Template.Spec.Containers {
+		if ct.Name == agentContainerName {
+			ref.Image = ct.Image
+		}
+	}
+	return ref
+}
+
+// injects reports whether a Job runs the repository-declared image: only
+// when the kill switch is off, the Spec carries a pinned image and the
+// runner has binaries to inject. Any one of the three missing means the
+// default Job, unchanged.
+func (c *Client) injects(runner Runner, spec Spec) bool {
+	return c.cfg.AllowRepositoryImages && spec.RunnerImage != "" && len(runner.Inject) > 0
+}
+
+// injectionRefusal reports why a Job that would run a repository-declared
+// image must not be built at all, or nil when it may. It is a refusal, not
+// a quiet fall back to the default image: each case is a contradiction in
+// controller configuration, and a Job built anyway would either break the
+// isolation model or hide the misconfiguration behind an audit trail that
+// just says "default".
+//
+// A runner that injects its model credential from a Secret is the first:
+// Inject is meant only for a credential-free (brokered) runner, and the
+// threat model's promise that no credential exists in a repository-image
+// pod is kept here, where the pod is built, not left to whoever assembles
+// the runner fleet.
+//
+// An image reference that is not pinned to a sha256 digest is the second:
+// the kubelet would pull whatever a tag points to at pull time, an image no
+// resolution check ever saw, while the runner-image annotation and the
+// RunnerImageRef Create returns recorded the tag as the reference that ran.
+// The resolver only ever writes a pinned reference, so anything else in
+// Spec.RunnerImage is a bug or a tampered status, not an operator choice.
+//
+// A missing ephemeral-storage limit is the third: it is the threat model's
+// wall on disk, and without it a hostile image can fill the node's disk
+// through the emptyDirs until the kubelet starts evicting other workloads.
+func (c *Client) injectionRefusal(harnessID string, runner Runner, spec Spec) error {
+	if !runner.Brokered && runner.Secret != "" {
+		return fmt.Errorf("jobs: runner %q injects a model credential (%s from Secret %s) and cannot run a "+
+			"repository-declared image; only a brokered or credential-free runner may Inject",
+			harnessID, runner.SecretEnv, runner.Secret)
+	}
+	if ref, err := runnerimage.ParseDeclared(spec.RunnerImage); err != nil || ref.Digest == "" {
+		return fmt.Errorf("jobs: repository-declared image %q is not pinned to a sha256 digest; "+
+			"only a digest reference the resolver pinned may run", spec.RunnerImage)
+	}
+	if c.cfg.EphemeralStorage == "" {
+		return fmt.Errorf("jobs: a repository-declared image needs an ephemeral-storage limit " +
+			"(Config.EphemeralStorage), the wall on the disk its emptyDirs can fill")
+	}
+	return nil
+}
+
+// agentRunnerBin is the binary the agent container runs; on a
+// repository-image Job it is the injected copy, by absolute path.
+const agentRunnerBin = "agent-runner"
+
+// injectedBinaries is the prepare step's copy list: agent-runner first,
+// always — the agent container's command is the injected agent-runner
+// whatever the runner lists — then the runner's other binaries, in order,
+// each once.
+func injectedBinaries(runner Runner) []string {
+	bins := []string{agentRunnerBin}
+	for _, b := range runner.Inject {
+		if !slices.Contains(bins, b) {
+			bins = append(bins, b)
+		}
+	}
+	return bins
 }
 
 // buildSecret holds everything the init container needs: the handoff
@@ -318,6 +508,16 @@ func (c *Client) buildJob(name string, spec Spec) (*batchv1.Job, error) {
 	}
 	lbls := jobLabels(spec)
 	ann := map[string]string{annotationRepo: spec.Repo}
+	inject := c.injects(runner, spec)
+	if inject {
+		if err := c.injectionRefusal(spec.Harness, runner, spec); err != nil {
+			return nil, err
+		}
+		ann[annotationRunnerImage] = spec.RunnerImage
+		ann[annotationRunnerImageSource] = v1alpha1.RunnerImageSourceRepository
+		ann[annotationToolsImage] = runner.Image
+		lbls[labelRunnerImageSource] = v1alpha1.RunnerImageSourceRepository
+	}
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -340,12 +540,20 @@ func (c *Client) buildJob(name string, spec Spec) (*batchv1.Job, error) {
 						FSGroup:        new(int64(runAsUser)),
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
-					Volumes:        c.podVolumes(name, runner, findingTokenTTL(c.cfg.Deadline)),
-					InitContainers: []corev1.Container{c.prepareContainer(runner, spec, res)},
-					Containers:     []corev1.Container{c.agentContainer(runner, spec, res)},
+					Volumes:        c.podVolumes(name, runner, findingTokenTTL(c.cfg.Deadline), inject),
+					InitContainers: []corev1.Container{c.prepareContainer(runner, spec, res, inject)},
+					Containers:     []corev1.Container{c.agentContainer(runner, spec, res, inject)},
 				},
 			},
 		},
+	}
+	if inject {
+		// A repository image is untrusted: refuse the kube-api-access token
+		// in the pod's own spec instead of relying on the ServiceAccount's
+		// automount setting, which an operator overlay could change. The
+		// broker's projected caller token is an explicit volume and is
+		// unaffected. Default Jobs are left byte-identical.
+		job.Spec.Template.Spec.AutomountServiceAccountToken = new(false)
 	}
 	if c.cfg.Deadline > 0 {
 		job.Spec.ActiveDeadlineSeconds = new(int64(c.cfg.Deadline.Seconds()))
@@ -369,28 +577,35 @@ func volumes(secretName string) []corev1.Volume {
 }
 
 // podVolumes is volumes plus, for a brokered runner, the projected broker
-// caller token. The projection works despite automountServiceAccountToken
-// being off on the agent ServiceAccount — that suppresses only the default
-// API token — and the pod's FSGroup keeps the file readable at uid 65532.
-func (c *Client) podVolumes(secretName string, runner Runner, tokenTTL int64) []corev1.Volume {
+// caller token, plus, when injecting, the patchy-bin emptyDir. The
+// projection works despite automountServiceAccountToken being off on the
+// agent ServiceAccount — that suppresses only the default API token — and
+// the pod's FSGroup keeps the file readable at uid 65532.
+func (c *Client) podVolumes(secretName string, runner Runner, tokenTTL int64, inject bool) []corev1.Volume {
 	vols := volumes(secretName)
-	if !runner.Brokered {
-		return vols
-	}
-	return append(vols, corev1.Volume{
-		Name: volBrokerToken,
-		VolumeSource: corev1.VolumeSource{
-			Projected: &corev1.ProjectedVolumeSource{
-				Sources: []corev1.VolumeProjection{{
-					ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-						Audience:          c.cfg.BrokerAudience,
-						ExpirationSeconds: new(tokenTTL),
-						Path:              "token",
-					},
-				}},
+	if runner.Brokered {
+		vols = append(vols, corev1.Volume{
+			Name: volBrokerToken,
+			VolumeSource: corev1.VolumeSource{
+				Projected: &corev1.ProjectedVolumeSource{
+					Sources: []corev1.VolumeProjection{{
+						ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+							Audience:          c.cfg.BrokerAudience,
+							ExpirationSeconds: new(tokenTTL),
+							Path:              "token",
+						},
+					}},
+				},
 			},
-		},
-	})
+		})
+	}
+	if inject {
+		vols = append(vols, corev1.Volume{
+			Name:         volPatchyBin,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		})
+	}
+	return vols
 }
 
 // findingTokenTTL sizes a finding Job's caller-token expiry. agent-runner
@@ -404,26 +619,38 @@ func findingTokenTTL(deadline time.Duration) int64 {
 }
 
 // prepareContainer fetches the artifact tarball and stages the handoff
-// files. No credential of any kind reaches it. It runs the same image as the
-// agent container — the init only needs /bin/sh, curl, and git, which both
-// runner images carry.
-func (c *Client) prepareContainer(runner Runner, spec Spec, res corev1.ResourceRequirements) corev1.Container {
+// files. No credential of any kind reaches it. It always runs the harness's
+// own runner image — the init only needs /bin/sh, curl, and git, which every
+// runner image carries — so on a repository-image Job the digest-verified
+// fetch, the synthetic base commit, the binary injection and the sandbox
+// probe all happen in trusted code before the declared image runs anything.
+func (c *Client) prepareContainer(runner Runner, spec Spec, res corev1.ResourceRequirements,
+	inject bool) corev1.Container {
 	env := []corev1.EnvVar{
 		{Name: "HOME", Value: workspaceDir},
 		{Name: "PATCHY_BASE_SHA", Value: spec.BaseSHA},
 		{Name: "PATCHY_ARTIFACT_URL", Value: spec.ArtifactURL},
 		{Name: "PATCHY_ARTIFACT_DIGEST", Value: spec.ArtifactDigest},
 	}
+	script := prepareScript
+	mounts := []corev1.VolumeMount{
+		{Name: volWorkspace, MountPath: workspaceDir},
+		{Name: volTmp, MountPath: "/tmp"},
+		{Name: volInput, MountPath: inputMount, ReadOnly: true},
+	}
+	if inject {
+		env = append(env,
+			corev1.EnvVar{Name: "PATCHY_INJECT", Value: strings.Join(injectedBinaries(runner), " ")},
+			corev1.EnvVar{Name: sandboxprobe.TimeoutEnv, Value: c.cfg.SandboxProbeTimeout.String()})
+		script += injectScript
+		mounts = append(mounts, corev1.VolumeMount{Name: volPatchyBin, MountPath: patchyBinDir})
+	}
 	return corev1.Container{
-		Name:    initContainerName,
-		Image:   runner.Image,
-		Command: []string{"/bin/sh", "-c", prepareScript},
-		Env:     env,
-		VolumeMounts: []corev1.VolumeMount{
-			{Name: volWorkspace, MountPath: workspaceDir},
-			{Name: volTmp, MountPath: "/tmp"},
-			{Name: volInput, MountPath: inputMount, ReadOnly: true},
-		},
+		Name:            initContainerName,
+		Image:           runner.Image,
+		Command:         []string{"/bin/sh", "-c", script},
+		Env:             env,
+		VolumeMounts:    mounts,
 		SecurityContext: containerSecurity(),
 		Resources:       res,
 	}
@@ -432,8 +659,12 @@ func (c *Client) prepareContainer(runner Runner, spec Spec, res corev1.ResourceR
 // agentContainer runs agent-runner. No GitHub credential reaches it — that
 // is the isolation model. A brokered runner additionally mounts the
 // projected caller token (agent container only; the init stays
-// identity-free).
-func (c *Client) agentContainer(runner Runner, spec Spec, res corev1.ResourceRequirements) corev1.Container {
+// identity-free). When injecting, the container runs the repository's
+// image instead, with agent-runner started by absolute path from the
+// read-only patchy-bin mount — neither the image's ENTRYPOINT nor its PATH
+// can redirect it — and the injection env on top of the usual one.
+func (c *Client) agentContainer(runner Runner, spec Spec, res corev1.ResourceRequirements,
+	inject bool) corev1.Container {
 	mounts := []corev1.VolumeMount{
 		{Name: volWorkspace, MountPath: workspaceDir},
 		{Name: volTmp, MountPath: "/tmp"},
@@ -441,11 +672,17 @@ func (c *Client) agentContainer(runner Runner, spec Spec, res corev1.ResourceReq
 	if runner.Brokered {
 		mounts = append(mounts, corev1.VolumeMount{Name: volBrokerToken, MountPath: brokerTokenDir, ReadOnly: true})
 	}
+	image, command, env := runner.Image, []string{agentRunnerBin}, c.agentEnv(runner, spec)
+	if inject {
+		image, command = spec.RunnerImage, []string{patchyBinDir + "/" + agentRunnerBin}
+		env = injectEnv(env, spec)
+		mounts = append(mounts, corev1.VolumeMount{Name: volPatchyBin, MountPath: patchyBinDir, ReadOnly: true})
+	}
 	return corev1.Container{
 		Name:            agentContainerName,
-		Image:           runner.Image,
-		Command:         []string{"agent-runner"},
-		Env:             c.agentEnv(runner, spec),
+		Image:           image,
+		Command:         command,
+		Env:             env,
 		VolumeMounts:    mounts,
 		SecurityContext: containerSecurity(),
 		Resources:       res,
@@ -463,9 +700,13 @@ func (c *Client) agentContainer(runner Runner, spec Spec, res corev1.ResourceReq
 // has to keep out of the controller-global Env.
 // The per-Job harness/model vars are reserved too: they are resolved per Job
 // and set from the Spec, so a controller-global Env copy must never shadow
-// them. The gateway names a brokered runner's Env owns (base-URL overrides,
+// them. So is the injected-binary directory, which only a Job that injects
+// sets: on the default image it would send agent-runner looking for an
+// injected CLI that was never copied. The gateway names a brokered runner's Env owns (base-URL overrides,
 // skip-auth switches, the caller-token channel) are folded in below from
-// provider.GatewayEnvNames — Config.Env can never shadow those either.
+// provider.GatewayEnvNames — Config.Env can never shadow those either. The
+// proxy variables are reserved because a proxy would redirect the broker
+// traffic: nothing but the gateway env decides where a pod's model calls go.
 var reservedEnv = map[string]bool{
 	"HOME":                        true,
 	"PATCHY_WORKSPACE":            true,
@@ -480,6 +721,7 @@ var reservedEnv = map[string]bool{
 	"PATCHY_GRANTED_MAX_TURNS":    true,
 	"PATCHY_GRANTED_TOKEN_BUDGET": true,
 	"PATCHY_CALIBRATION":          true,
+	agentrun.BinDirEnv:            true,
 	"ANTHROPIC_API_KEY":           true,
 	"CLAUDE_CODE_OAUTH_TOKEN":     true,
 	"ANTHROPIC_AUTH_TOKEN":        true,
@@ -495,6 +737,123 @@ func init() {
 	for _, name := range provider.GatewayEnvNames {
 		reservedEnv[name] = true
 	}
+	for _, name := range proxyEnv {
+		reservedEnv[name] = true
+	}
+	for _, name := range gitRedirectEnv {
+		reservedEnv[name] = true
+	}
+}
+
+// gitRedirectEnv are the variables that point git at a different
+// repository, work tree, index or object store. They cannot join scrubEnv:
+// Kubernetes can set a variable but never unset it, and git reads an empty
+// value of any of these as a broken path, not as absent, so blanking them
+// would fail every git call agent-runner makes. They are reserved instead,
+// which keeps them out of Config.Env and, through ReservedEnvNames, gets an
+// image whose ENV sets one refused at resolution with a readable reason.
+var gitRedirectEnv = []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"}
+
+// proxyEnv are the proxy variables in both cases (curl and Go honour the
+// lowercase forms): reserved against Config.Env and blanked on a
+// repository image, so no image ENV and no operator passthrough can point
+// the pod's traffic anywhere but the broker.
+var proxyEnv = []string{
+	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+	"http_proxy", "https_proxy", "no_proxy", "all_proxy",
+}
+
+// ReservedEnvNames returns every name Create owns, sorted: the credential
+// channels, the per-Job PATCHY_* vars, the gateway names, the proxy
+// variables and git's repository redirections. source-controller passes it to runnerimage.CheckEnv as the
+// set an image's ENV may not name, so resolve-time rejection and the
+// Job's own reservations are one list.
+func ReservedEnvNames() []string {
+	return slices.Sorted(maps.Keys(reservedEnv))
+}
+
+// scrubEnv are the names blanked, with an explicit empty value, in the
+// agent container of a repository-image Job: an explicit container env
+// overrides image ENV, so this is the backstop for whatever the resolver's
+// reserved-ENV check did not know. It is a list of known redirection
+// points, not an enumeration of everything an image's ENV can influence,
+// and only names whose empty value means "unset" may join it. Shell startup hooks (the runner execs the
+// CLI without a shell, but the CLI's own shell tool does not), the dynamic
+// loader's injection points (agent-runner is static; claude is not), the
+// interpreters' startup files, git's config and helper redirections, and
+// the proxies. The gateway names and every PATCHY_* key agent-runner reads
+// join them at build time (injectEnv), minus whatever the Job sets itself.
+var scrubEnv = append([]string{
+	"BASH_ENV", "ENV", "SHELLOPTS", "PROMPT_COMMAND",
+	"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
+	"NODE_OPTIONS", "PYTHONSTARTUP",
+	"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_EXEC_PATH", "GIT_SSH_COMMAND",
+}, proxyEnv...)
+
+// injectEnv is the agent env of a repository-image Job: the usual env, then
+// where the injected binaries are, a controller-owned PATH (patchy's
+// directory first, then the image's sanitized entries — never an empty or
+// trailing component a shell would read as the working tree, yet the
+// image's own toolchain directories survive), git told to ignore the
+// image's system config, the injected CLI's self-updater off (as the
+// trusted image's ENV has it), and finally an explicit empty value for every
+// scrubbed name, gateway name and agent-runner key the Job did not set. The
+// blanks are sorted so the Job is deterministic.
+//
+// Those four names and the scrubbed ones are owned outright: an entry of
+// the same name in the usual env (an operator's Config.Env passthrough,
+// which a default Job keeps) is dropped first, so the pod carries patchy's
+// value exactly once rather than a duplicate whose winner Kubernetes leaves
+// undefined. They are not in reservedEnv, because that list is also what an
+// image's ENV may not name, and every image sets PATH.
+func injectEnv(env []corev1.EnvVar, spec Spec) []corev1.EnvVar {
+	own := []corev1.EnvVar{
+		{Name: agentrun.BinDirEnv, Value: patchyBinDir},
+		{Name: "PATH", Value: podPath(spec.RunnerSearchPath)},
+		{Name: "GIT_CONFIG_NOSYSTEM", Value: "1"},
+		{Name: "DISABLE_AUTOUPDATER", Value: "1"},
+	}
+	owned := make(map[string]bool, len(own)+len(scrubEnv))
+	for _, e := range own {
+		owned[e.Name] = true
+	}
+	for _, name := range scrubEnv {
+		owned[name] = true
+	}
+	env = append(slices.DeleteFunc(env, func(e corev1.EnvVar) bool { return owned[e.Name] }), own...)
+	present := make(map[string]bool, len(env))
+	for _, e := range env {
+		present[e.Name] = true
+	}
+	blank := map[string]bool{}
+	for _, name := range slices.Concat(scrubEnv, provider.GatewayEnvNames, agentrun.ConfigEnvKeys()) {
+		if !present[name] {
+			blank[name] = true
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(blank)) {
+		env = append(env, corev1.EnvVar{Name: name, Value: ""})
+	}
+	return env
+}
+
+// podPath joins patchy's binary directory with the image's sanitized search
+// path. The Repository status never carries an empty or relative entry
+// (runnerimage.SanitizePath refuses them), but the join drops any anyway;
+// an empty search path — a Repository written before the field existed —
+// falls back to the runc default rather than leaving git and bash
+// unreachable.
+func podPath(searchPath string) string {
+	entries := []string{patchyBinDir}
+	if searchPath == "" {
+		searchPath = runnerimage.DefaultPath
+	}
+	for p := range strings.SplitSeq(searchPath, ":") {
+		if strings.HasPrefix(p, "/") && p != patchyBinDir {
+			entries = append(entries, p)
+		}
+	}
+	return strings.Join(entries, ":")
 }
 
 // credentialChannelEnv is every env var name any harness accepts a model
@@ -660,18 +1019,22 @@ func sanitizeLabelValue(s string) string {
 	return out
 }
 
+// resources renders the per-container requests and limits. Ephemeral
+// storage, when configured, is both a request and a limit of the same
+// quantity: the limit is the wall on disk (the kubelet evicts a pod that
+// fills its emptyDirs), and requesting it keeps the scheduler honest.
 func (c Config) resources() (corev1.ResourceRequirements, error) {
 	var rr corev1.ResourceRequirements
 	var err error
-	if rr.Requests, err = resourceList(c.CPURequest, c.MemoryRequest); err != nil {
+	if rr.Requests, err = resourceList(c.CPURequest, c.MemoryRequest, c.EphemeralStorage); err != nil {
 		return rr, err
 	}
-	rr.Limits, err = resourceList(c.CPULimit, c.MemoryLimit)
+	rr.Limits, err = resourceList(c.CPULimit, c.MemoryLimit, c.EphemeralStorage)
 	return rr, err
 }
 
-func resourceList(cpu, memory string) (corev1.ResourceList, error) {
-	if cpu == "" && memory == "" {
+func resourceList(cpu, memory, ephemeral string) (corev1.ResourceList, error) {
+	if cpu == "" && memory == "" && ephemeral == "" {
 		return nil, nil
 	}
 	rl := corev1.ResourceList{}
@@ -688,6 +1051,13 @@ func resourceList(cpu, memory string) (corev1.ResourceList, error) {
 			return nil, fmt.Errorf("jobs: memory quantity %q: %w", memory, err)
 		}
 		rl[corev1.ResourceMemory] = q
+	}
+	if ephemeral != "" {
+		q, err := resource.ParseQuantity(ephemeral)
+		if err != nil {
+			return nil, fmt.Errorf("jobs: ephemeral-storage quantity %q: %w", ephemeral, err)
+		}
+		rl[corev1.ResourceEphemeralStorage] = q
 	}
 	return rl, nil
 }

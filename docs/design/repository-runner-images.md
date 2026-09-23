@@ -178,12 +178,13 @@ human has read it.
 
 `RepositoryReconciler.Reconcile` (`internal/controller/source/repository_controller.go`) gains one block after the
 artifact fetch, guarded exactly like the SHA: `if r.Images != nil && repo.Status.RunnerImage == nil`. The status write
-is split in two so that resolution never costs a re-download: the first update persists `ResolvedSHA`, `Forge` and
-`Artifact` with `Ready=False` / `RunnerImageResolving`; the second, after resolution, writes `RunnerImage` and
-`Ready=True`. A restart between the two finds the artifact on disk and resumes at resolution; a restart after the second
-carries the pointer through untouched, so a moved tag can never change the environment between investigation and
-remediation of one finding. `RunnerImage` has one writer, and `stall(reason)` carries the artifact through so a rejected
-Repository still has a tree to run on.
+is split in two so that a transient registry failure never costs a re-download: the first update persists `ResolvedSHA`,
+`Forge` and `Artifact` with `Ready=False` / `RunnerImageResolving`; the second, after resolution, writes `RunnerImage`
+and `Ready=True`. The artifact store indexes tarballs in memory only (they are reproducible), so a restart between the
+two re-downloads the tarball at the persisted `ResolvedSHA` (the same tree) and resumes at resolution; a restart after
+the second carries the pointer through untouched, so a moved tag can never change the environment between investigation
+and remediation of one finding. `RunnerImage` has one writer, and `stall(reason)` carries the artifact through so a
+rejected Repository still has a tree to run on.
 
 Steps, in a new pure package `internal/runnerimage` plus an `ocireg`-backed resolver:
 
@@ -457,7 +458,8 @@ evaluation-controller page says so.
 - **Kill switch flipped mid-finding**: the next Job uses the default image, annotated so; the verdict-hold decision for
   an attempt already launched is unchanged because it reads the Investigation's stamp; documented as an emergency
   control.
-- **source-controller restart**: artifact re-used from disk, manifest not re-read once pinned, image unchanged.
+- **source-controller restart**: artifact re-downloaded at the pinned SHA (the store's tarball index is in memory),
+  manifest not re-read once pinned, image unchanged.
 
 `onReject: handoff | default` (default `handoff`) ships together with a sticky tracking-issue comment
 (`<!-- patchy:runner-image -->`, the existing `findSticky` mechanism in `internal/controller/integration/project.go`,

@@ -157,10 +157,12 @@ func (r *RepositoryReconciler) pinRunnerImage(
 // resolveRunnerImage reads the declaration out of the stored tarball (so it
 // is bound to the pinned tree) and, when it names an image, allowlists,
 // pins and checks it. The registry is consulted only after the first status
-// write has persisted the artifact with Ready=False / RunnerImageResolving,
-// so a transient failure or a restart resumes here without a re-download.
-// A *imageRejection is deterministic; any other error is transient. The
-// returned record's ResolvedAt is the caller's to stamp.
+// write has persisted the SHA and the artifact with Ready=False /
+// RunnerImageResolving, so a transient failure retries here without a
+// re-download (a restart empties the in-memory store index and re-fetches,
+// but the persisted SHA keeps the tree the same). A *imageRejection is
+// deterministic; any other error is transient. The returned record's
+// ResolvedAt is the caller's to stamp.
 func (r *RepositoryReconciler) resolveRunnerImage(
 	ctx context.Context, repo *v1alpha1.Repository, key string,
 ) (*v1alpha1.RunnerImage, error) {

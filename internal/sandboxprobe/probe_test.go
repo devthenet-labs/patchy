@@ -8,6 +8,7 @@ import (
 	"errors"
 	"math/rand"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -64,24 +65,32 @@ func newProber(clock *fakeClock, open func(round int, addr string) bool, timeout
 	return Prober{Targets: testTargets, Timeout: timeout, Dial: n.dial, Now: clock.Now, Sleep: clock.Sleep}
 }
 
-func TestRunEnforcedOnFirstRound(t *testing.T) {
+// TestRunEnforcedAfterConfirmingRounds: egress blocked from the start is
+// concluded after confirmRounds blocked rounds, one retry interval apart,
+// and no sooner.
+func TestRunEnforcedAfterConfirmingRounds(t *testing.T) {
 	clock := newClock()
 	p := newProber(clock, func(int, string) bool { return false }, 20*time.Second)
 	res, err := p.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !res.Enforced || res.Rounds != 1 || res.Open != nil {
-		t.Errorf("Result = %+v, want enforced after one round", res)
+	if !res.Enforced || res.Rounds != confirmRounds || res.Open != nil {
+		t.Errorf("Result = %+v, want enforced after %d rounds", res, confirmRounds)
 	}
-	if len(clock.sleeps) != 0 {
-		t.Errorf("sleeps = %v, want none when the first round is already blocked", clock.sleeps)
+	if len(clock.sleeps) != confirmRounds-1 {
+		t.Errorf("sleeps = %v, want one between each of the %d confirming rounds", clock.sleeps, confirmRounds)
+	}
+	if want := time.Duration(confirmRounds-1) * retryInterval; res.Elapsed != want {
+		t.Errorf("Elapsed = %s, want %s", res.Elapsed, want)
 	}
 }
 
 // TestRunRetriesWhileEgressAttaches: the CNI attaches the policy a few
 // seconds after the pod starts, so early successful connections must not
-// be the verdict.
+// be the verdict; the blocked rounds after it are, once confirmRounds of
+// them have run — even when that run of rounds began at the very end of
+// the window and finishes past it.
 func TestRunRetriesWhileEgressAttaches(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -89,10 +98,10 @@ func TestRunRetriesWhileEgressAttaches(t *testing.T) {
 		timeout    time.Duration
 		wantRounds int
 	}{
-		{"closes on the second round", 1, 20 * time.Second, 2},
-		{"closes after five seconds", 5, 20 * time.Second, 6},
-		{"closes on the last round inside the window", 19, 20 * time.Second, 20},
-		{"closes on the round the window elapses", 20, 20 * time.Second, 21},
+		{"closes on the second round", 1, 20 * time.Second, 1 + confirmRounds},
+		{"closes after five seconds", 5, 20 * time.Second, 5 + confirmRounds},
+		{"closes on the last round inside the window", 19, 20 * time.Second, 19 + confirmRounds},
+		{"closes on the round the window elapses", 20, 20 * time.Second, 20 + confirmRounds},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -180,53 +189,71 @@ func TestRunUnenforcedAfterWindow(t *testing.T) {
 	}
 }
 
-// TestRunPropertyVerdictFollowsFirstBlockedRound pins the invariant behind
-// the tables above: for any pattern of open rounds and any window, the
-// probe is enforced exactly when some round inside the window sees nothing
-// answer, stopping on that round; otherwise it stops on the round the
-// window elapses, with the still-open target listed. Seeded so the gate is
-// deterministic.
-func TestRunPropertyVerdictFollowsFirstBlockedRound(t *testing.T) {
+// TestRunPropertyVerdictFollowsFirstConfirmedRun pins the invariant behind
+// the tables above, stated declaratively rather than as the loop: for any
+// pattern of open and blocked rounds and any window, let E be the first
+// round that completes confirmRounds consecutive blocked rounds and U the
+// first round at or past the end of the window in which a target answers.
+// The probe is enforced at E when E comes before U, and otherwise
+// unenforced at U with the answering target listed. Seeded so the gate is
+// deterministic; both verdicts must occur so the property is never
+// vacuously true.
+func TestRunPropertyVerdictFollowsFirstConfirmedRun(t *testing.T) {
 	const maxSteps = 21 // rounds inside a 20s window at the 1s interval
+	const rounds = maxSteps + confirmRounds
 
-	property := func(pattern [maxSteps]uint8, windowSeed uint8) bool {
-		// The window admits rounds 1..steps; steps is at least 2 so the
+	var enforced, unenforced int
+	property := func(pattern [rounds]uint8, windowSeed uint8) bool {
+		// The window's last round is steps; steps is at least 2 so the
 		// window is never zero (which would mean the default).
 		steps := int(windowSeed%(maxSteps-1)) + 2
 		timeout := time.Duration(steps-1) * retryInterval
+		isOpen := func(round int) bool { return round > rounds || pattern[round-1]&1 == 1 }
 		open := func(round int, addr string) bool {
-			if round > maxSteps {
-				return true
-			}
-			bits := pattern[round-1]
-			if bits&1 == 0 {
+			if !isOpen(round) {
 				return false
 			}
 			// Exactly one target answers in an open round, chosen by the
 			// pattern, so Open is never trivially the whole list.
+			bits := uint8(0)
+			if round <= rounds {
+				bits = pattern[round-1]
+			}
 			return addr == testTargets[int(bits>>1)%len(testTargets)].Addr
 		}
 		res, err := newProber(newClock(), open, timeout).Run(context.Background())
 		if err != nil {
 			return false
 		}
-		firstBlocked := 0
-		for r := 1; r <= steps; r++ {
-			if pattern[r-1]&1 == 0 {
-				firstBlocked = r
-				break
+		e := 0
+		for r := confirmRounds; r <= rounds && e == 0; r++ {
+			run := true
+			for k := r - confirmRounds + 1; k <= r; k++ {
+				run = run && !isOpen(k)
+			}
+			if run {
+				e = r
 			}
 		}
-		if firstBlocked > 0 {
-			return res.Enforced && res.Rounds == firstBlocked && res.Open == nil &&
-				res.Elapsed == time.Duration(firstBlocked-1)*retryInterval
+		u := steps
+		for !isOpen(u) {
+			u++
 		}
-		return !res.Enforced && res.Rounds == steps && len(res.Open) == 1 &&
-			res.Elapsed == time.Duration(steps-1)*retryInterval
+		if e > 0 && e < u {
+			enforced++
+			return res.Enforced && res.Rounds == e && res.Open == nil &&
+				res.Elapsed == time.Duration(e-1)*retryInterval
+		}
+		unenforced++
+		return !res.Enforced && res.Rounds == u && len(res.Open) == 1 &&
+			res.Elapsed == time.Duration(u-1)*retryInterval
 	}
 	cfg := &quick.Config{MaxCount: 500, Rand: rand.New(rand.NewSource(20260922))}
 	if err := quick.Check(property, cfg); err != nil {
 		t.Fatal(err)
+	}
+	if enforced == 0 || unenforced == 0 {
+		t.Errorf("generator reached enforced=%d unenforced=%d, want both", enforced, unenforced)
 	}
 }
 
@@ -330,8 +357,11 @@ func TestFromEnv(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p, err := FromEnv(func(k string) string {
-				if k == TimeoutEnv {
+				switch k {
+				case TimeoutEnv:
 					return tt.raw
+				case "KUBERNETES_SERVICE_HOST":
+					return "10.96.0.1"
 				}
 				return ""
 			})
@@ -379,5 +409,58 @@ func TestConnectCountsAnEstablishedConnection(t *testing.T) {
 	refused := func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("refused") }
 	if err := connect(context.Background(), "1.1.1.1:443", refused); err == nil {
 		t.Error("connect = nil on a refused dial, want the error (blocked)")
+	}
+}
+
+// TestRunOneBlockedRoundIsNotEnforcement: a single round in which nothing
+// answered (a lost SYN on each target, the CNI still wiring the pod) is not
+// evidence that policy is enforced when every later round connects. Only a
+// run of blocked rounds is; a target still open when the window closes is
+// the unenforced verdict.
+func TestRunOneBlockedRoundIsNotEnforcement(t *testing.T) {
+	tests := []struct {
+		name    string
+		blocked func(round int) bool
+	}{
+		{"only the first round blocked", func(round int) bool { return round == 1 }},
+		{"every other round blocked", func(round int) bool { return round%2 == 1 }},
+		{"one short of confirming, then open", func(round int) bool { return round <= 2 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := newProber(newClock(), func(round int, _ string) bool { return !tt.blocked(round) }, 20*time.Second)
+			res, err := p.Run(context.Background())
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if res.Enforced {
+				t.Errorf("Result = %+v, want unenforced: egress was open in the rounds after the blocked one", res)
+			}
+		})
+	}
+}
+
+// TestFromEnvRequiresAPIServer: the API-server target comes from the
+// environment the kubelet injects into every container. Without it the
+// probe would check two targets that a hardened network blocks regardless
+// of NetworkPolicy, so a missing KUBERNETES_SERVICE_HOST is a configuration
+// error, not a smaller target set.
+func TestFromEnvRequiresAPIServer(t *testing.T) {
+	if _, err := FromEnv(func(string) string { return "" }); err == nil ||
+		!strings.Contains(err.Error(), "KUBERNETES_SERVICE_HOST") {
+		t.Errorf("FromEnv without KUBERNETES_SERVICE_HOST = %v, want an error naming it", err)
+	}
+	p, err := FromEnv(func(k string) string {
+		return map[string]string{"KUBERNETES_SERVICE_HOST": "10.96.0.1"}[k]
+	})
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	var addrs []string
+	for _, target := range p.Targets {
+		addrs = append(addrs, target.Addr)
+	}
+	if !slices.Contains(addrs, "10.96.0.1:443") {
+		t.Errorf("targets = %v, want the API server among them", addrs)
 	}
 }

@@ -11,8 +11,10 @@
 // The probe retries rather than judging its first attempt: on some CNIs a
 // new pod's traffic is open for a few seconds until its policy attaches (EKS
 // Auto Mode among them), so a first successful connection proves nothing.
-// Egress is declared unenforced only when a target is still reachable at
-// the end of the window, and the process then exits ExitUnenforced, which
+// Nor does a first failed one: enforcement is concluded only after several
+// consecutive rounds in which nothing answered. Egress is declared
+// unenforced when a target is still reachable at the end of the window,
+// and the process then exits ExitUnenforced, which
 // the job controllers map to a SandboxUnenforced failure. The window, the
 // clock and the dialer are injectable so the retry behaviour is tested
 // without a network or a wall clock.

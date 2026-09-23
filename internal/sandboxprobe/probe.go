@@ -26,11 +26,17 @@ const DefaultTimeout = 20 * time.Second
 // reads the retry window from, as a Go duration; unset means DefaultTimeout.
 const TimeoutEnv = "PATCHY_SANDBOX_PROBE_TIMEOUT"
 
-// Per-attempt bounds: one TCP connect is given dialTimeout, and rounds that
-// still see an open target are retried every retryInterval.
+// Per-attempt bounds: one TCP connect is given dialTimeout, and rounds are
+// retried every retryInterval. Enforcement is concluded only after
+// confirmRounds consecutive rounds in which no target answered, so one
+// round that lost every SYN (a pod whose networking is still being wired)
+// cannot hand over a pod whose egress is in fact open. Against a policy
+// that drops rather than rejects, confirming costs about
+// confirmRounds x dialTimeout.
 const (
 	dialTimeout   = 3 * time.Second
 	retryInterval = time.Second
+	confirmRounds = 3
 )
 
 // Target is one address the sandbox must not be able to reach.
@@ -74,7 +80,8 @@ type Prober struct {
 
 // Result is the probe's conclusion.
 type Result struct {
-	// Enforced is true when no target answered in the last round.
+	// Enforced is true when no target answered in the last confirmRounds
+	// rounds.
 	Enforced bool
 	// Open lists the targets still reachable when the window closed; nil
 	// when Enforced.
@@ -102,8 +109,15 @@ func (r Result) Verdict() string {
 // FromEnv builds the production Prober: the default targets and the window
 // from TimeoutEnv. An unparseable window is an error rather than a silent
 // default, because the value is controller-written and a bad one means a
-// bug, not an operator choice.
+// bug, not an operator choice. So is a missing KUBERNETES_SERVICE_HOST,
+// which the kubelet sets in every container: without it the probe would
+// check only a public address and the metadata service, which a hardened
+// network blocks whatever NetworkPolicy does, and the one target that tells
+// enforced from open would silently drop out.
 func FromEnv(getenv func(string) string) (Prober, error) {
+	if getenv("KUBERNETES_SERVICE_HOST") == "" {
+		return Prober{}, fmt.Errorf("KUBERNETES_SERVICE_HOST is unset; the probe cannot check the Kubernetes API")
+	}
 	p := Prober{Targets: DefaultTargets(getenv), Timeout: DefaultTimeout}
 	if raw := getenv(TimeoutEnv); raw != "" {
 		d, err := time.ParseDuration(raw)
@@ -115,11 +129,14 @@ func FromEnv(getenv func(string) string) (Prober, error) {
 	return p, nil
 }
 
-// Run probes every target each round until either none answers (enforced)
-// or the window has elapsed with at least one still answering (unenforced).
-// It returns an error only when ctx ends first; a verdict is never inferred
-// from a cancelled round, since a dial that failed because the context died
-// looks exactly like a blocked one.
+// Run probes every target each round until either none has answered for
+// confirmRounds consecutive rounds (enforced) or a round at or past the end
+// of the window still sees one answering (unenforced). A run of blocked
+// rounds that began inside the window is allowed to finish past it, so a
+// policy that attaches late in the window is still confirmed rather than
+// cut short. It returns an error only when ctx ends first; a verdict is
+// never inferred from a cancelled round, since a dial that failed because
+// the context died looks exactly like a blocked one.
 func (p Prober) Run(ctx context.Context) (Result, error) {
 	now, sleep, dial := p.Now, p.Sleep, p.Dial
 	if now == nil {
@@ -137,6 +154,7 @@ func (p Prober) Run(ctx context.Context) (Result, error) {
 	}
 
 	start := now()
+	blocked := 0
 	for round := 1; ; round++ {
 		open := reachable(ctx, p.Targets, dial)
 		if err := ctx.Err(); err != nil {
@@ -144,10 +162,14 @@ func (p Prober) Run(ctx context.Context) (Result, error) {
 		}
 		elapsed := now().Sub(start)
 		if len(open) == 0 {
-			return Result{Enforced: true, Rounds: round, Elapsed: elapsed}, nil
-		}
-		if elapsed >= timeout {
-			return Result{Open: open, Rounds: round, Elapsed: elapsed}, nil
+			if blocked++; blocked >= confirmRounds {
+				return Result{Enforced: true, Rounds: round, Elapsed: elapsed}, nil
+			}
+		} else {
+			blocked = 0
+			if elapsed >= timeout {
+				return Result{Open: open, Rounds: round, Elapsed: elapsed}, nil
+			}
 		}
 		if err := sleep(ctx, retryInterval); err != nil {
 			return Result{}, err

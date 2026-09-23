@@ -1,0 +1,220 @@
+// Copyright 2026 Bitwise Media Group Ltd.
+// SPDX-License-Identifier: MIT
+
+package source
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+
+	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/runnerimage"
+)
+
+// The onReject policies: what a rejected declaration does to the Repository.
+const (
+	// OnRejectHandoff stalls the Repository, so the gate parks the finding
+	// for a human; the default.
+	OnRejectHandoff = "handoff"
+	// OnRejectDefault records the rejection and leaves the Repository Ready,
+	// so the finding runs on the default image with no human step.
+	OnRejectDefault = "default"
+)
+
+// maxMessageBytes is the CRD's cap on status.runnerImage.message.
+const maxMessageBytes = 4096
+
+// RunnerImages is the repository-declared runner image configuration. A nil
+// RepositoryReconciler.Images is the kill switch: no declaration is read
+// and status.runnerImage is never written.
+type RunnerImages struct {
+	// Policy is the operator's registry allowlist.
+	Policy runnerimage.Policy
+	// Resolver pins a declared reference to a digest and checks it.
+	Resolver runnerimage.Resolver
+	// OnReject is OnRejectHandoff or OnRejectDefault; empty means handoff.
+	OnReject string
+}
+
+// handoff reports whether a rejection stalls the Repository.
+func (i *RunnerImages) handoff() bool { return i.OnReject != OnRejectDefault }
+
+// imageRejection is a deterministic refusal of the declaration, carrying
+// what status.runnerImage records about it.
+type imageRejection struct {
+	declared string
+	manifest string
+	reason   string
+	cause    *runnerimage.Rejection
+}
+
+func (e *imageRejection) Error() string { return e.cause.Message }
+func (e *imageRejection) Unwrap() error { return e.cause }
+
+// status is the record a rejection leaves: no image, the reason and the
+// message the Stalled condition also carries.
+func (e *imageRejection) status(now metav1.Time) *v1alpha1.RunnerImage {
+	return &v1alpha1.RunnerImage{
+		Declared:   e.declared,
+		Manifest:   e.manifest,
+		Rejected:   e.reason,
+		Message:    truncate(e.cause.Message),
+		ResolvedAt: &now,
+	}
+}
+
+// rejected wraps a *runnerimage.Rejection from stage, labelling it with the
+// Rejection's own reason when the check set one and stage otherwise; any
+// other error passes through.
+func rejected(stage, declared, manifest string, err error) error {
+	var rej *runnerimage.Rejection
+	if !errors.As(err, &rej) {
+		return err
+	}
+	reason := rej.Reason
+	if reason == "" {
+		reason = stage
+	}
+	return &imageRejection{declared: declared, manifest: manifest, reason: reason, cause: rej}
+}
+
+// pinRunnerImage runs the runner-image half of the reconcile once the
+// artifact is stored: resolve exactly once, then keep the record. It returns
+// done=true when it wrote a terminal status itself (a stall, a failure or a
+// conflict re-queue) and the caller must return its result; otherwise the
+// caller finishes the reconcile with the Ready=True write.
+func (r *RepositoryReconciler) pinRunnerImage(
+	ctx context.Context, repo *v1alpha1.Repository, sha, key string, now metav1.Time,
+) (ctrl.Result, bool, error) {
+	if repo.Status.RunnerImage != nil {
+		// Pinned, accepted or rejected: never re-resolved, so a moved tag or
+		// a changed policy cannot alter the environment of a finding in
+		// flight. A restart re-fetches the artifact but a rejection stays
+		// stalled.
+		if repo.Status.RunnerImage.Rejected != "" && r.Images.handoff() {
+			return ctrl.Result{}, true, r.stall(ctx, repo, sha, v1alpha1.ReasonRunnerImageRejected,
+				errors.New(repo.Status.RunnerImage.Message))
+		}
+		return ctrl.Result{}, false, nil
+	}
+	ri, err := r.resolveRunnerImage(ctx, repo, key, now)
+	var rej *imageRejection
+	switch {
+	case errors.As(err, &rej):
+		repo.Status.RunnerImage = rej.status(now)
+		r.log().LogAttrs(ctx, slog.LevelWarn, "runner image rejected",
+			slog.String("repository", repo.Name), slog.String("manifest", rej.manifest),
+			slog.String("declared", rej.declared), slog.String("reason", rej.reason),
+			slog.String("message", rej.cause.Message), slog.Bool("handoff", r.Images.handoff()))
+		if r.Images.handoff() {
+			return ctrl.Result{}, true, r.stall(ctx, repo, sha, v1alpha1.ReasonRunnerImageRejected, rej)
+		}
+		return ctrl.Result{}, false, nil
+	case kerrors.IsConflict(err):
+		return ctrl.Result{Requeue: true}, true, nil
+	case err != nil:
+		return ctrl.Result{}, true, r.fail(ctx, repo, v1alpha1.ReasonRunnerImageResolveFailed, err)
+	}
+	repo.Status.RunnerImage = ri
+	return ctrl.Result{}, false, nil
+}
+
+// resolveRunnerImage reads the declaration out of the stored tarball (so it
+// is bound to the pinned tree) and, when it names an image, allowlists,
+// pins and checks it. The registry is consulted only after the first status
+// write has persisted the artifact with Ready=False / RunnerImageResolving,
+// so a transient failure or a restart resumes here without a re-download.
+// A *imageRejection is deterministic; any other error is transient.
+func (r *RepositoryReconciler) resolveRunnerImage(
+	ctx context.Context, repo *v1alpha1.Repository, key string, now metav1.Time,
+) (*v1alpha1.RunnerImage, error) {
+	decl, err := r.declaration(key)
+	if err != nil {
+		return nil, rejected("InvalidDeclaration", "", runnerimage.AgentYAMLPath, err)
+	}
+	switch decl.Outcome {
+	case runnerimage.OutcomeNone:
+		return nil, nil
+	case runnerimage.OutcomeNotApplicable:
+		// Not a rejection: the file was not written for patchy. The reason
+		// is recorded for the owner and the default image runs.
+		return &v1alpha1.RunnerImage{Manifest: decl.Manifest, Message: truncate(decl.Reason), ResolvedAt: &now}, nil
+	}
+	ref, err := runnerimage.ParseDeclared(decl.Image)
+	if err != nil {
+		return nil, rejected("InvalidReference", decl.Image, decl.Manifest, err)
+	}
+	if err := r.Images.Policy.Allow(ref); err != nil {
+		return nil, rejected("NotAllowlisted", decl.Image, decl.Manifest, err)
+	}
+	if err := r.resolving(ctx, repo, decl); err != nil {
+		return nil, err
+	}
+	res, err := r.Images.Resolver.Resolve(ctx, ref)
+	if err != nil {
+		if runnerimage.IsRejection(err) {
+			return nil, rejected("Resolve", decl.Image, decl.Manifest, err)
+		}
+		return nil, fmt.Errorf("resolve runner image %s: %w", decl.Image, err)
+	}
+	return &v1alpha1.RunnerImage{
+		Declared:   decl.Image,
+		Manifest:   decl.Manifest,
+		Image:      res.Image,
+		SearchPath: strings.Join(res.SearchPath, ":"),
+		Verified:   res.Verified,
+		ResolvedAt: &now,
+	}, nil
+}
+
+// declaration reads the two declaration files out of the stored artifact
+// and applies precedence.
+func (r *RepositoryReconciler) declaration(key string) (runnerimage.Declaration, error) {
+	rc, err := r.Artifacts.Open(key)
+	if err != nil {
+		return runnerimage.Declaration{}, fmt.Errorf("open artifact: %w", err)
+	}
+	files, err := runnerimage.ReadFiles(rc)
+	if cerr := rc.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return runnerimage.Declaration{}, fmt.Errorf("read declaration: %w", err)
+	}
+	return runnerimage.Declare(files)
+}
+
+// resolving is the first of the two status writes: the artifact, SHA and
+// forge are persisted with Ready=False / RunnerImageResolving before any
+// registry call is made.
+func (r *RepositoryReconciler) resolving(
+	ctx context.Context, repo *v1alpha1.Repository, decl runnerimage.Declaration,
+) error {
+	meta.SetStatusCondition(&repo.Status.Conditions, metav1.Condition{
+		Type:               v1alpha1.ConditionReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             v1alpha1.ReasonRunnerImageResolving,
+		Message:            fmt.Sprintf("resolving runner image `%s` declared in `%s`", decl.Image, decl.Manifest),
+		ObservedGeneration: repo.Generation,
+	})
+	meta.RemoveStatusCondition(&repo.Status.Conditions, v1alpha1.ConditionStalled)
+	repo.Status.ObservedGeneration = repo.Generation
+	return r.Status().Update(ctx, repo)
+}
+
+// truncate bounds a message to the CRD's field cap, on a rune boundary.
+func truncate(s string) string {
+	if len(s) <= maxMessageBytes {
+		return s
+	}
+	const ellipsis = "…"
+	return strings.ToValidUTF8(s[:maxMessageBytes-len(ellipsis)], "") + ellipsis
+}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -44,8 +45,21 @@ type RepositoryReconciler struct {
 	// ClientFor returns the forge API client for a resolution; nil uses the
 	// Forges store (tests substitute a fake).
 	ClientFor func(ctx context.Context, res *forge.Resolved) (forgeClient, error)
+	// Images resolves the repository-declared runner image beside the SHA,
+	// exactly once per Repository; nil disables the feature (the kill
+	// switch) and leaves the Job shape untouched.
+	Images *RunnerImages
+	// Now is the clock seam; nil means time.Now.
+	Now func() time.Time
 	// Log receives reconcile diagnostics; nil discards.
 	Log *slog.Logger
+}
+
+func (r *RepositoryReconciler) now() time.Time {
+	if r.Now == nil {
+		return time.Now()
+	}
+	return r.Now()
 }
 
 // clientFor resolves the API-client seam.
@@ -102,13 +116,13 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if info, err = r.fetch(ctx, gh, res, sha, req.String()); err != nil {
 			var tooBig *tooLargeError
 			if errors.As(err, &tooBig) {
-				return ctrl.Result{}, r.stall(ctx, &repo, sha, tooBig)
+				return ctrl.Result{}, r.stall(ctx, &repo, sha, "ArtifactTooLarge", tooBig)
 			}
 			return ctrl.Result{}, r.fail(ctx, &repo, "FetchFailed", err)
 		}
 	}
 
-	now := metav1.Now()
+	now := metav1.NewTime(r.now())
 	repo.Status.ResolvedSHA = sha
 	repo.Status.Forge = &v1alpha1.LocalObjectReference{Name: res.Forge.Name}
 	repo.Status.Artifact = &v1alpha1.Artifact{
@@ -116,6 +130,13 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		Digest:        info.Digest,
 		SizeBytes:     info.Size,
 		LastFetchedAt: &now,
+	}
+	// Pin the runner image exactly once, beside the SHA, with the artifact
+	// already in hand so resolution never costs a re-download.
+	if r.Images != nil {
+		if result, done, err := r.pinRunnerImage(ctx, &repo, sha, req.String(), now); done {
+			return result, err
+		}
 	}
 	meta.SetStatusCondition(&repo.Status.Conditions, metav1.Condition{
 		Type:               v1alpha1.ConditionReady,
@@ -131,10 +152,15 @@ func (r *RepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		return ctrl.Result{}, err
 	}
-	r.log().LogAttrs(ctx, slog.LevelInfo, "repository artifact ready",
+	attrs := []slog.Attr{
 		slog.String("repository", req.String()),
 		slog.String("sha", sha),
-		slog.Int64("bytes", info.Size))
+		slog.Int64("bytes", info.Size),
+	}
+	if ri := repo.Status.RunnerImage; ri != nil {
+		attrs = append(attrs, slog.String("runner_image", ri.Image), slog.String("runner_image_manifest", ri.Manifest))
+	}
+	r.log().LogAttrs(ctx, slog.LevelInfo, "repository artifact ready", attrs...)
 	return ctrl.Result{}, nil
 }
 
@@ -202,21 +228,25 @@ func (r *RepositoryReconciler) fail(ctx context.Context, repo *v1alpha1.Reposito
 	return cause
 }
 
-// stall records the Stalled condition for an over-cap artifact; only a spec
-// change re-queues.
-func (r *RepositoryReconciler) stall(ctx context.Context, repo *v1alpha1.Repository, sha string, cause error) error {
+// stall records the Stalled condition with the reason (an over-cap artifact,
+// a rejected runner image); only a spec change re-queues. Whatever the
+// caller has put on the status is carried through, so a rejected runner
+// image keeps its artifact and a revived finding still has a tree to run on.
+func (r *RepositoryReconciler) stall(
+	ctx context.Context, repo *v1alpha1.Repository, sha, reason string, cause error,
+) error {
 	repo.Status.ResolvedSHA = sha
 	meta.SetStatusCondition(&repo.Status.Conditions, metav1.Condition{
 		Type:               v1alpha1.ConditionStalled,
 		Status:             metav1.ConditionTrue,
-		Reason:             "ArtifactTooLarge",
+		Reason:             reason,
 		Message:            cause.Error(),
 		ObservedGeneration: repo.Generation,
 	})
 	meta.SetStatusCondition(&repo.Status.Conditions, metav1.Condition{
 		Type:               v1alpha1.ConditionReady,
 		Status:             metav1.ConditionFalse,
-		Reason:             "ArtifactTooLarge",
+		Reason:             reason,
 		ObservedGeneration: repo.Generation,
 	})
 	repo.Status.ObservedGeneration = repo.Generation

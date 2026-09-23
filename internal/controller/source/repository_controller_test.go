@@ -29,6 +29,7 @@ type fakeForgeClient struct {
 	headSHA       string
 	tarball       string
 	headCalls     int
+	tarballCalls  int
 }
 
 func (f *fakeForgeClient) DefaultBranch(context.Context, ghclient.Repo) (string, error) {
@@ -41,6 +42,7 @@ func (f *fakeForgeClient) HeadSHA(context.Context, ghclient.Repo, string) (strin
 }
 
 func (f *fakeForgeClient) Tarball(context.Context, ghclient.Repo, string) (io.ReadCloser, error) {
+	f.tarballCalls++
 	return io.NopCloser(strings.NewReader(f.tarball)), nil
 }
 

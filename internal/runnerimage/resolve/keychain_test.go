@@ -152,3 +152,48 @@ func TestNewKeychainBuilds(t *testing.T) {
 		t.Fatalf("NewKeychain = %#v, want every branch wired", kc)
 	}
 }
+
+// TestGoogleKeychainRetriesAfterAFailure: ggcr's google.Keychain resolves
+// once per process and keeps authn.Anonymous for good when Application
+// Default Credentials are unavailable at that moment (the GKE metadata
+// server refuses a new Pod's first requests), which turned a transient
+// credential failure into a 401 and a pinned AccessDenied. The leg must
+// fail, so the caller backs off, ask again next time, and cache only a
+// success.
+func TestGoogleKeychainRetriesAfterAFailure(t *testing.T) {
+	calls := 0
+	kc := &googleKeychain{auth: func(context.Context) (authn.Authenticator, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("metadata server not ready")
+		}
+		return &authn.Bearer{Token: "ya29.token"}, nil
+	}}
+	host := registryOf(t, "europe-west1-docker.pkg.dev")
+	if a, err := kc.Resolve(host); err == nil || a != nil {
+		t.Fatalf("first Resolve = %v, %v; want the credential error, never anonymous", a, err)
+	}
+	for range 2 {
+		a, err := kc.Resolve(host)
+		if err != nil {
+			t.Fatalf("Resolve after recovery: %v", err)
+		}
+		cfg, err := a.Authorization()
+		if err != nil || cfg.RegistryToken != "ya29.token" {
+			t.Errorf("auth = %+v, %v; want the ADC token", cfg, err)
+		}
+	}
+	if calls != 2 {
+		t.Errorf("credential lookups = %d, want 2 (the failure, then one cached success)", calls)
+	}
+}
+
+func TestNewKeychainGoogleLegCachesOnlySuccess(t *testing.T) {
+	kc, ok := NewKeychain().(*hostKeychain)
+	if !ok {
+		t.Fatal("NewKeychain is not a hostKeychain")
+	}
+	if _, ok := kc.google.(*googleKeychain); !ok {
+		t.Errorf("google leg = %T, want *googleKeychain (ggcr's google.Keychain caches anonymous)", kc.google)
+	}
+}

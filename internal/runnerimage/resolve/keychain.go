@@ -30,15 +30,16 @@ const ecrTokenSkew = 5 * time.Minute
 // NewKeychain builds the host-selected keychain the resolver authenticates
 // with. ECR hosts go through the AWS SDK's default credential chain (IRSA or
 // Pod Identity in-cluster, the same path the AWS enhancer uses), Artifact
-// Registry and GCR through google.Keychain, and every other host through
-// the docker config under DOCKER_CONFIG (the mounted pullSecret), which
-// falls back to anonymous when it has no entry for the host. Selection is by
-// host, so a cloud host never consults the docker config and a ghcr host
-// never mints a cloud token.
+// Registry and GCR through Application Default Credentials (Workload
+// Identity in-cluster), and every other host through the docker config
+// under DOCKER_CONFIG (the mounted pullSecret), which falls back to
+// anonymous when it has no entry for the host. Selection is by host, so a
+// cloud host never consults the docker config and a ghcr host never mints a
+// cloud token. A cloud credential failure is an error, never anonymous.
 func NewKeychain() authn.Keychain {
 	return &hostKeychain{
 		ecr:    &ecrKeychain{tokens: awsECRToken, now: time.Now},
-		google: google.Keychain,
+		google: &googleKeychain{auth: google.NewEnvAuthenticator},
 		docker: authn.DefaultKeychain,
 	}
 }
@@ -62,10 +63,48 @@ func (k *hostKeychain) ResolveContext(ctx context.Context, target authn.Resource
 	case ecrHost.MatchString(host):
 		return k.ecr.ResolveContext(ctx, target)
 	case host == "gcr.io" || strings.HasSuffix(host, ".gcr.io") || strings.HasSuffix(host, ".pkg.dev"):
-		return k.google.Resolve(target)
+		return authn.Resolve(ctx, k.google, target)
 	default:
 		return k.docker.Resolve(target)
 	}
+}
+
+// googleKeychain authenticates Artifact Registry and GCR through Application
+// Default Credentials, caching only a success. ggcr's google.Keychain
+// resolves once per process and keeps authn.Anonymous for good when ADC is
+// unavailable at that moment (the GKE metadata server refuses a new Pod's
+// first requests), which turned a transient credential failure into a 401,
+// a deterministic AccessDenied rejection pinned on the Repository. Here a
+// failure is an error, so the caller backs off and the next resolution asks
+// again; a host that needs no credential still needs ADC to be configured.
+type googleKeychain struct {
+	// auth builds the authenticator; the default is
+	// google.NewEnvAuthenticator (whose token source refreshes itself) and
+	// tests substitute a fake.
+	auth func(ctx context.Context) (authn.Authenticator, error)
+
+	mu     sync.Mutex
+	cached authn.Authenticator
+}
+
+// Resolve implements authn.Keychain.
+func (k *googleKeychain) Resolve(target authn.Resource) (authn.Authenticator, error) {
+	return k.ResolveContext(context.Background(), target)
+}
+
+// ResolveContext implements authn.ContextKeychain.
+func (k *googleKeychain) ResolveContext(ctx context.Context, target authn.Resource) (authn.Authenticator, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.cached != nil {
+		return k.cached, nil
+	}
+	a, err := k.auth(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("google application default credentials for %s: %w", target.RegistryStr(), err)
+	}
+	k.cached = a
+	return a, nil
 }
 
 // ecrToken is one authorization token: "AWS:<password>" decoded, with the

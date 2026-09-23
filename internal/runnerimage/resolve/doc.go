@@ -31,8 +31,9 @@
 //
 // Registry credentials come from a host-selected keychain (NewKeychain):
 // ECR through the AWS SDK's default credential chain, Artifact Registry and
-// GCR through google.Keychain, everything else through the docker config
-// under DOCKER_CONFIG, anonymous last. A 401, 403 or 404 is a
+// GCR through Application Default Credentials, everything else through the
+// docker config under DOCKER_CONFIG, anonymous last. A cloud credential
+// failure is transient, never anonymous. A 401, 403 or 404 is a
 // *runnerimage.Rejection; anything else is transient and left to the
 // caller's backoff.
 //

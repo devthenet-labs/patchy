@@ -200,10 +200,11 @@ Steps, in a new pure package `internal/runnerimage` plus an `ocireg`-backed reso
    the HEAD is skipped. Either way the resolver builds `<repo>@sha256:<digest>` and passes only that reference to every
    subsequent call (`ocireg` gains `ConfigFile(ctx, ref)` beside `Manifest` and `Platforms`), so nothing after this step
    can observe a tag move. The client authenticates with a host-selected keychain: the ECR credential helper (IRSA or
-   Pod Identity, the path context-controller already uses) for `*.amazonaws.com`, `google.Keychain` for Artifact
-   Registry, the mounted dockerconfigjson for everything else, anonymous last. A 401 or 403 here is deterministic
-   (`RunnerImageRejected`: "registry denied access to `<ref>`; configure pullSecret or a cloud credential"), never retry
-   backoff.
+   Pod Identity, the path context-controller already uses) for `*.amazonaws.com`, Application Default Credentials for
+   Artifact Registry (cached only on success: ggcr's `google.Keychain` keeps anonymous for the process lifetime when the
+   first lookup fails), the mounted dockerconfigjson for everything else, anonymous last. A cloud credential failure is
+   transient backoff, never anonymous. A 401 or 403 here is deterministic (`RunnerImageRejected`: "registry denied
+   access to `<ref>`; configure pullSecret or a cloud credential"), never retry backoff.
 4. Enumerate what would actually run. If the resolved object is an image index, the `linux/amd64` and `linux/arm64`
    children are enumerated by their own digests and each is checked in step 5; the image is rejected unless every child
    passes with an identical sanitized PATH, and the recorded digest is the index digest (what cosign signs and the

@@ -39,6 +39,13 @@ func TestParseAgentYAML(t *testing.T) {
 				"line 1: cannot unmarshal !!str `just a ...` into map[string]interface {}"},
 		{"malformed", "image: [\n", "",
 			"could not parse `.patchy/agent.yaml`: yaml: line 1: did not find expected node content"},
+		{"second document carrying build", "image: ghcr.io/org/app:1\n---\nbuild:\n  dockerfile: Dockerfile\n", "",
+			"`.patchy/agent.yaml` has more than one YAML document; it must be a single mapping"},
+		{"second document repeating image", "image: a\n---\nimage: b\n", "",
+			"`.patchy/agent.yaml` has more than one YAML document; it must be a single mapping"},
+		{"empty second document", "image: a\n---\n", "",
+			"`.patchy/agent.yaml` has more than one YAML document; it must be a single mapping"},
+		{"leading document marker is one document", "---\nimage: ghcr.io/org/app:1\n", "ghcr.io/org/app:1", ""},
 		{"duplicate key", "image: x\nimage: y\n", "",
 			"could not parse `.patchy/agent.yaml`: yaml: unmarshal errors: " +
 				"line 2: mapping key \"image\" already defined at line 1"},

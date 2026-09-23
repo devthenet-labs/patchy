@@ -226,9 +226,15 @@ func TestInjectedPrepareContainer(t *testing.T) {
 			t.Errorf("inject tail lacks %q:\n%s", want, tail)
 		}
 	}
-	// The probe runs after the fetch and the copy, last in the script.
+	// The probe runs after the fetch and the copy, last in the script, as
+	// the trusted agent-runner invoked with the subcommand agent-runner
+	// dispatches on (cmd/agent-runner pins the other side).
 	if !strings.HasSuffix(script, "sandbox-probe\n") {
 		t.Errorf("prepare script does not end with the probe:\n%s", script)
+	}
+	lines := strings.Split(strings.TrimSpace(script), "\n")
+	if got, want := strings.Fields(lines[len(lines)-1]), []string{"/usr/local/bin/agent-runner", sandboxprobe.Command}; !slices.Equal(got, want) {
+		t.Errorf("probe invocation = %q, want %q", got, want)
 	}
 	if !strings.HasPrefix(script, "set -eu\n") {
 		t.Error("prepare script lost set -e; a failing probe would not stop the init")

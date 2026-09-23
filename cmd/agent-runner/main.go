@@ -6,15 +6,16 @@
 // stages against a pre-cloned repository and reports results as an event
 // stream on stdout. It never talks to GitHub.
 //
-// Invoked as `agent-runner sandbox-probe` it instead runs the
-// negative-connectivity check the trusted prepare init container performs
-// before a repository-declared image gets to run anything, and exits
-// sandboxprobe.ExitUnenforced when egress is still open at the end of the
-// window.
+// Invoked as `agent-runner sandbox-probe` (sandboxprobe.Command) it instead
+// runs the negative-connectivity check the trusted prepare init container
+// performs before a repository-declared image gets to run anything, and
+// exits sandboxprobe.ExitUnenforced when egress is still open at the end of
+// the window.
 package main
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -25,27 +26,24 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/sandboxprobe"
 )
 
-// probeCommand is the argument that selects the sandbox probe instead of a
-// stage; internal/jobs writes it into the prepare script.
-const probeCommand = "sandbox-probe"
-
 func main() {
-	os.Exit(run())
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := run(ctx, os.Args, os.Getenv, os.Stderr)
+	stop()
+	os.Exit(code)
 }
 
-func run() int {
-	// Diagnostics go to stderr; stdout is reserved for the envelope event
-	// stream the controller parses.
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+// run is the process: args and the environment in, diagnostics to stderr
+// (stdout is reserved for the envelope event stream the controller parses),
+// the exit status out.
+func run(ctx context.Context, args []string, getenv func(string) string, stderr io.Writer) int {
+	log := slog.New(slog.NewTextHandler(stderr, nil))
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	if len(os.Args) > 1 && os.Args[1] == probeCommand {
-		return probe(ctx, log)
+	if len(args) > 1 && args[1] == sandboxprobe.Command {
+		return sandboxprobe.Main(ctx, getenv, log)
 	}
 
-	cfg, err := agentrun.FromEnv(os.Getenv)
+	cfg, err := agentrun.FromEnv(getenv)
 	if err != nil {
 		log.LogAttrs(ctx, slog.LevelError, "invalid configuration", slog.Any("error", err))
 		return 2
@@ -58,28 +56,5 @@ func run() int {
 		log.LogAttrs(ctx, slog.LevelError, "agent run failed", slog.Any("error", err))
 		return 2
 	}
-	return 0
-}
-
-// probe runs the sandbox probe and prints its one verdict line to stderr.
-// Exit 0 means every target was blocked; ExitUnenforced means one still
-// answered when the window closed; anything else is the probe itself
-// failing to run.
-func probe(ctx context.Context, log *slog.Logger) int {
-	p, err := sandboxprobe.FromEnv(os.Getenv)
-	if err != nil {
-		log.LogAttrs(ctx, slog.LevelError, "invalid sandbox probe configuration", slog.Any("error", err))
-		return 2
-	}
-	res, err := p.Run(ctx)
-	if err != nil {
-		log.LogAttrs(ctx, slog.LevelError, "sandbox probe interrupted", slog.Any("error", err))
-		return 1
-	}
-	if !res.Enforced {
-		log.LogAttrs(ctx, slog.LevelError, res.Verdict())
-		return sandboxprobe.ExitUnenforced
-	}
-	log.LogAttrs(ctx, slog.LevelInfo, res.Verdict())
 	return 0
 }

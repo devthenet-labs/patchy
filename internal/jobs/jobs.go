@@ -135,13 +135,14 @@ fi
 // only then, so the default Job stays byte-identical. It still runs in the
 // trusted runner image: each binary named in $PATCHY_INJECT is copied from
 // where the Dockerfile put it into the patchy-bin emptyDir (read-only in the
-// agent container), then the sandbox probe runs from the trusted binary.
-// Under set -e a non-zero probe exit ends the script with that status —
+// agent container), then the sandbox probe runs from the trusted binary,
+// selected by the one subcommand name agent-runner dispatches on. Under
+// set -e a non-zero probe exit ends the script with that status —
 // ExitSandboxUnenforced — before the agent container ever starts.
 const injectScript = `for bin in $PATCHY_INJECT; do
   cp "` + toolsBinDir + `/$bin" "` + patchyBinDir + `/$bin"
 done
-` + toolsBinDir + `/agent-runner sandbox-probe
+` + toolsBinDir + `/` + agentRunnerBin + ` ` + sandboxprobe.Command + `
 `
 
 // Runner is one harness's agent-runner deployment surface: the container image

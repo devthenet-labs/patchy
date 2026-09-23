@@ -18,7 +18,10 @@
 // without a network or a wall clock.
 //
 // The probe is stdlib-only and lives in the static agent-runner binary
-// (`agent-runner sandbox-probe`), the same trusted binary the prepare step
-// copies into the pod, so it never depends on what the untrusted image
-// carries.
+// (`agent-runner sandbox-probe`, the subcommand named by Command, which
+// internal/jobs writes into the prepare script and agent-runner dispatches
+// on), the same trusted binary the prepare step copies into the pod, so it
+// never depends on what the untrusted image carries. Main is that
+// subcommand's whole body, so its exit statuses are tested here rather
+// than in package main.
 package sandboxprobe

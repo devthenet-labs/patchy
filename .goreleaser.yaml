@@ -440,6 +440,33 @@ dockers_v2:
           org.opencontainers.image.licenses: MIT
           org.opencontainers.image.revision: "{{ .FullCommit }}"
           org.opencontainers.image.version: "{{ .Version }}"
+    # The base image application teams extend for a repository-declared agent
+    # image (docs/integrations/agent-images.md). It contains no patchy binary —
+    # agent-runner and the claude CLI are injected at pod start — so the
+    # Dockerfile copies nothing from the context; `ids` names one build only to
+    # keep that context small instead of carrying every binary goreleaser built.
+    - id: agent-base
+      ids: [agent-runner]
+      dockerfile: Dockerfile.agent-base
+      images:
+          - ghcr.io/devthenet-labs/patchy/agent-base
+      tags:
+          - v{{ .Version }}
+          - latest
+      platforms:
+          - linux/amd64
+          - linux/arm64
+      labels:
+          org.opencontainers.image.source: https://github.com/devthenet-labs/patchy
+          org.opencontainers.image.licenses: MIT
+          org.opencontainers.image.revision: "{{ .FullCommit }}"
+          org.opencontainers.image.version: "{{ .Version }}"
+      # ghcr shows a multi-arch package's description from the index
+      # annotation, not from the per-platform config labels.
+      annotations:
+          "index:org.opencontainers.image.description": >-
+              Base image for repository-declared patchy agent images: glibc (wolfi),
+              bash, git and core build tools, uid 65532, caches under /tmp.
     - id: status-server
       ids: [status-server]
       dockerfile: Dockerfile.controller

@@ -243,6 +243,39 @@ func TestSandboxOutcomes(t *testing.T) {
 	}
 }
 
+// TestSandboxAgentRunnerNotExecutable: when docker cannot execute the
+// mounted agent-runner at all (exit 126: permission denied, as when uid
+// 65532 cannot search the bind-mounted directory; exit 127: not found),
+// the preflight fails with docker's own reason, not with advice to replace
+// a runner image that is not at fault.
+func TestSandboxAgentRunnerNotExecutable(t *testing.T) {
+	for code, stderr := range map[int]string{
+		126: "docker: Error response from daemon: failed to create task for container: failed to create shim " +
+			"task: OCI runtime create failed: runc create failed: unable to start container process: error " +
+			"during container init: exec: \"/patchy/bin/agent-runner\": stat /patchy/bin/agent-runner: " +
+			"permission denied: unknown\n\nRun 'docker run --help' for more information\n",
+		127: "docker: Error response from daemon: failed to create task for container: OCI runtime create " +
+			"failed: exec: \"/patchy/bin/agent-runner\": stat /patchy/bin/agent-runner: no such file or " +
+			"directory: unknown\n",
+	} {
+		d := healthyDocker(func(args []string) (Result, bool) {
+			return Result{ExitCode: code, Stderr: stderr}, entrypoint(args) == "/patchy/bin/agent-runner"
+		})
+		checks := Sandbox(context.Background(), d, sandboxConfig())
+		if got := checkLine(checks); got != "runner=PASS preflight=FAIL bash=PASS git=PASS" {
+			t.Fatalf("exit %d: checks = %s\n%+v", code, got, checks)
+		}
+		reason := checks[1].Reason
+		if strings.Contains(reason, "--runner-image") || strings.Contains(reason, "older") {
+			t.Errorf("exit %d: reason blames the runner image's age: %s", code, reason)
+		}
+		if !strings.Contains(reason, `exec: "/patchy/bin/agent-runner": stat /patchy/bin/agent-runner`) ||
+			!strings.Contains(reason, "could not execute") {
+			t.Errorf("exit %d: reason = %s, want docker's own exec error", code, reason)
+		}
+	}
+}
+
 // TestSandboxLocalSearchPath: an image the registry could not provide runs
 // with the PATH its local copy declares, sanitized as the resolver would.
 func TestSandboxLocalSearchPath(t *testing.T) {

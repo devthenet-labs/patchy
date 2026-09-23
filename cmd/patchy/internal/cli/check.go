@@ -208,7 +208,11 @@ func sandbox(ctx context.Context, opts *Options, report imagecheck.Report,
 // bind-mounted from. It sits under the user cache directory rather than
 // the system temp directory because a docker VM (Docker Desktop, colima)
 // shares the home directory with its containers by default, and not
-// always the system temp directory.
+// always the system temp directory. It is 0755, not MkdirTemp's 0700: on
+// native Linux docker a bind mount keeps the host inode's owner and mode,
+// and the container runs as uid 65532, which must reach agent-runner
+// through it. What sits in it is the trusted runner's binaries, so there
+// is nothing to hide from other local users.
 func sandboxDir() (string, error) {
 	parent := ""
 	if cache, err := os.UserCacheDir(); err == nil {
@@ -217,7 +221,15 @@ func sandboxDir() (string, error) {
 			parent = ""
 		}
 	}
-	return os.MkdirTemp(parent, "check-image-")
+	dir, err := os.MkdirTemp(parent, "check-image-")
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", err
+	}
+	return dir, nil
 }
 
 // renderCheckImage writes the report: structured under -o json/yaml, one

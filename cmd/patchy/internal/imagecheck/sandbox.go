@@ -163,6 +163,9 @@ func Sandbox(ctx context.Context, cmd Commander, cfg SandboxConfig) []Check {
 		r.add(CheckPreflight, Fail, "docker could not run "+cfg.Image+": "+detail(res))
 		r.skip("docker could not run the image", CheckBash, CheckGit)
 		return r.Checks
+	case res.ExitCode == dockerCannotInvoke || res.ExitCode == dockerNotFound:
+		r.add(CheckPreflight, Fail, fmt.Sprintf("docker could not execute %s/agent-runner in the image (exit %d: %s)",
+			patchyBinDir, res.ExitCode, detail(res)))
 	case res.ExitCode == 0:
 		r.add(CheckPreflight, Pass, lastLine(res.Stdout))
 	case res.ExitCode == agentrun.ExitPreflightFailed:
@@ -180,10 +183,15 @@ func Sandbox(ctx context.Context, cmd Commander, cfg SandboxConfig) []Check {
 	return r.Checks
 }
 
-// dockerRunFailed is docker run's own exit status when it could not create
-// or start the container at all (no such image, pull denied, bad flag),
-// as opposed to the container's command failing.
-const dockerRunFailed = 125
+// docker run's own exit statuses, as opposed to the container's command
+// failing: 125 when it could not create or start the container at all (no
+// such image, pull denied, bad flag), 126 when the command could not be
+// invoked (permission denied) and 127 when it was not found.
+const (
+	dockerRunFailed    = 125
+	dockerCannotInvoke = 126
+	dockerNotFound     = 127
+)
 
 // docker runs one docker command and returns its stdout, or an error
 // carrying the last line docker printed.

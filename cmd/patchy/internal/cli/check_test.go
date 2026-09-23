@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -172,8 +173,16 @@ func TestSandboxDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	if info, err := os.Stat(dir); err != nil || !info.IsDir() || !strings.HasPrefix(filepath.Base(dir), "check-image-") {
-		t.Errorf("sandboxDir = %q (%v), want a fresh check-image- directory", dir, err)
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() || !strings.HasPrefix(filepath.Base(dir), "check-image-") {
+		t.Fatalf("sandboxDir = %q (%v), want a fresh check-image- directory", dir, err)
+	}
+	// The directory is bind-mounted as /patchy/bin into a container running
+	// as uid 65532, which native Linux docker holds to the host inode's owner
+	// and mode: anything short of o+rx and 65532 cannot reach agent-runner.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o755 {
+		t.Errorf("sandboxDir mode = %v, want 0755 so uid 65532 can execute what is mounted from it",
+			info.Mode().Perm())
 	}
 }
 

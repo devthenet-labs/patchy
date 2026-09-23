@@ -5,6 +5,8 @@ package jobs
 
 import (
 	"context"
+	"maps"
+	"math/rand"
 	"slices"
 	"strings"
 	"testing"
@@ -578,5 +580,107 @@ func TestAgentEnvParsesToBinDir(t *testing.T) {
 				t.Errorf("BinDir = %q, want %q", got.BinDir, tt.want)
 			}
 		})
+	}
+}
+
+// TestInjectedEnvOwnsItsNames: on a repository image the names the
+// injection owns — where the binaries are, the PATH, git's system-config
+// switch, the self-updater switch and every scrubbed name — carry
+// patchy's value exactly once, whatever the operator's Config.Env says.
+// An operator value of the same name would otherwise sit beside patchy's
+// as a duplicate, which Kubernetes leaves undefined.
+func TestInjectedEnvOwnsItsNames(t *testing.T) {
+	cfg := injectedConfig()
+	operator := map[string]string{
+		"PATH": "/opt/tools/bin", "PATCHY_BIN_DIR": "/opt/evil", "GIT_CONFIG_NOSYSTEM": "0",
+		"DISABLE_AUTOUPDATER": "0", "LD_PRELOAD": "/opt/lib/hook.so", "NODE_OPTIONS": "--require /opt/hook.js",
+		"BASH_ENV": "/opt/rc", "GIT_SSH_COMMAND": "ssh -o ProxyCommand=evil",
+	}
+	maps.Copy(cfg.Env, operator)
+	agent := buildJobForTest(t, cfg, injectedSpec()).Spec.Template.Spec.Containers[0]
+
+	want := map[string]string{
+		"PATH": "/patchy/bin:" + repoSearchPath, "PATCHY_BIN_DIR": patchyBinDir, "GIT_CONFIG_NOSYSTEM": "1",
+		"DISABLE_AUTOUPDATER": "1", "LD_PRELOAD": "", "NODE_OPTIONS": "", "BASH_ENV": "", "GIT_SSH_COMMAND": "",
+		// An operator value for a name the injection does not own survives.
+		"PATCHY_INVESTIGATE_TIMEOUT": "15m",
+	}
+	for name, value := range want {
+		var got []string
+		for _, e := range agent.Env {
+			if e.Name == name {
+				got = append(got, e.Value)
+			}
+		}
+		if len(got) != 1 || got[0] != value {
+			t.Errorf("agent env %s = %q, want exactly one entry %q", name, got, value)
+		}
+	}
+}
+
+// TestDefaultJobKeepsOperatorEnv: the takeover is the repository image's
+// alone. A default Job passes the same operator values through as it
+// always has — except PATCHY_BIN_DIR, which is per-Job (set only when the
+// Job injects), since on the default image it would send agent-runner
+// looking for an injected CLI that was never copied.
+func TestDefaultJobKeepsOperatorEnv(t *testing.T) {
+	cfg := testConfig()
+	maps.Copy(cfg.Env, map[string]string{
+		"PATH": "/opt/tools/bin", "LD_PRELOAD": "/opt/lib/jemalloc.so", "DISABLE_AUTOUPDATER": "1",
+		"PATCHY_BIN_DIR": "/opt/evil",
+	})
+	envs := envMap(buildJobForTest(t, cfg, testSpec()).Spec.Template.Spec.Containers[0])
+	for name, value := range map[string]string{
+		"PATH": "/opt/tools/bin", "LD_PRELOAD": "/opt/lib/jemalloc.so", "DISABLE_AUTOUPDATER": "1",
+	} {
+		if got := envs[name]; got.Value != value {
+			t.Errorf("default Job env %s = %+v, want the operator's %q", name, got, value)
+		}
+	}
+	if got, ok := envs["PATCHY_BIN_DIR"]; ok {
+		t.Errorf("PATCHY_BIN_DIR = %+v reached a default Job from Config.Env, want it reserved", got)
+	}
+}
+
+// TestPropertyNoDuplicateEnv: whatever names the operator's Config.Env
+// carries — owned, scrubbed, gateway, reserved, patchy's own or unrelated —
+// and whatever the runner's gateway Env renders beside them, no container
+// of any Job, injected or default, ever lists a name twice. Runner.Env is
+// drawn from what provider.Env can render (the gateway names bar the
+// broker token file, which the Job sets itself) plus the injection-owned
+// and scrubbed names, since those must be taken over from it too. Seeded
+// so the gate is deterministic.
+func TestPropertyNoDuplicateEnv(t *testing.T) {
+	rng := rand.New(rand.NewSource(20260923))
+	owned := []string{"PATH", "PATCHY_BIN_DIR", "GIT_CONFIG_NOSYSTEM", "DISABLE_AUTOUPDATER"}
+	operatorNames := slices.Concat(owned, []string{"HOME", "PATCHY_INVESTIGATE_TIMEOUT", "EDITOR", "LANG"},
+		scrubEnv, provider.GatewayEnvNames, agentrun.ConfigEnvKeys(), ReservedEnvNames())
+	runnerNames := slices.Concat(owned, scrubEnv, []string{"EDITOR"},
+		slices.DeleteFunc(slices.Clone(provider.GatewayEnvNames), func(n string) bool {
+			return n == "PATCHY_BROKER_TOKEN_FILE"
+		}))
+	for i := range 1000 {
+		cfg := injectedConfig()
+		cfg.AllowRepositoryImages = rng.Intn(3) != 0
+		for range rng.Intn(12) {
+			cfg.Env[operatorNames[rng.Intn(len(operatorNames))]] = "operator"
+		}
+		claude := cfg.Runners["claude"]
+		claude.Env = maps.Clone(claude.Env)
+		for range rng.Intn(4) {
+			claude.Env[runnerNames[rng.Intn(len(runnerNames))]] = "runner"
+		}
+		cfg.Runners["claude"] = claude
+		pod := buildJobForTest(t, cfg, injectedSpec()).Spec.Template.Spec
+		for _, ct := range append(pod.InitContainers, pod.Containers...) {
+			seen := map[string]bool{}
+			for _, e := range ct.Env {
+				if seen[e.Name] {
+					t.Fatalf("iteration %d: %s env lists %s twice\n  config env: %v\n  runner env: %v",
+						i, ct.Name, e.Name, cfg.Env, claude.Env)
+				}
+				seen[e.Name] = true
+			}
+		}
 	}
 }

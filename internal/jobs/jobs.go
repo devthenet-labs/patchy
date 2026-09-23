@@ -691,7 +691,9 @@ func (c *Client) agentContainer(runner Runner, spec Spec, res corev1.ResourceReq
 // has to keep out of the controller-global Env.
 // The per-Job harness/model vars are reserved too: they are resolved per Job
 // and set from the Spec, so a controller-global Env copy must never shadow
-// them. The gateway names a brokered runner's Env owns (base-URL overrides,
+// them. So is the injected-binary directory, which only a Job that injects
+// sets: on the default image it would send agent-runner looking for an
+// injected CLI that was never copied. The gateway names a brokered runner's Env owns (base-URL overrides,
 // skip-auth switches, the caller-token channel) are folded in below from
 // provider.GatewayEnvNames — Config.Env can never shadow those either. The
 // proxy variables are reserved because a proxy would redirect the broker
@@ -710,6 +712,7 @@ var reservedEnv = map[string]bool{
 	"PATCHY_GRANTED_MAX_TURNS":    true,
 	"PATCHY_GRANTED_TOKEN_BUDGET": true,
 	"PATCHY_CALIBRATION":          true,
+	agentrun.BinDirEnv:            true,
 	"ANTHROPIC_API_KEY":           true,
 	"CLAUDE_CODE_OAUTH_TOKEN":     true,
 	"ANTHROPIC_AUTH_TOKEN":        true,
@@ -771,14 +774,30 @@ var scrubEnv = append([]string{
 // image's own toolchain directories survive), git told to ignore the
 // image's system config, the injected CLI's self-updater off (as the
 // trusted image's ENV has it), and finally an explicit empty value for every
-// scrubbed name the Job did not set. The blanks are sorted so the Job is
-// deterministic.
+// scrubbed name, gateway name and agent-runner key the Job did not set. The
+// blanks are sorted so the Job is deterministic.
+//
+// Those four names and the scrubbed ones are owned outright: an entry of
+// the same name in the usual env (an operator's Config.Env passthrough,
+// which a default Job keeps) is dropped first, so the pod carries patchy's
+// value exactly once rather than a duplicate whose winner Kubernetes leaves
+// undefined. They are not in reservedEnv, because that list is also what an
+// image's ENV may not name, and every image sets PATH.
 func injectEnv(env []corev1.EnvVar, spec Spec) []corev1.EnvVar {
-	env = append(env,
-		corev1.EnvVar{Name: agentrun.BinDirEnv, Value: patchyBinDir},
-		corev1.EnvVar{Name: "PATH", Value: podPath(spec.RunnerSearchPath)},
-		corev1.EnvVar{Name: "GIT_CONFIG_NOSYSTEM", Value: "1"},
-		corev1.EnvVar{Name: "DISABLE_AUTOUPDATER", Value: "1"})
+	own := []corev1.EnvVar{
+		{Name: agentrun.BinDirEnv, Value: patchyBinDir},
+		{Name: "PATH", Value: podPath(spec.RunnerSearchPath)},
+		{Name: "GIT_CONFIG_NOSYSTEM", Value: "1"},
+		{Name: "DISABLE_AUTOUPDATER", Value: "1"},
+	}
+	owned := make(map[string]bool, len(own)+len(scrubEnv))
+	for _, e := range own {
+		owned[e.Name] = true
+	}
+	for _, name := range scrubEnv {
+		owned[name] = true
+	}
+	env = append(slices.DeleteFunc(env, func(e corev1.EnvVar) bool { return owned[e.Name] }), own...)
 	present := make(map[string]bool, len(env))
 	for _, e := range env {
 		present[e.Name] = true

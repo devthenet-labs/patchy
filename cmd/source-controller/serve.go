@@ -85,7 +85,10 @@ func runnerImages(opts *cli.Options) (*source.RunnerImages, error) {
 	cfg := resolve.Config{
 		MaxBytes:      int64(opts.Int("repository-image-max-bytes")),
 		AllowUnsigned: opts.Bool("repository-image-allow-unsigned"),
-		Keychain:      resolve.NewKeychain(),
+		// The Job's own reserved names, beyond the prefixes and gateway
+		// names the resolver refuses on its own.
+		ReservedEnv: runnerimage.JobReservedEnv(),
+		Keychain:    resolve.NewKeychain(),
 	}
 	if path := opts.String("repository-image-cosign-key-file"); path != "" {
 		raw, err := os.ReadFile(path)

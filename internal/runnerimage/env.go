@@ -21,6 +21,26 @@ var reservedEnvPrefixes = []string{"PATCHY_", "ANTHROPIC_", "CLAUDE_", "CLAUDE_C
 // by the image would redirect the broker traffic.
 var proxyEnv = []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"}
 
+// JobReservedEnv returns the names the agent Job sets or reserves for itself
+// that CheckEnv's own rules (the prefixes, the gateway names, the proxies)
+// do not already cover: the other harnesses' credential channels, the
+// GitHub tokens the no-GitHub-token invariant keeps out of the pod, and
+// HOME. It is the extra set source-controller passes, so resolve-time
+// rejection covers the Job builder's reservedEnv union
+// provider.GatewayEnvNames as the design specifies; a jobs test pins that
+// every name the Job reserves is refused with it.
+func JobReservedEnv() map[string]bool {
+	return map[string]bool{
+		"HOME":                 true,
+		"GH_TOKEN":             true,
+		"GITHUB_TOKEN":         true,
+		"COPILOT_GITHUB_TOKEN": true,
+		"OPENAI_API_KEY":       true,
+		"CODEX_API_KEY":        true,
+		"CODEX_ACCESS_TOKEN":   true,
+	}
+}
+
 // ReservedEnvName reports whether an image may not set name: it is one of
 // extra (the caller passes the Job's own reserved names, which the image
 // must not shadow), a provider gateway name, carries a reserved prefix, or is

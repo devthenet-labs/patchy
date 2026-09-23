@@ -54,7 +54,8 @@ type Config struct {
 	AllowUnsigned bool
 	// ReservedEnv names variables an image ENV may not set beyond the
 	// built-in list runnerimage.CheckEnv enforces: the Job builder's own
-	// reserved names, injected by the wiring; nil means the built-in list.
+	// reserved names, which the wiring injects as runnerimage.JobReservedEnv;
+	// nil means the built-in list only.
 	ReservedEnv map[string]bool
 	// Keychain authenticates registry calls (NewKeychain); nil is anonymous.
 	Keychain authn.Keychain

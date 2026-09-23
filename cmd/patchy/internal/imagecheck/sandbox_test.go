@@ -111,9 +111,11 @@ func healthyDocker(override func(args []string) (Result, bool)) *fakeDocker {
 
 func sandboxConfig() SandboxConfig {
 	return SandboxConfig{
-		Image:       "ghcr.io/org/app@sha256:" + strings.Repeat("a", 64),
-		SearchPath:  []string{"/usr/local/go/bin", "/usr/bin"},
-		Platforms:   []string{"linux/amd64", "linux/arm64"},
+		Image:      "ghcr.io/org/app@sha256:" + strings.Repeat("a", 64),
+		SearchPath: []string{"/usr/local/go/bin", "/usr/bin"},
+		// The docker host's own platform alone; the multi-platform tests
+		// set their own.
+		Platforms:   []string{"linux/arm64"},
 		RunnerImage: RunnerImageRepository + ":v1.2.3",
 		BinDir:      "/tmp/patchy-bin",
 	}
@@ -366,6 +368,128 @@ func TestSandboxAgentRunnerNotExecutable(t *testing.T) {
 	}
 }
 
+// platformLine is checkLine with each check's platform.
+func platformLine(checks []Check) string {
+	out := make([]string, 0, len(checks))
+	for _, c := range checks {
+		out = append(out, c.Platform+":"+c.Name+"="+string(c.Status))
+	}
+	return strings.Join(out, " ")
+}
+
+// TestSandboxRunsEveryPlatform: an index must satisfy the contract on every
+// platform a node could pull, so each one it serves is run, the docker
+// host's own first and natively, the others under docker's emulation, with
+// the runner's binaries for that platform, and every line names its
+// platform.
+func TestSandboxRunsEveryPlatform(t *testing.T) {
+	d := healthyDocker(nil)
+	cfg := sandboxConfig()
+	cfg.Platforms = []string{"linux/amd64", "linux/arm64"}
+	checks := Sandbox(context.Background(), d, cfg)
+	want := "linux/arm64:runner=PASS linux/arm64:preflight=PASS linux/arm64:bash=PASS linux/arm64:git=PASS " +
+		"linux/amd64:runner=PASS linux/amd64:preflight=PASS linux/amd64:bash=PASS linux/amd64:git=PASS"
+	if got := platformLine(checks); got != want {
+		t.Fatalf("checks = %s\nwant     %s", got, want)
+	}
+	if strings.Contains(checks[0].Reason, "emulated") || !strings.Contains(checks[4].Reason, "emulated") {
+		t.Errorf("runner reasons = %q, %q; want only linux/amd64 marked emulated", checks[0].Reason,
+			checks[4].Reason)
+	}
+	for _, platform := range []string{"linux/arm64", "linux/amd64"} {
+		create := []string{"create", "--quiet", "--platform", platform, cfg.RunnerImage}
+		if !slices.ContainsFunc(d.calls, func(c []string) bool { return slices.Equal(c, create) }) {
+			t.Errorf("the runner binaries were never copied for %s", platform)
+		}
+		var entrypoints []string
+		for _, run := range d.runs() {
+			if flagValue(run, "--platform") == platform && flagValue(run, "--entrypoint") != "true" {
+				entrypoints = append(entrypoints, entrypoint(run))
+			}
+		}
+		if want := []string{"/patchy/bin/agent-runner", "bash", "git"}; !slices.Equal(entrypoints, want) {
+			t.Errorf("%s ran %v, want %v", platform, entrypoints, want)
+		}
+	}
+}
+
+// TestSandboxSkipsPlatformsItCannotEmulate: a docker host with no emulation
+// for a platform (no binfmt handler: the runner image's own binary fails
+// with exec format error) cannot say anything about it, so that platform's
+// lines are SKIP with the reason, never FAIL and never silently absent.
+func TestSandboxSkipsPlatformsItCannotEmulate(t *testing.T) {
+	d := healthyDocker(func(args []string) (Result, bool) {
+		return Result{ExitCode: 255, Stderr: "exec /usr/bin/true: exec format error\n"},
+			args[0] == "run" && flagValue(args, "--platform") == "linux/amd64"
+	})
+	cfg := sandboxConfig()
+	cfg.Platforms = []string{"linux/amd64", "linux/arm64"}
+	checks := Sandbox(context.Background(), d, cfg)
+	want := "linux/arm64:runner=PASS linux/arm64:preflight=PASS linux/arm64:bash=PASS linux/arm64:git=PASS " +
+		"linux/amd64:runner=SKIP linux/amd64:preflight=SKIP linux/amd64:bash=SKIP linux/amd64:git=SKIP"
+	if got := platformLine(checks); got != want {
+		t.Fatalf("checks = %s\nwant     %s", got, want)
+	}
+	if !strings.Contains(checks[4].Reason, "exec format error") || !strings.Contains(checks[4].Reason, "emulat") {
+		t.Errorf("reason = %q, want the host's missing emulation named", checks[4].Reason)
+	}
+	for _, run := range d.runs() {
+		if flagValue(run, "--platform") == "linux/amd64" && strings.Contains(strings.Join(run, " "), "@sha256:") {
+			t.Errorf("the image under test ran as linux/amd64 after the probe failed: %v", entrypoint(run))
+		}
+	}
+}
+
+// TestSandboxStopsWhenInterrupted: once the run is interrupted, the
+// platforms not yet run are skipped as interrupted rather than failed one
+// docker call at a time.
+func TestSandboxStopsWhenInterrupted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d := healthyDocker(nil)
+	d.interrupt = func(_ context.Context, args []string) error {
+		if args[0] == "run" && entrypoint(args) == "git" {
+			cancel()
+			return context.Canceled
+		}
+		return nil
+	}
+	cfg := sandboxConfig()
+	cfg.Platforms = []string{"linux/amd64", "linux/arm64"}
+	checks := Sandbox(ctx, d, cfg)
+	want := "linux/arm64:runner=PASS linux/arm64:preflight=PASS linux/arm64:bash=PASS linux/arm64:git=FAIL " +
+		"linux/amd64:runner=SKIP linux/amd64:preflight=SKIP linux/amd64:bash=SKIP linux/amd64:git=SKIP"
+	if got := platformLine(checks); got != want {
+		t.Fatalf("checks = %s\nwant     %s", got, want)
+	}
+	if !strings.Contains(checks[4].Reason, "interrupted") {
+		t.Errorf("reason = %q, want the interruption named", checks[4].Reason)
+	}
+	for _, c := range d.calls {
+		if flagValue(c, "--platform") == "linux/amd64" {
+			t.Errorf("docker was still called for linux/amd64 after the interruption: %v", c[:2])
+		}
+	}
+}
+
+// TestSandboxPlatformIsPrintable: a platform name is the index's own
+// string, so the label and the progress narrating it are shown inert.
+func TestSandboxPlatformIsPrintable(t *testing.T) {
+	var progress []string
+	cfg := sandboxConfig()
+	cfg.Platforms = []string{"linux/arm64", "linux/amd64/\x1b[2K"}
+	cfg.Progress = func(msg string) { progress = append(progress, msg) }
+	checks := Sandbox(context.Background(), healthyDocker(nil), cfg)
+	if len(checks) != 8 || checks[4].Platform != `linux/amd64/\x1b[2K` {
+		t.Fatalf("checks = %+v, want the second platform labelled with its escape shown", checks)
+	}
+	for _, msg := range progress {
+		if strings.ContainsRune(msg, 0x1b) {
+			t.Errorf("progress %q carries a raw escape", msg)
+		}
+	}
+}
+
 // TestSandboxLocalSearchPath: an image the registry could not provide runs
 // with the PATH its local copy declares, sanitized as the resolver would.
 func TestSandboxLocalSearchPath(t *testing.T) {
@@ -393,23 +517,23 @@ func TestDefaultRunnerImage(t *testing.T) {
 	}
 }
 
-func TestChoosePlatform(t *testing.T) {
+func TestRunPlatforms(t *testing.T) {
 	cases := []struct {
 		host      string
 		platforms []string
-		want      string
-		emulated  bool
+		want      []runPlatform
 	}{
-		{"linux/arm64", nil, "linux/arm64", false},
-		{"linux/arm64", []string{"linux/amd64", "linux/arm64/v8"}, "linux/arm64", false},
-		{"linux/arm64", []string{"linux/amd64"}, "linux/amd64", true},
-		{"linux/amd64", []string{"linux/amd64"}, "linux/amd64", false},
+		{"linux/arm64", nil, []runPlatform{{name: "linux/arm64"}}},
+		{"linux/arm64", []string{"linux/amd64", "linux/arm64/v8"},
+			[]runPlatform{{name: "linux/arm64"}, {name: "linux/amd64", emulated: true}}},
+		{"linux/arm64", []string{"linux/amd64"}, []runPlatform{{name: "linux/amd64", emulated: true}}},
+		{"linux/amd64", []string{"linux/amd64"}, []runPlatform{{name: "linux/amd64"}}},
+		{"linux/amd64", []string{"linux/arm64/v8", "linux/amd64", "linux/arm64"},
+			[]runPlatform{{name: "linux/amd64"}, {name: "linux/arm64/v8", emulated: true}}},
 	}
 	for _, tc := range cases {
-		got, emulated := choosePlatform(tc.host, tc.platforms)
-		if got != tc.want || emulated != tc.emulated {
-			t.Errorf("choosePlatform(%s, %v) = %s, %v; want %s, %v", tc.host, tc.platforms, got, emulated, tc.want,
-				tc.emulated)
+		if got := runPlatforms(tc.host, tc.platforms); !slices.Equal(got, tc.want) {
+			t.Errorf("runPlatforms(%s, %v) = %+v, want %+v", tc.host, tc.platforms, got, tc.want)
 		}
 	}
 }

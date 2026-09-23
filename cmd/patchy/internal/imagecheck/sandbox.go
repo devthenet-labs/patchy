@@ -97,8 +97,9 @@ type SandboxConfig struct {
 	// from the local image's config, as source-controller would.
 	SearchPath []string
 	// Platforms are the image's runnable platforms (os/arch[/variant]) as
-	// the registry serves them; the docker host's own is preferred, and an
-	// empty list means the host's.
+	// the registry serves them. Each is run: the docker host's own natively
+	// and first, the others under docker's emulation. An empty list means
+	// the host's alone.
 	Platforms []string
 	// RunnerImage is the trusted image agent-runner and claude come from.
 	RunnerImage string
@@ -121,12 +122,17 @@ func SkipSandbox(reason string) []Check {
 }
 
 // Sandbox runs the image under test the way a repository-image Job's agent
-// container runs it and returns the runner, preflight, bash and git checks.
-// A missing docker CLI or an unreachable daemon skips them all.
+// container runs it, once for each platform it serves, since a pod may land
+// on a node of any of them, and returns the runner, preflight, bash and git
+// checks of each, labelled with that platform. A missing docker CLI or an
+// unreachable daemon skips them all; a platform the docker host cannot
+// emulate skips that platform's.
 func Sandbox(ctx context.Context, cmd Commander, cfg SandboxConfig) []Check {
-	progress := cfg.Progress
-	if progress == nil {
-		progress = func(string) {}
+	progress := func(string) {}
+	if cfg.Progress != nil {
+		// A platform name is the index's own string; it is shown inert,
+		// like every reason.
+		progress = func(msg string) { cfg.Progress(printable(msg)) }
 	}
 	if _, err := cmd.LookPath("docker"); err != nil {
 		return SkipSandbox("docker CLI not found on PATH; --run needs a local docker")
@@ -139,41 +145,58 @@ func Sandbox(ctx context.Context, cmd Commander, cfg SandboxConfig) []Check {
 	if !strings.HasPrefix(host, "linux/") {
 		return SkipSandbox("the docker host runs " + host + " containers; the agent pod is linux")
 	}
-	platform, emulated := choosePlatform(host, cfg.Platforms)
 
-	var r Report
 	searchPath := cfg.SearchPath
 	if len(searchPath) == 0 {
 		if searchPath, err = localSearchPath(ctx, cmd, cfg.Image); err != nil {
-			r.skip(err.Error(), sandboxChecks...)
+			return SkipSandbox(err.Error())
+		}
+	}
+
+	var checks []Check
+	for _, p := range runPlatforms(host, cfg.Platforms) {
+		var platformChecks []Check
+		if err := ctx.Err(); err != nil {
+			platformChecks = SkipSandbox("the run was interrupted: " + err.Error())
+		} else {
+			platformChecks = sandboxAs(ctx, cmd, cfg, searchPath, p, progress)
+		}
+		for _, c := range platformChecks {
+			c.Platform = printable(p.name)
+			checks = append(checks, c)
+		}
+	}
+	return checks
+}
+
+// sandboxAs runs the four sandbox checks as one platform.
+func sandboxAs(ctx context.Context, cmd Commander, cfg SandboxConfig, searchPath []string, p runPlatform,
+	progress func(string)) []Check {
+	var r Report
+	if p.emulated {
+		if reason, ok := emulates(ctx, cmd, cfg.RunnerImage, p.name); !ok {
+			r.skip(reason, sandboxChecks...)
 			return r.Checks
 		}
 	}
 
-	progress(fmt.Sprintf("copying %s out of %s (%s)", strings.Join(injected, " and "), cfg.RunnerImage, platform))
-	if err := extract(ctx, cmd, cfg.RunnerImage, platform, cfg.BinDir); err != nil {
+	progress(fmt.Sprintf("copying %s out of %s (%s)", strings.Join(injected, " and "), cfg.RunnerImage, p.name))
+	if err := extract(ctx, cmd, cfg.RunnerImage, p.name, cfg.BinDir); err != nil {
 		r.add(CheckRunner, Fail, err.Error())
 		r.skip("the runner binaries could not be copied", CheckPreflight, CheckBash, CheckGit)
 		return r.Checks
 	}
-	reason := fmt.Sprintf("%s from %s (%s)", strings.Join(injected, " and "), cfg.RunnerImage, platform)
-	if emulated {
-		reason += "; the docker host is not " + platform + ", so it runs emulated"
+	reason := fmt.Sprintf("%s from %s", strings.Join(injected, " and "), cfg.RunnerImage)
+	if p.emulated {
+		reason += "; the docker host is not " + p.name + ", so it runs emulated"
 	}
 	r.add(CheckRunner, Pass, reason)
 
 	run := func(entrypoint string, args ...string) (Result, error) {
-		// Interrupting a run (Ctrl-C, runTimeout) kills the docker client,
-		// not the container, so every run is named and removed by name.
-		name := "patchy-check-" + strings.ToLower(rand.Text())
-		defer removeContainer(ctx, cmd, name)
-		ctx, cancel := context.WithTimeout(ctx, runTimeout)
-		defer cancel()
-		return cmd.Run(ctx, "docker",
-			sandboxArgs(name, cfg.Image, platform, cfg.BinDir, searchPath, entrypoint, args)...)
+		return runContainer(ctx, cmd, sandboxArgs(cfg.Image, p.name, cfg.BinDir, searchPath, entrypoint, args)...)
 	}
 
-	progress(fmt.Sprintf("running agent-runner %s in %s (%s)", agentrun.PreflightCommand, cfg.Image, platform))
+	progress(fmt.Sprintf("running agent-runner %s in %s (%s)", agentrun.PreflightCommand, cfg.Image, p.name))
 	res, err := run(patchyBinDir+"/agent-runner", agentrun.PreflightCommand)
 	switch {
 	case err != nil:
@@ -204,6 +227,22 @@ func Sandbox(ctx context.Context, cmd Commander, cfg SandboxConfig) []Check {
 	return r.Checks
 }
 
+// emulates asks whether the docker host can run binaries of platform at
+// all, by running the runner image's own `true` as that platform: a trusted
+// binary, so its failure says nothing about the image under test. Only a
+// definite no (exec format error: no binfmt handler for the platform) is
+// ok == false, with the reason to report; any other outcome lets the real
+// checks run and speak for themselves.
+func emulates(ctx context.Context, cmd Commander, runnerImage, platform string) (reason string, ok bool) {
+	res, err := runContainer(ctx, cmd, "--platform", platform, "--network", "none", "--entrypoint", "true",
+		runnerImage)
+	if err != nil || res.ExitCode == 0 || !strings.Contains(res.Stderr+res.Stdout, "exec format error") {
+		return "", true
+	}
+	return fmt.Sprintf("the docker host cannot run %s binaries (%s), so this platform went unchecked; "+
+		"install emulation for it (binfmt_misc with QEMU) to check it", platform, detail(res)), false
+}
+
 // docker run's own exit statuses, as opposed to the container's command
 // failing: 125 when it could not create or start the container at all (no
 // such image, pull denied, bad flag), 126 when the command could not be
@@ -229,14 +268,29 @@ func docker(ctx context.Context, cmd Commander, args ...string) (string, error) 
 	return res.Stdout, nil
 }
 
-// choosePlatform picks the platform to run as: the docker host's own when
-// the image serves it (or nothing is known about the image), otherwise the
-// image's first runnable platform, which docker then emulates.
-func choosePlatform(host string, platforms []string) (platform string, emulated bool) {
+// runPlatform is one platform the sandbox runs the image as.
+type runPlatform struct {
+	name     string
+	emulated bool
+}
+
+// runPlatforms lists the platforms to run the image as: the docker host's
+// own first, natively, when the image serves it (or nothing is known about
+// the image), then each other platform the image serves, once per os/arch,
+// which docker emulates.
+func runPlatforms(host string, platforms []string) []runPlatform {
+	var out []runPlatform
 	if len(platforms) == 0 || slices.ContainsFunc(platforms, func(p string) bool { return osArch(p) == host }) {
-		return host, false
+		out = append(out, runPlatform{name: host})
 	}
-	return platforms[0], true
+	seen := map[string]bool{host: true}
+	for _, p := range platforms {
+		if !seen[osArch(p)] {
+			seen[osArch(p)] = true
+			out = append(out, runPlatform{name: p, emulated: true})
+		}
+	}
+	return out
 }
 
 // osArch drops a platform's variant: linux/arm64/v8 is linux/arm64.
@@ -285,6 +339,20 @@ func extract(ctx context.Context, cmd Commander, runnerImage, platform, binDir s
 	return nil
 }
 
+// runContainer is one `docker run` of args in a container of its own,
+// bounded by runTimeout (quiet, so a pull's progress never becomes the line
+// a failure is explained by). Interrupting a run (Ctrl-C, the timeout)
+// kills the docker client, not the container, and --rm removes only a
+// container that exits, so each is named and force-removed by name however
+// the run ends.
+func runContainer(ctx context.Context, cmd Commander, args ...string) (Result, error) {
+	name := "patchy-check-" + strings.ToLower(rand.Text())
+	defer removeContainer(ctx, cmd, name)
+	ctx, cancel := context.WithTimeout(ctx, runTimeout)
+	defer cancel()
+	return cmd.Run(ctx, "docker", append([]string{"run", "--rm", "--quiet", "--name", name}, args...)...)
+}
+
 // removeContainer force-removes a container the sandbox made, on a context
 // of its own: the run it follows may have been interrupted, and the
 // container must go anyway.
@@ -294,22 +362,19 @@ func removeContainer(ctx context.Context, cmd Commander, container string) {
 	_, _ = cmd.Run(ctx, "docker", "rm", "--force", container)
 }
 
-// sandboxArgs is the docker run of one command in the emulated agent
-// container, named so it can be removed however the run ends (quiet, so a
-// pull's progress never becomes the line a failure is explained by): the
-// pod's security context (uid 65532, read-only root, all capabilities
-// dropped, no privilege escalation; docker's default seccomp profile stands
-// in for RuntimeDefault), bounded processes, memory and CPU, no network at
-// all (the pod reaches only DNS, the artifact server and the broker, none
-// of which a check needs), the two emptyDirs as sized executable tmpfs
-// mounts, the binaries read-only at /patchy/bin, the image's ENTRYPOINT
-// replaced as the Job's Command replaces it, and the agent container's
-// environment.
-func sandboxArgs(name, image, platform, binDir string, searchPath []string, entrypoint string,
-	args []string) []string {
+// sandboxArgs is the runContainer arguments of one command in the emulated
+// agent container: the pod's security context (uid 65532, read-only root,
+// all capabilities dropped, no privilege escalation; docker's default
+// seccomp profile stands in for RuntimeDefault), bounded processes, memory
+// and CPU, no network at all (the pod reaches only DNS, the artifact server
+// and the broker, none of which a check needs), the two emptyDirs as sized
+// executable tmpfs mounts, the binaries read-only at /patchy/bin, the
+// image's ENTRYPOINT replaced as the Job's Command replaces it, and the
+// agent container's environment.
+func sandboxArgs(image, platform, binDir string, searchPath []string, entrypoint string, args []string) []string {
 	tmpfs := ":exec,mode=1777,size=" + sandboxTmpfsSize
 	out := []string{
-		"run", "--rm", "--quiet", "--name", name, "--platform", platform,
+		"--platform", platform,
 		"--user", sandboxUser, "--read-only", "--network", "none",
 		"--cap-drop", "ALL", "--security-opt", "no-new-privileges",
 		"--pids-limit", sandboxPids, "--memory", sandboxMemory, "--cpus", sandboxCPUs,

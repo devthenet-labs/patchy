@@ -82,11 +82,16 @@ func newCheckImageCmd(opts *Options) *cobra.Command {
 			"container is removed when its run ends, even an interrupted one. In it,\n" +
 			"agent-runner's own preflight (the check a stage runs before its first model\n" +
 			"call: claude --version, git --version and bash -c true) runs, then bash -c true\n" +
-			"and git --version on their own. Without a docker CLI the run is skipped, not\n" +
-			"failed. An image that exists only in your local docker store fails the registry\n" +
-			"checks but still runs; to check both before publishing, push it to a scratch\n" +
-			"tag or a local registry.\n\n" +
-			"Each check prints one line: PASS, FAIL or SKIP, the check, and the reason.\n" +
+			"and git --version on their own. A pod may land on a node of any platform the\n" +
+			"image serves, so all of that runs once per platform: the docker host's own\n" +
+			"natively and first, any other under docker's emulation (Docker Desktop has it;\n" +
+			"on Linux, binfmt_misc with QEMU). A platform the docker host cannot emulate is\n" +
+			"reported as SKIP. Without a docker CLI the run is skipped, not failed. An image\n" +
+			"that exists only in your local docker store fails the registry checks but\n" +
+			"still runs; to check both before publishing, push it to a scratch tag or a\n" +
+			"local registry.\n\n" +
+			"Each check prints one line: PASS, FAIL or SKIP, the check, the platform for a\n" +
+			"--run check, and the reason.\n" +
 			"-o json or -o yaml prints the whole report as data instead. The exit status is\n" +
 			"non-zero when any check fails.",
 		Example: "  patchy check image ghcr.io/acme/shop-agent:1\n" +
@@ -235,7 +240,8 @@ func sandboxDir() (string, error) {
 }
 
 // renderCheckImage writes the report: structured under -o json/yaml, one
-// line per check otherwise.
+// line per check otherwise, with the platform after the check's name for
+// the sandbox checks, which run once per platform.
 func renderCheckImage(opts *Options, report imagecheck.Report, format printer.Format) error {
 	switch format {
 	case printer.FormatJSON:
@@ -252,7 +258,11 @@ func renderCheckImage(opts *Options, report imagecheck.Report, format printer.Fo
 	}
 	w := tabwriter.NewWriter(opts.Out, 0, 8, 2, ' ', 0)
 	for _, c := range report.Checks {
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", c.Status, c.Name, oneLine(c.Reason)); err != nil {
+		cells := []string{string(c.Status), c.Name}
+		if c.Platform != "" {
+			cells = append(cells, c.Platform)
+		}
+		if _, err := fmt.Fprintln(w, strings.Join(append(cells, oneLine(c.Reason)), "\t")); err != nil {
 			return err
 		}
 	}

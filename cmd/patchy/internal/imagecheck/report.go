@@ -43,7 +43,10 @@ const (
 type Check struct {
 	Name   string `json:"name"`
 	Status Status `json:"status"`
-	Reason string `json:"reason"`
+	// Platform is the platform a sandbox check ran as; empty for the static
+	// checks, which judge every platform at once.
+	Platform string `json:"platform,omitempty"`
+	Reason   string `json:"reason"`
 }
 
 // Platform is one manifest a linux/amd64 or linux/arm64 node could run.

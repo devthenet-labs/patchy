@@ -27,12 +27,17 @@ PATH=/patchy/bin:<the image's PATH> and the rest of the pod's environment; each
 container is removed when its run ends, even an interrupted one. In it,
 agent-runner's own preflight (the check a stage runs before its first model
 call: claude --version, git --version and bash -c true) runs, then bash -c true
-and git --version on their own. Without a docker CLI the run is skipped, not
-failed. An image that exists only in your local docker store fails the registry
-checks but still runs; to check both before publishing, push it to a scratch
-tag or a local registry.
+and git --version on their own. A pod may land on a node of any platform the
+image serves, so all of that runs once per platform: the docker host's own
+natively and first, any other under docker's emulation (Docker Desktop has it;
+on Linux, binfmt_misc with QEMU). A platform the docker host cannot emulate is
+reported as SKIP. Without a docker CLI the run is skipped, not failed. An image
+that exists only in your local docker store fails the registry checks but
+still runs; to check both before publishing, push it to a scratch tag or a
+local registry.
 
-Each check prints one line: PASS, FAIL or SKIP, the check, and the reason.
+Each check prints one line: PASS, FAIL or SKIP, the check, the platform for a
+--run check, and the reason.
 -o json or -o yaml prints the whole report as data instead. The exit status is
 non-zero when any check fails.
 

@@ -186,29 +186,32 @@ func TestSandboxDir(t *testing.T) {
 	}
 }
 
-// hostileGitDocker is a working linux/amd64 docker host running an image
-// whose git answers `git --version` with terminal control sequences: a
-// cursor-up-and-erase that would paint a forged PASS over the lines above
-// it, an OSC 52 clipboard write, and a C1 CSI (U+009B) that encoding/json
-// passes through unescaped.
-type hostileGitDocker struct{}
+// fakeDockerHost is a working linux/amd64 docker host whose image under
+// test passes every sandbox check, its git answering `git --version` with
+// gitOutput.
+type fakeDockerHost struct{ gitOutput string }
 
-// hostileGitOutput is what the image's git prints.
+// hostileGitOutput is what a hostile image's git prints: a cursor-up-and-
+// erase that would paint a forged PASS over the lines above it, an OSC 52
+// clipboard write, and a C1 CSI (U+009B) that encoding/json passes through
+// unescaped.
 const hostileGitOutput = "\x1b[2A\x1b[2K\rPASS  preflight  looks fine\x1b]52;c;ZWNobyBwd25lZA==\x07\u009b31m\n"
 
-func (hostileGitDocker) LookPath(file string) (string, error) { return "/usr/local/bin/" + file, nil }
+func (fakeDockerHost) LookPath(file string) (string, error) { return "/usr/local/bin/" + file, nil }
 
-func (hostileGitDocker) Run(_ context.Context, _ string, args ...string) (imagecheck.Result, error) {
+func (f fakeDockerHost) Run(_ context.Context, _ string, args ...string) (imagecheck.Result, error) {
 	switch args[0] {
 	case "version":
 		return imagecheck.Result{Stdout: "linux/amd64\n"}, nil
 	case "create":
 		return imagecheck.Result{Stdout: "c0ffee\n"}, nil
 	case "run":
-		if slices.Contains(args, "git") {
-			return imagecheck.Result{Stdout: hostileGitOutput}, nil
+		switch {
+		case slices.Contains(args, "git"):
+			return imagecheck.Result{Stdout: f.gitOutput}, nil
+		case slices.Contains(args, "/patchy/bin/agent-runner"):
+			return imagecheck.Result{Stdout: "preflight passed\n"}, nil
 		}
-		return imagecheck.Result{Stdout: "preflight passed\n"}, nil
 	}
 	return imagecheck.Result{}, nil
 }
@@ -224,7 +227,7 @@ func TestCheckImageEscapesContainerOutput(t *testing.T) {
 			var out bytes.Buffer
 			opts := &Options{Out: &out, ErrOut: io.Discard, Output: output}
 			f := &checkImageFlags{run: true, maxBytes: 1 << 30, runnerImage: "runner:test"}
-			if err := runCheckImage(context.Background(), opts, f, good, hostileGitDocker{}); err != nil {
+			if err := runCheckImage(context.Background(), opts, f, good, fakeDockerHost{hostileGitOutput}); err != nil {
 				t.Fatalf("runCheckImage: %v\n%s", err, out.String())
 			}
 			for i, r := range out.String() {
@@ -236,5 +239,69 @@ func TestCheckImageEscapesContainerOutput(t *testing.T) {
 				t.Errorf("the table does not show the escape sequence the image printed:\n%s", out.String())
 			}
 		})
+	}
+}
+
+// pushCheckIndex pushes an image index serving linux/amd64 and linux/arm64
+// as org/multi:v1 and returns its reference.
+func pushCheckIndex(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(registry.New(registry.Logger(log.New(io.Discard, "", 0))))
+	t.Cleanup(srv.Close)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archs := []string{"amd64", "arm64"}
+	adds := make([]mutate.IndexAddendum, 0, len(archs))
+	for _, arch := range archs {
+		img, err := mutate.ConfigFile(mutate.MediaType(empty.Image, types.OCIManifestSchema1), &v1.ConfigFile{
+			OS: "linux", Architecture: arch, Config: v1.Config{Env: []string{"PATH=/usr/bin"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		adds = append(adds, mutate.IndexAddendum{Add: img,
+			Descriptor: v1.Descriptor{Platform: &v1.Platform{OS: "linux", Architecture: arch}}})
+	}
+	idx := mutate.AppendManifests(mutate.IndexMediaType(empty.Index, types.OCIImageIndex), adds...)
+	tag, err := name.NewTag(u.Host + "/org/multi:v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.WriteIndex(tag, idx); err != nil {
+		t.Fatal(err)
+	}
+	return tag.String()
+}
+
+// TestCheckImageRunsEveryPlatform: --run on an index runs the sandbox checks
+// once per platform the index serves, the docker host's first, and every
+// sandbox line names the platform it ran as.
+func TestCheckImageRunsEveryPlatform(t *testing.T) {
+	ref := pushCheckIndex(t)
+	var out bytes.Buffer
+	opts := &Options{Out: &out, ErrOut: io.Discard, Output: "table"}
+	f := &checkImageFlags{run: true, maxBytes: 1 << 30, runnerImage: "runner:test"}
+	if err := runCheckImage(context.Background(), opts, f, ref, fakeDockerHost{"git version 2.51.0\n"}); err != nil {
+		t.Fatalf("runCheckImage: %v\n%s", err, out.String())
+	}
+	var sandboxLines []string
+	for line := range strings.Lines(out.String()) {
+		if fields := strings.Fields(line); len(fields) > 2 && slices.Contains([]string{"runner", "preflight", "bash",
+			"git"}, fields[1]) {
+			sandboxLines = append(sandboxLines, fields[0]+" "+fields[1]+" "+fields[2])
+		}
+	}
+	want := []string{
+		"PASS runner linux/amd64", "PASS preflight linux/amd64", "PASS bash linux/amd64", "PASS git linux/amd64",
+		"PASS runner linux/arm64", "PASS preflight linux/arm64", "PASS bash linux/arm64", "PASS git linux/arm64",
+	}
+	if !slices.Equal(sandboxLines, want) {
+		t.Errorf("sandbox lines = %q, want %q\n%s", sandboxLines, want, out.String())
+	}
+	if !strings.Contains(out.String(), "PASS  runner     linux/arm64  agent-runner and claude from runner:test; the "+
+		"docker host is not linux/arm64, so it runs emulated") {
+		t.Errorf("the emulated platform's runner line is not marked emulated:\n%s", out.String())
 	}
 }

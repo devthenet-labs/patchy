@@ -198,7 +198,10 @@ runs.
 ### To Amazon ECR from GitHub Actions
 
 Push with GitHub's OIDC token, so the workflow holds no long-lived AWS key. You need an IAM role that trusts GitHub's
-OIDC provider for your repository and may push to the ECR repository, and the workflow needs `id-token: write`:
+OIDC provider for your repository and may push to the ECR repository, and the workflow needs `id-token: write`. The
+workflow builds `.patchy/Dockerfile`, so copy the [example](#examples) you chose there (or point `file:` at wherever
+your Dockerfile lives). It builds both platforms on one amd64 runner, so `setup-qemu-action` registers the emulator the
+arm64 half's `RUN` steps need; without it they fail with `exec format error`:
 
 ```yaml
 # .github/workflows/agent-image.yaml
@@ -222,6 +225,7 @@ jobs:
           role-to-assume: arn:aws:iam::<account>:role/<push-role>
           aws-region: <region>
       - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-qemu-action@v3 # runs the arm64 RUN steps on this amd64 runner
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         id: build

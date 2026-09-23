@@ -33,6 +33,12 @@ type Status struct {
 	// started or when no pod exists yet. A pod stuck pulling never mutates
 	// the Job, so this is the only signal a Job watch cannot deliver.
 	Waiting string
+	// AgentStarted means the agent container is running or has terminated.
+	// An empty Waiting cannot say so on its own: it is also empty when the
+	// pod has no container status yet (unscheduled, waiting for a node, not
+	// yet reported by the kubelet), and a pull that fails after that never
+	// mutates the Job either.
+	AgentStarted bool
 	// WaitingMessage is the kubelet's message beside Waiting (the registry's
 	// "manifest unknown", for one), empty when Waiting is.
 	WaitingMessage string
@@ -60,6 +66,7 @@ func (c *Client) Status(ctx context.Context, jobName string) (Status, error) {
 	}
 	if pod != nil {
 		s.Waiting, s.WaitingMessage = agentWaiting(pod)
+		s.AgentStarted = agentStarted(pod)
 		s.InitExitCode = prepareExitCode(pod)
 	}
 	return s, nil
@@ -105,6 +112,13 @@ func agentWaiting(pod *corev1.Pod) (reason, message string) {
 		return "", ""
 	}
 	return agent.State.Waiting.Reason, agent.State.Waiting.Message
+}
+
+// agentStarted reports whether the agent container is running or has
+// terminated.
+func agentStarted(pod *corev1.Pod) bool {
+	agent := agentStatus(pod)
+	return agent != nil && (agent.State.Running != nil || agent.State.Terminated != nil)
 }
 
 // prepareExitCode returns the prepare init container's exit code once it

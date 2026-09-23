@@ -472,7 +472,8 @@ func TestExitSandboxUnenforced(t *testing.T) {
 }
 
 // TestStatusReadsPod: the collectors' view of a Job includes its pod's
-// waiting reason, the prepare init's exit code and the image source.
+// waiting reason, whether the agent has started, the prepare init's exit
+// code and the image source.
 func TestStatusReadsPod(t *testing.T) {
 	newJob := func(ann map[string]string) *batchv1.Job {
 		return &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "j", Namespace: "patchy-agents", Annotations: ann}}
@@ -511,7 +512,20 @@ func TestStatusReadsPod(t *testing.T) {
 			newJob(nil),
 			withInit(jobPodInState("j", corev1.PodRunning, corev1.ContainerState{
 				Running: &corev1.ContainerStateRunning{}}), 0),
-			Status{InitExitCode: new(int32(0)), RunnerImageSource: "default"},
+			Status{AgentStarted: true, InitExitCode: new(int32(0)), RunnerImageSource: "default"},
+		},
+		{
+			"agent already terminated",
+			newJob(map[string]string{annotationRunnerImageSource: "repository"}),
+			withInit(jobPodInState("j", corev1.PodSucceeded, corev1.ContainerState{
+				Terminated: &corev1.ContainerStateTerminated{}}), 0),
+			Status{AgentStarted: true, InitExitCode: new(int32(0)), RunnerImageSource: "repository"},
+		},
+		{
+			"pod with no container status yet",
+			newJob(map[string]string{annotationRunnerImageSource: "repository"}),
+			unreported(jobPodInState("j", corev1.PodPending, corev1.ContainerState{})),
+			Status{RunnerImageSource: "repository"},
 		},
 		{
 			"a foreign source value reads as default",
@@ -541,6 +555,13 @@ func TestStatusReadsPod(t *testing.T) {
 			}
 		})
 	}
+}
+
+// unreported strips the pod's container statuses, as the kubelet leaves a
+// pod it has not scheduled or reported yet.
+func unreported(pod *corev1.Pod) *corev1.Pod {
+	pod.Status.ContainerStatuses = nil
+	return pod
 }
 
 // withInit adds a terminated prepare init container status with the exit

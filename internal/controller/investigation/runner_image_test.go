@@ -308,6 +308,17 @@ func TestCollectPullFailFast(t *testing.T) {
 				Active: 1, Created: clock.Add(-5 * time.Minute), Waiting: "ErrImagePull", WaitingMessage: manifestUnknown,
 				RunnerImageSource: v1alpha1.RunnerImageSourceRepository,
 			}, 0, true},
+		// Still unscheduled past the grace: a pull failure once it lands on a
+		// node never mutates the Job, so the collector keeps looking.
+		{"repository image with no pod status after the grace keeps polling", v1alpha1.RunnerImageSourceRepository,
+			jobs.Status{
+				Active: 1, Created: clock.Add(-5 * time.Minute), RunnerImageSource: v1alpha1.RunnerImageSourceRepository,
+			}, runnerguard.PullPoll, false},
+		{"repository image whose agent started is left to the Job watch", v1alpha1.RunnerImageSourceRepository,
+			jobs.Status{
+				Active: 1, Created: clock.Add(-5 * time.Minute), AgentStarted: true,
+				RunnerImageSource: v1alpha1.RunnerImageSourceRepository,
+			}, 0, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -110,9 +110,16 @@ func repoStatus(created time.Time, waiting, message string) jobs.Status {
 	}
 }
 
+// started marks st's agent container as started.
+func started(st jobs.Status) jobs.Status {
+	st.AgentStarted = true
+	return st
+}
+
 // TestPending: a repository-image pod gets the pull grace whatever it
-// reports, then fails fast only on a pull failure that cannot heal; a
-// default-image Job is never judged at all.
+// reports, then fails fast only on a pull failure that cannot heal and is
+// looked at again until its agent container has started; a default-image
+// Job is never judged at all.
 func TestPending(t *testing.T) {
 	early := clock.Add(-30 * time.Second)
 	late := clock.Add(-5 * time.Minute)
@@ -147,7 +154,11 @@ func TestPending(t *testing.T) {
 		{"after grace, bare backoff keeps waiting", repoStatus(late, "ImagePullBackOff", "Back-off pulling image"),
 			PullPoll, ""},
 		{"after grace, still initializing keeps waiting", repoStatus(late, "PodInitializing", ""), PullPoll, ""},
-		{"after grace, running is left to the Job watch", repoStatus(late, "", ""), 0, ""},
+		{"after grace, running is left to the Job watch", started(repoStatus(late, "", "")), 0, ""},
+		// No container status at all (unscheduled, waiting for a node, not
+		// yet reported): a later pull failure never mutates the Job, so the
+		// collector must keep looking.
+		{"after grace, no container status yet keeps polling", repoStatus(late, "", ""), PullPoll, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -76,7 +76,7 @@ func Revived(fnd *v1alpha1.Finding) bool {
 
 // PullGrace is how long a repository-image pod may sit waiting on its agent
 // container before a collector judges the wait; PullPoll paces the looks
-// after it while the container is still waiting.
+// after it until the container has started.
 const (
 	PullGrace = 2 * time.Minute
 	PullPoll  = 30 * time.Second
@@ -90,9 +90,13 @@ const (
 // container status is indistinguishable from one about to fail its pull —
 // then a failure detail once the agent container is stuck on a pull failure
 // that will not heal (InvalidImageName, CreateContainerConfigError, or a pull
-// error saying the manifest is unknown or not found), a slower requeue while
-// it is waiting on anything else, and nothing once it has started. Any other
-// pull error keeps waiting for the Job's activeDeadlineSeconds.
+// error saying the manifest is unknown or not found), a slower requeue until
+// the agent container has started, and nothing once it has. The slower
+// requeue covers a container waiting on anything else and a pod with no
+// container status at all (unscheduled, or waiting for a node past the
+// grace): a pull that fails once it is scheduled never mutates the Job, so
+// only these looks would see it. Any other pull error keeps waiting for the
+// Job's activeDeadlineSeconds.
 func Pending(st jobs.Status, now time.Time) (time.Duration, string) {
 	if st.Done || st.RunnerImageSource != v1alpha1.RunnerImageSourceRepository {
 		return 0, ""
@@ -107,7 +111,7 @@ func Pending(st jobs.Status, now time.Time) (time.Duration, string) {
 		}
 		return 0, "agent image pull failed: " + detail
 	}
-	if st.Waiting != "" {
+	if !st.AgentStarted {
 		return PullPoll, ""
 	}
 	return 0, ""

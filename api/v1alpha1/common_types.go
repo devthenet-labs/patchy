@@ -120,7 +120,11 @@ type JobReference struct {
 // ran: the Source is "default" whenever injection did not happen, for any
 // reason.
 type RunnerImageRef struct {
-	// Image is the digest-pinned reference the pod ran.
+	// Image is the image reference the agent container ran, as written into
+	// the Job. With Source "repository" it is the digest-pinned reference
+	// resolved onto the Repository's status. With Source "default" it is the
+	// per-harness runner image exactly as the operator configured it, which
+	// is digest-pinned only if that configuration pins it (a tag otherwise).
 	Image string `json:"image"`
 	// Source is RunnerImageSourceRepository when the image came from the
 	// Repository's declaration and RunnerImageSourceDefault when the

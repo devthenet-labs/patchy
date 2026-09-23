@@ -421,7 +421,12 @@ spec:
                   flip between attempts cannot change the decision.
                 properties:
                   image:
-                    description: Image is the digest-pinned reference the pod ran.
+                    description: |-
+                      Image is the image reference the agent container ran, as written into
+                      the Job. With Source "repository" it is the digest-pinned reference
+                      resolved onto the Repository's status. With Source "default" it is the
+                      per-harness runner image exactly as the operator configured it, which
+                      is digest-pinned only if that configuration pins it (a tag otherwise).
                     type: string
                   manifest:
                     description: |-

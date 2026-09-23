@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.7](https://github.com/devthenet-labs/patchy/compare/v0.11.6...v0.11.7) (2026-09-23)
+
+
+### Features
+
+* **cli:** patchy check image ([#24](https://github.com/devthenet-labs/patchy/issues/24)) ([b4c563a](https://github.com/devthenet-labs/patchy/commit/b4c563af42fa4d8a00ab91fbbe2e84bf775bf571))
+* **controllers:** repository runner images in the job controllers (phase 5) ([#25](https://github.com/devthenet-labs/patchy/issues/25)) ([b00856d](https://github.com/devthenet-labs/patchy/commit/b00856d40796b3661ab9b3f61e5c8cb129583ac3))
+
 ## [0.11.6](https://github.com/devthenet-labs/patchy/compare/v0.11.5...v0.11.6) (2026-09-23)
 
 

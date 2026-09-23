@@ -14,8 +14,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
@@ -172,5 +174,58 @@ func TestSandboxDir(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() || !strings.HasPrefix(filepath.Base(dir), "check-image-") {
 		t.Errorf("sandboxDir = %q (%v), want a fresh check-image- directory", dir, err)
+	}
+}
+
+// hostileGitDocker is a working linux/amd64 docker host running an image
+// whose git answers `git --version` with terminal control sequences: a
+// cursor-up-and-erase that would paint a forged PASS over the lines above
+// it, an OSC 52 clipboard write, and a C1 CSI (U+009B) that encoding/json
+// passes through unescaped.
+type hostileGitDocker struct{}
+
+// hostileGitOutput is what the image's git prints.
+const hostileGitOutput = "\x1b[2A\x1b[2K\rPASS  preflight  looks fine\x1b]52;c;ZWNobyBwd25lZA==\x07\u009b31m\n"
+
+func (hostileGitDocker) LookPath(file string) (string, error) { return "/usr/local/bin/" + file, nil }
+
+func (hostileGitDocker) Run(_ context.Context, _ string, args ...string) (imagecheck.Result, error) {
+	switch args[0] {
+	case "version":
+		return imagecheck.Result{Stdout: "linux/amd64\n"}, nil
+	case "create":
+		return imagecheck.Result{Stdout: "c0ffee\n"}, nil
+	case "run":
+		if slices.Contains(args, "git") {
+			return imagecheck.Result{Stdout: hostileGitOutput}, nil
+		}
+		return imagecheck.Result{Stdout: "preflight passed\n"}, nil
+	}
+	return imagecheck.Result{}, nil
+}
+
+// TestCheckImageEscapesContainerOutput: what the image under test prints
+// reaches the report inert. Its control characters are shown escaped, so
+// it can neither move the cursor over the lines above it nor drive the
+// terminal, and the table carries no control byte but its line breaks.
+func TestCheckImageEscapesContainerOutput(t *testing.T) {
+	good, _ := pushCheckImage(t, []string{"PATH=/usr/bin"}, nil)
+	for _, output := range []string{"table", "json", "yaml"} {
+		t.Run(output, func(t *testing.T) {
+			var out bytes.Buffer
+			opts := &Options{Out: &out, ErrOut: io.Discard, Output: output}
+			f := &checkImageFlags{run: true, maxBytes: 1 << 30, runnerImage: "runner:test"}
+			if err := runCheckImage(context.Background(), opts, f, good, hostileGitDocker{}); err != nil {
+				t.Fatalf("runCheckImage: %v\n%s", err, out.String())
+			}
+			for i, r := range out.String() {
+				if r != '\n' && r != '\t' && unicode.IsControl(r) {
+					t.Fatalf("output carries control character %U at byte %d:\n%q", r, i, out.String())
+				}
+			}
+			if output == "table" && !strings.Contains(out.String(), `\x1b[2A\x1b[2K`) {
+				t.Errorf("the table does not show the escape sequence the image printed:\n%s", out.String())
+			}
+		})
 	}
 }

@@ -4,7 +4,6 @@
 package imagecheck
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os/exec"
@@ -20,9 +19,36 @@ var _ Commander = ExecCommander{}
 // LookPath implements Commander.
 func (ExecCommander) LookPath(file string) (string, error) { return exec.LookPath(file) }
 
-// Run implements Commander.
+// outputTail is how much of each stream Run keeps: the end, where the line
+// a check reads is, and no more. The commands run the image under test,
+// which may write without end for as long as runTimeout allows.
+const outputTail = 64 << 10
+
+// tailBuffer is an io.Writer that keeps only the last outputTail bytes
+// written to it.
+type tailBuffer struct{ buf []byte }
+
+// Write implements io.Writer; it never fails.
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if len(p) >= outputTail {
+		p = p[len(p)-outputTail:]
+		t.buf = t.buf[:0]
+	}
+	if over := len(t.buf) + len(p) - outputTail; over > 0 {
+		t.buf = append(t.buf[:0], t.buf[over:]...)
+	}
+	t.buf = append(t.buf, p...)
+	return n, nil
+}
+
+// String returns the kept tail.
+func (t *tailBuffer) String() string { return string(t.buf) }
+
+// Run implements Commander. It keeps only the last outputTail bytes of
+// each stream.
 func (ExecCommander) Run(ctx context.Context, name string, args ...string) (Result, error) {
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr tailBuffer
 	c := exec.CommandContext(ctx, name, args...)
 	c.Stdout, c.Stderr = &stdout, &stderr
 	err := c.Run()

@@ -908,12 +908,15 @@ agent:
         # set, the agent ServiceAccount also lists it in imagePullSecrets —
         # and the kubelet reads that Secret from agent.namespace, not the
         # release namespace, so a Secret of the same name must exist there
-        # too: supply pullSecretData to have the chart render it, or create
-        # it yourself.
+        # too: supply pullSecretData to have the chart render both, or create
+        # them yourself. The mount is optional: until the release-namespace
+        # Secret exists (with a .dockerconfigjson key), source-controller
+        # still starts, resolves anonymously and rejects what it cannot read.
         pullSecret: ""
         # The .dockerconfigjson content (JSON, not base64) the chart renders
-        # into agent.namespace as a Secret named `pullSecret`. Optional; like
-        # any inline credential it lands in the release's revision history.
+        # as the `pullSecret` Secret in both the release namespace and
+        # agent.namespace. Optional; like any inline credential it lands in
+        # the release's revision history.
         pullSecretData: ""
     # The sandbox policies: default-deny both directions plus DNS, the
     # artifact server, and TCP-443-only external egress. A plain

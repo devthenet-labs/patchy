@@ -118,6 +118,10 @@ expect on "$src | .volumes[] | select(.name == \"repository-image-key\") | .conf
 expect on "$src | .volumes[] | select(.name == \"registry\") | .secret.secretName" patchy-registry
 expect on "$src | .volumes[] | select(.name == \"registry\") | .secret.items[] | .key + \" -> \" + .path" \
   ".dockerconfigjson -> config.json"
+# Optional: a missing Secret, or one without the .dockerconfigjson key, must
+# not hold source-controller (and with it the artifact server) in
+# ContainerCreating; resolution degrades to anonymous and rejects per image.
+expect on "$src | .volumes[] | select(.name == \"registry\") | .secret.optional" true
 expect on 'select(.kind == "Deployment" and .metadata.name == "patchy-source-controller") | .spec.template.metadata.annotations["checksum/repository-image-key"] | length' 64
 expect on 'select(.kind == "Deployment" and .metadata.name != "patchy-source-controller") | .spec.template.spec.volumes[].name | select(. == "registry" or . == "repository-image-key")' ""
 expect on 'select(.kind == "ConfigMap" and .metadata.name == "patchy-repository-image-key") | .data["cosign.pub"]' \
@@ -125,13 +129,22 @@ expect on 'select(.kind == "ConfigMap" and .metadata.name == "patchy-repository-
 
 # ---- feature on: the agent namespace's pull credential ----------------------
 expect on 'select(.kind == "ServiceAccount" and .metadata.name == "patchy-agent") | .imagePullSecrets[].name' patchy-registry
+# pullSecretData renders the Secret into both namespaces: agent.namespace for
+# the kubelet, the release namespace for source-controller's mount.
 expect on 'select(.kind == "Secret" and .metadata.name == "patchy-registry") | .metadata.namespace + " " + .type' \
-  "patchy-agents kubernetes.io/dockerconfigjson"
+  "patchy kubernetes.io/dockerconfigjson
+patchy-agents kubernetes.io/dockerconfigjson"
 expect on 'select(.kind == "Secret" and .metadata.name == "patchy-registry") | .data[".dockerconfigjson"] | @base64d' \
-  '{"auths":{"ghcr.io":{"auth":"cGxhY2Vob2xkZXI6cGxhY2Vob2xkZXI="}}}'
+  '{"auths":{"ghcr.io":{"auth":"cGxhY2Vob2xkZXI6cGxhY2Vob2xkZXI="}}}
+{"auths":{"ghcr.io":{"auth":"cGxhY2Vob2xkZXI6cGxhY2Vob2xkZXI="}}}'
+expect on 'select(.kind == "Secret" and .metadata.namespace == "patchy") | .metadata.labels["app.kubernetes.io/name"]' \
+  source-controller
+render on-one-namespace -f "$fixtures/repository-images.yaml" --set agent.namespace=patchy
+expect on-one-namespace 'select(.kind == "Secret" and .metadata.name == "patchy-registry") | .metadata.namespace' patchy
 render on-no-data -f "$fixtures/repository-images.yaml" --set agent.repositoryImages.pullSecretData=
 expect on-no-data 'select(.kind == "ServiceAccount" and .metadata.name == "patchy-agent") | .imagePullSecrets[].name' patchy-registry
 expect on-no-data 'select(.kind == "Secret") | .metadata.name' ""
+expect on-no-data "$src | .volumes[] | select(.name == \"registry\") | .secret.optional" true
 render on-no-secret -f "$fixtures/repository-images.yaml" \
   --set agent.repositoryImages.pullSecretData= --set agent.repositoryImages.pullSecret=
 expect on-no-secret 'select(.kind == "ServiceAccount" and .metadata.name == "patchy-agent") | .imagePullSecrets' null

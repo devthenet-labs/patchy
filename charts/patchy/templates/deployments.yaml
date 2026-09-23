@@ -20,7 +20,8 @@
 #
 # With agent.repositoryImages enabled, source-controller additionally mounts
 # the cosign public key (a ConfigMap, configmap.yaml) and, with pullSecret,
-# the registry credential it resolves declared images with — the one
+# the registry credential (optional; serviceaccounts.yaml renders it from
+# pullSecretData) it resolves declared images with — the one
 # dockerconfigjson key mapped to config.json, the file go-containerregistry
 # reads under DOCKER_CONFIG.
 {{- $ri := .Values.agent.repositoryImages | default dict }}
@@ -185,9 +186,17 @@ spec:
                 {{- end }}
                 {{- if $ri.pullSecret }}
                 # DOCKER_CONFIG: the operator's dockerconfigjson Secret.
+                # Optional, so a Secret that is missing (or lacks the
+                # .dockerconfigjson key) leaves the directory empty rather
+                # than holding source-controller, and the artifact server
+                # every agent Job fetches from, in ContainerCreating:
+                # resolution falls back to anonymous and rejects per image.
+                # The keychain reads config.json on every resolve, so a
+                # Secret created later takes effect without a restart.
                 - name: registry
                   secret:
                       secretName: {{ $ri.pullSecret }}
+                      optional: true
                       items:
                           - key: .dockerconfigjson
                             path: config.json

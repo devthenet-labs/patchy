@@ -185,7 +185,7 @@ runner image without any change to the custom resources.
 | `agent.repositoryImages.ephemeralStorage`    | `""`         | Ephemeral-storage request and limit on both containers of every agent Job, such as `8Gi`. **Required** when enabled                                          |
 | `agent.repositoryImages.changesetMaxEntries` | `500`        | Most files a changeset from a repository-image run may touch before remediation-controller rejects it                                                        |
 | `agent.repositoryImages.pullSecret`          | `""`         | dockerconfigjson Secret in the release namespace that source-controller resolves images with; also listed in the agent ServiceAccount's `imagePullSecrets`   |
-| `agent.repositoryImages.pullSecretData`      | `""`         | The `.dockerconfigjson` content (JSON, not base64); when set, the chart renders the `pullSecret` Secret into `agent.namespace` too                           |
+| `agent.repositoryImages.pullSecretData`      | `""`         | The `.dockerconfigjson` content (JSON, not base64); when set, the chart renders the `pullSecret` Secret into both namespaces                                 |
 
 ```yaml
 agent:
@@ -238,7 +238,9 @@ on other CNIs `sourceController.networkPolicy.extraEgress` can add `169.254.169.
 registry set `pullSecret`: source-controller mounts that Secret's `.dockerconfigjson` key as `config.json` under
 `DOCKER_CONFIG`, and the agent ServiceAccount lists it in `imagePullSecrets`. The kubelet reads pull Secrets from the
 pod's own namespace, so a Secret of the same name must also exist in `agent.namespace`: set `pullSecretData` to have the
-chart render it there, or create it yourself.
+chart render it in both namespaces, or create both yourself. The mount is optional, so a missing release-namespace
+Secret (or one without a `.dockerconfigjson` key) does not stop source-controller: it resolves anonymously, rejects the
+images it cannot read, and picks the credential up once the Secret appears.
 
 ### Model providers (brokered claude)
 

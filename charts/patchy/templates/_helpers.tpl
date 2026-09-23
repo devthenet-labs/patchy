@@ -305,7 +305,7 @@ TestChartEphemeralStoragePatternIsSound (internal/runnercfg).
 {{- fail (printf "agent.repositoryImages.enabled requires narrow agent egress, but agent.networkPolicy.broadEgress (%q) resolves to broad under agent.networkPolicy.mode %q: the base policy would allow TCP 443 to anywhere. Set agent.networkPolicy.broadEgress: never (brokered claude runners only), or use agent.networkPolicy.mode cilium or gke." (.Values.agent.networkPolicy.broadEgress | default "auto") (include "patchy.egressMode" .)) -}}
 {{- end -}}
 {{- if and $ri.pullSecretData (not $ri.pullSecret) -}}
-{{- fail "agent.repositoryImages.pullSecretData requires agent.repositoryImages.pullSecret, the name of the Secret it renders into agent.namespace (the same name as the release-namespace Secret source-controller mounts)" -}}
+{{- fail "agent.repositoryImages.pullSecretData requires agent.repositoryImages.pullSecret, the name of the Secret it renders into both the release namespace (source-controller's mount) and agent.namespace (the kubelet's pull)" -}}
 {{- end -}}
 {{- end -}}
 {{- end }}

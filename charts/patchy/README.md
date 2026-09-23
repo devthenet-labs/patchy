@@ -184,7 +184,7 @@ The genuinely shared settings stay global:
   agent Job) are required when `enabled`; `maxBytes`, `onReject` (`default` runs a rejected declaration on the default
   image, `handoff` parks the finding), `changesetMaxEntries`, and `pullSecret`/`pullSecretData` (a dockerconfigjson
   Secret for registries other than ECR or Artifact Registry; the kubelet needs a same-named copy in `agent.namespace`,
-  which `pullSecretData` renders) tune it. Enabling it fails the render while the agent egress is broad — set
+  and `pullSecretData` renders both) tune it. Enabling it fails the render while the agent egress is broad — set
   `agent.networkPolicy.broadEgress: never` under `mode: none` or `istio` — and adds the EKS Pod Identity agent to
   source-controller's NetworkPolicy, so an ECR allowlist needs only a Pod Identity association on the source-controller
   ServiceAccount. See [Helm charts](../../docs/deployment/helm.md#repository-runner-images) in the docs.

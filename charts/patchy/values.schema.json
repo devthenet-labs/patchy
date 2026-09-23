@@ -1432,11 +1432,11 @@
                         },
                         "pullSecret": {
                             "type": "string",
-                            "description": "dockerconfigjson Secret (release namespace) source-controller resolves declared images with; also listed in the agent ServiceAccount's imagePullSecrets"
+                            "description": "dockerconfigjson Secret (release namespace) source-controller resolves declared images with, mounted optional; also listed in the agent ServiceAccount's imagePullSecrets"
                         },
                         "pullSecretData": {
                             "type": "string",
-                            "description": "The .dockerconfigjson content (JSON, not base64) rendered into agent.namespace as the pullSecret Secret"
+                            "description": "The .dockerconfigjson content (JSON, not base64) rendered as the pullSecret Secret in both the release namespace and agent.namespace"
                         }
                     }
                 },

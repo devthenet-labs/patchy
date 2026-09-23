@@ -43,7 +43,7 @@ run = "go run ./fakegithub/cmd"
 
 # Everything derived from api/v1alpha1: deepcopy methods (controller-gen
 # object) and the CRD manifests for both kustomize and helm (hack/codegen.sh).
-# CI treats a dirty tree after this task as drift and fails.
+# codegen-check (in the pr gate) treats a dirty tree after it as drift.
 [codegen]
 description = "regenerate deepcopy + CRD manifests from api/v1alpha1"
 dir = "{{cwd}}"
@@ -73,6 +73,15 @@ run = "./hack/load.sh"
 description = "run envtest-backed tests (real kube-apiserver)"
 dir = "{{cwd}}"
 run = "./hack/envtest.sh"
+
+# Codegen drift gate: regenerate, then fail when the generated files differ
+# from what was on disk before. The baseline is a `git stash create` snapshot
+# of the working tree (HEAD when clean), not HEAD itself, so uncommitted API
+# edits whose manifests were already regenerated do not count as drift.
+[codegen-check]
+description = "fail when deepcopy/CRD manifests are stale against api/v1alpha1"
+dir = "{{cwd}}"
+run = 'snap=$(git stash create); mise run codegen && git diff --exit-code "${snap:-HEAD}" -- api deploy charts'
 
 # Status page SPA: built into internal/web/ui/dist and embedded into the
 # status-server binary via -tags withui (hack/build.sh). dist/ is git-ignored
@@ -179,13 +188,17 @@ run = [
   { task = "docs-build" },
 ]
 
+# The envtest suite (CRD schema assertions) and the codegen drift check run
+# here because the reusable CI workflow runs neither; see [ci] above.
 [pr]
 description = "full local gate before a pull request"
 run = [
   { task = "tidy" },
   { task = "fmt" },
+  { task = "codegen-check" },
   { task = "lint" },
   { task = "test" },
+  { task = "envtest" },
   { task = "build" },
   { task = "docs" },
   { task = "docs-build" },

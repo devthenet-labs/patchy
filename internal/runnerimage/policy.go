@@ -40,8 +40,8 @@ func (p Policy) Entries() []string {
 }
 
 // NormalizeEntry validates one allowlist entry and returns its canonical
-// form: "host/segment[/...]/". The host is lowercased and index.docker.io
-// becomes docker.io; at least one path segment is required (a host alone
+// form: "host/segment[/...]/". The entry is lowercased, as ParseDeclared
+// lowercases references, and index.docker.io becomes docker.io; at least one path segment is required (a host alone
 // would admit every image on a shared registry); no segment may be empty or
 // carry a tag or digest; glob characters and whitespace are refused. The
 // chart mirrors these rules.
@@ -68,15 +68,20 @@ func NormalizeEntry(entry string) (string, error) {
 			return "", fmt.Errorf("registry allowlist entry `%s` may not name a tag or digest", entry)
 		}
 	}
-	return canonicalHost(host) + "/" + path + "/", nil
+	return canonicalHost(host) + "/" + strings.ToLower(path) + "/", nil
 }
 
 // Allow reports, as a *Rejection, a reference whose repository is not under
 // any entry. Matching is on segment boundaries: "ghcr.io/org/" admits
 // "ghcr.io/org/app" and "ghcr.io/org/team/app", never "ghcr.io/org-evil/app".
+// The repository must already be canonical and grammatical (ParseDeclared's
+// output); anything else is refused rather than matched, so no spelling can
+// match an entry its canonical form does not.
 func (p Policy) Allow(ref imageref.Ref) error {
-	host, path, _ := strings.Cut(ref.Repository, "/")
-	candidate := canonicalHost(host) + "/" + path + "/"
+	if canonicalRepository(ref.Repository) != ref.Repository || !validRepository(ref.Repository) {
+		return reject("image `%s` is not a valid OCI image reference", ref.String())
+	}
+	candidate := ref.Repository + "/"
 	for _, e := range p.entries {
 		if strings.HasPrefix(candidate, e) {
 			return nil

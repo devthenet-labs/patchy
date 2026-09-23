@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"testing/quick"
+
+	"github.com/bitwise-media-group/patchy/internal/mirror/imageref"
 )
 
 func TestNormalizeEntry(t *testing.T) {
@@ -19,6 +21,7 @@ func TestNormalizeEntry(t *testing.T) {
 		{"ghcr.io/org/", "ghcr.io/org/", ""},
 		{"ghcr.io/org/team/", "ghcr.io/org/team/", ""},
 		{"GHCR.IO/org/", "ghcr.io/org/", ""},
+		{"ghcr.io/Org/Team", "ghcr.io/org/team/", ""},
 		{"index.docker.io/library/", "docker.io/library/", ""},
 		{"Index.Docker.IO/library", "docker.io/library/", ""},
 		{"localhost:5000/team", "localhost:5000/team/", ""},
@@ -100,7 +103,9 @@ func TestPolicyAllow(t *testing.T) {
 		{"ghcr.io/orgx/app", "image `ghcr.io/orgx/app:latest`" + suffix},
 		{"ghcr.io/org", ""}, // an entry admits the repository it names exactly
 		{"ghcr.io/other/org/app", "image `ghcr.io/other/org/app:latest`" + suffix},
-		{"ghcr.io/Org/app", "image `ghcr.io/Org/app:latest`" + suffix},
+		{"ghcr.io/Org/app", ""}, // canonicalized to ghcr.io/org/app, which is what is pulled
+		{"ghcr.io//org/app/", ""},
+		{"index.docker.io/alpine", ""},
 		{"docker.io/acme/app", "image `docker.io/acme/app:latest`" + suffix},
 		{"acme/app", "image `docker.io/acme/app:latest`" + suffix},
 		{"localhost:5001/team/app", "image `localhost:5001/team/app:latest`" + suffix},
@@ -128,17 +133,50 @@ func TestPolicyAllow(t *testing.T) {
 	}
 }
 
+func TestPolicyAllowRefusesNonCanonicalRef(t *testing.T) {
+	// Allow is public: a Ref built without ParseDeclared must not reach the
+	// prefix match unless it is already canonical and grammatical.
+	p, err := NewPolicy([]string{"ghcr.io/org/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, repo := range []string{
+		"ghcr.io/org/../evil/app", "ghcr.io/org//app", "GHCR.io/org/app", "ghcr.io/org/App",
+		"ghcr.io/org/app/", "ghcr.io/org/-app", "ghcr.io/org",
+	} {
+		ref := imageref.Ref{Repository: repo, Tag: "latest"}
+		err := p.Allow(ref)
+		if repo == "ghcr.io/org" {
+			if err != nil {
+				t.Errorf("Allow(%q) = %v, want allowed", repo, err)
+			}
+			continue
+		}
+		want := "image `" + ref.String() + "` is not a valid OCI image reference"
+		if err == nil || err.Error() != want || !IsRejection(err) {
+			t.Errorf("Allow(%q) = %v, want Rejection %q", repo, err, want)
+		}
+	}
+}
+
 var hosts = []string{"ghcr.io", "GHCR.io", "index.docker.io", "Index.Docker.IO", "docker.io", "localhost:5000",
 	"123456789012.dkr.ecr.us-east-1.amazonaws.com", "us-docker.pkg.dev"}
 
+// genSegment returns a path component valid under the distribution grammar:
+// lowercase alphanumeric runs joined by ".", "_", "__" or dashes.
 func genSegment(r *rand.Rand) string {
-	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789-_."
-	n := 1 + r.Intn(8)
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = alphabet[r.Intn(len(alphabet))]
+	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	separators := []string{".", "_", "__", "-", "--"}
+	var b strings.Builder
+	for run := 1 + r.Intn(3); run > 0; run-- {
+		for n := 1 + r.Intn(4); n > 0; n-- {
+			b.WriteByte(alphabet[r.Intn(len(alphabet))])
+		}
+		if run > 1 {
+			b.WriteString(separators[r.Intn(len(separators))])
+		}
 	}
-	return string(b)
+	return b.String()
 }
 
 func genSegments(r *rand.Rand) []string {

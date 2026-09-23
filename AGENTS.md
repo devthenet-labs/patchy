@@ -194,6 +194,10 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   `Resolver` seam and `Rejection`); `resolve` is the go-containerregistry implementation source-controller
   wires in (one HEAD then digest-only calls, index enumeration, host-selected keychain, in-process cosign
   verification in bundle and legacy forms, a digest-keyed verdict cache). No Kubernetes types in either.
+- `runnerguard` — the job controllers' side of repository-declared images, shared by investigation and
+  remediation: whether a launch may run the Repository's pin (kill switch, not revived by a human, sandbox
+  breaker), the pull fail-fast gated on the Job's `runner-image-source` annotation (never on config), and the
+  in-memory sandbox breaker a prepare exit 78 trips until restart (`patchy.sandbox.breaker` gauge).
 - `mirror` — the engine behind `patchy mirror` (CLI-only, except `imageref`, which `runnerimage` also builds
   on; no controller consumes the rest): vendored mirroring of
   upstream helm charts and OCI artifacts into one or more platform registries (mirror.yaml lists them; every

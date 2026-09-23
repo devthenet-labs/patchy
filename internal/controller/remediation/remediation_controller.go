@@ -27,6 +27,7 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/envelope"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/report"
+	"github.com/bitwise-media-group/patchy/internal/runnerguard"
 	"github.com/bitwise-media-group/patchy/internal/schedule"
 	"github.com/bitwise-media-group/patchy/internal/templates"
 	"github.com/bitwise-media-group/patchy/internal/transcriptstore"
@@ -78,6 +79,14 @@ type RemediationReconciler struct {
 	// change between spawn and launch fails the run cleanly instead of
 	// creating an unrunnable Job.
 	Enabled []string
+	// Images decides whether a launch runs the Repository's pinned
+	// repository-declared image (the --repository-images kill switch and
+	// the sandbox breaker); the zero value never does.
+	Images runnerguard.Guard
+	// MaxChangesetEntries caps upserts plus deletes in a changeset held to
+	// the repository-image rules, before any forge call is made; <= 0 means
+	// DefaultChangesetMaxEntries.
+	MaxChangesetEntries int
 	// Now is the clock seam; nil means time.Now.
 	Now func() time.Time
 	// Log receives diagnostics; nil discards.
@@ -239,7 +248,7 @@ func (r *RemediationReconciler) launch(ctx context.Context, rem *v1alpha1.Remedi
 	if fnd.Spec.Repository != nil {
 		repoName = fnd.Spec.Repository.Name
 	}
-	jobName, _, err := r.Runner.Create(ctx, jobs.Spec{
+	spec := jobs.Spec{
 		Repo:                  repoName,
 		Attempt:               int(rem.Spec.Attempt),
 		Phase:                 "remediate",
@@ -258,16 +267,25 @@ func (r *RemediationReconciler) launch(ctx context.Context, rem *v1alpha1.Remedi
 		// the investigation predicted.
 		MaxTurns:    rem.Spec.Parameters.MaxTurns,
 		TokenBudget: rem.Spec.Parameters.TokenBudget,
-	})
+	}
+	if skipped := r.Images.Pin(&spec, &repo, &fnd); skipped != "" {
+		r.log().LogAttrs(ctx, slog.LevelInfo, "not running the repository-declared runner image",
+			slog.String("remediation", rem.Name), slog.String("reason", skipped))
+	}
+	jobName, image, err := r.Runner.Create(ctx, spec)
 	if err != nil {
 		return fmt.Errorf("launch remediation job: %w", err)
 	}
+	// The image is recorded from what Create returned, never from the
+	// Repository's pin: the changeset validator applies its
+	// repository-image rules on this stamp.
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var cur v1alpha1.Remediation
 		if err := r.Get(ctx, client.ObjectKeyFromObject(rem), &cur); err != nil {
 			return client.IgnoreNotFound(err)
 		}
 		cur.Status.JobRef = &v1alpha1.JobReference{Name: jobName}
+		cur.Status.RunnerImage = &image
 		return r.Status().Update(ctx, &cur)
 	})
 }
@@ -281,8 +299,20 @@ func (r *RemediationReconciler) collect(ctx context.Context, rem *v1alpha1.Remed
 		}
 		return ctrl.Result{}, err
 	}
+	// A repository-image Job's prepare init refused to hand over: there is
+	// no log to read, and the cluster cannot sandbox a repository image.
+	if runnerguard.SandboxRefused(st) {
+		return ctrl.Result{}, r.sandboxRefused(ctx, rem)
+	}
 	if !st.Done {
-		return ctrl.Result{}, nil
+		// A default-image Job waits for the Job watch, as it always has; a
+		// repository-image one is looked at again while its pod may be stuck
+		// pulling, which never mutates the Job.
+		requeue, pullFailure := runnerguard.Pending(st, r.now())
+		if pullFailure != "" {
+			return ctrl.Result{}, r.pullFailed(ctx, rem, pullFailure)
+		}
+		return ctrl.Result{RequeueAfter: requeue}, nil
 	}
 	out, err := r.Runner.Result(ctx, rem.Status.JobRef.Name)
 	if err != nil {
@@ -319,6 +349,38 @@ func (r *RemediationReconciler) collect(ctx context.Context, rem *v1alpha1.Remed
 	}
 }
 
+// sandboxRefused ends a run whose sandbox probe found NetworkPolicy
+// unenforced: the breaker trips, so every later launch in this process runs
+// the default image, and the finding goes back to the queue without this
+// attempt counting against MaxAttempts — the run is marked SandboxRefused,
+// which fail() subtracts, and the next one runs on the default image, so
+// the retry cannot loop.
+func (r *RemediationReconciler) sandboxRefused(ctx context.Context, rem *v1alpha1.Remediation) error {
+	r.Images.Breaker.Trip(ctx, rem.Status.JobRef.Name, rem.Spec.FindingRef.Name)
+	result := &envelope.Remediation{Stage: agentresult.FailedStage(nil, "aborted", runnerguard.SandboxReason)}
+	refused := func(cur *v1alpha1.Remediation) {
+		meta.SetStatusCondition(&cur.Status.Conditions, runnerguard.RefusedCondition(cur.Generation))
+	}
+	if err := r.stampChild(ctx, rem, result, v1alpha1.RunFailed, nil, refused); err != nil {
+		return err
+	}
+	return r.finishFinding(ctx, rem, result, v1alpha1.PhaseQueued, runnerguard.SandboxReason)
+}
+
+// pullFailed ends a run whose repository-declared image cannot be pulled
+// and never will be, then deletes the Job so its pod stops retrying the
+// registry until the deadline.
+func (r *RemediationReconciler) pullFailed(ctx context.Context, rem *v1alpha1.Remediation, detail string) error {
+	if err := r.fail(ctx, rem, "aborted", detail, nil, nil); err != nil {
+		return err
+	}
+	if err := r.Runner.Delete(ctx, rem.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
+		r.log().LogAttrs(ctx, slog.LevelWarn, "delete agent job after pull failure",
+			slog.String("job", rem.Status.JobRef.Name), slog.Any("error", err))
+	}
+	return nil
+}
+
 // remGVK identifies the owner reference a transcript carries.
 var remGVK = metav1.TypeMeta{
 	APIVersion: v1alpha1.GroupVersion.String(),
@@ -349,6 +411,15 @@ func (r *RemediationReconciler) succeed(
 	}
 	if fnd.Spec.Repository == nil || result.Changeset == nil {
 		return r.fail(ctx, rem, "aborted", "success without changeset or repository", &result.Stage, transcript)
+	}
+	// Validate before any forge call: the changeset is the pod's output,
+	// and on a repository-declared image the pod's process is the image's.
+	rules, err := r.changesetRules(ctx, rem)
+	if err != nil {
+		return err
+	}
+	if err := validateChangeset(result.Changeset, rules); err != nil {
+		return r.fail(ctx, rem, string(envelope.OutcomeChangesetRejected), err.Error(), &result.Stage, transcript)
 	}
 	branch := "patchy/" + fnd.Name
 	if err := r.Forge.Push(ctx, rem.Namespace, fnd.Spec.Repository.URL, branch, result.Changeset); err != nil {
@@ -428,11 +499,18 @@ func stageOf(result *envelope.Remediation) *envelope.Stage {
 // stage when it emitted one; its accounting survives the failure so the run's
 // turns, tokens and cost still reach the child and the rollups — a failed run
 // spent real money, and the estimate-against-actual averages depend on it
-// being counted. Nil when no event arrived at all.
+// being counted. Nil when no event arrived at all. Attempts the sandbox
+// probe refused are not counted toward MaxAttempts.
 func (r *RemediationReconciler) fail(
 	ctx context.Context, rem *v1alpha1.Remediation, outcome, detail string, reported *envelope.Stage,
 	transcript *v1alpha1.TranscriptRef,
 ) error {
+	// Counted before the child is stamped: an error here leaves it Running
+	// for the next reconcile instead of Failed with the finding unreleased.
+	consumed, err := r.consumedAttempts(ctx, rem)
+	if err != nil {
+		return err
+	}
 	result := &envelope.Remediation{Stage: agentresult.FailedStage(reported, outcome, detail)}
 	if err := r.stampChild(ctx, rem, result, v1alpha1.RunFailed, transcript, nil); err != nil {
 		return err
@@ -442,10 +520,29 @@ func (r *RemediationReconciler) fail(
 		maxAttempts = 2
 	}
 	to := v1alpha1.PhaseQueued
-	if rem.Spec.Attempt >= maxAttempts {
+	if consumed >= maxAttempts {
 		to = v1alpha1.PhaseFailed
 	}
 	return r.finishFinding(ctx, rem, result, to, outcome+": "+detail)
+}
+
+// consumedAttempts is rem's attempt number less the finding's earlier
+// attempts the sandbox probe refused: their agent never ran.
+func (r *RemediationReconciler) consumedAttempts(ctx context.Context, rem *v1alpha1.Remediation) (int32, error) {
+	var siblings v1alpha1.RemediationList
+	if err := r.List(ctx, &siblings, client.InNamespace(rem.Namespace),
+		client.MatchingLabels{v1alpha1.LabelFinding: rem.Spec.FindingRef.Name}); err != nil {
+		return 0, fmt.Errorf("count refused attempts: %w", err)
+	}
+	consumed := rem.Spec.Attempt
+	for i := range siblings.Items {
+		sib := &siblings.Items[i]
+		if sib.Spec.FindingRef.UID == rem.Spec.FindingRef.UID && sib.Spec.Attempt < rem.Spec.Attempt &&
+			runnerguard.Refused(sib.Status.Conditions) {
+			consumed--
+		}
+	}
+	return consumed, nil
 }
 
 // finishFinding applies the post-run phase and summary to the finding.
@@ -578,4 +675,69 @@ func (r *RemediationReconciler) now() time.Time {
 		return time.Now()
 	}
 	return r.Now()
+}
+
+func (r *RemediationReconciler) log() *slog.Logger {
+	if r.Log == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return r.Log
+}
+
+// maxChangesetEntries is MaxChangesetEntries with its default applied.
+func (r *RemediationReconciler) maxChangesetEntries() int {
+	if r.MaxChangesetEntries <= 0 {
+		return DefaultChangesetMaxEntries
+	}
+	return r.MaxChangesetEntries
+}
+
+// changesetRules gathers what rem's changeset is validated against: the
+// Repository's pinned commit, the entry cap, and whether the
+// repository-image rules apply. A Repository that has vanished leaves the
+// base empty, which refuses the changeset rather than pushing it unchecked.
+//
+// The repository-image rules apply when either this run or the
+// Investigation it acts on ran a repository-declared image. The
+// remediation agent's input is not only the tree: its analysis is the
+// Investigation's report and its parameters are the ones the spawner took
+// from it, and a default-image remediation of a repository-image
+// investigation (a human approved a held verdict, the breaker tripped
+// between the two, or the controllers' flags differ) would otherwise follow
+// that image's instructions exempt from the CI deny. An Investigation that
+// cannot be found cannot vouch for itself, so the stricter rules apply.
+func (r *RemediationReconciler) changesetRules(ctx context.Context, rem *v1alpha1.Remediation) (changesetRules, error) {
+	rules := changesetRules{
+		MaxEntries:      r.maxChangesetEntries(),
+		RepositoryImage: ranRepositoryImage(rem.Status.RunnerImage),
+	}
+	var repo v1alpha1.Repository
+	key := types.NamespacedName{Namespace: rem.Namespace, Name: rem.Spec.RepositoryRef.Name}
+	switch err := r.Get(ctx, key, &repo); {
+	case err == nil:
+		rules.Base = repo.Status.ResolvedSHA
+	case !kerrors.IsNotFound(err):
+		return rules, err
+	}
+	if rules.RepositoryImage {
+		return rules, nil
+	}
+	var inv v1alpha1.Investigation
+	key = types.NamespacedName{Namespace: rem.Namespace, Name: rem.Spec.InvestigationRef.Name}
+	switch err := r.Get(ctx, key, &inv); {
+	case err == nil:
+		rules.RepositoryImage = ranRepositoryImage(inv.Status.RunnerImage)
+	case kerrors.IsNotFound(err):
+		rules.RepositoryImage = true
+	default:
+		return rules, err
+	}
+	return rules, nil
+}
+
+// ranRepositoryImage reports whether a run's launch stamp says its pod ran
+// a repository-declared image. A run launched before the stamp existed ran
+// the default image.
+func ranRepositoryImage(ri *v1alpha1.RunnerImageRef) bool {
+	return ri != nil && ri.Source == v1alpha1.RunnerImageSourceRepository
 }

@@ -271,26 +271,40 @@ func TestGateIgnoresRetryForRemediationFailure(t *testing.T) {
 	}
 }
 
-// fakeRunner is the jobs seam.
+// fakeRunner is the jobs seam. Like the real client with repository
+// images allowed, Create reports a repository image exactly when the Spec
+// asks for one. status, when set, replaces the done-derived Status.
 type fakeRunner struct {
 	created []jobs.Spec
 	done    bool
 	events  []envelope.Event
 	turns   []transcript.Turn
+	status  *jobs.Status
+	results int
+	deleted []string
 }
 
 func (f *fakeRunner) Create(_ context.Context, spec jobs.Spec) (string, v1alpha1.RunnerImageRef, error) {
 	f.created = append(f.created, spec)
+	if spec.RunnerImage != "" {
+		return "job-1", v1alpha1.RunnerImageRef{
+			Image: spec.RunnerImage, Source: v1alpha1.RunnerImageSourceRepository, Manifest: spec.RunnerImageManifest,
+		}, nil
+	}
 	return "job-1", v1alpha1.RunnerImageRef{
 		Image: "claude-agent-runner:1", Source: v1alpha1.RunnerImageSourceDefault,
 	}, nil
 }
 
 func (f *fakeRunner) Result(context.Context, string) (jobs.RunOutput, error) {
+	f.results++
 	return jobs.RunOutput{Events: f.events, Turns: f.turns}, nil
 }
 
 func (f *fakeRunner) Status(context.Context, string) (jobs.Status, error) {
+	if f.status != nil {
+		return *f.status, nil
+	}
 	st := jobs.Status{Done: f.done}
 	if f.done {
 		st.Succeeded = 1
@@ -298,7 +312,10 @@ func (f *fakeRunner) Status(context.Context, string) (jobs.Status, error) {
 	return st, nil
 }
 
-func (f *fakeRunner) Delete(context.Context, string) error { return nil }
+func (f *fakeRunner) Delete(_ context.Context, name string) error {
+	f.deleted = append(f.deleted, name)
+	return nil
+}
 
 // investigationFixture is a granted Investigation with its finding + repo.
 func investigationFixture() []client.Object {

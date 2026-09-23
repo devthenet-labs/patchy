@@ -786,6 +786,15 @@ func noticeReason(fnd *v1alpha1.Finding) string {
 	if inv := fnd.Status.Investigation; inv != nil && inv.Recommendation == v1alpha1.RecommendationManual {
 		return " (investigation recommended a manual fix)"
 	}
+	// An ignore verdict from a repository-declared image is held rather
+	// than dismissed (investigation-controller's route), and nothing is
+	// written back to the scanner: the alert stays open there until a
+	// human resolves it.
+	if inv := fnd.Status.Investigation; inv != nil && inv.Recommendation == v1alpha1.RecommendationIgnore &&
+		inv.RunnerImage != nil && inv.RunnerImage.Source == v1alpha1.RunnerImageSourceRepository {
+		return " (the agent recommended ignore; patchy did not dismiss the alert because the run used a " +
+			"repository-declared image)"
+	}
 	if fnd.Spec.Repository == nil {
 		return " (no repository could be identified)"
 	}

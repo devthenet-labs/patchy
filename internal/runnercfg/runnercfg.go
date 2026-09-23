@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/bitwise-media-group/patchy/internal/cli"
@@ -115,6 +116,12 @@ func Runners(opts *cli.Options) (map[string]jobs.Runner, error) {
 		if err != nil {
 			return nil, err
 		}
+		// The finding runner is the one harness that may run a
+		// repository-declared image: brokered, so its pod holds no
+		// credential for that image to read. It contributes agent-runner
+		// and its CLI; codex, copilot (a real credential in-pod) and the
+		// fake leave Inject nil and always run their own image.
+		r.Inject = claudeInject()
 		runners[model.HarnessClaude] = r
 	}
 	if img := opts.String("codex-agent-image"); img != "" {
@@ -148,6 +155,47 @@ func Runners(opts *cli.Options) (map[string]jobs.Runner, error) {
 			"--claude-agent-image / --codex-agent-image / --copilot-agent-image / --fake-agent-image)")
 	}
 	return runners, nil
+}
+
+// claudeInject is what the claude runner image contributes to a Job that
+// runs a repository-declared image: agent-runner and the claude CLI, where
+// the Dockerfile puts them.
+func claudeInject() []string {
+	inject := []string{"agent-runner"}
+	if h, ok := harness.ByID(model.HarnessClaude); ok {
+		inject = append(inject, h.CLI()...)
+	}
+	return inject
+}
+
+// RegisterRepositoryImageFlags adds the repository-declared runner image
+// flags both job controllers share: the kill switch, and the
+// ephemeral-storage wall a repository image's Job requires.
+func RegisterRepositoryImageFlags(f *pflag.FlagSet) {
+	f.Bool("repository-images", false,
+		"run a Repository's pinned repository-declared runner image (brokered claude runner only); "+
+			"off runs every Job on its harness's own image")
+	f.String("agent-ephemeral-storage", "",
+		"ephemeral-storage request and limit on both agent containers, a quantity such as 8Gi "+
+			"(required with --repository-images)")
+}
+
+// RepositoryImages reads those flags: whether repository images are on,
+// and the ephemeral-storage quantity for every agent Job (empty leaves the
+// Job without one, exactly as before the flag existed). A repository image
+// without the wall on disk is refused at startup rather than at every Job.
+func RepositoryImages(opts *cli.Options) (enabled bool, ephemeralStorage string, err error) {
+	enabled, ephemeralStorage = opts.Bool("repository-images"), opts.String("agent-ephemeral-storage")
+	if ephemeralStorage != "" {
+		if _, err := resource.ParseQuantity(ephemeralStorage); err != nil {
+			return false, "", fmt.Errorf("--agent-ephemeral-storage %q: %w", ephemeralStorage, err)
+		}
+	}
+	if enabled && ephemeralStorage == "" {
+		return false, "", errors.New("--agent-ephemeral-storage is required with --repository-images: " +
+			"it bounds the disk a repository-declared image can fill through the pod's emptyDirs")
+	}
+	return enabled, ephemeralStorage, nil
 }
 
 // EvolveRunners builds the evolve-runner fleet from the flags, mirroring

@@ -3,7 +3,11 @@
 
 package harness
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestByID(t *testing.T) {
 	tests := []struct {
@@ -42,5 +46,56 @@ func TestHarnessesImplementUsageScanner(t *testing.T) {
 		if _, ok := h.(UsageScanner); !ok {
 			t.Errorf("harness %q does not implement UsageScanner", h.ID())
 		}
+	}
+}
+
+// fakeCLI drops an executable stand-in for the harness's first CLI name
+// into dir and returns its path.
+func fakeCLI(t *testing.T, dir string, h Harness) string {
+	t.Helper()
+	p := filepath.Join(dir, h.CLI()[0])
+	if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestAvailablePrefersBinDir(t *testing.T) {
+	dir := t.TempDir()
+	want := fakeCLI(t, dir, NewFake())
+	t.Setenv(BinDirEnv, dir)
+	got, ok := Available(NewFake())
+	if !ok || got != want {
+		t.Errorf("Available(fake) with %s = (%q, %v), want the injected %q", BinDirEnv, got, ok, want)
+	}
+}
+
+func TestAvailableFallsBackToPath(t *testing.T) {
+	// An empty bin dir: the PATH copy is found, not nothing.
+	t.Setenv(BinDirEnv, t.TempDir())
+	got, ok := Available(NewFake())
+	if !ok || got == "" || filepath.Dir(got) == os.Getenv(BinDirEnv) {
+		t.Errorf("Available(fake) = (%q, %v), want cat from PATH", got, ok)
+	}
+}
+
+func TestAvailableIn(t *testing.T) {
+	dir := t.TempDir()
+	if got, ok := AvailableIn(NewFake(), dir); ok {
+		t.Errorf("AvailableIn(empty dir) = (%q, true), want not found and no PATH fallback", got)
+	}
+	// A non-executable file is not a CLI.
+	if err := os.WriteFile(filepath.Join(dir, "cat"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := AvailableIn(NewFake(), dir); ok {
+		t.Errorf("AvailableIn(non-executable) = (%q, true), want not found", got)
+	}
+	if err := os.Remove(filepath.Join(dir, "cat")); err != nil {
+		t.Fatal(err)
+	}
+	want := fakeCLI(t, dir, NewFake())
+	if got, ok := AvailableIn(NewFake(), dir); !ok || got != want {
+		t.Errorf("AvailableIn = (%q, %v), want %q", got, ok, want)
 	}
 }

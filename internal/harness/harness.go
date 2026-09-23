@@ -4,7 +4,9 @@
 package harness
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/bitwise-media-group/patchy/internal/runner"
 	"github.com/bitwise-media-group/patchy/internal/transcript"
@@ -142,10 +144,36 @@ func ByID(id string) (Harness, bool) {
 	return nil, false
 }
 
-// Available finds the first of the harness's runner binaries on PATH.
+// BinDirEnv names the directory patchy's own binaries were injected into
+// when the pod runs a repository-declared image (internal/jobs sets it to
+// /patchy/bin). The trusted prepare step copies the harness CLI there, and
+// Available prefers it over PATH so the CLI that runs is the one patchy
+// supplied rather than whatever the image put first on its PATH.
+const BinDirEnv = "PATCHY_BIN_DIR"
+
+// Available finds the harness's runner binary: under $PATCHY_BIN_DIR first
+// when that is set, then the first of its candidates on PATH.
 func Available(h Harness) (path string, ok bool) {
+	if dir := os.Getenv(BinDirEnv); dir != "" {
+		if p, ok := AvailableIn(h, dir); ok {
+			return p, true
+		}
+	}
 	for _, name := range h.CLI() {
 		if p, err := exec.LookPath(name); err == nil {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// AvailableIn finds the harness's runner binary under dir alone, never
+// falling back to PATH: an injected CLI that is missing must be reported,
+// not quietly replaced by the image's own.
+func AvailableIn(h Harness, dir string) (path string, ok bool) {
+	for _, name := range h.CLI() {
+		p := filepath.Join(dir, name)
+		if info, err := os.Stat(p); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
 			return p, true
 		}
 	}

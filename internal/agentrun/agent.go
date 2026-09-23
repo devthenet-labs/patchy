@@ -119,6 +119,12 @@ func (a *Agent) remediate(ctx context.Context, params remediationParams) *envelo
 		ev.Detail = fmt.Sprintf("unknown harness %q", a.cfg.RemediateHarness)
 		return ev
 	}
+	cli, err := a.preflight(ctx, h)
+	if err != nil {
+		ev.Outcome = envelope.OutcomeImageIncompatible
+		ev.Detail = err.Error()
+		return ev
+	}
 	env, err := a.brokerEnv()
 	if err != nil {
 		ev.Outcome = envelope.OutcomeRuntimeError
@@ -157,7 +163,7 @@ func (a *Agent) remediate(ctx context.Context, params remediationParams) *envelo
 	}
 
 	onLine, _ := a.observe(h, params.budget)
-	res, runErr := a.exec.Run(ctx, h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
+	res, runErr := a.exec.Run(ctx, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.RemediateModel, a.cfg.RemediateHarness),
 		MaxTurns:  params.maxTurns,
@@ -165,7 +171,7 @@ func (a *Agent) remediate(ctx context.Context, params remediationParams) *envelo
 		SessionID: a.newSessionID(),
 		AddDirs:   []string{a.cfg.Workspace},
 		Env:       env,
-	}), a.cfg.RemediateTimeout, onLine)
+	}), cli), a.cfg.RemediateTimeout, onLine)
 	a.fillStage(&ev.Stage, h, res)
 
 	if res.Aborted {
@@ -365,6 +371,12 @@ func (a *Agent) investigate(ctx context.Context) *envelope.Investigation {
 		ev.Detail = fmt.Sprintf("unknown harness %q", a.cfg.InvestigateHarness)
 		return ev
 	}
+	cli, err := a.preflight(ctx, h)
+	if err != nil {
+		ev.Outcome = envelope.OutcomeImageIncompatible
+		ev.Detail = err.Error()
+		return ev
+	}
 	prompt, err := templates.RenderInvestigatePrompt(templates.InvestigatePrompt{
 		IssuePath:         a.cfg.issuePath(),
 		ReportPath:        a.cfg.investigationPath(),
@@ -388,7 +400,7 @@ func (a *Agent) investigate(ctx context.Context) *envelope.Investigation {
 	}
 
 	onLine, _ := a.observe(h, a.cfg.InvestigateTokenBudget)
-	res, runErr := a.exec.Run(ctx, h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
+	res, runErr := a.exec.Run(ctx, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.InvestigateModel, a.cfg.InvestigateHarness),
 		MaxTurns:  a.cfg.InvestigateMaxTurns,
@@ -396,7 +408,7 @@ func (a *Agent) investigate(ctx context.Context) *envelope.Investigation {
 		SessionID: a.newSessionID(),
 		AddDirs:   []string{a.cfg.Workspace},
 		Env:       env,
-	}), a.cfg.InvestigateTimeout, onLine)
+	}), cli), a.cfg.InvestigateTimeout, onLine)
 	a.fillStage(&ev.Stage, h, res)
 
 	if res.Aborted {
@@ -606,7 +618,11 @@ func (a *Agent) fillStage(st *envelope.Stage, h harness.Harness, res runner.Resu
 // gate into an outcome; OK means the stage's report can be trusted to exist.
 // A run that exhausted its turn or token limit is reported as budget
 // exceeded rather than a generic runtime error — it names the cause, and it
-// is the same outcome the runner's own kill switch raises. A runtime error
+// is the same outcome the runner's own kill switch raises. So is a run the
+// egress broker cut off at one of its per-pod limits: the broker answers
+// 429 with a message opening with provider.LimitMessagePrefix, and a CLI
+// failure carrying that text anywhere in its output is the broker's kill
+// switch doing the runner's job from outside the pod. A runtime error
 // carries the process's exit status and scrubbed stderr tail (runEvidence);
 // secrets are the credential values to scrub from it.
 func stageOutcome(h harness.Harness, res runner.Result, runErr error, secrets []string) (envelope.Outcome, string) {
@@ -620,9 +636,48 @@ func stageOutcome(h harness.Harness, res runner.Result, runErr error, secrets []
 		if b, ok := h.(harness.BudgetReporter); ok && b.Exhausted(res.Stdout) {
 			return envelope.OutcomeBudgetExceeded, msg
 		}
-		return envelope.OutcomeRuntimeError, msg + runEvidence(res, secrets)
+		detail := msg + runEvidence(res, secrets)
+		if limit := brokerLimitMessage(res, msg); limit != "" {
+			if !strings.Contains(detail, limit) {
+				detail += " (" + limit + ")"
+			}
+			return envelope.OutcomeBudgetExceeded, detail
+		}
+		return envelope.OutcomeRuntimeError, detail
 	}
 	return envelope.OutcomeOK, ""
+}
+
+// brokerLimitMessageBytes bounds the excerpt of the broker's message a
+// detail quotes; limitMessageStops are the bytes that end it (a JSON
+// escape or quote, a closing brace, a newline).
+const (
+	brokerLimitMessageBytes = 200
+	limitMessageStops       = "\\\"}\n"
+)
+
+// brokerLimitMessage returns the egress broker's per-pod limit message when
+// a failed run carries it — in the harness's reason, in the stderr tail, or
+// in the stream itself, where the claude CLI relays an API error as an
+// assistant message before its error result — and "" otherwise. The
+// excerpt runs from the prefix to the end of the message, cut at a quote,
+// escape, brace or newline so a JSON-embedded message comes out clean.
+func brokerLimitMessage(res runner.Result, msg string) string {
+	for _, text := range []string{msg, res.StderrTail, string(res.Stdout)} {
+		i := strings.Index(text, provider.LimitMessagePrefix)
+		if i < 0 {
+			continue
+		}
+		rest := text[i:]
+		if end := strings.IndexAny(rest, limitMessageStops); end >= 0 {
+			rest = rest[:end]
+		}
+		if len(rest) > brokerLimitMessageBytes {
+			rest = rest[:brokerLimitMessageBytes]
+		}
+		return strings.TrimSpace(rest)
+	}
+	return ""
 }
 
 // stderrDetailBytes bounds the stderr tail a runtime-error detail carries: it

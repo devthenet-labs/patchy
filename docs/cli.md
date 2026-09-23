@@ -266,6 +266,27 @@ allowed to consult the wall clock (tracked-tag cooldowns, allowlist expiry stamp
 Like `dev`, the `mirror` flags also resolve from `PATCHY_MIRROR_*` environment variables and `.patchy.yaml` (`mirror:`
 block); `-C` points at a store checkout from anywhere.
 
+## Checking an agent image
+
+`patchy check image` is the third cluster-free command, for repository owners about to declare an
+[agent image](integrations/agent-images.md) in `.patchy/agent.yaml` or `.devcontainer/devcontainer.json`. It runs
+source-controller's own checks, through the same code, and reports every verdict rather than the first failure:
+
+```sh
+patchy check image ghcr.io/acme/shop-agent:1                                   # platform, size, VOLUME, ENV, PATH
+patchy check image ghcr.io/acme/shop-agent:1 --allow ghcr.io/acme/ --cosign-key cosign.pub
+patchy check image ghcr.io/acme/shop-agent:1 --run                             # plus the agent's preflight in docker
+```
+
+`--allow` stands in for the operator's registry allowlist and `--cosign-key` for their signing key; without the key the
+signature line is skipped, because source-controller admits an unverified image only when the operator allows unsigned
+images. Registry credentials are your own docker credentials. `--run` needs a local docker: it copies `agent-runner` and
+the claude CLI out of the claude runner image released with this CLI (`--runner-image` overrides it) and runs the image
+the way the agent pod does, with uid 65532, a read-only root filesystem, no network and no capabilities, then runs the
+preflight a stage runs before its first model call, followed by `bash -c true` and `git --version`. Each check prints
+one line (PASS, FAIL or SKIP, then the reason); `-o json` prints the report as data, and the exit status is non-zero
+when any check fails.
+
 ## Permissions
 
 Each action is a **custom RBAC verb**, granted independently: holding `approve` says nothing about `suspend`. The

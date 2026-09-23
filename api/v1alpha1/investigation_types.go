@@ -45,6 +45,13 @@ type InvestigationStatus struct {
 	// JobRef locates the agent Job in the agents namespace.
 	// +optional
 	JobRef *JobReference `json:"jobRef,omitempty"`
+	// RunnerImage is the image the Job actually launched on, written beside
+	// JobRef from what the Job client returned. Verdict routing reads its
+	// Source (an ignore produced on a repository image is held for a human)
+	// and never controller configuration at collect time, so a kill-switch
+	// flip between attempts cannot change the decision.
+	// +optional
+	RunnerImage *RunnerImageRef `json:"runnerImage,omitempty"`
 	// Stage is the agent accounting for the run.
 	// +optional
 	Stage *StageResult `json:"stage,omitempty"`

@@ -113,6 +113,41 @@ type JobReference struct {
 	UID types.UID `json:"uid,omitempty"`
 }
 
+// RunnerImageRef records the agent runner image one run actually launched
+// on. The launching controller writes it beside JobReference from the value
+// the Job client returned, never from its own configuration or from the
+// Repository's pin, so the audit trail and the verdict routing read what
+// ran: the Source is "default" whenever injection did not happen, for any
+// reason.
+type RunnerImageRef struct {
+	// Image is the image reference the agent container ran, as written into
+	// the Job. With Source "repository" it is the digest-pinned reference
+	// resolved onto the Repository's status. With Source "default" it is the
+	// per-harness runner image exactly as the operator configured it, which
+	// is digest-pinned only if that configuration pins it (a tag otherwise).
+	Image string `json:"image"`
+	// Source is RunnerImageSourceRepository when the image came from the
+	// Repository's declaration and RunnerImageSourceDefault when the
+	// per-harness runner image ran (nothing declared, a non-claude harness,
+	// the kill switch).
+	// +kubebuilder:validation:Enum=repository;default
+	Source string `json:"source"`
+	// Manifest is the declaring file's repository-relative path, copied from
+	// the Repository at launch when Source is "repository" so the tracking
+	// issue and describe can name the file; empty otherwise.
+	// +optional
+	Manifest string `json:"manifest,omitempty"`
+}
+
+// RunnerImageRef sources.
+const (
+	// RunnerImageSourceRepository: the pod ran the image the repository
+	// declared, injected with patchy's harness binaries.
+	RunnerImageSourceRepository = "repository"
+	// RunnerImageSourceDefault: the pod ran the per-harness runner image.
+	RunnerImageSourceDefault = "default"
+)
+
 // Level grades severity and priority.
 // +kubebuilder:validation:Enum=low;medium;high;critical
 type Level string
@@ -271,7 +306,10 @@ type UsageSummary struct {
 type StageResult struct {
 	// Outcome is the envelope outcome vocabulary (ok, runtime_error, timeout,
 	// budget_exceeded, report_missing, report_invalid, commit_failed,
-	// changeset_too_large) plus "aborted" for a run killed with no envelope.
+	// changeset_too_large, image_incompatible, changeset_rejected) plus
+	// "aborted" for a run killed with no envelope. The pod never emits
+	// changeset_rejected: the remediation collector sets it when a changeset
+	// fails validation before any forge call.
 	Outcome string `json:"outcome"`
 	// Harness that executed the stage.
 	// +optional

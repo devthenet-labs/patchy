@@ -60,4 +60,24 @@ const (
 	// at Opened rather than advancing it without a repository. Bounded by the
 	// accumulation window; past that the finding advances regardless.
 	ReasonRepositoryUnresolved = "RepositoryUnresolved"
+
+	// Repository runner-image reasons, all set by source-controller.
+
+	// ReasonRunnerImageResolving: the artifact is stored and pinned, and
+	// Ready is False only while the repository-declared runner image is
+	// resolved. The status write is split around resolution on purpose: a
+	// restart here resumes at resolution from the artifact on disk instead
+	// of re-downloading the tree.
+	ReasonRunnerImageResolving = "RunnerImageResolving"
+	// ReasonRunnerImageRejected: the declared runner image failed policy
+	// deterministically (an unusable manifest, a registry outside the
+	// allowlist, a 401/403/404, an oversized or wrong-platform image, a
+	// reserved ENV, a VOLUME, an empty PATH, a missing or bad signature).
+	// Stalled=True with a human message; the artifact is retained so the
+	// finding can still run on the default image.
+	ReasonRunnerImageRejected = "RunnerImageRejected"
+	// ReasonRunnerImageResolveFailed: resolving the declared runner image
+	// hit a transient error (registry unreachable). Ready=False and the
+	// reconcile backs off and retries, without re-downloading the artifact.
+	ReasonRunnerImageResolveFailed = "RunnerImageResolveFailed"
 )

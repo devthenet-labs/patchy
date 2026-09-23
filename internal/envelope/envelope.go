@@ -46,6 +46,18 @@ const (
 	OutcomeReportInvalid     Outcome = "report_invalid"
 	OutcomeCommitFailed      Outcome = "commit_failed"
 	OutcomeChangesetTooLarge Outcome = "changeset_too_large"
+	// OutcomeImageIncompatible is the preflight's verdict on a
+	// repository-declared runner image: the injected claude CLI, git or bash
+	// failed to run there (a musl or bash-less image), so the stage never
+	// started. It is a compatibility check, not an integrity one — the image
+	// supplies the loader and libc the CLI runs on.
+	OutcomeImageIncompatible Outcome = "image_incompatible"
+	// OutcomeChangesetRejected is set by the remediation collector, never
+	// emitted by the pod: the changeset arrived intact but failed
+	// controller-side validation (the entry cap, path shape, or CI
+	// definitions on a repository-image run), and zero forge calls were
+	// made. Distinct from OutcomeChangesetTooLarge, the pod's own byte cap.
+	OutcomeChangesetRejected Outcome = "changeset_rejected"
 )
 
 // Usage is the stage's agent accounting (all fields concrete: the envelope

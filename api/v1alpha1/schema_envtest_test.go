@@ -7,7 +7,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -285,12 +288,195 @@ func TestSchemaValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("repository status keeps the pinned runner image", func(t *testing.T) {
+		testRepositoryRunnerImageSchema(ctx, t, c)
+	})
+
+	t.Run("run status runner image is enum-checked and round-trips on every carrier", func(t *testing.T) {
+		testRunStatusRunnerImageSchema(ctx, t, c)
+	})
+
 	t.Run("evaluation spec is immutable and bounded", func(t *testing.T) {
 		testEvaluationSchema(ctx, t, c)
 	})
 
 	t.Run("evaluation unit spec is immutable and its failure reason is an enum", func(t *testing.T) {
 		testEvaluationUnitSchema(ctx, t, c)
+	})
+}
+
+// testRepositoryRunnerImageSchema writes a fully populated runner-image
+// record through the status subresource and reads it back, so a field the
+// generated CRD schema does not know (and the API server would silently
+// prune) fails here rather than as a mysteriously empty status in a cluster.
+func testRepositoryRunnerImageSchema(ctx context.Context, t *testing.T, c client.Client) {
+	t.Helper()
+	repo := &patchyv1.Repository{
+		ObjectMeta: metav1.ObjectMeta{Name: "finding-abc123-1-src", Namespace: "default"},
+		Spec:       patchyv1.RepositorySpec{URL: "https://github.com/acme/shop"},
+	}
+	if err := c.Create(ctx, repo); err != nil {
+		t.Fatalf("Create(repository) = %v, want nil", err)
+	}
+	resolvedAt := metav1.NewTime(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))
+	want := &patchyv1.RunnerImage{
+		Declared:   "ghcr.io/acme/go-agent-env:1.26",
+		Manifest:   ".patchy/agent.yaml",
+		Image:      "ghcr.io/acme/go-agent-env@sha256:" + strings.Repeat("a", 64),
+		SearchPath: "/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin",
+		Verified:   true,
+		ResolvedAt: &resolvedAt,
+	}
+	repo.Status.ResolvedSHA = strings.Repeat("b", 40)
+	repo.Status.RunnerImage = want.DeepCopy()
+	if err := c.Status().Update(ctx, repo); err != nil {
+		t.Fatalf("Status().Update(runnerImage) = %v, want nil", err)
+	}
+	got := &patchyv1.Repository{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(repo), got); err != nil {
+		t.Fatalf("Get(repository) = %v", err)
+	}
+	if got.Status.RunnerImage == nil {
+		t.Fatal("status.runnerImage = nil after update, want the record (schema pruned it?)")
+	}
+	// The API server round-trips timestamps in local time; compare the
+	// instant, then the rest of the record verbatim.
+	if !got.Status.RunnerImage.ResolvedAt.Equal(&resolvedAt) {
+		t.Errorf("status.runnerImage.resolvedAt = %v, want %v", got.Status.RunnerImage.ResolvedAt, resolvedAt)
+	}
+	got.Status.RunnerImage.ResolvedAt, want.ResolvedAt = nil, nil
+	if !reflect.DeepEqual(got.Status.RunnerImage, want) {
+		t.Errorf("status.runnerImage = %+v, want %+v", got.Status.RunnerImage, want)
+	}
+
+	rejected := &patchyv1.RunnerImage{
+		Declared: "docker.io/library/golang:1.26",
+		Manifest: ".devcontainer/devcontainer.json",
+		Rejected: "NotAllowlisted",
+		Message:  "docker.io/library/ is not an allowlisted registry path",
+	}
+	got.Status.RunnerImage = rejected.DeepCopy()
+	if err := c.Status().Update(ctx, got); err != nil {
+		t.Fatalf("Status().Update(rejected runnerImage) = %v, want nil", err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(repo), got); err != nil {
+		t.Fatalf("Get(repository) = %v", err)
+	}
+	if !reflect.DeepEqual(got.Status.RunnerImage, rejected) {
+		t.Errorf("status.runnerImage (rejected) = %+v, want %+v", got.Status.RunnerImage, rejected)
+	}
+
+	// Message is mirrored from free-form resolver/policy output; the schema
+	// caps it so a hostile or runaway explanation cannot bloat the object.
+	// 4096 bytes is the ceiling, one more is rejected.
+	got.Status.RunnerImage.Message = strings.Repeat("m", 4096)
+	if err := c.Status().Update(ctx, got); err != nil {
+		t.Fatalf("Status().Update(runnerImage.message=4096 bytes) = %v, want nil", err)
+	}
+	got.Status.RunnerImage.Message = strings.Repeat("m", 4097)
+	if err := c.Status().Update(ctx, got); err == nil {
+		t.Error("Status().Update(runnerImage.message=4097 bytes) = nil, want maxLength rejection")
+	}
+}
+
+// testRunStatusRunnerImageSchema exercises the RunnerImageRef schema on
+// every status that carries one: the Investigation and Remediation run
+// statuses and the Finding's investigation mirror. Each record is written
+// through the status subresource and the read-back is compared against the
+// value that was written (never against the update's own response), so a
+// field the generated schema prunes fails here.
+func testRunStatusRunnerImageSchema(ctx context.Context, t *testing.T, c client.Client) {
+	t.Helper()
+	want := func() *patchyv1.RunnerImageRef {
+		return &patchyv1.RunnerImageRef{
+			Image:    "ghcr.io/acme/go-agent-env@sha256:" + strings.Repeat("a", 64),
+			Source:   patchyv1.RunnerImageSourceRepository,
+			Manifest: ".devcontainer/devcontainer.json",
+		}
+	}
+
+	t.Run("investigation", func(t *testing.T) {
+		inv := &patchyv1.Investigation{}
+		if err := c.Get(ctx, client.ObjectKey{Name: "finding-abc123-1-inv-1", Namespace: "default"}, inv); err != nil {
+			t.Fatalf("Get(investigation) = %v", err)
+		}
+		inv.Status.RunnerImage = want()
+		inv.Status.RunnerImage.Source = "bogus"
+		if err := c.Status().Update(ctx, inv); err == nil {
+			t.Error("Status().Update(runnerImage.source=bogus) = nil, want enum rejection")
+		}
+		inv.Status.RunnerImage = want()
+		if err := c.Status().Update(ctx, inv); err != nil {
+			t.Fatalf("Status().Update(runnerImage.source=repository) = %v, want nil", err)
+		}
+		got := &patchyv1.Investigation{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(inv), got); err != nil {
+			t.Fatalf("Get(investigation) = %v", err)
+		}
+		if !reflect.DeepEqual(got.Status.RunnerImage, want()) {
+			t.Errorf("status.runnerImage = %+v, want %+v", got.Status.RunnerImage, want())
+		}
+	})
+
+	t.Run("remediation", func(t *testing.T) {
+		rem := &patchyv1.Remediation{
+			ObjectMeta: metav1.ObjectMeta{Name: "finding-abc123-1-rem-1", Namespace: "default"},
+			Spec: patchyv1.RemediationSpec{
+				FindingRef:       patchyv1.ObjectReference{Name: "finding-abc123-1"},
+				InvestigationRef: patchyv1.ObjectReference{Name: "finding-abc123-1-inv-1"},
+				RepositoryRef:    patchyv1.LocalObjectReference{Name: "finding-abc123-1-src"},
+				Attempt:          1,
+			},
+		}
+		if err := c.Create(ctx, rem); err != nil {
+			t.Fatalf("Create(remediation) = %v, want nil", err)
+		}
+		rem.Status.RunnerImage = want()
+		rem.Status.RunnerImage.Source = "bogus"
+		if err := c.Status().Update(ctx, rem); err == nil {
+			t.Error("Status().Update(runnerImage.source=bogus) = nil, want enum rejection")
+		}
+		rem.Status.RunnerImage = want()
+		if err := c.Status().Update(ctx, rem); err != nil {
+			t.Fatalf("Status().Update(runnerImage) = %v, want nil", err)
+		}
+		got := &patchyv1.Remediation{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(rem), got); err != nil {
+			t.Fatalf("Get(remediation) = %v", err)
+		}
+		if !reflect.DeepEqual(got.Status.RunnerImage, want()) {
+			t.Errorf("status.runnerImage = %+v, want %+v", got.Status.RunnerImage, want())
+		}
+	})
+
+	t.Run("finding investigation mirror", func(t *testing.T) {
+		f := &patchyv1.Finding{}
+		if err := c.Get(ctx, client.ObjectKey{Name: "finding-abc123-1", Namespace: "default"}, f); err != nil {
+			t.Fatalf("Get(finding) = %v", err)
+		}
+		f.Status.Investigation = &patchyv1.InvestigationSummary{
+			Name:        "finding-abc123-1-inv-1",
+			Attempt:     1,
+			RunnerImage: want(),
+		}
+		f.Status.Investigation.RunnerImage.Source = "bogus"
+		if err := c.Status().Update(ctx, f); err == nil {
+			t.Error("Status().Update(investigation.runnerImage.source=bogus) = nil, want enum rejection")
+		}
+		f.Status.Investigation.RunnerImage = want()
+		if err := c.Status().Update(ctx, f); err != nil {
+			t.Fatalf("Status().Update(investigation.runnerImage) = %v, want nil", err)
+		}
+		got := &patchyv1.Finding{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(f), got); err != nil {
+			t.Fatalf("Get(finding) = %v", err)
+		}
+		if got.Status.Investigation == nil {
+			t.Fatal("status.investigation = nil after update, want the summary")
+		}
+		if !reflect.DeepEqual(got.Status.Investigation.RunnerImage, want()) {
+			t.Errorf("status.investigation.runnerImage = %+v, want %+v", got.Status.Investigation.RunnerImage, want())
+		}
 	})
 }
 

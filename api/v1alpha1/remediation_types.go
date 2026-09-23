@@ -62,6 +62,11 @@ type RemediationStatus struct {
 	// JobRef locates the agent Job in the agents namespace.
 	// +optional
 	JobRef *JobReference `json:"jobRef,omitempty"`
+	// RunnerImage is the image the Job actually launched on, written beside
+	// JobRef from what the Job client returned; the changeset validator
+	// applies its repository-image rules on this Source.
+	// +optional
+	RunnerImage *RunnerImageRef `json:"runnerImage,omitempty"`
 	// Stage is the agent accounting for the run.
 	// +optional
 	Stage *StageResult `json:"stage,omitempty"`

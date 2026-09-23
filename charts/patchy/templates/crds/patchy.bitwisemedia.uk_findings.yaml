@@ -9,7 +9,7 @@ metadata:
     {{- if .Values.crds.keep }}
     helm.sh/resource-policy: keep
     {{- end }}
-    controller-gen.kubebuilder.io/version: v0.21.0
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: findings.patchy.bitwisemedia.uk
 spec:
   group: patchy.bitwisemedia.uk
@@ -613,6 +613,39 @@ spec:
                     - ignore
                     - manual
                     type: string
+                  runnerImage:
+                    description: |-
+                      RunnerImage the investigation ran on, mirrored from the child for the
+                      projection (the tracking issue's sticky comment and the status page).
+                    properties:
+                      image:
+                        description: |-
+                          Image is the image reference the agent container ran, as written into
+                          the Job. With Source "repository" it is the digest-pinned reference
+                          resolved onto the Repository's status. With Source "default" it is the
+                          per-harness runner image exactly as the operator configured it, which
+                          is digest-pinned only if that configuration pins it (a tag otherwise).
+                        type: string
+                      manifest:
+                        description: |-
+                          Manifest is the declaring file's repository-relative path, copied from
+                          the Repository at launch when Source is "repository" so the tracking
+                          issue and describe can name the file; empty otherwise.
+                        type: string
+                      source:
+                        description: |-
+                          Source is RunnerImageSourceRepository when the image came from the
+                          Repository's declaration and RunnerImageSourceDefault when the
+                          per-harness runner image ran (nothing declared, a non-claude harness,
+                          the kill switch).
+                        enum:
+                        - repository
+                        - default
+                        type: string
+                    required:
+                    - image
+                    - source
+                    type: object
                 required:
                 - attempt
                 - name

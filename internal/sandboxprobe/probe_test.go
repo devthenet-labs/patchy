@@ -360,3 +360,24 @@ func TestVerdict(t *testing.T) {
 		}
 	}
 }
+
+// closeFailingConn is a connection that was established but whose Close
+// reports an error, as a reset arriving before close can on some stacks.
+type closeFailingConn struct{ net.Conn }
+
+func (closeFailingConn) Close() error { return errors.New("connection reset by peer") }
+
+// TestConnectCountsAnEstablishedConnection: once the TCP connect succeeded
+// the target is reachable, whatever closing the socket reports. Counting a
+// failed Close as blocked would be the unsafe direction — a round in which
+// every target connected could conclude "enforced".
+func TestConnectCountsAnEstablishedConnection(t *testing.T) {
+	established := func(context.Context, string, string) (net.Conn, error) { return closeFailingConn{}, nil }
+	if err := connect(context.Background(), "1.1.1.1:443", established); err != nil {
+		t.Errorf("connect = %v on an established connection whose Close failed, want nil (reachable)", err)
+	}
+	refused := func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("refused") }
+	if err := connect(context.Background(), "1.1.1.1:443", refused); err == nil {
+		t.Error("connect = nil on a refused dial, want the error (blocked)")
+	}
+}

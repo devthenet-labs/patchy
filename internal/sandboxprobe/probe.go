@@ -181,11 +181,21 @@ func reachable(ctx context.Context, targets []Target, dial func(context.Context,
 // dialTCP is the production dialer: a TCP connect bounded by the context,
 // closed immediately, because reaching the port at all is the finding.
 func dialTCP(ctx context.Context, addr string) error {
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	return connect(ctx, addr, (&net.Dialer{}).DialContext)
+}
+
+// connect is dialTCP over an injectable dial function. Once the connect
+// succeeded the target is reachable: a Close error does not unmake that,
+// and reporting it as the dial's result would count an open target as
+// blocked, the unsafe direction.
+func connect(ctx context.Context, addr string,
+	dial func(ctx context.Context, network, addr string) (net.Conn, error)) error {
+	conn, err := dial(ctx, "tcp", addr)
 	if err != nil {
 		return err
 	}
-	return conn.Close()
+	_ = conn.Close()
+	return nil
 }
 
 // sleepContext waits d or until ctx ends.

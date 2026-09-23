@@ -85,5 +85,7 @@ with `--repository-images` on the [investigation](investigation-controller.md#ag
   deterministic failure is a rejection: `rejected` carries the reason label and `message` the explanation (the guide's
   [troubleshooting table](../integrations/agent-images.md#troubleshooting) lists every label). Under
   `--repository-image-on-reject default` the Repository stays `Ready` and the finding runs on the default runner image;
-  under `handoff` it is `Stalled` / `RunnerImageRejected`, the investigation gate parks the finding `HandedOff` with the
-  message, and approving it runs the remediation on the default runner image.
+  under `handoff` it is `Stalled` / `RunnerImageRejected` and the investigation gate parks the finding `HandedOff` with
+  the message, before any investigation exists. Nothing revives a finding parked this way (`approve` revives only a
+  finding with an investigation to remediate from), so it stays with a human; a fixed declaration applies to the next
+  finding on the repository.

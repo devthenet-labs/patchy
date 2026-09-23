@@ -44,7 +44,7 @@ func TestRunnerImageCommentGoldens(t *testing.T) {
 		{"runner_image_rejected_default.md", rejected},
 		{"runner_image_rejected_handoff.md", func() RunnerImageComment {
 			c := rejected
-			c.Parked, c.ApproveCommand = true, "/patchy approve"
+			c.Parked = true
 			return c
 		}()},
 		// A .patchy/agent.yaml that could not be read names no reference, so

@@ -301,8 +301,8 @@ Once the finding's repository snapshot is taken, patchy keeps one comment on the
 - **Not applicable** — the devcontainer.json was not used, the exact reason, and that the default runner image ran.
 - **Rejected** — the declared image, the reason label (see [troubleshooting](#troubleshooting)) and the exact message,
   and what patchy did: ran the default runner image (the default), or parked the finding for a human because the
-  operator set `onReject: handoff` (approving it runs the default runner image). It ends with the `patchy check image`
-  command to run.
+  operator set `onReject: handoff` (patchy does not investigate a parked finding, and approving it does not revive it).
+  It ends with the `patchy check image` command to run.
 - **Failed in a run** — a run on the accepted image ended `image_incompatible` (with the preflight's error), or was
   refused with `SandboxUnenforced` because the cluster does not enforce the network isolation patchy requires; the
   second is for the operator to fix, not you.

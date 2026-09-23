@@ -44,11 +44,11 @@ type RunnerImageComment struct {
 	// devcontainer.json was not applicable.
 	Reason string
 	// Parked reports that the rejection handed the finding to a human
-	// (onReject handoff) instead of falling back to the default image.
+	// (onReject handoff) instead of falling back to the default image. The
+	// gate parks it before any investigation exists, and an approval revives
+	// only a finding with an investigation to remediate from, so a parked
+	// finding stays with a human.
 	Parked bool
-	// ApproveCommand is the tracker's approve comment; empty means
-	// "/approve".
-	ApproveCommand string
 	// Incompatible is the latest run whose preflight found the image
 	// incompatible (image_incompatible); nil when none did.
 	Incompatible *RunnerImageRun
@@ -85,9 +85,6 @@ func (c RunnerImageComment) CheckRef() string {
 func RenderRunnerImageComment(c RunnerImageComment) (string, error) {
 	if c.GuideURL == "" {
 		c.GuideURL = AgentImageGuideURL
-	}
-	if c.ApproveCommand == "" {
-		c.ApproveCommand = "/approve"
 	}
 	return render("runner_image_comment.md.tmpl", c)
 }

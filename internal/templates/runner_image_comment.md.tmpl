@@ -16,7 +16,7 @@ The agent ran in the default runner image instead, which carries no language too
 patchy could not use {{ if .Declared }}{{ code .Declared }}, declared in{{ else }}the declaration in{{ end }} `{{ .Manifest }}` (`{{ .Rejected }}`):
 {{ fence .Reason }}
 {{- if .Parked }}
-patchy parked this finding for a human rather than run it on another image, because the operator set `onReject: handoff`. Comment {{ code .ApproveCommand }} to run it in the default runner image.
+patchy parked this finding for a human rather than run it on another image, because the operator set `onReject: handoff`. patchy will not investigate this finding: it stays with its human owners.
 {{- else }}
 The agent ran in the default runner image instead, which carries no language toolchain.
 {{- end }}

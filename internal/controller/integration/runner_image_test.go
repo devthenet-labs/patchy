@@ -286,9 +286,13 @@ func TestProjectRunnerImageOutcomes(t *testing.T) {
 			[]string{"could not use `docker.io/library/golang:1.26`", "(`NotAllowlisted`)",
 				"not under an allowlisted registry path", "default runner image instead",
 				"`patchy check image docker.io/library/golang:1.26`"}, []string{"parked"}},
+		// The gate parks the finding before any investigation exists, and an
+		// approval revives only a finding that has one, so the comment must
+		// not offer /approve as a way out.
 		{"rejected under handoff", []client.Object{imageRepository(rejected, stalled)}, false,
 			[]string{"(`NotAllowlisted`)", "parked this finding for a human", "`onReject: handoff`",
-				"Comment `/approve`"}, []string{"default runner image instead"}},
+				"not investigate this finding", "the fix applies to the next finding"},
+			[]string{"default runner image instead", "approve"}},
 		{"sandbox refused", []client.Object{imageRepository(acceptedImage()),
 			imageInvestigation(1, v1alpha1.RunnerImageSourceRepository,
 				&v1alpha1.StageResult{Outcome: "aborted", Detail: "SandboxUnenforced: ..."}, refused)}, false,

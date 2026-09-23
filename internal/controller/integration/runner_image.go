@@ -83,9 +83,7 @@ func (r *FindingReconciler) runnerImageBody(ctx context.Context, fnd *v1alpha1.F
 	if err := r.List(ctx, &rems, client.InNamespace(fnd.Namespace), own); err != nil {
 		return "", fmt.Errorf("list remediations: %w", err)
 	}
-	c := runnerImageComment(src, imageRuns(fnd, invs.Items, rems.Items))
-	c.ApproveCommand = r.approveCommand(ctx, fnd)
-	return templates.RenderRunnerImageComment(c)
+	return templates.RenderRunnerImageComment(runnerImageComment(src, imageRuns(fnd, invs.Items, rems.Items)))
 }
 
 // ownedRepository picks the finding's own Repository out of those carrying

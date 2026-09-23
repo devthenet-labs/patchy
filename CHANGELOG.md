@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.5](https://github.com/devthenet-labs/patchy/compare/v0.11.4...v0.11.5) (2026-09-23)
+
+
+### Features
+
+* **api:** repository-declared runner image types, reasons and envelope outcomes ([#10](https://github.com/devthenet-labs/patchy/issues/10)) ([0949aed](https://github.com/devthenet-labs/patchy/commit/0949aed2afb2cc658575cee27b778edd5ca7411e))
+* **broker:** enforce route surface, body checks, spend limits and pre-auth ([#12](https://github.com/devthenet-labs/patchy/issues/12)) ([c3a9292](https://github.com/devthenet-labs/patchy/commit/c3a92924085483a8dad5557c8513e320b52785d4))
+* **runnerimage:** pure core for repository-declared runner images ([#11](https://github.com/devthenet-labs/patchy/issues/11)) ([00e1e5e](https://github.com/devthenet-labs/patchy/commit/00e1e5ee22c1edc2269ff0daf426e45b08d94231))
+
 ## [0.11.4](https://github.com/devthenet-labs/patchy/compare/v0.11.3...v0.11.4) (2026-09-22)
 
 

@@ -1300,6 +1300,66 @@
                         "$ref": "#/definitions/agentRunner"
                     }
                 },
+                "repositoryImages": {
+                    "type": "object",
+                    "description": "Repository-declared runner images: a watched repository names the image its claude agent runs in; off by default, and enabling it fails the render unless the required values are set and the agent egress is narrow",
+                    "additionalProperties": false,
+                    "required": [
+                        "enabled"
+                    ],
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "The kill switch; false renders none of the keys below"
+                        },
+                        "registries": {
+                            "type": "array",
+                            "description": "Registry path prefixes (host/path/) a declared image must sit under; required when enabled",
+                            "items": {
+                                "type": "string",
+                                "minLength": 1
+                            }
+                        },
+                        "cosignPublicKey": {
+                            "type": "string",
+                            "description": "PEM public key every declared image must be cosign-signed with; required when enabled unless allowUnsigned"
+                        },
+                        "allowUnsigned": {
+                            "type": "boolean",
+                            "description": "Admit unsigned images (explicit opt-out of signature verification)"
+                        },
+                        "maxBytes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Largest compressed layer total of one platform of a declared image, in bytes"
+                        },
+                        "onReject": {
+                            "type": "string",
+                            "enum": [
+                                "default",
+                                "handoff"
+                            ],
+                            "description": "What a rejected declaration does to the finding: run it on the default image (default) or park it for a human (handoff)"
+                        },
+                        "ephemeralStorage": {
+                            "type": "string",
+                            "description": "Ephemeral-storage request and limit on both agent containers, a quantity such as 8Gi; required when enabled"
+                        },
+                        "changesetMaxEntries": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Most files a changeset from a repository-image run may touch"
+                        },
+                        "pullSecret": {
+                            "type": "string",
+                            "description": "dockerconfigjson Secret (release namespace) source-controller resolves declared images with; also listed in the agent ServiceAccount's imagePullSecrets"
+                        },
+                        "pullSecretData": {
+                            "type": "string",
+                            "description": "The .dockerconfigjson content (JSON, not base64) rendered into agent.namespace as the pullSecret Secret"
+                        }
+                    }
+                },
                 "networkPolicy": {
                     "type": "object",
                     "additionalProperties": false,

@@ -1,0 +1,24 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# chart-render-test fixture: agent.repositoryImages enabled with every value
+# the render-time guards require, on narrow egress (mode none with the broad
+# 443 rule removed). The key is a throwaway P-256 public key whose private
+# half was never kept; the registry credential is a placeholder.
+agent:
+    networkPolicy:
+        mode: none
+        broadEgress: never
+    repositoryImages:
+        enabled: true
+        registries:
+            - 123456789012.dkr.ecr.us-east-1.amazonaws.com/patchy/
+            - ghcr.io/example/agent-images/
+        cosignPublicKey: |
+            -----BEGIN PUBLIC KEY-----
+            MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETXieGUPXxCOQBGzaWj0PR4lb6mxv
+            rk7N2FzMqhjN+trpRo9SjSYa3jwbGYZOICHuVXODs8xJCY//oYraiAeR/g==
+            -----END PUBLIC KEY-----
+        ephemeralStorage: 8Gi
+        pullSecret: patchy-registry
+        pullSecretData: '{"auths":{"ghcr.io":{"auth":"cGxhY2Vob2xkZXI6cGxhY2Vob2xkZXI="}}}'

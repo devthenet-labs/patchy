@@ -137,11 +137,13 @@ run = "./hack/dev-colima.sh"
 # Integration/Forge CRs) render the same stack as deploy/kustomize and are
 # published to oci://ghcr.io/devthenet-labs/patchy/charts by
 # .github/workflows/helm.yaml on release. This is the local gate: lint plus a
-# render of every component combination the templates branch on.
+# render of every component combination the templates branch on, then the
+# render assertions (hack/chart-render-test.sh: which keys reach which
+# controller, the mounts, and the render-time guards).
 [helm-lint]
 description = "lint and render the helm charts"
 dir = "{{cwd}}"
-run = "./hack/helm-lint.sh"
+run = ["./hack/helm-lint.sh", "./hack/chart-render-test.sh"]
 
 # Everything derived from the CLI's cobra command tree: the per-command
 # reference under docs/cli (nav'd from docs/cli.md) and the shell completions.

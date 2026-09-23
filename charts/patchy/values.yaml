@@ -783,6 +783,82 @@ agent:
             dnsPatterns:
                 - "*.githubcopilot.com"
                 - api.github.com
+    # Repository-declared runner images: a watched repository names the image
+    # its claude agent runs in (`image:` in .patchy/agent.yaml, or the
+    # top-level `image` of .devcontainer/devcontainer.json), so the agent has
+    # that repository's toolchain. source-controller checks the image against
+    # the policy below and pins it to a digest once per Repository; the Job's
+    # trusted init still runs the claude runner image and injects agent-runner
+    # and the claude CLI into the declared one. Only the brokered claude runner
+    # uses it — codex, copilot and evaluation Jobs keep their own images. Off
+    # by default; `enabled: false` is the kill switch (the next Job runs the
+    # default image, no CR edits needed) and renders none of the keys below.
+    #
+    # Enabling it FAILS THE RENDER unless every required value below is set
+    # and the agent egress is narrow: agent.networkPolicy.create must be true
+    # and agent.networkPolicy.broadEgress must not resolve to keeping "TCP 443
+    # to anywhere". Under mode none or istio that means broadEgress: never,
+    # which removes the rule for codex and copilot too — there, a fleet using
+    # repository images is brokered-claude only. The CNI must also actually
+    # enforce NetworkPolicy (EKS Auto Mode does not by default): every
+    # repository-image Job probes that before untrusted code runs and fails
+    # SandboxUnenforced when it does not.
+    repositoryImages:
+        enabled: false
+        # Registry path prefixes a declared image must sit under, e.g.
+        # 123456789012.dkr.ecr.us-east-1.amazonaws.com/patchy/ or
+        # ghcr.io/my-org/agent-images/. Required when enabled. Each entry
+        # needs a path segment (a bare host is refused at startup), matches on
+        # segment boundaries and takes no globs. Never list a pull-through
+        # cache namespace (.../docker-hub/, .../ecr-public/,
+        # <region>-docker.pkg.dev/<project>/*-remote/): anyone can populate
+        # those.
+        registries: []
+        # PEM public key every declared image must be cosign-signed with (key
+        # mode: `cosign sign --key` bundles and the legacy .sig tag both
+        # verify). Rendered into a ConfigMap and mounted into
+        # source-controller. Required when enabled unless allowUnsigned.
+        cosignPublicKey: ""
+        # Admit unsigned images, so registry write access alone decides what
+        # the agent runs. An explicit opt-out; never the default.
+        allowUnsigned: false
+        # Largest compressed layer total of one platform of a declared image,
+        # in bytes (4 GiB). Writable disk is ephemeralStorage below.
+        maxBytes: 4294967296
+        # What a rejected declaration (a registry off the list, a missing
+        # signature, a reserved ENV, ...) does to the finding:
+        #
+        #   default  run it on the default runner image, recording why.
+        #   handoff  park the finding HandedOff for a human; an approve or
+        #            retry then runs it on the default image.
+        #
+        # A devcontainer.json patchy cannot honour (it builds its image or
+        # adds features) is not a rejection: it runs on the default image
+        # either way.
+        onReject: default
+        # Ephemeral-storage request AND limit on both containers of every
+        # agent Job, a quantity such as 8Gi: an image that fills its emptyDirs
+        # is evicted instead of filling the node. Required when enabled.
+        ephemeralStorage: ""
+        # Most files (upserts plus deletes) a changeset from a
+        # repository-image run may touch before remediation-controller
+        # rejects it without any forge call. Default-image runs are not
+        # capped.
+        changesetMaxEntries: 500
+        # Name of a kubernetes.io/dockerconfigjson Secret in the RELEASE
+        # namespace that source-controller resolves declared images with
+        # (mounted as DOCKER_CONFIG). Leave empty for ECR and Artifact
+        # Registry: source-controller uses its workload identity there. When
+        # set, the agent ServiceAccount also lists it in imagePullSecrets —
+        # and the kubelet reads that Secret from agent.namespace, not the
+        # release namespace, so a Secret of the same name must exist there
+        # too: supply pullSecretData to have the chart render it, or create
+        # it yourself.
+        pullSecret: ""
+        # The .dockerconfigjson content (JSON, not base64) the chart renders
+        # into agent.namespace as a Secret named `pullSecret`. Optional; like
+        # any inline credential it lands in the release's revision history.
+        pullSecretData: ""
     # The sandbox policies: default-deny both directions plus DNS, the
     # artifact server, and TCP-443-only external egress. A plain
     # NetworkPolicy cannot match hostnames; enforcement at that level needs

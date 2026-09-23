@@ -36,7 +36,7 @@ const (
 )
 
 // DefaultBetaDenylist is the anthropic-beta entries stripped when
-// Config.BetaDenylist is nil: the betas that would have the upstream reach
+// Config.BetaDenylist is empty and the deny-list is not disabled: the betas that would have the upstream reach
 // MCP servers, the web, a code-execution container or the Files API on the
 // pod's behalf, plus the 1M context window (a spend multiplier). A
 // deny-list rather than an allowlist because the CLI's beta set changes
@@ -132,9 +132,13 @@ type Config struct {
 	// off.
 	Limits Limits
 	// BetaDenylist is the anthropic-beta patterns (path.Match globs) to
-	// strip: nil takes DefaultBetaDenylist, an empty non-nil slice strips
-	// nothing.
+	// strip from the header and from a body anthropic_beta array. Empty —
+	// nil or not — takes DefaultBetaDenylist, so the zero value is the safe
+	// default.
 	BetaDenylist []string
+	// DisableBetaDenylist strips no betas at all. It is the only way to
+	// turn the deny-list off, and it excludes BetaDenylist.
+	DisableBetaDenylist bool
 	// PreauthRequestsPerSecond and PreauthBurst are the per-source-IP token
 	// bucket ahead of authentication; the burst is also the per-IP in-flight
 	// cap. Zero disables.
@@ -143,8 +147,8 @@ type Config struct {
 	// TokenReviewsPerSecond bounds TokenReview calls broker-wide, with a
 	// short queue; zero disables.
 	TokenReviewsPerSecond float64
-	// Upstreams is the route table, keyed by path prefix
-	// ("anthropic"/"bedrock"/"vertex"/"foundry").
+	// Upstreams is the route table, keyed by path prefix; only the
+	// provider.Names routes, each with its own surface, are accepted.
 	Upstreams map[string]Upstream
 }
 
@@ -165,7 +169,7 @@ func (c Config) withDefaults() Config {
 	if c.MaxAnthropicRequestBytes <= 0 {
 		c.MaxAnthropicRequestBytes = DefaultMaxAnthropicRequestBytes
 	}
-	if c.BetaDenylist == nil {
+	if len(c.BetaDenylist) == 0 && !c.DisableBetaDenylist {
 		c.BetaDenylist = slices.Clone(DefaultBetaDenylist)
 	}
 	return c
@@ -206,6 +210,9 @@ func (c Config) validate() error {
 	}
 	if c.PreauthRequestsPerSecond < 0 || c.TokenReviewsPerSecond < 0 || c.PreauthBurst < 0 {
 		return errors.New("broker: pre-authentication rates must not be negative")
+	}
+	if c.DisableBetaDenylist && len(c.BetaDenylist) > 0 {
+		return errors.New("broker: a beta deny-list and DisableBetaDenylist are exclusive")
 	}
 	for _, p := range c.BetaDenylist {
 		if _, err := path.Match(p, ""); err != nil {

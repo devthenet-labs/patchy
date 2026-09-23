@@ -22,7 +22,6 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/broker"
 	"github.com/bitwise-media-group/patchy/internal/cli"
 	"github.com/bitwise-media-group/patchy/internal/kube"
-	"github.com/bitwise-media-group/patchy/internal/runnercfg"
 	"github.com/bitwise-media-group/patchy/internal/telemetry"
 	"github.com/bitwise-media-group/patchy/internal/version"
 )
@@ -213,16 +212,6 @@ func foundryUpstream(_ context.Context, opts *cli.Options) (*broker.Upstream, er
 	}
 }
 
-// betaDenylist parses --beta-denylist: empty keeps the engine's built-in
-// list (nil), "none" strips nothing (an empty non-nil list), anything else
-// is the operator's own patterns.
-func betaDenylist(raw string) []string {
-	if strings.EqualFold(strings.TrimSpace(raw), "none") {
-		return []string{}
-	}
-	return runnercfg.SplitList(raw)
-}
-
 func serve(ctx context.Context, opts *cli.Options) error {
 	prov, shutdown, err := telemetry.Init(ctx, telemetry.Config{
 		Dir:            os.Getenv("PATCHY_TELEMETRY_DIR"),
@@ -249,6 +238,13 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	if err != nil {
 		return err
 	}
+	// --beta-denylist: empty keeps the engine's built-in list, "none" strips
+	// nothing, anything else is the operator's own patterns.
+	betas := opts.StringList("beta-denylist")
+	disableBetas := len(betas) == 1 && strings.EqualFold(betas[0], "none")
+	if disableBetas {
+		betas = nil
+	}
 	srv, err := broker.New(cs, broker.Config{
 		Audience:                 opts.String("token-audience"),
 		AgentNamespace:           opts.String("agent-namespace"),
@@ -263,9 +259,10 @@ func serve(ctx context.Context, opts *cli.Options) error {
 			TokensPerPod:     int64(opts.Int("tokens-per-pod")),
 			TokensPerHour:    int64(opts.Int("tokens-per-hour")),
 			MaxTokensCeiling: int64(opts.Int("max-tokens-ceiling")),
-			ModelAllowlist:   runnercfg.SplitList(opts.String("model-allowlist")),
+			ModelAllowlist:   opts.StringList("model-allowlist"),
 		},
-		BetaDenylist:             betaDenylist(opts.String("beta-denylist")),
+		BetaDenylist:             betas,
+		DisableBetaDenylist:      disableBetas,
 		PreauthRequestsPerSecond: opts.Float("preauth-requests-per-second"),
 		PreauthBurst:             opts.Int("preauth-burst"),
 		TokenReviewsPerSecond:    opts.Float("token-reviews-per-second"),

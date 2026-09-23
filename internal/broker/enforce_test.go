@@ -581,18 +581,20 @@ func TestPreauthSourceRate(t *testing.T) {
 // forwarded; the operator can replace or disable the list.
 func TestBetaDenylist(t *testing.T) {
 	tests := []struct {
-		name string
-		deny []string
-		sent []string
-		want string
+		name    string
+		deny    []string
+		disable bool
+		sent    []string
+		want    string
 	}{
-		{"default strips the server-side betas", nil,
+		{"default strips the server-side betas", nil, false,
 			[]string{"mcp-client-2025-11-20, prompt-caching-2024-07-31", "context-1m-2025-08-07,files-api-2025-04-14"},
 			"prompt-caching-2024-07-31"},
-		{"default strips everything", nil, []string{"web-fetch-2025-09-10", "code-execution-2025-08-25"}, ""},
-		{"operator list", []string{"fast-mode-*"}, []string{"fast-mode-2026-02-01,mcp-client-2025-11-20"},
+		{"default strips everything", nil, false, []string{"web-fetch-2025-09-10", "code-execution-2025-08-25"}, ""},
+		{"operator list", []string{"fast-mode-*"}, false, []string{"fast-mode-2026-02-01,mcp-client-2025-11-20"},
 			"mcp-client-2025-11-20"},
-		{"disabled", []string{}, []string{"mcp-client-2025-11-20"}, "mcp-client-2025-11-20"},
+		{"empty is the default", []string{}, false, []string{"mcp-client-2025-11-20,x"}, "x"},
+		{"disabled", nil, true, []string{"mcp-client-2025-11-20"}, "mcp-client-2025-11-20"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -603,8 +605,9 @@ func TestBetaDenylist(t *testing.T) {
 			}))
 			defer up.Close()
 			s := newTestServer(t, Config{
-				BetaDenylist: tt.deny,
-				Upstreams:    map[string]Upstream{"anthropic": {Target: mustTarget(t, up.URL)}},
+				BetaDenylist:        tt.deny,
+				DisableBetaDenylist: tt.disable,
+				Upstreams:           map[string]Upstream{"anthropic": {Target: mustTarget(t, up.URL)}},
 			}, nil)
 			req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(`{}`))
 			req.Header.Set(TokenHeader, tok("good"))

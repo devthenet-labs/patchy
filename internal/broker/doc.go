@@ -10,12 +10,15 @@
 // broker alone holds the Anthropic API key or the cloud workload identity
 // that signs Bedrock/Vertex/Foundry traffic.
 //
-// One route per upstream, keyed by path prefix (anthropic, bedrock, vertex,
-// foundry). The route set is the extension seam for future brokered
-// upstreams (forge-minted GitHub tokens, package registries). Every request
-// is audited as a single slog line (never bodies or headers) and streamed
-// through with immediate flushing so SSE responses survive multi-minute
-// runs.
+// One route per upstream, keyed by path prefix. The route set is closed:
+// Config.validate admits only the model providers in provider.Names
+// (anthropic, bedrock, vertex, foundry), because every route is a positive
+// method+path surface (surface.go) and a metered model-inference contract,
+// not an open proxy. Brokering another upstream (forge-minted GitHub tokens,
+// package registries) means adding its name and a surface for it, not only a
+// route. Every request is audited as a single slog line (never bodies or
+// headers) and streamed through with immediate flushing so SSE responses
+// survive multi-minute runs.
 //
 // The broker is also the enforcement point for what a pod may ask of the
 // model API and how much, because under a repository-declared agent image

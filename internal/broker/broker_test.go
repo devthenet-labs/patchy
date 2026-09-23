@@ -659,6 +659,9 @@ func TestConfigValidation(t *testing.T) {
 		"negative preauth burst":   func(c *Config) { c.PreauthBurst = -1 },
 		"negative review rate":     func(c *Config) { c.TokenReviewsPerSecond = -1 },
 		"malformed beta pattern":   func(c *Config) { c.BetaDenylist = []string{"ok-*", "bad-["} },
+		"disabled with patterns": func(c *Config) {
+			c.DisableBetaDenylist, c.BetaDenylist = true, []string{"x-*"}
+		},
 	} {
 		cfg := valid()
 		mutate(&cfg)

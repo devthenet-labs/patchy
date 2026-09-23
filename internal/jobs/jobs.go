@@ -175,7 +175,10 @@ type Runner struct {
 	// harness never runs a repository image (codex and copilot hold a real
 	// credential in-pod; the fake harness replays fixtures), whatever the
 	// Repository declares. runnercfg sets {"agent-runner", "claude"} for the
-	// claude runner, so "claude only" is configuration, not code.
+	// claude runner, so "claude only" is configuration, not code. A runner
+	// that injects a Secret credential (not Brokered, Secret set) may not
+	// Inject: Create refuses such a Job rather than hand the credential to
+	// the repository's image.
 	Inject []string
 }
 
@@ -414,6 +417,27 @@ func (c *Client) injects(runner Runner, spec Spec) bool {
 	return c.cfg.AllowRepositoryImages && spec.RunnerImage != "" && len(runner.Inject) > 0
 }
 
+// injectionRefusal reports why a Job that would run a repository-declared
+// image must not be built at all, or nil when it may. It is a refusal, not
+// a quiet fall back to the default image: each case is a contradiction in
+// controller configuration, and a Job built anyway would either break the
+// isolation model or hide the misconfiguration behind an audit trail that
+// just says "default".
+//
+// A runner that injects its model credential from a Secret is the first:
+// Inject is meant only for a credential-free (brokered) runner, and the
+// threat model's promise that no credential exists in a repository-image
+// pod is kept here, where the pod is built, not left to whoever assembles
+// the runner fleet.
+func injectionRefusal(harnessID string, runner Runner) error {
+	if !runner.Brokered && runner.Secret != "" {
+		return fmt.Errorf("jobs: runner %q injects a model credential (%s from Secret %s) and cannot run a "+
+			"repository-declared image; only a brokered or credential-free runner may Inject",
+			harnessID, runner.SecretEnv, runner.Secret)
+	}
+	return nil
+}
+
 // buildSecret holds everything the init container needs: the handoff
 // markdown files.
 func buildSecret(name, namespace string, spec Spec) *corev1.Secret {
@@ -443,6 +467,9 @@ func (c *Client) buildJob(name string, spec Spec) (*batchv1.Job, error) {
 	ann := map[string]string{annotationRepo: spec.Repo}
 	inject := c.injects(runner, spec)
 	if inject {
+		if err := injectionRefusal(spec.Harness, runner); err != nil {
+			return nil, err
+		}
 		ann[annotationRunnerImage] = spec.RunnerImage
 		ann[annotationRunnerImageSource] = v1alpha1.RunnerImageSourceRepository
 		ann[annotationToolsImage] = runner.Image

@@ -38,3 +38,13 @@ includes = [".mise/tasks/go-cli.toml", "tasks.toml"]
 "go:sigs.k8s.io/controller-runtime/tools/setup-envtest" = "v0.25.0"
 "go:golang.org/x/perf/cmd/benchstat" = "0.0.0-20260709024250-82a0b07e230d"
 "aqua:mikefarah/yq" = "4.53.6"
+# Overrides the shared toolchain's kubescape (lint-kustomize's scanner), which
+# locks v4.0.11. kubescape downloads its controls bundle at scan time, and that
+# bundle now carries CEL-language rules (C-0207, C-0262, C-0275, C-0276,
+# C-0292, C-0295, C-0296). v4.0.9-v4.0.12 cannot evaluate CEL rules — a stub
+# until kubescape/kubescape#3513 (issue #3512) — so every scan dies with
+# `no ValidatingAdmissionPolicy for control ... in embedded bundle`, whatever
+# the manifests hold. v4.0.13 wires CEL in but races (`concurrent map
+# iteration and map write`, fixed by #3787), so v4.0.14 is the first release
+# that scans. Drop this pin once the toolchain's mise.lock reaches >= v4.0.14.
+"aqua:kubescape/kubescape" = "4.0.14"

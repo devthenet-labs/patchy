@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.6](https://github.com/devthenet-labs/patchy/compare/v0.11.5...v0.11.6) (2026-09-23)
+
+
+### Features
+
+* **images:** agent-base image and examples for repository-declared agent images ([#20](https://github.com/devthenet-labs/patchy/issues/20)) ([bcb2b55](https://github.com/devthenet-labs/patchy/commit/bcb2b5578fe5d87801ae834667e223dafe921a32))
+* **jobs:** repository-declared runner images in Jobs and agent-runner ([#15](https://github.com/devthenet-labs/patchy/issues/15)) ([90a9f94](https://github.com/devthenet-labs/patchy/commit/90a9f9481f843afb88641af5ba7a34fa7193dd07))
+* **source:** resolve and pin repository-declared runner images ([#16](https://github.com/devthenet-labs/patchy/issues/16)) ([6946943](https://github.com/devthenet-labs/patchy/commit/69469434d08842c1dc72ac5c1ad74f12bee183b8))
+
+
+### Bug Fixes
+
+* **broker:** wait briefly for a concurrency slot before refusing ([#23](https://github.com/devthenet-labs/patchy/issues/23)) ([0183d4d](https://github.com/devthenet-labs/patchy/commit/0183d4d2f481ac3dc42bed9b610a0588fae2d847))
+
 ## [0.11.5](https://github.com/devthenet-labs/patchy/compare/v0.11.4...v0.11.5) (2026-09-23)
 
 

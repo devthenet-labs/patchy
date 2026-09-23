@@ -334,18 +334,18 @@ func (b *syncBuffer) String() string {
 func TestTokensPerPodTripsAfterMessageStart(t *testing.T) {
 	var hits atomic.Int64
 	up := countingUpstream(t, &hits, "text/event-stream", sseUsage(5000, 7, true))
-	s := newTestServer(t, Config{
+	s, buf := auditServer(t, Config{
 		Limits:    Limits{TokensPerPod: 1000},
 		Upstreams: map[string]Upstream{"anthropic": {Target: mustTarget(t, up.URL)}},
-	}, nil)
+	})
 	h := s.Handler()
 
 	rec := post(h, "/anthropic/v1/messages", `{"model":"claude-sonnet-5"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("first request: status = %d: %s", rec.Code, rec.Body.String())
 	}
-	if got := s.ledger.totals("agent-pod-1").tokens; got != 5000+10+20+7 {
-		t.Fatalf("pod tokens = %d, want every usage field summed (5037)", got)
+	if got := lastAudit(t, buf)["pod_tokens"]; got != float64(5000+10+20+7) {
+		t.Fatalf("audit pod_tokens = %v, want every usage field summed (5037)", got)
 	}
 	rec = post(h, "/anthropic/v1/messages", `{"model":"claude-sonnet-5"}`)
 	if rec.Code != http.StatusTooManyRequests {

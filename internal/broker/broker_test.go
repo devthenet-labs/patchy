@@ -640,6 +640,35 @@ func TestConfigValidation(t *testing.T) {
 			t.Errorf("vertex upstream without a usable project/location accepted: %+v", u)
 		}
 	}
+	target := &url.URL{Scheme: "https", Host: "x"}
+	valid := func() Config {
+		return Config{
+			AgentNamespace: testNamespace, AgentServiceAccount: testSA,
+			Upstreams: map[string]Upstream{"anthropic": {Target: target}},
+		}
+	}
+	for name, mutate := range map[string]func(*Config){
+		"unknown route":            func(c *Config) { c.Upstreams["github"] = Upstream{Target: target} },
+		"route without target":     func(c *Config) { c.Upstreams["anthropic"] = Upstream{} },
+		"negative requests":        func(c *Config) { c.Limits.RequestsPerPod = -1 },
+		"negative concurrency":     func(c *Config) { c.Limits.ConcurrentPerPod = -1 },
+		"negative tokens per pod":  func(c *Config) { c.Limits.TokensPerPod = -1 },
+		"negative tokens per hour": func(c *Config) { c.Limits.TokensPerHour = -1 },
+		"negative ceiling":         func(c *Config) { c.Limits.MaxTokensCeiling = -1 },
+		"negative preauth rate":    func(c *Config) { c.PreauthRequestsPerSecond = -1 },
+		"negative preauth burst":   func(c *Config) { c.PreauthBurst = -1 },
+		"negative review rate":     func(c *Config) { c.TokenReviewsPerSecond = -1 },
+		"malformed beta pattern":   func(c *Config) { c.BetaDenylist = []string{"ok-*", "bad-["} },
+	} {
+		cfg := valid()
+		mutate(&cfg)
+		if _, err := New(fake.NewClientset(), cfg, nil); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if _, err := New(fake.NewClientset(), valid(), nil); err != nil {
+		t.Errorf("valid config refused: %v", err)
+	}
 	if _, err := ParseTarget("not a url"); err == nil {
 		t.Error("relative target accepted")
 	}

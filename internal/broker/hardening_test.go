@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -446,5 +447,81 @@ func TestAttackerStringsBounded(t *testing.T) {
 	}
 	if p, _ := lastAudit(t, buf)["path"].(string); len(p) > 512 {
 		t.Errorf("audit path is %d bytes", len(p))
+	}
+}
+
+// TestPreauthConcurrencyCap: the per-source-IP in-flight cap refuses a
+// source's extra request while its bucket still has tokens — the refusal
+// is the cap, not the rate — and leaves other sources alone.
+func TestPreauthConcurrencyCap(t *testing.T) {
+	started, release := make(chan struct{}, 8), make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		started <- struct{}{}
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer up.Close()
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	s := newTestServer(t, Config{
+		PreauthRequestsPerSecond: 1000, PreauthBurst: 1,
+		Upstreams: map[string]Upstream{"anthropic": {Target: mustTarget(t, up.URL)}},
+	}, nil)
+	h := s.Handler()
+	send := func(ip string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/anthropic/v1/models", nil)
+		req.RemoteAddr = ip + ":4242"
+		req.Header.Set(TokenHeader, tok("good"))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	go send("10.0.0.20")
+	<-started
+	time.Sleep(20 * time.Millisecond) // the bucket refills; only the cap can refuse now
+	second := make(chan *httptest.ResponseRecorder, 1)
+	go func() { second <- send("10.0.0.20") }()
+	var rec *httptest.ResponseRecorder
+	select {
+	case rec = <-second:
+	case <-started:
+		t.Fatal("second in-flight request from the same source reached the upstream")
+	case <-time.After(5 * time.Second):
+		t.Fatal("second in-flight request neither refused nor forwarded")
+	}
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second in-flight request: status = %d, want 429", rec.Code)
+	}
+	if msg := errorMessage(t, rec.Body.Bytes()); !strings.Contains(msg, "concurrent") {
+		t.Fatalf("message = %q, want the concurrency cap", msg)
+	}
+	other := make(chan int, 1)
+	go func() { other <- send("10.0.0.21").Code }()
+	<-started // the other source reached the upstream
+	unblock()
+	if got := <-other; got != http.StatusOK {
+		t.Fatalf("other source: status = %d", got)
+	}
+}
+
+// TestMaxAnthropicRequestBytes: a non-signing route buffers under its own
+// cap and refuses a larger body before any upstream contact.
+func TestMaxAnthropicRequestBytes(t *testing.T) {
+	var hits atomic.Int64
+	up := countingUpstream(t, &hits, "application/json", `{}`)
+	s := newTestServer(t, Config{
+		MaxAnthropicRequestBytes: 16,
+		Upstreams:                map[string]Upstream{"anthropic": {Target: mustTarget(t, up.URL)}},
+	}, nil)
+	rec := post(s.Handler(), "/anthropic/v1/messages", `{"model":"`+strings.Repeat("x", 52)+`"}`)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413: %s", rec.Code, rec.Body.String())
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+	if rec := post(s.Handler(), "/anthropic/v1/messages", `{"max_tokens":1}`); rec.Code != http.StatusOK {
+		t.Fatalf("a body within the cap: status = %d", rec.Code)
 	}
 }

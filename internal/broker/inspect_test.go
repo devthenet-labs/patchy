@@ -237,17 +237,25 @@ func TestFilterBetas(t *testing.T) {
 // entries that match no deny pattern, in order, and filtering is
 // idempotent.
 func TestFilterBetasProperty(t *testing.T) {
-	pool := []string{"mcp-client-2025-11-20", "web-fetch-2025-09-10", "code-execution-2025-08-25",
-		"files-api-2025-04-14", "context-1m-2025-08-07", "prompt-caching-2024-07-31", "fast-mode-2026-02-01",
-		"compact-2026-01-12", "MCP-CLIENT-X"}
+	// The oracle is hand-labelled against DefaultBetaDenylist, never
+	// computed with the matcher under test.
+	pool := []struct {
+		entry  string
+		denied bool
+	}{
+		{"mcp-client-2025-11-20", true}, {"web-fetch-2025-09-10", true}, {"code-execution-2025-08-25", true},
+		{"files-api-2025-04-14", true}, {"context-1m-2025-08-07", true}, {"MCP-CLIENT-X", true},
+		{"prompt-caching-2024-07-31", false}, {"fast-mode-2026-02-01", false}, {"compact-2026-01-12", false},
+		{"mcp-client", false}, {"context-1m", false}, {"x-web-fetch-1", false},
+	}
 	prop := func(picks []uint8, splits []bool) bool {
 		sent := make([]string, 0, len(picks))
 		var expect []string
 		for _, p := range picks {
 			e := pool[int(p)%len(pool)]
-			sent = append(sent, e)
-			if !betaDenied(e, DefaultBetaDenylist) {
-				expect = append(expect, e)
+			sent = append(sent, e.entry)
+			if !e.denied {
+				expect = append(expect, e.entry)
 			}
 		}
 		// Spread the entries over one or more header values.

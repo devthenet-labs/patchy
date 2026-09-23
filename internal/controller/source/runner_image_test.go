@@ -292,11 +292,13 @@ func TestRunnerImageRejections(t *testing.T) {
 	}
 }
 
-// TestRunnerImageOnRejectDefault: under onReject default — also what an
-// unset policy means — a rejection is recorded but the Repository stays
-// Ready, so the finding runs on the default image with no human step.
+// TestRunnerImageOnRejectDefault: under onReject default (the
+// --repository-image-on-reject default, which the chart always renders) a
+// rejection is recorded but the Repository stays Ready, so the finding runs
+// on the default image with no human step. An UNSET policy on the struct is
+// the fail-safe hand-off instead; TestRunnerImageOnRejectUnsetParks pins it.
 func TestRunnerImageOnRejectDefault(t *testing.T) {
-	for _, policy := range []string{OnRejectDefault, ""} {
+	for _, policy := range []string{OnRejectDefault} {
 		t.Run("policy="+policy, func(t *testing.T) {
 			gh := &fakeForgeClient{defaultBranch: "main", headSHA: "abc123",
 				tarball: tarball(t, map[string]string{runnerimage.AgentYAMLPath: "image: ghcr.io/acme-evil/app:1\n"})}
@@ -645,5 +647,27 @@ func TestRunnerImageResolveDeadline(t *testing.T) {
 	}
 	if repo.Status.RunnerImage != nil || condition(t, repo, v1alpha1.ConditionStalled) != nil {
 		t.Errorf("status = %+v, want no pin and no stall on a timeout", repo.Status)
+	}
+}
+
+// TestRunnerImageOnRejectUnsetParks: RunnerImages{} with no OnReject is the
+// fail-safe hand-off (RunnerImages.handoff), so a caller that forgets to wire
+// the policy parks a rejected declaration rather than silently running it on
+// the default image. The binary never leaves it unset: the flag defaults to
+// "default".
+func TestRunnerImageOnRejectUnsetParks(t *testing.T) {
+	gh := &fakeForgeClient{defaultBranch: "main", headSHA: "abc123",
+		tarball: tarball(t, map[string]string{runnerimage.AgentYAMLPath: "image: ghcr.io/acme-evil/app:1\n"})}
+	r, c := imageHarness(t, gh, &fakeResolver{})
+	r.Images.OnReject = ""
+
+	reconcile(t, r)
+
+	repo := getRepo(t, c)
+	if meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionReady) {
+		t.Errorf("Ready = %+v, want not Ready: an unset policy hands off", condition(t, repo, v1alpha1.ConditionReady))
+	}
+	if st := condition(t, repo, v1alpha1.ConditionStalled); st == nil || st.Reason != v1alpha1.ReasonRunnerImageRejected {
+		t.Errorf("Stalled = %+v, want RunnerImageRejected", st)
 	}
 }

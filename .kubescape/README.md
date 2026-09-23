@@ -5,6 +5,11 @@
 Every entry is an accepted design decision or a scanner false positive — none is a deferred fix. Resource `name`
 attributes are regexes; the leading `.*` absorbs the release-name prefix.
 
+Every entry uses the `disable` action, not `alertOnly`. From kubescape v4.0.13 (kubescape/kubescape#3615, pulling in
+kubescape/opa-utils#190) `alertOnly` only acknowledges a finding: the resource still reports `failed (w/exceptions)` and
+still trips `--severity-threshold`. `disable` is the action that removes an accepted finding from the failed count,
+which is what these entries have always meant (before v4.0.13 the two actions behaved identically).
+
 ## controllers-c0211-selinux-options-are-host-specific (C-0211)
 
 The deployments already set the full security context: `runAsNonRoot`, non-zero uid/gid, `fsGroup` +

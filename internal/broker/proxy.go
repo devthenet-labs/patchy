@@ -46,6 +46,11 @@ func newRoute(name string, u Upstream, log *slog.Logger) *route {
 			pr.SetURL(u.Target)
 			pr.Out.Host = u.Target.Host
 			stripCallerHeaders(pr.Out.Header)
+			// Ask for an unencoded response: the usage scanner reads the
+			// bytes as they stream, and a caller-negotiated gzip or br body
+			// would blind it. Setting the header also stops the transport
+			// adding its own gzip.
+			pr.Out.Header.Set("Accept-Encoding", "identity")
 		},
 		Transport:     credentialTransport{next: newTransport(), cred: u.Credential},
 		FlushInterval: -1, // stream: flush every write immediately
@@ -106,10 +111,16 @@ func bufferBody(r *http.Request, limit int64) ([]byte, bool, error) {
 	if int64(len(body)) > limit {
 		return nil, false, nil
 	}
+	setBody(r, body)
+	return body, true, nil
+}
+
+// setBody makes body the request's re-readable body, as a signing
+// credential needs it.
+func setBody(r *http.Request, body []byte) {
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
-	return body, true, nil
 }
 
 // writeAPIError emits an Anthropic-style JSON error envelope, which is what

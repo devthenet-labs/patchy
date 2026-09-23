@@ -219,6 +219,15 @@ func newReviewLimiter(perSecond float64) *reviewLimiter {
 	return &reviewLimiter{lim: rate.NewLimiter(rate.Limit(perSecond), max(1, int(perSecond)))}
 }
 
+// retryAfter is the Retry-After, in whole seconds, for a caller refused a
+// review slot: one slot's interval, at least a second.
+func (l *reviewLimiter) retryAfter() int {
+	if l == nil || l.lim.Limit() <= 0 {
+		return 1
+	}
+	return max(1, int(math.Ceil(1/float64(l.lim.Limit()))))
+}
+
 // admit waits up to reviewQueueWait for a review slot.
 func (l *reviewLimiter) admit(ctx context.Context) error {
 	if l == nil {

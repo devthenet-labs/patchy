@@ -236,12 +236,21 @@ type usageWriter struct {
 	onUsage func(usage)
 	started bool
 	status  int
+	// bytes is what a 2xx response streamed through, for the output
+	// estimate when neither max_tokens nor a ceiling bounds it.
+	bytes int64
 }
 
 func (w *usageWriter) WriteHeader(code int) {
 	if !w.started {
 		w.started, w.status = true, code
 		w.scan.start(w.Header().Get("Content-Type"))
+		// An encoded body is not parseable text: fail closed to the
+		// worst-case charge rather than scan compressed bytes. The broker
+		// asks upstreams for identity, so this is a misbehaving upstream.
+		if ce := w.Header().Get("Content-Encoding"); ce != "" && !strings.EqualFold(ce, "identity") {
+			w.scan.mode = scanOpaque
+		}
 	}
 	w.ResponseWriter.WriteHeader(code)
 }
@@ -251,6 +260,7 @@ func (w *usageWriter) Write(p []byte) (int, error) {
 		w.WriteHeader(http.StatusOK)
 	}
 	if w.status/100 == 2 {
+		w.bytes += int64(len(p))
 		if d := w.scan.write(p); d.total() > 0 {
 			w.onUsage(d)
 		}

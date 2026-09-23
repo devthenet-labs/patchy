@@ -33,6 +33,7 @@ type ledger struct {
 	mu        sync.Mutex
 	pods      map[string]*podCounters
 	hour      hourWindow
+	reserved  int64 // outstanding reservations broker-wide
 	lastSweep time.Time
 }
 
@@ -40,6 +41,7 @@ type podCounters struct {
 	requests int64
 	inflight int64
 	tokens   int64
+	reserved int64 // outstanding reservations of in-flight requests
 	seen     time.Time
 }
 
@@ -48,10 +50,17 @@ func newLedger(limits Limits, now func() time.Time) *ledger {
 }
 
 // admit checks every request-time limit for pod and, when all pass, records
-// the request and takes an in-flight slot. It returns the slot's release, or
-// the refusal message (carrying the fixed prefix the in-pod runtime maps to
-// budget_exceeded).
-func (l *ledger) admit(pod string) (func(), string) {
+// the request, takes an in-flight slot and reserves the request's worst-case
+// tokens against both token limits. The token checks count every
+// outstanding reservation, all under one lock, so parallel requests cannot
+// each pass before any of them is charged: a request is refused when the
+// committed total (charged plus reserved) has reached the limit or its own
+// reservation would carry it over. It returns the release — which frees the
+// slot and returns the reservation once the request has been charged its
+// actual usage — or the refusal message (carrying the fixed prefix the
+// in-pod runtime maps to budget_exceeded).
+func (l *ledger) admit(pod string, reserve int64) (func(), string) {
+	reserve = max(reserve, 0)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -59,10 +68,10 @@ func (l *ledger) admit(pod string) (func(), string) {
 	p := l.podLocked(pod, now)
 	lim := l.limits
 	switch {
-	case lim.TokensPerHour > 0 && l.hour.sum(now) >= lim.TokensPerHour:
+	case lim.TokensPerHour > 0 && over(l.hour.sum(now)+l.reserved, reserve, lim.TokensPerHour):
 		return nil, fmt.Sprintf("%s: broker-wide hourly token ceiling (%d) reached",
 			provider.LimitMessagePrefix, lim.TokensPerHour)
-	case lim.TokensPerPod > 0 && p.tokens >= lim.TokensPerPod:
+	case lim.TokensPerPod > 0 && over(p.tokens+p.reserved, reserve, lim.TokensPerPod):
 		return nil, fmt.Sprintf("%s: tokens per pod (%d) reached", provider.LimitMessagePrefix, lim.TokensPerPod)
 	case lim.RequestsPerPod > 0 && p.requests >= lim.RequestsPerPod:
 		return nil, fmt.Sprintf("%s: requests per pod (%d) reached", provider.LimitMessagePrefix, lim.RequestsPerPod)
@@ -72,12 +81,22 @@ func (l *ledger) admit(pod string) (func(), string) {
 	}
 	p.requests++
 	p.inflight++
+	p.reserved += reserve
+	l.reserved += reserve
 	return func() {
 		l.mu.Lock()
 		defer l.mu.Unlock()
 		p.inflight--
+		p.reserved -= reserve
+		l.reserved -= reserve
 		p.seen = l.now()
 	}, ""
+}
+
+// over reports whether a request reserving reserve tokens is refused under
+// limit given what is already committed.
+func over(committed, reserve, limit int64) bool {
+	return committed >= limit || committed+reserve > limit
 }
 
 // charge adds n tokens to pod's total and the hourly window.

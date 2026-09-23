@@ -228,6 +228,26 @@ func TestModelAllowlist(t *testing.T) {
 		{"bedrock arn",
 			"/bedrock/model/arn:aws:bedrock:us-east-1:1:inference-profile%2Fus.anthropic.claude-opus-5-v1:0/invoke",
 			`{}`, http.StatusOK},
+		{"bedrock global profile", "/bedrock/model/global.anthropic.claude-sonnet-5-v1:0/invoke", `{}`, http.StatusOK},
+		{"bedrock us-gov profile", "/bedrock/model/us-gov.anthropic.claude-sonnet-5-v1:0/invoke", `{}`, http.StatusOK},
+		{"bedrock foundation-model arn",
+			"/bedrock/model/arn:aws:bedrock:us-east-1::foundation-model%2Fanthropic.claude-sonnet-5-v1:0/invoke",
+			`{}`, http.StatusOK},
+		{"bedrock us-gov arn",
+			"/bedrock/model/arn:aws-us-gov:bedrock:us-gov-west-1:1:inference-profile%2Fus-gov.anthropic.claude-opus-5-v1:0" +
+				"/invoke", `{}`, http.StatusOK},
+		{"bedrock application profile arn",
+			"/bedrock/model/arn:aws:bedrock:us-east-1:1:application-inference-profile%2Fclaude-sonnet-5/invoke",
+			`{}`, http.StatusForbidden},
+		{"bedrock provisioned arn",
+			"/bedrock/model/arn:aws:bedrock:us-east-1:1:provisioned-model%2Fclaude-sonnet-5/invoke",
+			`{}`, http.StatusForbidden},
+		{"bedrock nested arn resource",
+			"/bedrock/model/arn:aws:bedrock:us-east-1:1:inference-profile%2Fx%2Fclaude-sonnet-5/invoke",
+			`{}`, http.StatusForbidden},
+		{"bedrock non-bedrock arn",
+			"/bedrock/model/arn:aws:s3:us-east-1:1:inference-profile%2Fclaude-sonnet-5/invoke",
+			`{}`, http.StatusForbidden},
 		{"bedrock denied", "/bedrock/model/us.anthropic.claude-fable-5-1-v1:0/invoke",
 			`{"model":"claude-sonnet-5"}`, http.StatusForbidden},
 		{"vertex allowed", vertex + "claude-sonnet-5@20260514:streamRawPredict", `{}`, http.StatusOK},
@@ -334,12 +354,16 @@ func TestTokensPerPodTripsAfterMessageStart(t *testing.T) {
 }
 
 // TestCutStreamCharged: a stream that ends without message_stop, or a
-// response that never reports usage, is charged at least the request-size
-// estimate, so aborting cannot dodge the counter. A response the upstream
+// response that never reports usage, is charged its worst case — input at
+// least the request-size estimate, output at least the output bound (here,
+// with neither max_tokens nor a ceiling, a bytes/4 estimate of what
+// streamed) — so aborting cannot dodge the counter. A response the upstream
 // refused costs nothing.
 func TestCutStreamCharged(t *testing.T) {
 	body := `{"model":"claude-sonnet-5","messages":[{"role":"user","content":"` + strings.Repeat("x", 3900) + `"}]}`
 	estimate := int64(len(body)) / 4
+	cut, large := sseUsage(50, 3, false), sseUsage(50000, 3, false)
+	streamed := func(s string) int64 { return int64(len(s)) / 4 }
 	tests := []struct {
 		name        string
 		contentType string
@@ -347,13 +371,13 @@ func TestCutStreamCharged(t *testing.T) {
 		upstream    string
 		want        int64
 	}{
-		{"cut after message_start", "text/event-stream", http.StatusOK, sseUsage(50, 3, false), estimate},
+		{"cut after message_start", "text/event-stream", http.StatusOK, cut, estimate + streamed(cut)},
 		{"complete stream", "text/event-stream", http.StatusOK, sseUsage(50, 3, true), 50 + 10 + 20 + 3},
 		{"json with usage", "application/json", http.StatusOK,
 			`{"id":"m","usage":{"input_tokens":40,"output_tokens":2}}`, 42},
-		{"json without usage", "application/json", http.StatusOK, `{"id":"m"}`, estimate},
+		{"json without usage", "application/json", http.StatusOK, `{"id":"m"}`, estimate + streamed(`{"id":"m"}`)},
 		{"binary event stream", "application/vnd.amazon.eventstream", http.StatusOK, "\x00\x00\x01", estimate},
-		{"large stream exceeds estimate", "text/event-stream", http.StatusOK, sseUsage(50000, 3, false), 50000 + 30 + 3},
+		{"large stream exceeds estimate", "text/event-stream", http.StatusOK, large, 50000 + 30 + streamed(large)},
 		{"upstream 4xx", "application/json", http.StatusBadRequest, `{"type":"error"}`, 0},
 	}
 	for _, tt := range tests {
@@ -364,22 +388,23 @@ func TestCutStreamCharged(t *testing.T) {
 				_, _ = io.WriteString(w, tt.upstream)
 			}))
 			defer up.Close()
-			s := newTestServer(t, Config{
+			s, buf := auditServer(t, Config{
 				Upstreams: map[string]Upstream{"anthropic": {Target: mustTarget(t, up.URL)}},
-			}, nil)
+			})
 			rec := post(s.Handler(), "/anthropic/v1/messages", body)
 			if rec.Code != tt.status {
 				t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 			}
-			if got := s.ledger.totals("agent-pod-1").tokens; got != tt.want {
-				t.Errorf("pod tokens = %d, want %d", got, tt.want)
+			if got := auditTokens(t, buf); got != tt.want {
+				t.Errorf("charged %d, want %d", got, tt.want)
 			}
 		})
 	}
 }
 
 // TestClientDisconnectCharged: the pod itself hanging up mid-stream (the
-// proxy aborts the handler) still settles the estimate and the audit line.
+// proxy aborts the handler) still settles the worst case and the audit
+// line.
 func TestClientDisconnectCharged(t *testing.T) {
 	upstreamDone := make(chan struct{})
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -408,8 +433,9 @@ func TestClientDisconnectCharged(t *testing.T) {
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 
-	body := `{"model":"claude-sonnet-5","messages":[{"role":"user","content":"` + strings.Repeat("x", 3900) + `"}]}`
-	estimate := int64(len(body)) / 4
+	body := `{"model":"claude-sonnet-5","max_tokens":500,"messages":[{"role":"user","content":"` +
+		strings.Repeat("x", 3900) + `"}]}`
+	want := int64(len(body))/4 + 500
 	ctx, cancel := context.WithCancel(t.Context())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/anthropic/v1/messages", strings.NewReader(body))
 	if err != nil {
@@ -429,23 +455,15 @@ func TestClientDisconnectCharged(t *testing.T) {
 	<-upstreamDone
 
 	deadline := time.Now().Add(5 * time.Second)
-	for s.ledger.totals("agent-pod-1").tokens < estimate {
-		if time.Now().After(deadline) {
-			t.Fatalf("pod tokens = %d after disconnect, want at least the estimate %d",
-				s.ledger.totals("agent-pod-1").tokens, estimate)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := s.ledger.totals("agent-pod-1").tokens; got != estimate {
-		t.Errorf("pod tokens = %d, want exactly the estimate %d (input already seen is topped up, not added)",
-			got, estimate)
-	}
-	deadline = time.Now().Add(5 * time.Second)
 	for !strings.Contains(logBuf.String(), `"estimated":true`) {
 		if time.Now().After(deadline) {
 			t.Fatalf("no audit line with the estimate after the disconnect: %s", logBuf.String())
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	if got := auditTokens(t, &logBuf); got != want {
+		t.Errorf("charged %d, want the estimate plus max_tokens %d (input already seen is topped up, not added)",
+			got, want)
 	}
 }
 

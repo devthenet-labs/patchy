@@ -15,25 +15,25 @@ func TestLedgerHourlyCeilingAndEviction(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	l := newLedger(Limits{TokensPerHour: 100, TokensPerPod: 1000}, func() time.Time { return now })
 
-	release, reason := l.admit("a")
+	release, reason := l.admit("a", 0)
 	if reason != "" {
 		t.Fatal(reason)
 	}
 	release()
 	l.charge("a", 60)
 	l.charge("b", 40)
-	if _, reason := l.admit("c"); !strings.Contains(reason, "hourly") ||
+	if _, reason := l.admit("c", 0); !strings.Contains(reason, "hourly") ||
 		!strings.HasPrefix(reason, provider.LimitMessagePrefix) {
 		t.Fatalf("at the hourly ceiling: reason = %q", reason)
 	}
 	// The window slides: fifty-nine minutes on the tokens still count, an
 	// hour on they do not.
 	now = now.Add(59 * time.Minute)
-	if _, reason := l.admit("c"); reason == "" {
+	if _, reason := l.admit("c", 0); reason == "" {
 		t.Fatal("admitted inside the trailing hour")
 	}
 	now = now.Add(2 * time.Minute)
-	release, reason = l.admit("c")
+	release, reason = l.admit("c", 0)
 	if reason != "" {
 		t.Fatalf("after the hour: %s", reason)
 	}
@@ -43,9 +43,9 @@ func TestLedgerHourlyCeilingAndEviction(t *testing.T) {
 	}
 	// Pods idle past the TTL are evicted; one with a request in flight is
 	// kept.
-	holding, _ := l.admit("held")
+	holding, _ := l.admit("held", 0)
 	now = now.Add(ledgerTTL + time.Minute)
-	if _, reason := l.admit("x"); reason != "" {
+	if _, reason := l.admit("x", 0); reason != "" {
 		t.Fatal(reason)
 	}
 	if got := l.totals("a"); got != (podTotals{}) {
@@ -60,24 +60,24 @@ func TestLedgerHourlyCeilingAndEviction(t *testing.T) {
 func TestLedgerPerPod(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	l := newLedger(Limits{RequestsPerPod: 2, ConcurrentPerPod: 1, TokensPerPod: 50}, func() time.Time { return now })
-	r1, reason := l.admit("p")
+	r1, reason := l.admit("p", 0)
 	if reason != "" {
 		t.Fatal(reason)
 	}
-	if _, reason := l.admit("p"); !strings.Contains(reason, "concurrent") {
+	if _, reason := l.admit("p", 0); !strings.Contains(reason, "concurrent") {
 		t.Fatalf("second in flight: %q", reason)
 	}
 	r1()
-	r2, reason := l.admit("p")
+	r2, reason := l.admit("p", 0)
 	if reason != "" {
 		t.Fatal(reason)
 	}
 	r2()
-	if _, reason := l.admit("p"); !strings.Contains(reason, "requests per pod") {
+	if _, reason := l.admit("p", 0); !strings.Contains(reason, "requests per pod") {
 		t.Fatalf("third request: %q", reason)
 	}
 	l.charge("q", 50)
-	if _, reason := l.admit("q"); !strings.Contains(reason, "tokens per pod") {
+	if _, reason := l.admit("q", 0); !strings.Contains(reason, "tokens per pod") {
 		t.Fatalf("over tokens: %q", reason)
 	}
 	l.charge("q", 0)
@@ -88,7 +88,7 @@ func TestLedgerPerPod(t *testing.T) {
 	// Unlimited: everything counts, nothing refuses.
 	u := newLedger(Limits{}, func() time.Time { return now })
 	for range 10 {
-		release, reason := u.admit("z")
+		release, reason := u.admit("z", 0)
 		if reason != "" {
 			t.Fatal(reason)
 		}
@@ -110,5 +110,45 @@ func TestHourWindow(t *testing.T) {
 	}
 	if got := h.sum(base.Add(200 * time.Minute)); got != 0 {
 		t.Fatalf("stale sum = %d, want 0", got)
+	}
+}
+
+// TestLedgerReservation: a reservation counts against both token limits
+// until released, so parallel admissions see each other's worst case.
+func TestLedgerReservation(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	l := newLedger(Limits{TokensPerPod: 1000, TokensPerHour: 1500}, func() time.Time { return now })
+	if _, reason := l.admit("fresh", 1001); !strings.Contains(reason, "tokens per pod") {
+		t.Fatalf("a single reservation over the budget: reason = %q", reason)
+	}
+	r1, reason := l.admit("p", 600)
+	if reason != "" {
+		t.Fatal(reason)
+	}
+	if _, reason := l.admit("p", 600); !strings.Contains(reason, "tokens per pod") {
+		t.Fatalf("second reservation over the pod budget: reason = %q", reason)
+	}
+	r2, reason := l.admit("q", 800)
+	if reason != "" {
+		t.Fatal(reason)
+	}
+	if _, reason := l.admit("z", 200); !strings.Contains(reason, "hourly") {
+		t.Fatalf("reservations over the hourly ceiling: reason = %q", reason)
+	}
+	// Settled at its actual usage, the reservation is returned.
+	l.charge("p", 10)
+	r1()
+	r2()
+	release, reason := l.admit("p", 600)
+	if reason != "" {
+		t.Fatalf("after release: %s", reason)
+	}
+	release()
+	if got := l.totals("p").tokens; got != 10 {
+		t.Fatalf("pod tokens = %d, want only the charged 10", got)
+	}
+	l.charge("p", 990)
+	if _, reason := l.admit("p", 0); !strings.Contains(reason, "tokens per pod") {
+		t.Fatalf("at the budget with no reservation: reason = %q", reason)
 	}
 }

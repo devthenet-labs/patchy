@@ -42,10 +42,30 @@ func TestInspectBody(t *testing.T) {
 		{"file_id nested", `{"a":[{"b":{"c":[{"file_id":"f"}]}}]}`, "file references", "", 0},
 		{"source file", `{"messages":[{"content":[{"source":{"type":"file"}}]}]}`, "file references", "", 0},
 		{"source base64 fine", `{"messages":[{"content":[{"source":{"type":"base64","data":"x"}}]}]}`, "", "", 0},
+		{"source url", `{"messages":[{"content":[{"type":"image","source":{"type":"url","url":"u"}}]}]}`,
+			`source type "url"`, "", 0},
+		{"source without type", `{"messages":[{"content":[{"source":{"url":"u"}}]}]}`, "source type", "", 0},
+		{"file_id in input_schema", `{"tools":[{"name":"t","input_schema":{"properties":{"file_id":{}}}}]}`, "", "", 0},
+		{"file_id in tool_use input", `{"messages":[{"content":[{"type":"tool_use","input":{"file_id":"f"}}]}]}`,
+			"", "", 0},
+		{"file_id in server_tool_use input",
+			`{"messages":[{"content":[{"type":"server_tool_use","input":{"file_id":"f"}}]}]}`, "", "", 0},
+		{"input of a non-tool block is walked", `{"messages":[{"content":[{"type":"text","input":{"file_id":"f"}}]}]}`,
+			"file references", "", 0},
+		{"schema outside json_schema is walked", `{"x":{"type":"other","schema":{"file_id":"f"}}}`,
+			"file references", "", 0},
+		{"max_tokens float", `{"max_tokens":1.0}`, "max_tokens", "", 0},
+		{"max_tokens exponent", `{"max_tokens":1e3}`, "max_tokens", "", 0},
+		{"max_tokens string", `{"max_tokens":"10"}`, "max_tokens", "", 0},
+		{"max_tokens negative", `{"max_tokens":-1}`, "max_tokens", "", 0},
+		{"max_tokens overflow", `{"max_tokens":9223372036854775808}`, "max_tokens", "", 0},
+		{"max_tokens zero", `{"max_tokens":0}`, "", "", 0},
+		{"anthropic_beta not an array", `{"anthropic_beta":"x"}`, "anthropic_beta", "", 0},
+		{"anthropic_beta non-string entry", `{"anthropic_beta":[1]}`, "anthropic_beta", "", 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			insp, err := inspectBody([]byte(tt.body))
+			insp, err := inspectBody([]byte(tt.body), DefaultBetaDenylist)
 			switch {
 			case tt.wantErr == "" && err != nil:
 				t.Fatalf("rejected: %v", err)
@@ -82,7 +102,7 @@ func TestWalkForFilesProperty(t *testing.T) {
 			}
 		}
 		raw, _ := json.Marshal(map[string]any{"model": "m", "messages": v})
-		_, err := inspectBody(raw)
+		_, err := inspectBody(raw, DefaultBetaDenylist)
 		return err != nil && strings.Contains(err.Error(), "file references")
 	}
 	if err := quick.Check(prop, quickConfig()); err != nil {
@@ -98,7 +118,8 @@ func TestModelPolicy(t *testing.T) {
 	if newModelPolicy(nil) != nil || newModelPolicy([]string{" ", ""}) == nil {
 		t.Fatal("empty list must yield a nil policy; blank entries must not")
 	}
-	p := newModelPolicy([]string{"anthropic/claude-sonnet-5", "Claude-Opus-5", "my-deployment"})
+	p := newModelPolicy([]string{"anthropic/claude-sonnet-5", "Claude-Opus-5", "my-deployment",
+		"arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-fable-5-1-v1:0"})
 	tests := []struct {
 		wire string
 		want bool
@@ -126,6 +147,21 @@ func TestModelPolicy(t *testing.T) {
 		{"my-deployment-2", false},
 		{"claude-haikus", false},
 		{"other/claude-sonnet-5", true},
+		{"global.anthropic.claude-sonnet-5-v1:0", true},
+		{"us-gov.anthropic.claude-sonnet-5-v1:0", true},
+		{"jp.anthropic.claude-sonnet-5-v1:0", true},
+		{"zz.anthropic.claude-sonnet-5-v1:0", false},
+		{"arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5-v1:0", true},
+		{"arn:aws-us-gov:bedrock:us-gov-west-1:1:inference-profile/us-gov.anthropic.claude-opus-5-v1:0", true},
+		{"ARN:AWS:BEDROCK:US-EAST-1:1:INFERENCE-PROFILE/US.ANTHROPIC.CLAUDE-OPUS-5-V1:0", true},
+		{"arn:aws:bedrock:us-east-1:1:application-inference-profile/claude-sonnet-5", false},
+		{"arn:aws:bedrock:us-east-1:1:provisioned-model/claude-sonnet-5", false},
+		{"arn:aws:bedrock:us-east-1:1:custom-model/claude-sonnet-5", false},
+		{"arn:aws:bedrock:us-east-1:1:inference-profile/x/claude-sonnet-5", false},
+		{"arn:aws:bedrock:us-east-1:1:inference-profile/", false},
+		{"arn:aws:sagemaker:us-east-1:1:inference-profile/claude-sonnet-5", false},
+		{"arn:aws:bedrock:us-east-1", false},
+		{"claude-fable-5-1-v1:0", true}, // admitted by the ARN entry
 	}
 	for _, tt := range tests {
 		if got := p.allows(tt.wire); got != tt.want {
@@ -241,5 +277,32 @@ func TestFilterBetasProperty(t *testing.T) {
 	}
 	if err := quick.Check(prop, quickConfig()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestInspectBodyStripsBodyBetas: denied anthropic_beta entries are dropped
+// from the body and the field removed when nothing survives; a body with
+// nothing denied is not rewritten.
+func TestInspectBodyStripsBodyBetas(t *testing.T) {
+	tests := []struct {
+		name, body string
+		want       string // the rewritten body, "" when forwarded unchanged
+	}{
+		{"absent", `{"model":"m"}`, ""},
+		{"nothing denied", `{"anthropic_beta":["prompt-caching-2024-07-31"]}`, ""},
+		{"some denied", `{"anthropic_beta":["mcp-client-2025-11-20","a<b"],"max_tokens":5}`,
+			`{"anthropic_beta":["a<b"],"max_tokens":5}`},
+		{"all denied", `{"anthropic_beta":["context-1m-2025-08-07"],"x":1.50}`, `{"x":1.50}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			insp, err := inspectBody([]byte(tt.body), DefaultBetaDenylist)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(insp.rewritten) != tt.want {
+				t.Fatalf("rewritten = %s, want %s", insp.rewritten, tt.want)
+			}
+		})
 	}
 }

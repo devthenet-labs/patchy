@@ -4,6 +4,7 @@
 package remediation
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -217,10 +218,10 @@ func TestRemediationSandboxRefused(t *testing.T) {
 	}
 }
 
-// TestRemediationChangesetRejected: a changeset over the entry cap, or one
-// reaching outside the tree, is refused on any run; one touching CI
-// definitions is refused on a repository-image run only. Every refusal
-// fails the attempt changeset_rejected with zero forge calls.
+// TestRemediationChangesetRejected: a changeset reaching outside the tree
+// is refused on any run; one over the entry cap or touching CI definitions
+// is refused on a repository-image run only. Every refusal fails the
+// attempt changeset_rejected with zero forge calls.
 func TestRemediationChangesetRejected(t *testing.T) {
 	file := func(p string) envelope.FileChange {
 		return envelope.FileChange{Path: p, Mode: "100644", ContentB64: "eA=="}
@@ -232,9 +233,11 @@ func TestRemediationChangesetRejected(t *testing.T) {
 		deletes    []string
 		wantReject string
 	}{
-		{"over the entry cap", v1alpha1.RunnerImageSourceDefault,
+		{"over the entry cap on a repository image", v1alpha1.RunnerImageSourceRepository,
 			[]envelope.FileChange{file("a.go"), file("b.go"), file("c.go")}, []string{"d.go"},
 			"4 entries (upserts plus deletes), over the 3-entry limit"},
+		{"over the entry cap on a default image is pushed as before", v1alpha1.RunnerImageSourceDefault,
+			[]envelope.FileChange{file("a.go"), file("b.go"), file("c.go")}, []string{"d.go"}, ""},
 		{"workflow on a repository image", v1alpha1.RunnerImageSourceRepository,
 			[]envelope.FileChange{file("a.go"), file(".github/workflows/release.yml")}, nil,
 			`".github/workflows/release.yml" is a CI definition`},
@@ -365,4 +368,30 @@ func TestRemediationChangesetUnpushable(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestRemediationChangesetEntryCapDefaultImage pins what the entry cap
+// means with repository images off: a default-image changeset over the
+// default cap (a vendored dependency bump rewrites hundreds of files) is
+// pushed exactly as before this feature, while the same changeset from a
+// repository-image run is refused before any forge call.
+func TestRemediationChangesetEntryCapDefaultImage(t *testing.T) {
+	many := func(cs *envelope.Changeset) {
+		cs.Upserts = nil
+		for i := range DefaultChangesetMaxEntries + 1 {
+			cs.Upserts = append(cs.Upserts, envelope.FileChange{
+				Path: "vendor/example.com/m/f" + strconv.Itoa(i) + ".go", Mode: "100644", ContentB64: "eA==",
+			})
+		}
+	}
+	t.Run("default image is pushed as before", func(t *testing.T) {
+		fw, _, f := rejectedOnce(t, withImage(acceptedImage(), v1alpha1.RunnerImageSourceDefault), many)
+		if len(fw.pushed) != 1 || fw.prCalls != 1 || f.Status.Phase != v1alpha1.PhaseInReview {
+			t.Errorf("pushed/prs/phase = %v/%d/%q, want pushed and InReview", fw.pushed, fw.prCalls, f.Status.Phase)
+		}
+	})
+	t.Run("repository image is refused", func(t *testing.T) {
+		fw, rem, f := rejectedOnce(t, withImage(acceptedImage(), v1alpha1.RunnerImageSourceRepository), many)
+		wantRejected(t, fw, rem, f, "501 entries (upserts plus deletes), over the 500-entry limit")
+	})
 }

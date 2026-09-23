@@ -449,13 +449,16 @@ evaluation-controller page says so.
 - **Incompatible image**: preflight emits `image_incompatible`; same path to `Failed`.
 - **Broker limit hit**: 429 carrying the `egress broker: per-pod limit` prefix; a cooperative run ends `budget_exceeded`
   (the CLI failure is mapped by `agentrun.stageOutcome`), a hostile one is cut off; the deadline still ends the Job.
-- **Changeset rejected**: the remediation collector validates every changeset before any forge call: entries (upserts
-  plus deletes) at most `--changeset-max-entries` (default 500), path length and shape (no `..`, no absolute paths,
-  nothing under `.git/`), and, for repository-image runs only, nothing under `.github/workflows/**` or
-  `.github/actions/**`, because a branch in the same repository triggers CI with repository secrets before any human has
-  looked at it (leaving default-image runs unchanged also avoids the 422 when the App lacks the `workflows` permission).
-  A rejected changeset fails the attempt `changeset_rejected` with a `LastFailureReason` naming the limit or the path,
-  and zero forge calls are made.
+- **Changeset rejected**: the remediation collector validates every changeset before any forge call against what a
+  legitimate run always produces: the Repository's pinned `resolvedSHA` as its base, path length and shape (no `..`, no
+  absolute paths, nothing under `.git/`, no NUL), and a `100644`/`100755`/`120000` mode with base64 content on every
+  upsert. A repository-image run is also refused what a legitimate diff can contain: more than `--changeset-max-entries`
+  (default 500) entries (upserts plus deletes), a control character in a path, and anything under `.github/workflows/**`
+  or `.github/actions/**`, because a branch in the same repository triggers CI with repository secrets before any human
+  has looked at it. Default-image runs keep those three as they were, so upgrading with the feature off changes nothing
+  observable (a vendored dependency bump legitimately rewrites hundreds of files, and leaving workflows alone also
+  avoids the 422 when the App lacks the `workflows` permission). A rejected changeset fails the attempt
+  `changeset_rejected` with a `LastFailureReason` naming the limit or the path, and zero forge calls are made.
 - **Ignore verdict on a repository image**: the Finding goes to `HandedOff`. The phase notice and the sticky comment
   read "the agent recommended ignore; patchy did not dismiss the alert because the run used a repository-declared
   image". Because dismissal write-back (`resolveSource` in `internal/controller/integration/project.go`) fires only on

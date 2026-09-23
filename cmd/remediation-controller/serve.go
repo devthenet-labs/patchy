@@ -74,8 +74,8 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.Int("remediate-manual-token-budget", 1200000,
 		"most output tokens a human approval can grant")
 	f.Int("changeset-max-entries", remediation.DefaultChangesetMaxEntries,
-		"most files (upserts plus deletes) a remediation changeset may touch before it is rejected "+
-			"without any forge call")
+		"most files (upserts plus deletes) a changeset from a repository-image run may touch before it is "+
+			"rejected without any forge call")
 	return cmd
 }
 

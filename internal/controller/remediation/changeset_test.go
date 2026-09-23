@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"testing/quick"
+	"unicode"
 
 	"github.com/bitwise-media-group/patchy/internal/envelope"
 )
@@ -22,7 +23,8 @@ func changesetOf(paths ...string) *envelope.Changeset {
 }
 
 // TestValidateChangeset names each refusal, and shows the repository-image
-// rules touching CI definitions only.
+// rules adding exactly the entry cap, control characters and CI
+// definitions.
 func TestValidateChangeset(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -33,9 +35,11 @@ func TestValidateChangeset(t *testing.T) {
 	}{
 		{"ordinary fix", changesetOf("cmd/main.go", "go.sum", "docs/SECURITY.md"), true, "", true},
 		{"dotfiles are fine", changesetOf(".gitignore", ".github/dependabot.yml", ".githooks/pre-commit"), true, "", true},
-		{"at the cap", changesetOf("a", "b", "c"), false, "", true},
+		{"at the cap", changesetOf("a", "b", "c"), true, "", true},
+		{"over the cap on a repository image", changesetOf("a", "b", "c", "d"), true, "4 entries", false},
+		{"over the cap on a default image", changesetOf("a", "b", "c", "d"), false, "", true},
 		{"deletes count toward the cap", &envelope.Changeset{BaseSHA: "abc123",
-			Upserts: changesetOf("a", "b").Upserts, Deletes: []string{"c", "d"}}, false, "4 entries", false},
+			Upserts: changesetOf("a", "b").Upserts, Deletes: []string{"c", "d"}}, true, "4 entries", false},
 		{"empty path", changesetOf(""), false, "empty path", false},
 		{"absolute", changesetOf("/etc/passwd"), false, "is absolute", false},
 		{"parent component", changesetOf("src/../../x"), false, `".." component`, false},
@@ -44,8 +48,11 @@ func TestValidateChangeset(t *testing.T) {
 		{"trailing slash", changesetOf("src/"), false, "empty component", false},
 		{"inside .git", changesetOf(".git/hooks/pre-commit"), false, "inside .git", false},
 		{"inside a nested .GIT", changesetOf("vendor/x/.GIT/config"), false, "inside .git", false},
-		{"control character", changesetOf("a\nb"), false, "control character", false},
-		{"NUL", changesetOf("a\x00b"), false, "control character", false},
+		{"control character on a repository image", changesetOf("a\nb"), true, "control character", false},
+		{"tab on a repository image", changesetOf("a\tb"), true, "control character", false},
+		{"tab on a default image", changesetOf("a\tb"), false, "", true},
+		{"NUL on a default image", changesetOf("a\x00b"), false, "contains NUL", false},
+		{"NUL on a repository image", changesetOf("a\x00b"), true, "contains NUL", false},
 		{"invalid UTF-8", changesetOf("a\xffb"), false, "not valid UTF-8", false},
 		{"overlong", changesetOf(strings.Repeat("a", maxChangesetPathBytes+1)), false, "over the 4096-byte limit", false},
 		{"workflow on a default image", changesetOf(".github/workflows/ci.yml"), false, "", true},
@@ -155,7 +162,7 @@ func TestValidateChangesetUpserts(t *testing.T) {
 // that includes the separator's troublemakers ('.', upper case, space), so
 // the generator reaches "..", ".git", ".GitHub" and empty components.
 func genPath(r *rand.Rand) string {
-	alphabet := []byte("abgGhHiItuwWks.-_ ")
+	alphabet := []byte("abgGhHiItuwWks.-_ \t")
 	segs := make([]string, 1+r.Intn(5))
 	for i := range segs {
 		b := make([]byte, r.Intn(6))
@@ -187,7 +194,8 @@ func pathConfig(seed int64) *quick.Config {
 // TestValidateChangesetProperties states the validator's invariants over
 // generated paths: an accepted path never escapes the tree or touches .git;
 // the repository-image rules only ever refuse more, and what they refuse
-// beyond the default is exactly the CI definitions.
+// beyond the default is exactly the CI definitions and the paths with a
+// control character.
 func TestValidateChangesetProperties(t *testing.T) {
 	accepted := func(p string, repoImg bool) bool {
 		return validateChangeset(changesetOf(p), changesetRules{
@@ -216,15 +224,18 @@ func TestValidateChangesetProperties(t *testing.T) {
 		if !dflt {
 			return !repo // the repository rules may only refuse more
 		}
-		return repo == !ciPath(p)
+		refusedMore := ciPath(p) || strings.ContainsFunc(p, unicode.IsControl)
+		return repo != refusedMore
 	}
 	if err := quick.Check(stricter, pathConfig(20260924)); err != nil {
-		t.Errorf("repository-image rules differ from the default by more than CI paths: %v", err)
+		t.Errorf("repository-image rules differ from the default by more than CI and control-character paths: %v",
+			err)
 	}
 }
 
-// TestValidateChangesetEntryCapProperty: the cap alone decides a changeset
-// of acceptable paths — any count up to it passes, any count past it fails.
+// TestValidateChangesetEntryCapProperty: the cap alone decides a
+// repository-image changeset of acceptable paths — any count up to it
+// passes, any count past it fails — and never a default-image one.
 func TestValidateChangesetEntryCapProperty(t *testing.T) {
 	cfg := &quick.Config{
 		MaxCount: 500,
@@ -233,9 +244,10 @@ func TestValidateChangesetEntryCapProperty(t *testing.T) {
 			args[0] = reflect.ValueOf(r.Intn(40))
 			args[1] = reflect.ValueOf(r.Intn(40))
 			args[2] = reflect.ValueOf(1 + r.Intn(60))
+			args[3] = reflect.ValueOf(r.Intn(2) == 1)
 		},
 	}
-	capped := func(upserts, deletes, maxEntries int) bool {
+	capped := func(upserts, deletes, maxEntries int, repoImg bool) bool {
 		cs := &envelope.Changeset{BaseSHA: "abc123"}
 		for i := range upserts {
 			cs.Upserts = append(cs.Upserts, envelope.FileChange{Path: "src/f" + strings.Repeat("x", i%7), Mode: "100644"})
@@ -243,8 +255,8 @@ func TestValidateChangesetEntryCapProperty(t *testing.T) {
 		for range deletes {
 			cs.Deletes = append(cs.Deletes, "old/file")
 		}
-		err := validateChangeset(cs, changesetRules{Base: "abc123", MaxEntries: maxEntries, RepositoryImage: true})
-		return (err == nil) == (upserts+deletes <= maxEntries)
+		err := validateChangeset(cs, changesetRules{Base: "abc123", MaxEntries: maxEntries, RepositoryImage: repoImg})
+		return (err == nil) == (!repoImg || upserts+deletes <= maxEntries)
 	}
 	if err := quick.Check(capped, cfg); err != nil {
 		t.Error(err)

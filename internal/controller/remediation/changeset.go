@@ -14,10 +14,11 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/envelope"
 )
 
-// DefaultChangesetMaxEntries is the default cap on a changeset's upserts
-// plus deletes (--changeset-max-entries). Every entry costs the forge write
-// API at least one call, so a changeset of many tiny files would spend the
-// installation token's budget before a human saw anything.
+// DefaultChangesetMaxEntries is the default cap on the upserts plus deletes
+// of a changeset held to the repository-image rules
+// (--changeset-max-entries). Every entry costs the forge write API at least
+// one call, so a changeset of many tiny files would spend the installation
+// token's budget before a human saw anything.
 const DefaultChangesetMaxEntries = 500
 
 // maxChangesetPathBytes bounds one path, PATH_MAX on Linux: far past any
@@ -47,25 +48,33 @@ type changesetRules struct {
 
 // validateChangeset checks a remediation changeset before the controller
 // makes any forge call with it, returning an error naming the limit or the
-// path it breaks. Every changeset must be based on the Repository's pinned
-// commit: the push builds its tree on and parents the base the pod reports,
-// so another base would push the branch onto a tree nobody reviewed — a
-// fork's head carrying its own workflows, say — and a changeset diffed
-// against one tree but pushed onto another silently reverts whatever
-// differs. Every changeset is also held to the entry cap, to paths git
-// itself could have produced (relative, no empty, "." or ".." component,
-// nothing inside .git, valid UTF-8 without control characters, bounded
-// length), and to upserts the forge can take (a regular, executable or
-// symlink mode, base64 content) — the last two are otherwise refused by the
-// forge on every retry, after a write token is minted and, for a mode,
-// after every blob is created, while the run holds its slot. None of these
-// is tripped by a legitimate run, since the pod builds the changeset from a
-// git diff. A run on a repository-declared image is
-// also refused any change to CI definitions (.github/workflows, .github/
-// actions, or .github itself replaced): a patchy branch in the same
-// repository triggers CI with its secrets before a human has looked, and
-// that image controls the process the changeset came out of. Default-image
-// runs are left as they were, which also spares them the forge's refusal
+// path it breaks.
+//
+// Every changeset is held to what a legitimate run always produces, since
+// the pod builds the changeset from a git diff of the tree it was handed:
+// the Repository's pinned commit as its base (the push builds its tree on,
+// and parents, the base the pod reports, so another base would push the
+// branch onto a tree nobody reviewed — a fork's head carrying its own
+// workflows, say — and a changeset diffed against one tree but pushed onto
+// another silently reverts whatever differs); paths git itself could have
+// produced (relative, no empty, "." or ".." component, nothing inside .git,
+// no NUL, valid UTF-8, bounded length); and upserts the forge can take (a
+// regular, executable or symlink mode, base64 content — otherwise refused
+// by the forge on every retry, after a write token is minted and, for a
+// mode, after every blob is created, while the run holds its slot). None of
+// these changes the outcome of a real changeset, so with repository images
+// off nothing observable changes.
+//
+// A changeset held to the repository-image rules — the image controls the
+// process the changeset came out of — is also refused what a legitimate
+// diff can contain but patchy will not push unreviewed from such a run:
+// more than MaxEntries entries (upserts plus deletes), a control character
+// in a path, and any change to CI definitions (.github/workflows,
+// .github/actions, or .github itself replaced), since a patchy branch in
+// the same repository triggers CI with its secrets before a human has
+// looked. Default-image runs keep all three as they were: a vendored
+// dependency bump rewrites hundreds of files, git allows a tab in a file
+// name, and leaving workflows alone also spares them the forge's refusal
 // when the App lacks the workflows permission.
 func validateChangeset(cs *envelope.Changeset, rules changesetRules) error {
 	switch {
@@ -74,14 +83,21 @@ func validateChangeset(cs *envelope.Changeset, rules changesetRules) error {
 	case cs.BaseSHA != rules.Base:
 		return fmt.Errorf("changeset base %.64q is not the repository's pinned commit %q", cs.BaseSHA, rules.Base)
 	}
-	if n := len(cs.Upserts) + len(cs.Deletes); n > rules.MaxEntries {
+	if n := len(cs.Upserts) + len(cs.Deletes); rules.RepositoryImage && n > rules.MaxEntries {
 		return fmt.Errorf("changeset has %d entries (upserts plus deletes), over the %d-entry limit", n, rules.MaxEntries)
 	}
 	check := func(p string) error {
 		if err := checkChangesetPath(p); err != nil {
 			return err
 		}
-		if rules.RepositoryImage && ciPath(p) {
+		if !rules.RepositoryImage {
+			return nil
+		}
+		if strings.ContainsFunc(p, unicode.IsControl) {
+			return fmt.Errorf("changeset path %q contains a control character, which a run on a "+
+				"repository-declared image may not use", p)
+		}
+		if ciPath(p) {
 			return fmt.Errorf("changeset path %q is a CI definition, which a run on a repository-declared "+
 				"image may not change", p)
 		}
@@ -104,7 +120,7 @@ func validateChangeset(cs *envelope.Changeset, rules changesetRules) error {
 }
 
 // checkChangesetPath refuses a path git could not have produced from a
-// commit, or that would reach outside the work tree.
+// checked-out commit, or that would reach outside the work tree.
 func checkChangesetPath(p string) error {
 	switch {
 	case p == "":
@@ -114,8 +130,8 @@ func checkChangesetPath(p string) error {
 			p, len(p), maxChangesetPathBytes)
 	case !utf8.ValidString(p):
 		return fmt.Errorf("changeset path %q is not valid UTF-8", p)
-	case strings.ContainsFunc(p, unicode.IsControl):
-		return fmt.Errorf("changeset path %q contains a control character", p)
+	case strings.ContainsRune(p, 0):
+		return fmt.Errorf("changeset path %q contains NUL", p)
 	case strings.HasPrefix(p, "/"):
 		return fmt.Errorf("changeset path %q is absolute", p)
 	}

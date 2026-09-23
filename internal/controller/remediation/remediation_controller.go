@@ -83,8 +83,9 @@ type RemediationReconciler struct {
 	// repository-declared image (the --repository-images kill switch and
 	// the sandbox breaker); the zero value never does.
 	Images runnerguard.Guard
-	// MaxChangesetEntries caps upserts plus deletes in a changeset before
-	// any forge call is made; <= 0 means DefaultChangesetMaxEntries.
+	// MaxChangesetEntries caps upserts plus deletes in a changeset held to
+	// the repository-image rules, before any forge call is made; <= 0 means
+	// DefaultChangesetMaxEntries.
 	MaxChangesetEntries int
 	// Now is the clock seam; nil means time.Now.
 	Now func() time.Time

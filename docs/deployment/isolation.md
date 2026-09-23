@@ -56,6 +56,38 @@ and agent Jobs — runs as non-root uid 65532 with a read-only root filesystem, 
 `backoffLimit: 0` and `restartPolicy: Never` — retries belong to the state machine, not to Kubernetes — under an
 `activeDeadlineSeconds` kill switch (`--job-deadline`).
 
+## Repository-declared images
+
+With repository runner images on, the agent container can run an image the target repository names
+([the repository-owner guide](../integrations/agent-images.md)), so the image is untrusted code with the agent's powers:
+it can read the workspace and the broker caller token, call the broker directly, and write forged `PATCHY-EVENT:` lines.
+The posture is built so that none of that reaches further than a default-image run:
+
+- **Same pod, same walls.** The pod security above is forced by patchy whatever the image says: uid 65532, read-only
+  root, no capabilities, the image's `USER` and `ENTRYPOINT` ignored, an image-declared `VOLUME` rejected at resolution
+  so only patchy's emptyDirs are writable, and both containers bounded by an ephemeral-storage limit. The image is
+  pinned to a digest once per Repository and only allowlisted, and by default signed, images are admitted
+  ([source-controller](../configuration/source-controller.md#repository-runner-images)).
+- **No Kubernetes identity.** The `patchy-agent` ServiceAccount has no Role and the pods run with
+  `automountServiceAccountToken: false`; the one projected token is bound to the broker's audience, is pod-bound, and is
+  honoured by the broker alone, whose per-pod limits and route surface are the enforced bound on what it buys.
+- **Trusted code first.** The `prepare` init container always runs the default runner image. It fetches and verifies the
+  tarball, synthesizes the git base, copies `agent-runner` and the claude CLI into a read-only `/patchy/bin`, and runs
+  the **sandbox probe** before any untrusted code starts: from inside the pod it tries the public internet
+  (`1.1.1.1:443`), the Kubernetes API server and the cloud metadata service (`169.254.169.254:80`). It retries for about
+  20 seconds, because on some CNIs (EKS Auto Mode among them) a new pod's NetworkPolicy attaches a few seconds after the
+  pod starts, and it concludes enforcement only after three consecutive rounds in which nothing answered. If egress is
+  still open, `prepare` exits 78, the agent container never starts, the run fails `SandboxUnenforced`, and the job
+  controller refuses repository images until it restarts. A cluster that does not enforce NetworkPolicy therefore fails
+  loudly instead of running untrusted images with open egress.
+- **Untrusted output is validated.** A changeset from a repository-image run must be based on the Repository's pinned
+  commit, is capped at `--changeset-max-entries` entries, and may not touch `.github/workflows/` or `.github/actions/`,
+  because a pushed branch runs CI with the repository's secrets before a human has read it; a refused changeset makes no
+  forge call. An `ignore` verdict from such a run is held for a human instead of dismissing the alert.
+- **What is not bounded.** DNS to the cluster resolver is open, as for every agent pod; only a Cilium DNS-rules or
+  `toFQDNs` allowlist bounds it. The usage and cost the claude CLI reports from a repository-image run are
+  image-controlled; the broker's per-pod totals are the trustworthy record.
+
 ## Network egress — the floor and the fence
 
 **The baseline NetworkPolicy is the floor.** `patchy-agents` is default-deny in both directions. Egress is re-permitted
@@ -159,4 +191,7 @@ pod log), which carries the remediation as a size-capped structured changeset (`
 the changed files' contents against the pinned base SHA, not git objects. The remediation-controller — not the agent —
 verifies the commit claim, replays the changeset through the GitHub Git Data API to create the `patchy/<finding>`
 branch, and opens the pull request, so every forge side effect passes through code that validates the state machine
-first.
+first. The stream itself is forgeable by whatever runs in the pod, so the controller validates every changeset before
+any forge call — its base must be the pinned commit and its paths git-shaped, plus the stricter
+[repository-image rules](#repository-declared-images) when the run used a repository-declared image — and every pull
+request still waits for a human to merge it.

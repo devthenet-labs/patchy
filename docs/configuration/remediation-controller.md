@@ -42,6 +42,16 @@ harness, on a claude runner without `--broker-url`, on a foundry model map that 
 model, or on an allowlisted model no enabled harness can run. The flag's own `--help` enumerates the accepted set,
 rendered from the harness definition, so it cannot drift from what the validation allows.
 
+`--repository-images` and `--agent-ephemeral-storage` work exactly as on the investigation-controller (see
+[repository-declared runner images](investigation-controller.md#repository-declared-runner-images)): the remediation
+runs the image the Repository pinned, under the same conditions, probe and pull-failure handling.
+
+| Flag                        | Env                              | Default | Purpose                                                                                                                                   |
+| --------------------------- | -------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `--repository-images`       | `PATCHY_REPOSITORY_IMAGES`       | `false` | Run a Repository's pinned repository-declared image (brokered claude runner only); the kill switch                                        |
+| `--agent-ephemeral-storage` | `PATCHY_AGENT_EPHEMERAL_STORAGE` | —       | Ephemeral-storage request and limit on both agent containers (e.g. `8Gi`); **required** with `--repository-images`                        |
+| `--changeset-max-entries`   | `PATCHY_CHANGESET_MAX_ENTRIES`   | `500`   | Most files (upserts plus deletes) a changeset from a repository-image run may touch; more is rejected before any forge call (must be > 0) |
+
 ## Stage flags
 
 The investigation report requests its own model, turn count, and token budget for the fix — but the turn and token
@@ -87,6 +97,15 @@ when the cumulative output-token count is exceeded; the harness CLI has no such 
   replays the changeset through the GitHub Git Data API (blob → tree → commit → ref) onto the `patchy/<finding>` branch
   with a scoped write token — no git binary, no clone — opens the pull request, and moves the finding to `InReview`. A
   recoverable failure re-queues (`Remediating → Queued`) within `--max-attempts`; exhaustion is `Failed`.
+- **Changeset validation** — before any forge call, every changeset is checked against what a legitimate run produces:
+  its base must be the Repository's pinned commit (`status.resolvedSHA`), every path relative and git-shaped (no empty,
+  `.` or `..` component, nothing under `.git/`, no NUL, valid UTF-8, at most 4096 bytes), and every upsert a regular,
+  executable or symlink mode with base64 content. A run held to the repository-image rules — it, or the investigation
+  whose report it acts on, ran a repository-declared image — is also refused more than `--changeset-max-entries`
+  entries, a control character in a path, and any change under `.github/workflows/` or `.github/actions/`, because a
+  pushed branch triggers CI with the repository's secrets before a human has read it. A refused changeset fails the
+  attempt `changeset_rejected` with the reason on the finding, and no forge call is made. Default-image runs keep the
+  last three unchecked, so upgrading with repository images off changes nothing.
 - **Rollups and the TTL** — on terminal-phase entry the stage statistics are aggregated exactly-once (finalizer-backed)
   into the per-scope `FindingRollup` objects; completed findings older than `--finding-ttl` are deleted, and the rollups
   remain the durable record.

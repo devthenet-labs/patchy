@@ -50,10 +50,87 @@ and probe `readyz` advisorily at startup.
 
 ## Flags
 
-`--listen-addr` (`:8080`), `--health-addr` (`:8081`), `--token-audience` (`patchy-egress-broker`), `--verdict-ttl`
-(`1m`), `--sse-ping-interval` (`30s`; negative disables injection), `--agent-namespace` (`patchy-agents`),
-`--agent-service-account` (`patchy-agent`), `--max-request-bytes` (`10485760`), plus the per-route flags above and their
-`--<provider>-base-url` overrides. As everywhere, each flag is also the matching `PATCHY_*` environment variable.
+As everywhere, each flag is also the matching `PATCHY_*` environment variable (`--tokens-per-pod` is
+`PATCHY_TOKENS_PER_POD`).
+
+| Flag                            | Default                | Purpose                                                                                              |
+| ------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------------------- |
+| `--listen-addr`                 | `:8080`                | The proxy listener                                                                                   |
+| `--health-addr`                 | `:8081`                | `/healthz` and `/readyz`                                                                             |
+| `--token-audience`              | `patchy-egress-broker` | Audience callers' projected tokens must be bound to (the job controllers' `--broker-token-audience`) |
+| `--verdict-ttl`                 | `1m`                   | How long one caller token's TokenReview verdict is cached                                            |
+| `--sse-ping-interval`           | `30s`                  | Idle keep-alive period for event-stream responses; negative disables ping injection                  |
+| `--agent-namespace`             | `patchy-agents`        | Namespace whose agent ServiceAccount callers must be                                                 |
+| `--agent-service-account`       | `patchy-agent`         | The only ServiceAccount the broker answers to                                                        |
+| `--max-request-bytes`           | `10485760` (10 MiB)    | Largest request body the payload-signing route (bedrock) accepts                                     |
+| `--max-anthropic-request-bytes` | `2097152` (2 MiB)      | Largest request body every other route accepts; bodies are buffered so they can be inspected         |
+
+The route flags are in [Routes and credentials](#routes-and-credentials): `--anthropic-api-key-file`, `--anthropic-auth`
+(`key`), `--anthropic-base-url` (`https://api.anthropic.com`), `--bedrock-region`, `--bedrock-base-url`,
+`--vertex-region`, `--vertex-project` (the only GCP project the vertex route admits; required with `--vertex-region`),
+`--vertex-base-url`, `--foundry-resource`, `--foundry-base-url`, `--foundry-auth` (`key`) and `--foundry-api-key-file`.
+
+### Limit flags
+
+Every limit is off at `0` (or empty), so an unconfigured broker behaves as it always has; the Helm chart sizes them.
+
+| Flag                            | Default | Purpose                                                                                                                                                                                         |
+| ------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--requests-per-pod`            | `0`     | Requests one agent pod may make in its lifetime                                                                                                                                                 |
+| `--concurrent-per-pod`          | `0`     | In-flight requests one agent pod may hold                                                                                                                                                       |
+| `--concurrency-wait`            | `2s`    | How long a request over `--concurrent-per-pod` waits for one of the pod's slots before it is refused; `0` takes the default, negative refuses at once                                           |
+| `--tokens-per-pod`              | `0`     | Tokens (input, cache creation, cache read and output) one agent pod may consume                                                                                                                 |
+| `--tokens-per-hour`             | `0`     | Broker-wide trailing-hour token ceiling across every pod                                                                                                                                        |
+| `--max-tokens-ceiling`          | `0`     | Largest `max_tokens` a request may set                                                                                                                                                          |
+| `--model-allowlist`             | empty   | Comma-separated model ids pods may name (canonical or wire form; dated variants and the `claude-haiku` helper family are admitted); empty admits every model                                    |
+| `--beta-denylist`               | empty   | Comma-separated `anthropic-beta` glob patterns to strip; empty uses the built-in list (`mcp-client-*`, `web-fetch-*`, `code-execution-*`, `files-api-*`, `context-1m-*`), `none` strips nothing |
+| `--preauth-requests-per-second` | `0`     | Per-source-IP request rate admitted before authentication                                                                                                                                       |
+| `--preauth-burst`               | `0`     | Per-source-IP burst and in-flight cap before authentication                                                                                                                                     |
+| `--token-reviews-per-second`    | `0`     | Broker-wide TokenReview rate, with a short queue                                                                                                                                                |
+
+## Enforcement
+
+Under a [repository-declared agent image](../integrations/agent-images.md) the agent pod runs code the repository
+controls, and the caller token is readable by anything in the pod, so the in-pod budget is advisory. The broker is the
+enforcement point for what a pod may ask of the model API and how much, in layers that all run before any upstream
+contact:
+
+1. **Pre-authentication.** A per-source-IP token bucket and in-flight cap (`--preauth-*`), then a syntactic check of the
+   token: three base64url segments, an `aud` naming the broker's audience, an unexpired `exp`, and a `kubernetes.io.pod`
+   claim. **Callers must present pod-bound tokens** — the projected ServiceAccount token the kubelet mounts into an
+   agent pod; a token minted with `kubectl create token` or the TokenRequest API without a pod binding is refused here,
+   before any TokenReview. A failed authentication counts against the source IP.
+2. **Authentication.** The TokenReview, its verdict cached for `--verdict-ttl` and rate-limited broker-wide
+   (`--token-reviews-per-second`), so a pod varying its token header degrades only itself. With any per-pod limit set, a
+   review without the `authentication.kubernetes.io/pod-name` extra is refused rather than counted in an anonymous
+   bucket.
+3. **Route surface.** Each route forwards a positive list of methods and paths and answers 404 to everything else, so
+   the Files, Batches and other upstream APIs are unreachable: `POST /v1/messages`, `POST /v1/messages/count_tokens` and
+   `GET /v1/models` on anthropic; `invoke` and `invoke-with-response-stream` on bedrock; `rawPredict` and
+   `streamRawPredict` in the configured project and location on vertex; the messages API on foundry. On bedrock and
+   vertex the model id is read from the path and checked against `--model-allowlist` there.
+4. **Body inspection.** Every body is buffered (`--max-anthropic-request-bytes`, 2 MiB, on every route but bedrock,
+   which keeps `--max-request-bytes`) and refused when it asks for a server-side tool that reaches the internet or a
+   container (`web_search_*`, `web_fetch_*`, `code_execution_*`, `mcp_toolset`), carries `mcp_servers`, `container`, a
+   `file_id` or a `source.type: file` block, names a model off the allowlist, or sets `max_tokens` above
+   `--max-tokens-ceiling`. Denied `anthropic-beta` entries are stripped. **The 2 MiB cap can refuse a legitimate request
+   with 413** when the agent's context carries many images (screenshots, diagrams); raise
+   `--max-anthropic-request-bytes` if runs fail that way.
+5. **Spend.** Per-pod request, concurrency and token counters and the broker-wide hourly ceiling are checked before
+   proxying. Tokens are charged from the usage every response reports (`message_start` and `message_delta` on a stream,
+   `usage` on a JSON body), as it streams, so a stream cut after `message_start` has already paid for its input. A
+   response whose usage never becomes final — a cut stream, a usage-less body, or any body the broker cannot parse — is
+   charged its worst case: the larger of the reported input and a request-size estimate (body bytes / 4), plus the
+   larger of the reported output and `max_tokens` (else the ceiling, else bytes streamed / 4). **Bedrock event streams
+   (`invoke-with-response-stream`) are binary and never parsed, so every such response is charged the request estimate
+   plus its `max_tokens`**, which overstates a normal run's spend; size `--tokens-per-pod` for it on bedrock.
+
+Over any limit the broker answers 429 in the Anthropic error envelope, with a message starting
+`egress broker: per-pod limit`, which `agent-runner` maps to the `budget_exceeded` outcome. The audit line carries the
+pod's running totals, so the limits can be sized from observed runs; the `patchy.broker.tokens` and
+`patchy.broker.preauth.rejections` counters carry the same figures. Aggregate spend is bounded by
+`max concurrent Jobs x --tokens-per-pod x Job turnover`, and by `--tokens-per-hour` when set. Evaluation pods run under
+the same ServiceAccount and share the per-pod limits, so size them for the longest legitimate evaluation too.
 
 ## The controller side
 
@@ -97,6 +174,9 @@ Invoke-class permissions only — the broker needs to call models, never to mana
 ## Known limitations
 
 - Codex and copilot remain in-pod-credentialed (both ship disabled); routing them through the broker is a follow-up.
-- Per-job budget metering at the broker is future work — budgets are enforced in-pod from the harness's streamed usage.
+- The limit counters live in memory, per replica, evicted after 24 hours: a broker restart resets every pod's totals,
+  and more than one replica multiplies the effective limits (the chart runs one).
+- Bedrock streaming responses are metered by estimate only (see [Enforcement](#enforcement)); the other routes are
+  metered from the usage they report.
 - Bedrock/Vertex runs may report no `total_cost_usd`; cost accounting then falls back to the registry's first-party
   rates, which approximates provider pricing.

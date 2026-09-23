@@ -258,6 +258,8 @@ type Spec struct {
 	// controller; empty runs the harness's runner image. It is honoured only
 	// when Config.AllowRepositoryImages is on and the runner has binaries to
 	// Inject — otherwise the Job is exactly what it would be without it.
+	// When it is honoured it must carry a sha256 digest; Create refuses a
+	// tag or bare name rather than run and record an unchecked image.
 	RunnerImage string
 	// RunnerSearchPath is that image's sanitized PATH from the Repository's
 	// status (colon-joined absolute entries); the Job prepends its own
@@ -429,11 +431,22 @@ func (c *Client) injects(runner Runner, spec Spec) bool {
 // threat model's promise that no credential exists in a repository-image
 // pod is kept here, where the pod is built, not left to whoever assembles
 // the runner fleet.
-func injectionRefusal(harnessID string, runner Runner) error {
+//
+// An image reference that is not pinned to a sha256 digest is the second:
+// the kubelet would pull whatever a tag points to at pull time, an image no
+// resolution check ever saw, while the runner-image annotation and the
+// RunnerImageRef Create returns recorded the tag as the reference that ran.
+// The resolver only ever writes a pinned reference, so anything else in
+// Spec.RunnerImage is a bug or a tampered status, not an operator choice.
+func injectionRefusal(harnessID string, runner Runner, spec Spec) error {
 	if !runner.Brokered && runner.Secret != "" {
 		return fmt.Errorf("jobs: runner %q injects a model credential (%s from Secret %s) and cannot run a "+
 			"repository-declared image; only a brokered or credential-free runner may Inject",
 			harnessID, runner.SecretEnv, runner.Secret)
+	}
+	if ref, err := runnerimage.ParseDeclared(spec.RunnerImage); err != nil || ref.Digest == "" {
+		return fmt.Errorf("jobs: repository-declared image %q is not pinned to a sha256 digest; "+
+			"only a digest reference the resolver pinned may run", spec.RunnerImage)
 	}
 	return nil
 }
@@ -467,7 +480,7 @@ func (c *Client) buildJob(name string, spec Spec) (*batchv1.Job, error) {
 	ann := map[string]string{annotationRepo: spec.Repo}
 	inject := c.injects(runner, spec)
 	if inject {
-		if err := injectionRefusal(spec.Harness, runner); err != nil {
+		if err := injectionRefusal(spec.Harness, runner, spec); err != nil {
 			return nil, err
 		}
 		ann[annotationRunnerImage] = spec.RunnerImage

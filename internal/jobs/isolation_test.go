@@ -232,3 +232,39 @@ func TestPropertyNoCredentialInRepositoryImagePod(t *testing.T) {
 		t.Errorf("generator did not reach every branch: injected=%d refused=%d default=%d", injected, refused, plain)
 	}
 }
+
+// TestRepositoryImageMustBeDigestPinned: the runner-image annotation and
+// the RunnerImageRef Create returns claim to record the digest that ran,
+// and the tag race is closed only if the kubelet pulls by digest. A
+// reference that is not pinned to a well-formed sha256 digest is refused,
+// never run and never recorded as though it had been checked.
+func TestRepositoryImageMustBeDigestPinned(t *testing.T) {
+	for _, image := range []string{
+		"ghcr.io/devthenet-labs/go-agent-env:latest",
+		"ghcr.io/devthenet-labs/go-agent-env",
+		"ghcr.io/devthenet-labs/go-agent-env@sha256:9f86d081",
+		"ghcr.io/devthenet-labs/go-agent-env@sha512:" + strings.Repeat("ab", 64),
+		"not a reference@sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+	} {
+		t.Run(image, func(t *testing.T) {
+			cfg := injectedConfig()
+			spec := injectedSpec()
+			spec.RunnerImage = image
+			cs := fake.NewClientset()
+			if name, ref, err := New(cs, cfg, nil).Create(context.Background(), spec); err == nil {
+				t.Fatalf("Create = (%q, %+v, nil), want a refusal of the unpinned %q", name, ref, image)
+			} else if !strings.Contains(err.Error(), "digest") {
+				t.Errorf("Create error = %q, want it to say the image is not digest-pinned", err)
+			}
+			assertNothingCreated(t, cs, cfg.Namespace)
+		})
+	}
+	// A tag beside the digest is still a pull by digest.
+	spec := injectedSpec()
+	spec.RunnerImage = "ghcr.io/devthenet-labs/go-agent-env:1.26@sha256:" +
+		"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	if _, ref := createWithRef(t, injectedConfig(), spec); ref.Source != v1alpha1.RunnerImageSourceRepository ||
+		ref.Image != spec.RunnerImage {
+		t.Errorf("Create returned %+v, want the tag+digest reference run as recorded", ref)
+	}
+}

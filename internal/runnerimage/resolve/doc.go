@@ -11,13 +11,13 @@
 // that was checked. For an image index every child a linux/amd64 or
 // linux/arm64 node could run, judged the way containerd picks one (other
 // spellings of those architectures, an empty OS), is enumerated by its own
-// digest and checked (compressed layer size, os/arch, VOLUME, reserved ENV,
-// PATH); every runnable child must pass with the same sanitized PATH, and
-// the index digest is what is recorded, because that is what cosign signs
-// and the kubelet pulls. An index that leaves a node an unchecked fallback
-// (linux/386, linux/arm/*, an entry with no platform) is rejected. A
-// single-platform manifest is checked the same way, with its os/arch read
-// from the config.
+// digest and checked (compressed layer size, a config blob of at most
+// 4 MiB, os/arch, VOLUME, reserved ENV, PATH); every runnable child must
+// pass with the same sanitized PATH, and the index digest is what is
+// recorded, because that is what cosign signs and the kubelet pulls. An
+// index that leaves a node an unchecked fallback (linux/386, linux/arm/*,
+// an entry with no platform) is rejected. A single-platform manifest is
+// checked the same way, with its os/arch read from the config.
 //
 // Signature verification is in-process with stdlib crypto: the sigstore
 // bundle cosign v3 attaches through the OCI referrers API (with the

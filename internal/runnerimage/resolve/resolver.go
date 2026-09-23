@@ -33,6 +33,12 @@ const (
 	// architecture with variants); every check costs a manifest and a config
 	// fetch on the single Repository worker.
 	maxChildren = 8
+	// maxConfigBytes caps an image config blob. ggcr reads a config whole,
+	// bounded only by the size the manifest declares, and the checks run
+	// before the signature, so an unsigned image from any pusher would
+	// otherwise choose how much the controller allocates (JSON decoding
+	// multiplies it several times over).
+	maxConfigBytes = 4 << 20
 )
 
 // Config configures a Resolver.
@@ -376,6 +382,15 @@ func (r *Resolver) checkChild(ctx context.Context, repo name.Repository, c child
 		return nil, &runnerimage.Rejection{Reason: "Oversized",
 			Message: fmt.Sprintf("image `%s`%s has %d bytes of compressed layers; the limit is %d bytes",
 				ref, platformSuffix(c.platform), size, r.cfg.MaxBytes)}
+	}
+	switch {
+	case m.Config.Size <= 0:
+		return nil, &runnerimage.Rejection{Reason: "Unsupported",
+			Message: fmt.Sprintf("image `%s`%s declares no config size", ref, platformSuffix(c.platform))}
+	case m.Config.Size > maxConfigBytes:
+		return nil, &runnerimage.Rejection{Reason: "Oversized",
+			Message: fmt.Sprintf("image `%s`%s has a %d-byte config; the limit is %d bytes",
+				ref, platformSuffix(c.platform), m.Config.Size, maxConfigBytes)}
 	}
 	cf, err := img.ConfigFile()
 	if err != nil {

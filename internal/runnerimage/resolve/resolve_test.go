@@ -719,6 +719,53 @@ func TestResolveRejections(t *testing.T) {
 	}
 }
 
+// TestResolveConfigSizeBounded: ggcr reads a config blob whole, bounded only
+// by the size the manifest declares, and the config is read before the
+// signature is checked, so any pusher chooses what the controller
+// allocates. An oversized config is refused before it is fetched.
+func TestResolveConfigSizeBounded(t *testing.T) {
+	c := &counter{}
+	repo := newRegistry(t, false, c.wrap)
+	huge := image(t, &v1.ConfigFile{Config: v1.Config{
+		Labels: map[string]string{"pad": strings.Repeat("x", 5<<20)},
+	}}, []byte("huge"))
+	push(t, repo.Tag("v1"), huge)
+	c.reset(nil)
+	r := newResolver(t, Config{})
+	_, err := r.Resolve(context.Background(), declared(t, repo.String()+":v1"))
+	rejection(t, err, "Oversized", "-byte config; the limit is")
+	cn, cerr := huge.ConfigName()
+	if cerr != nil {
+		t.Fatal(cerr)
+	}
+	if c.blobs[cn.String()] != 0 {
+		t.Error("fetched the oversized config before refusing it")
+	}
+}
+
+// TestResolveConfigSizeUnknown: a config descriptor without a size would
+// lift ggcr's only bound on the read.
+func TestResolveConfigSizeUnknown(t *testing.T) {
+	repo := newRegistry(t, false, nil)
+	cfg := []byte(`{"architecture":"amd64","os":"linux","config":{},"rootfs":{"type":"layers","diff_ids":[]}}`)
+	if err := remote.WriteLayer(repo, static.NewLayer(cfg, types.OCIConfigJSON)); err != nil {
+		t.Fatal(err)
+	}
+	h, _, err := v1.SHA256(strings.NewReader(string(cfg)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := fmt.Appendf(nil,
+		`{"schemaVersion":2,"mediaType":%q,"config":{"mediaType":%q,"size":-1,"digest":%q},"layers":[]}`,
+		types.OCIManifestSchema1, types.OCIConfigJSON, h)
+	if err := remote.Put(repo.Tag("v1"), rawManifest{raw, types.OCIManifestSchema1}); err != nil {
+		t.Fatal(err)
+	}
+	r := newResolver(t, Config{})
+	_, err = r.Resolve(context.Background(), declared(t, repo.String()+":v1"))
+	rejection(t, err, "Unsupported", "no config size")
+}
+
 // deny answers every manifest request under the repository path with the
 // status, leaving the ping alone, so the resolver sees what a registry that
 // refuses the pull returns.

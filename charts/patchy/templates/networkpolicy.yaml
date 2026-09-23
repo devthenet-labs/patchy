@@ -24,6 +24,7 @@
 {{- end }}
 {{- $mode := include "patchy.egressMode" . }}
 {{- $broadEgress := include "patchy.broadEgress" . }}
+{{- $repositoryImages := (.Values.agent.repositoryImages | default dict).enabled }}
 {{- range $c := list
     (dict "name" "integration-controller" "vals" .Values.integrationController)
     (dict "name" "source-controller" "vals" .Values.sourceController)
@@ -47,7 +48,12 @@
 # clusters usually use 443.{{ if eq $c.name "context-controller" }} The link-local rule is EKS Pod Identity:
 # the SDK's other in-cluster credential path fetches from the node-local
 # agent at 169.254.170.23:80 over HTTP (fd00:ec2::23 on IPv6 clusters) —
-# harmless elsewhere, since nothing else answers on that address.{{ end }}
+# harmless elsewhere, since nothing else answers on that address.{{ end }}{{ if and (eq $c.name "source-controller") $repositoryImages }} The link-local rule is EKS Pod Identity,
+# rendered because agent.repositoryImages is enabled: resolving a declared
+# image in ECR mints a registry token from the node-local agent at
+# 169.254.170.23:80 over HTTP (fd00:ec2::23 on IPv6 clusters) when the
+# ServiceAccount has a Pod Identity association — harmless elsewhere, since
+# nothing else answers on that address.{{ end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -109,7 +115,7 @@ spec:
                 port: 443
               - protocol: TCP
                 port: 6443
-        {{- if eq $c.name "context-controller" }}
+        {{- if or (eq $c.name "context-controller") (and (eq $c.name "source-controller") $repositoryImages) }}
         # The EKS Pod Identity agent (see the header comment).
         - to:
               - ipBlock:
@@ -128,6 +134,38 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
 {{- end }}
+{{- end }}
+{{- if and .Values.sourceController.networkPolicy.create $repositoryImages (eq $mode "cilium") }}
+---
+# ---- source-controller: the cloud-credential endpoint under Cilium ----------
+# The EKS Pod Identity agent source-controller mints its ECR token from is a
+# hostNetwork process on the pod's own node, and Cilium classifies traffic to
+# any node-local address as the reserved `host` entity, which CIDR selectors
+# (the ipBlock rule above) never match — so under Cilium that rule silently
+# matches nothing. The host entity is the only way to express the
+# destination; policies union, so this rides alongside the NetworkPolicy
+# above. The egress broker's cloud-credential policy is the same shape.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+    name: {{ include "patchy.fullname" . }}-source-controller-cloud-credentials
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" "source-controller") | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" .) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+spec:
+    endpointSelector:
+        matchLabels:
+            {{- include "patchy.selectorLabels" (dict "root" . "name" "source-controller") | nindent 12 }}
+    egress:
+        - toEntities: [host]
+          toPorts:
+              - ports:
+                    - port: "80"
+                      protocol: TCP
 {{- end }}
 {{- if .Values.agent.networkPolicy.create }}
 ---

@@ -17,6 +17,14 @@
 # No credential is mounted anywhere here: provider and forge credentials live
 # in Secrets referenced by the Integration and Forge custom resources
 # (spec.secretRef), read on demand through the API.
+#
+# With agent.repositoryImages enabled, source-controller additionally mounts
+# the cosign public key (a ConfigMap, configmap.yaml) and, with pullSecret,
+# the registry credential (optional; serviceaccounts.yaml renders it from
+# pullSecretData) it resolves declared images with — the one
+# dockerconfigjson key mapped to config.json, the file go-containerregistry
+# reads under DOCKER_CONFIG.
+{{- $ri := .Values.agent.repositoryImages | default dict }}
 {{- range $c := list
     (dict "name" "integration-controller" "vals" .Values.integrationController)
     (dict "name" "source-controller" "vals" .Values.sourceController)
@@ -54,6 +62,11 @@ spec:
                    (configmap.yaml), so a helm upgrade that changes it rolls
                    the pod — envFrom is read once, at container start. */}}
             {{- $checksums := dict "checksum/config" (include "patchy.controllerConfigMap" (dict "root" $ "c" $c) | sha256sum) }}
+            {{- /* source-controller reads the cosign public key once, at start,
+                   so a changed key must roll it too. */}}
+            {{- if and (eq $c.name "source-controller") $ri.enabled $ri.cosignPublicKey }}
+            {{- $_ := set $checksums "checksum/repository-image-key" ($ri.cosignPublicKey | trim | sha256sum) }}
+            {{- end }}
             {{- with include "patchy.annotations" (dict "root" $ "extra" (merge $checksums ($c.vals.podAnnotations | default dict))) }}
             annotations:
                 {{- . | nindent 16 }}
@@ -130,6 +143,18 @@ spec:
                       {{- if eq $c.name "source-controller" }}
                       - name: data
                         mountPath: /data
+                      {{- if $ri.enabled }}
+                      {{- if $ri.cosignPublicKey }}
+                      - name: repository-image-key
+                        mountPath: /etc/patchy/repository-image
+                        readOnly: true
+                      {{- end }}
+                      {{- if $ri.pullSecret }}
+                      - name: registry
+                        mountPath: /etc/patchy/registry
+                        readOnly: true
+                      {{- end }}
+                      {{- end }}
                       {{- end }}
                       - name: tmp
                         mountPath: /tmp
@@ -152,6 +177,31 @@ spec:
                 # rebuilds them — so an emptyDir is acceptable.
                 - name: data
                   emptyDir: {}
+                {{- if $ri.enabled }}
+                {{- if $ri.cosignPublicKey }}
+                # PATCHY_REPOSITORY_IMAGE_COSIGN_KEY_FILE.
+                - name: repository-image-key
+                  configMap:
+                      name: {{ include "patchy.fullname" $ }}-repository-image-key
+                {{- end }}
+                {{- if $ri.pullSecret }}
+                # DOCKER_CONFIG: the operator's dockerconfigjson Secret.
+                # Optional, so a Secret that is missing (or lacks the
+                # .dockerconfigjson key) leaves the directory empty rather
+                # than holding source-controller, and the artifact server
+                # every agent Job fetches from, in ContainerCreating:
+                # resolution falls back to anonymous and rejects per image.
+                # The keychain reads config.json on every resolve, so a
+                # Secret created later takes effect without a restart.
+                - name: registry
+                  secret:
+                      secretName: {{ $ri.pullSecret }}
+                      optional: true
+                      items:
+                          - key: .dockerconfigjson
+                            path: config.json
+                {{- end }}
+                {{- end }}
                 {{- end }}
                 # The root filesystem is read-only; every binary wants a
                 # writable /tmp.

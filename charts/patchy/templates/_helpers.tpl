@@ -252,3 +252,60 @@ yes
 yes
 {{- end -}}
 {{- end }}
+
+{{/*
+Render-time guards for agent.repositoryImages; called once from
+configmap.yaml, which always renders. Only an enabled block is judged, so
+flipping the kill switch off never fails a render. Every guard fails the
+render rather than leaving a controller to crash-loop, or a sandbox to run
+untrusted images with broad egress:
+
+  * registries empty — source-controller refuses to start without an
+    allowlist, and an empty one would admit nothing anyway.
+  * ephemeralStorage empty — both job controllers refuse to start without
+    the wall on disk a repository image can fill.
+  * cosignPublicKey empty without allowUnsigned — source-controller refuses
+    to start without a key unless unsigned images are explicitly allowed.
+  * cosignPublicKey without its PEM armour — source-controller parses a set
+    key at startup, allowUnsigned or not. A template cannot parse the DER
+    inside, so a well-armoured but corrupt key still stops it; the armour
+    catches the pasted-the-wrong-thing case.
+  * pullSecretData without pullSecret — the rendered Secret needs the name
+    both namespaces share.
+  * broad agent egress (the design's decision 2): no agent NetworkPolicy at
+    all, or a base policy that keeps "TCP 443 to anywhere", would let a
+    hostile image reach a model API with a key of its own. A NOTES warning
+    is invisible in CI; a failed render is not.
+
+The formats of a registries entry and of ephemeralStorage are
+values.schema.json patterns instead, so helm lint judges them too. Each
+pattern admits only values the binary accepts at startup, pinned by
+TestChartRegistryPatternIsSound (cmd/source-controller) and
+TestChartEphemeralStoragePatternIsSound (internal/runnercfg).
+*/}}
+{{- define "patchy.repositoryImagesGuard" -}}
+{{- $ri := .Values.agent.repositoryImages | default dict -}}
+{{- if $ri.enabled -}}
+{{- if not $ri.registries -}}
+{{- fail "agent.repositoryImages.enabled requires agent.repositoryImages.registries: list the registry path prefixes a declared image must sit under, e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/patchy/ or ghcr.io/my-org/agent-images/" -}}
+{{- end -}}
+{{- if not $ri.ephemeralStorage -}}
+{{- fail "agent.repositoryImages.enabled requires agent.repositoryImages.ephemeralStorage, a quantity such as 8Gi: the ephemeral-storage request and limit that bounds the disk a declared image can fill" -}}
+{{- end -}}
+{{- if and (not $ri.cosignPublicKey) (not $ri.allowUnsigned) -}}
+{{- fail "agent.repositoryImages.enabled requires agent.repositoryImages.cosignPublicKey, the PEM public key declared images must be cosign-signed with; set agent.repositoryImages.allowUnsigned: true to admit unsigned images instead" -}}
+{{- end -}}
+{{- if and $ri.cosignPublicKey (not (and (contains "-----BEGIN PUBLIC KEY-----" $ri.cosignPublicKey) (contains "-----END PUBLIC KEY-----" $ri.cosignPublicKey))) -}}
+{{- fail "agent.repositoryImages.cosignPublicKey is not a PEM public key: set it to the whole cosign.pub that cosign generate-key-pair writes, -----BEGIN PUBLIC KEY----- through -----END PUBLIC KEY----- (source-controller refuses anything else at startup)" -}}
+{{- end -}}
+{{- if not .Values.agent.networkPolicy.create -}}
+{{- fail "agent.repositoryImages.enabled requires the agent sandbox NetworkPolicy, but agent.networkPolicy.create is false: an agent pod would have unrestricted egress. Set agent.networkPolicy.create: true" -}}
+{{- end -}}
+{{- if include "patchy.broadEgress" . -}}
+{{- fail (printf "agent.repositoryImages.enabled requires narrow agent egress, but agent.networkPolicy.broadEgress (%q) resolves to broad under agent.networkPolicy.mode %q: the base policy would allow TCP 443 to anywhere. Set agent.networkPolicy.broadEgress: never (brokered claude runners only), or use agent.networkPolicy.mode cilium or gke." (.Values.agent.networkPolicy.broadEgress | default "auto") (include "patchy.egressMode" .)) -}}
+{{- end -}}
+{{- if and $ri.pullSecretData (not $ri.pullSecret) -}}
+{{- fail "agent.repositoryImages.pullSecretData requires agent.repositoryImages.pullSecret, the name of the Secret it renders into both the release namespace (source-controller's mount) and agent.namespace (the kubelet's pull)" -}}
+{{- end -}}
+{{- end -}}
+{{- end }}

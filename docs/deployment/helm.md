@@ -142,6 +142,8 @@ Everything else a binary binds (see the [configuration reference](../configurati
 | `agent.runners.<harness>`                | claude enabled; codex, copilot disabled               | Per-harness `enabled`/`image`; codex/copilot add `secret`/`secretKey`/`secretEnv`/`hosts`/`dnsPatterns`, claude a `provider` block instead (brokered)                                                                 |
 | `agent.runners.claude.provider`          | `name: anthropic`                                     | Which model API the egress broker fronts: `anthropic`/`bedrock`/`vertex`/`foundry` + `region`/`regionPrefix`/`projectID`/`resource`/`modelMap`/`env`                                                                  |
 | `egressBroker.*`                         | deploys when a claude runner is enabled               | The [egress credential broker](../configuration/egress-broker.md): `anthropicSecret`, `anthropicAuth` (`key`/`token`), `foundrySecret`, `serviceAccount.annotations` (workload identity), `networkPolicy.extraEgress` |
+| `egressBroker.limits.*`                  | off                                                   | Per-pod and broker-wide spend and request limits — see [Egress broker limits](#egress-broker-limits)                                                                                                                  |
+| `agent.repositoryImages.*`               | `enabled: false`                                      | Let a repository name the image its claude agent runs in — see [Repository runner images](#repository-runner-images)                                                                                                  |
 | `agent.networkPolicy.create`             | `true`                                                | Default-deny both directions + DNS + artifact + broker + TCP-443-only egress                                                                                                                                          |
 | `agent.networkPolicy.clusterCIDRs`       | RFC-1918 + link-local                                 | Cluster-internal ranges excluded from agent egress                                                                                                                                                                    |
 | `agent.runners.<harness>.hosts`          | codex: `api.openai.com`; claude: none (brokered)      | Per-runner egress allowlist — deliberately **no** forge hosts                                                                                                                                                         |
@@ -161,6 +163,105 @@ Because network policies are **additive**, an FQDN allowlist alongside the base 
 constrains nothing; `broadEgress: auto` therefore drops that rule whenever a hostname mode is enforcing. See the
 [isolation model](isolation.md#network-egress-the-floor-and-the-fence) for what each layer requires and what it doesn't
 cover.
+
+### Repository runner images
+
+`agent.repositoryImages` lets a watched repository name the image its claude agent runs in (`.patchy/agent.yaml`, or the
+top-level `image` of `.devcontainer/devcontainer.json`), so the agent has that repository's toolchain;
+[Agent images](../integrations/agent-images.md) covers building one, and the
+[design](../design/repository-runner-images.md) covers resolution, signing and the threat model. source-controller pins
+the declared image to a digest once per Repository, after checking it against the policy below. The block is off by
+default, and `enabled: false` renders none of it: that value is the kill switch, and the next Job runs the default
+runner image without any change to the custom resources.
+
+| Key                                          | Default      | Purpose                                                                                                                                                      |
+| -------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `agent.repositoryImages.enabled`             | `false`      | The kill switch; `PATCHY_REPOSITORY_IMAGES` on the source, investigation and remediation controllers                                                         |
+| `agent.repositoryImages.registries`          | `[]`         | Registry path prefixes (`host/path/`) a declared image must sit under. **Required** when enabled; never a pull-through cache namespace                       |
+| `agent.repositoryImages.cosignPublicKey`     | `""`         | PEM public key declared images must be cosign-signed with, rendered into a ConfigMap and mounted into source-controller. **Required** unless `allowUnsigned` |
+| `agent.repositoryImages.allowUnsigned`       | `false`      | Admit unsigned images: an explicit opt-out of signature verification                                                                                         |
+| `agent.repositoryImages.maxBytes`            | `4294967296` | Largest compressed layer total of one platform of a declared image, in bytes                                                                                 |
+| `agent.repositoryImages.onReject`            | `default`    | A rejected declaration runs on the default runner image, recording why (`default`), or parks the finding for a human (`handoff`)                             |
+| `agent.repositoryImages.ephemeralStorage`    | `""`         | Ephemeral-storage request and limit on both containers of every agent Job, such as `8Gi`. **Required** when enabled                                          |
+| `agent.repositoryImages.changesetMaxEntries` | `500`        | Most files a changeset from a repository-image run may touch before remediation-controller rejects it                                                        |
+| `agent.repositoryImages.pullSecret`          | `""`         | dockerconfigjson Secret in the release namespace that source-controller resolves images with; also listed in the agent ServiceAccount's `imagePullSecrets`   |
+| `agent.repositoryImages.pullSecretData`      | `""`         | The `.dockerconfigjson` content (JSON, not base64); when set, the chart renders the `pullSecret` Secret into both namespaces                                 |
+
+```yaml
+agent:
+  networkPolicy:
+    broadEgress: never # required under mode none or istio, see below
+  repositoryImages:
+    enabled: true
+    registries:
+      - 123456789012.dkr.ecr.us-east-1.amazonaws.com/patchy/
+    cosignPublicKey: |
+      -----BEGIN PUBLIC KEY-----
+      ...
+      -----END PUBLIC KEY-----
+    ephemeralStorage: 8Gi
+```
+
+The render fails, with a message naming the value to set, when the block is enabled and:
+
+- `registries` is empty, `ephemeralStorage` is empty, or `cosignPublicKey` is empty without `allowUnsigned: true` (each
+  would otherwise stop a controller at startup);
+- `cosignPublicKey` is set but lacks its `-----BEGIN PUBLIC KEY-----` / `-----END PUBLIC KEY-----` armour;
+- `pullSecretData` is set without `pullSecret`, which names the Secret it renders;
+- `agent.networkPolicy.create` is false, or `agent.networkPolicy.broadEgress` resolves to keeping the base policy's "TCP
+  443 to anywhere" rule, which would let a hostile image reach a model API with a key of its own. Under `mode: none` or
+  `istio` set `broadEgress: never`. That removes the rule for every runner, so codex and copilot lose their model egress
+  and the fleet is brokered-claude only; under `cilium` or `gke`, `auto` already drops the rule.
+
+Whether or not the block is enabled, the values schema refuses a `registries` entry that is not `host[:port]/path` with
+at least one path segment and no tag, digest, glob, comma or whitespace, and an `ephemeralStorage` that is not an
+unsigned quantity such as `8Gi` or `1.5Gi` (the controllers refuse either at startup).
+
+The CNI must also enforce NetworkPolicy, which the chart cannot check (EKS Auto Mode does not by default): every
+repository-image Job probes it before untrusted code runs and fails `SandboxUnenforced` when it is not enforced.
+
+**Registry credentials.** For ECR, source-controller mints a registry token with its workload identity and nodes pull
+with their own role, so no Secret is needed. Enabling the block adds the EKS Pod Identity agent (`169.254.170.23/32` and
+`fd00:ec2::23/128`, TCP 80) to source-controller's NetworkPolicy, plus a `CiliumNetworkPolicy` granting the node-local
+endpoint under `mode: cilium`, so a Pod Identity association on the source-controller ServiceAccount is all that
+remains:
+
+```sh
+# The ServiceAccount is <fullname>-source-controller: patchy-source-controller for a release named patchy.
+aws eks create-pod-identity-association --cluster-name <cluster> --namespace <release namespace> \
+  --service-account patchy-source-controller --role-arn <role with ECR read on the allowlisted prefix>
+```
+
+IRSA works as well (annotate `sourceController.serviceAccount` with `eks.amazonaws.com/role-arn`). Artifact Registry
+resolves through GKE Workload Identity on the same ServiceAccount, which fetches its token from the GKE metadata server.
+source-controller's NetworkPolicy admits only DNS and TCP 443/6443, so add the metadata server through
+`sourceController.networkPolicy.extraEgress`: `169.254.169.254/32` on TCP 80 and 8080 on Dataplane V2, and
+`169.254.169.252/32` on TCP 988 and 987 on other GKE clusters
+([GKE: network policy and Workload Identity Federation](https://cloud.google.com/kubernetes-engine/docs/how-to/network-policy#network-policy-and-workload-identity)).
+Without it source-controller cannot authenticate, so every declaration in a private Artifact Registry repository is
+rejected and, under `onReject: default`, runs on the default image.
+
+```yaml
+sourceController:
+  networkPolicy:
+    extraEgress:
+      # Dataplane V2. Other GKE clusters: 169.254.169.252/32 on 988 and 987.
+      - to:
+          - ipBlock:
+              cidr: 169.254.169.254/32
+        ports:
+          - protocol: TCP
+            port: 80
+          - protocol: TCP
+            port: 8080
+```
+
+For any other registry set `pullSecret`: source-controller mounts that Secret's `.dockerconfigjson` key as `config.json`
+under `DOCKER_CONFIG`, and the agent ServiceAccount lists it in `imagePullSecrets`. The kubelet reads pull Secrets from
+the pod's own namespace, so a Secret of the same name must also exist in `agent.namespace`: set `pullSecretData` to have
+the chart render it in both namespaces, or create both yourself. The mount is optional, so a missing release-namespace
+Secret (or one without a `.dockerconfigjson` key) does not stop source-controller: it resolves anonymously, rejects the
+images it cannot read, and picks the credential up once the Secret appears.
 
 ### Model providers (brokered claude)
 
@@ -224,6 +325,33 @@ Scope the cloud role to Invoke only: `bedrock:InvokeModel*`, `aiplatform.endpoin
     `agent.runners.claude.secret*` values are ignored (a NOTES warning fires if they are still set); if the old
     `secretEnv` was `CLAUDE_CODE_OAUTH_TOKEN`, set `egressBroker.anthropicAuth: token` so the broker sends the OAuth
     token as a bearer. Codex and copilot are unaffected.
+
+### Egress broker limits
+
+`egressBroker.limits` sizes what the broker enforces before any upstream call, one value per limit flag of the
+[egress broker](../configuration/egress-broker.md). Every value defaults to the binary's own default (off, or the
+built-in value where noted), and an unset value renders nothing, so upgrading changes nothing until one is set. Under a
+repository-declared image the in-pod budget is advisory and these limits are the enforced bound on spend, so size them
+before enabling `agent.repositoryImages`; the broker's audit line reports per-pod totals to size them from. Evaluation
+Jobs run under the same per-pod limits.
+
+| Key                                            | Default | Purpose                                                                                                         |
+| ---------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------- |
+| `egressBroker.limits.requestsPerPod`           | `0`     | Requests one agent pod may make in its lifetime; `0` is off                                                     |
+| `egressBroker.limits.concurrentPerPod`         | `0`     | In-flight requests one agent pod may hold; `0` is off                                                           |
+| `egressBroker.limits.concurrencyWait`          | `""`    | How long a request over `concurrentPerPod` waits for a slot; empty is the binary's 2s, negative refuses at once |
+| `egressBroker.limits.tokensPerPod`             | `0`     | Tokens (input, cache creation, cache read, output) one pod may consume; `0` is off                              |
+| `egressBroker.limits.tokensPerHour`            | `0`     | Broker-wide trailing-hour token ceiling; `0` is off                                                             |
+| `egressBroker.limits.maxTokensCeiling`         | `0`     | Largest `max_tokens` a request may set; `0` is off                                                              |
+| `egressBroker.limits.modelAllowlist`           | `[]`    | Model ids pods may name (the claude-haiku helper family is always admitted); empty admits every model           |
+| `egressBroker.limits.betaDenylist`             | `[]`    | `anthropic-beta` glob patterns to strip; empty keeps the built-in list, `[none]` strips nothing                 |
+| `egressBroker.limits.maxAnthropicRequestBytes` | `0`     | Largest buffered request body on the anthropic, vertex and foundry routes; `0` is the binary's 2 MiB            |
+| `egressBroker.limits.maxRequestBytes`          | `0`     | Largest request body on the payload-signing bedrock route; `0` is the binary's 10 MiB                           |
+| `egressBroker.limits.preauthRequestsPerSecond` | `0`     | Per-source-IP request rate admitted before authentication; `0` is off                                           |
+| `egressBroker.limits.preauthBurst`             | `0`     | Per-source-IP burst and in-flight cap before authentication                                                     |
+| `egressBroker.limits.tokenReviewsPerSecond`    | `0`     | Broker-wide TokenReview rate, with a short queue; `0` is off                                                    |
+
+`egressBroker.config.extra` still wins over anything these render.
 
 ## Operational notes
 

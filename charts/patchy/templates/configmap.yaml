@@ -57,6 +57,14 @@ for :8080 (integration) and :9790 (source).
 {{- $_ := set $data "PATCHY_LISTEN_ADDR" ":8080" }}
 {{- $_ := set $data "PATCHY_ACCUMULATION_WINDOW" $own.accumulationWindow }}
 {{- $_ := set $data "PATCHY_PROJECTION_CONCURRENCY" $own.projectionConcurrency }}
+{{- $intRI := $root.Values.agent.repositoryImages | default dict }}
+{{- if $intRI.enabled }}
+{{/*
+The runner-image tracking-issue comment: integration-controller watches each
+finding's Repository record and projects rejections and fallbacks to owners.
+*/}}
+{{- $_ := set $data "PATCHY_REPOSITORY_IMAGES" "true" }}
+{{- end }}
 {{- else if eq $c.name "context-controller" }}
 {{- $_ := set $data "PATCHY_ENHANCE_CONCURRENCY" $own.enhanceConcurrency }}
 {{- $_ := set $data "PATCHY_ENHANCE_MAX_OUTBOUND" $own.enhanceMaxOutbound }}

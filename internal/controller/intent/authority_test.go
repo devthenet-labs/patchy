@@ -60,6 +60,10 @@ func TestTriggerAuthority(t *testing.T) {
 			if tt.perm != "" {
 				e.gh.perms[approver] = tt.perm
 			}
+			if tt.wantBot {
+				// With write access, so only the bot rule can refuse it.
+				e.gh.perms[strings.ToLower(tt.requester)] = ghclient.PermissionWrite
+			}
 			name := e.newIntent(tt.requester)
 			for range 4 {
 				e.mustIntent(name)
@@ -119,10 +123,11 @@ func TestApprovalAuthority(t *testing.T) {
 		name  string
 		actor string
 		perm  string
+		bot   bool
 	}{
 		{name: "not an approver", actor: "mallory"},
 		{name: "read access only", actor: approver, perm: ghclient.PermissionRead},
-		{name: "a bot", actor: "renovate[bot]"},
+		{name: "a bot", actor: "renovate[bot]", bot: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -133,6 +138,11 @@ func TestApprovalAuthority(t *testing.T) {
 			if tt.perm != "" {
 				e.gh.perms[approver] = tt.perm
 			}
+			if tt.bot {
+				// An approver with write access: only the bot rule can
+				// refuse it.
+				e.gh.perms[tt.actor] = ghclient.PermissionWrite
+			}
 			id := e.gh.label(1, "patchy:approved", tt.actor)
 			e.settleActions(name)
 			in := e.get(name)
@@ -142,8 +152,12 @@ func TestApprovalAuthority(t *testing.T) {
 			if e.gh.hasLabel("patchy:approved") {
 				t.Error("the refused approve label is still on the issue")
 			}
-			if n := e.gh.withMarker("event-" + itoa(id)); len(n) != 1 {
-				t.Errorf("notices for the label = %d, want exactly one", len(n))
+			n := e.gh.withMarker("event-" + itoa(id))
+			if len(n) != 1 {
+				t.Fatalf("notices for the label = %d, want exactly one", len(n))
+			}
+			if got := strings.Contains(n[0].Body, "bot account"); got != tt.bot {
+				t.Errorf("notice names a bot = %v, want %v:\n%s", got, tt.bot, n[0].Body)
 			}
 			for _, s := range e.jobs.launched() {
 				if s.Phase == "build" {

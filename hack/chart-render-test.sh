@@ -379,6 +379,28 @@ expect_fail "eval ingress without host" "evaluationController.host is required w
 expect_fail "eval httpRoute without host" "evaluationController.host is required when evaluationController.httpRoute is enabled" \
   -f "$ef" --set evaluationController.httpRoute.enabled=true
 
+# ---- a harness enabled only for evaluations keeps its egress policy ----------
+# Evaluation Jobs carry the same harness label as finding Jobs, so a harness
+# enabled on either fleet needs its per-harness policy: without one a Cilium
+# or GKE pod is default-denied its model API, and an Istio pod has no
+# REGISTRY_ONLY Sidecar beside the base policy's TCP 443 to anywhere.
+hnp='select(.kind == "CiliumNetworkPolicy" or .kind == "FQDNNetworkPolicy" or .kind == "Sidecar" or .kind == "ServiceEntry") | .kind + "/" + .metadata.name'
+render eval-codex-cilium -f "$ef" --set agent.networkPolicy.mode=cilium --set evaluationController.runners.codex.enabled=true
+expect eval-codex-cilium "$hnp" "CiliumNetworkPolicy/patchy-agent-egress-claude
+CiliumNetworkPolicy/patchy-agent-egress-codex"
+expect eval-codex-cilium 'select(.kind == "CiliumNetworkPolicy" and .metadata.name == "patchy-agent-egress-codex") | .spec.endpointSelector.matchLabels["patchy.bitwisemedia.uk/harness"]' codex
+render eval-codex-gke -f "$ef" --set agent.networkPolicy.mode=gke --set evaluationController.runners.codex.enabled=true
+expect eval-codex-gke "$hnp" "FQDNNetworkPolicy/patchy-agent-egress-codex"
+render eval-claude-istio -f "$ef" --set agent.networkPolicy.mode=istio \
+  --set agent.runners.claude.enabled=false --set agent.runners.codex.enabled=true
+expect eval-claude-istio "$hnp" "ServiceEntry/patchy-agent-codex
+Sidecar/patchy-agent-egress-claude
+Sidecar/patchy-agent-egress-codex"
+# ...and a harness enabled nowhere gets none: the evaluation fleet's runner
+# flags mean nothing while the controller itself is off.
+render eval-off-cilium --set agent.networkPolicy.mode=cilium --set evaluationController.runners.codex.enabled=true
+expect eval-off-cilium "$hnp" "CiliumNetworkPolicy/patchy-agent-egress-claude"
+
 # ---- egress broker limits ---------------------------------------------------
 render limits -f "$fixtures/broker-limits.yaml"
 cm limits egress-broker PATCHY_REQUESTS_PER_POD 2000

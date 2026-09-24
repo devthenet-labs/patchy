@@ -37,9 +37,10 @@
 Brokered claude gets NO FQDNNetworkPolicy: its pods have no external hosts
 at all — the base agents-egress NetworkPolicy (which still renders under
 this mode) grants DNS, the artifact server, and the broker, and that is the
-whole claude egress story.
+whole claude egress story. Every other runner enabled on either fleet
+(patchy.harnessEnabled) gets its policy.
 */}}
-{{- if and $r.enabled (ne $id "claude") }}
+{{- if and (include "patchy.harnessEnabled" (dict "root" $root "id" $id)) (ne $id "claude") }}
 ---
 apiVersion: networking.gke.io/v1alpha1
 kind: FQDNNetworkPolicy

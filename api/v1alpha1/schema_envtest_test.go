@@ -307,6 +307,18 @@ func TestSchemaValidation(t *testing.T) {
 	t.Run("evaluation unit spec is immutable and its failure reason is an enum", func(t *testing.T) {
 		testEvaluationUnitSchema(ctx, t, c)
 	})
+
+	t.Run("project is defaulted, bounded, and its labels differ", func(t *testing.T) {
+		testProjectSchema(ctx, t, c)
+	})
+
+	t.Run("intent spec is immutable except suspend and its status is bounded", func(t *testing.T) {
+		testIntentSchema(ctx, t, c)
+	})
+
+	t.Run("intent run spec is immutable and holds its stage invariants", func(t *testing.T) {
+		testIntentRunSchema(ctx, t, c)
+	})
 }
 
 // testRepositoryRunnerImageSchema writes a fully populated runner-image

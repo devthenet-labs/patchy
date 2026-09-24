@@ -1487,6 +1487,50 @@ func TestPullRequestAdoption(t *testing.T) {
 	}
 }
 
+// TestEndedIntentKeepsWhatThePushRecorded: a run whose commit was made and
+// recorded, aborted because its intent ended, keeps the report, usage and
+// transcript the push recorded with the commit.
+func TestEndedIntentKeepsWhatThePushRecorded(t *testing.T) {
+	e := newEnv(t, testProject())
+	ctx := context.Background()
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	e.gh.failNext("CreateBranchRef", errTransient)
+	for range 30 {
+		if runs := e.runsOf(name, v1alpha1.IntentStageBuild); len(runs) > 0 && runs[0].Status.PushedCommit != "" {
+			break
+		}
+		_ = e.reconcileIntent(name)
+		e.readyRepositories(repoImage)
+		_, _ = e.runs.Reconcile(ctx, req(runSchedulerRequest))
+		for _, r := range e.intentRuns(name) {
+			_, _ = e.runs.Reconcile(ctx, req(r.Name))
+		}
+		e.clock.Advance(time.Minute)
+	}
+	build := e.runsOf(name, v1alpha1.IntentStageBuild)[0]
+	if build.Status.PushedCommit == "" || build.Status.Report == "" {
+		t.Fatalf("build = %+v, want its commit and report recorded", build.Status)
+	}
+	e.gh.comment(approver, "/patchy cancel")
+	for range 5 {
+		if e.get(name).Status.Phase == v1alpha1.IntentClosed {
+			break
+		}
+		e.clock.Advance(time.Minute)
+		e.mustIntent(name)
+	}
+	if _, err := e.runs.Reconcile(ctx, req(build.Name)); err != nil {
+		t.Fatal(err)
+	}
+	run := e.runsOf(name, v1alpha1.IntentStageBuild)[0]
+	if run.Status.Outcome != OutcomeAborted || run.Status.Report != build.Status.Report ||
+		run.Status.Usage != build.Status.Usage {
+		t.Errorf("run = %s, report %d bytes, usage %+v; want aborted, keeping the report and usage", run.Status.Outcome,
+			len(run.Status.Report), run.Status.Usage)
+	}
+}
+
 // TestTransientPRFailureRetries: a failed pull request create is retried and
 // opens exactly one.
 func TestTransientPRFailureRetries(t *testing.T) {

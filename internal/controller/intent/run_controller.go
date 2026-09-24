@@ -319,7 +319,10 @@ func (r *RunReconciler) intentEnded(ctx context.Context, run *v1alpha1.IntentRun
 			return true, err
 		}
 	}
-	return true, r.settle(ctx, run, result{outcome: OutcomeAborted, detail: "the intent ended before the run did"})
+	// A build that pushed its commit, or was held for a suspension, already
+	// recorded its report, usage and transcript: they are kept.
+	return true, r.settle(ctx, run, result{outcome: OutcomeAborted, detail: "the intent ended before the run did",
+		keep: run.Status.PushedCommit != "" || pushHeld(run)})
 }
 
 // launch creates the run's agent Job. A plan runs read-only on the default

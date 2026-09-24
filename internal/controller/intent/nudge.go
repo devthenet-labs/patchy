@@ -16,7 +16,8 @@ import (
 )
 
 // nudgeBuffer bounds the nudges waiting for the intent reconciler. A nudge
-// dropped because it is full is repeated by discovery's next full listing.
+// dropped because it is full is repeated by discovery's next full listing;
+// one whose hand-off fails is kept for the reconcile's retry (restore).
 const nudgeBuffer = 256
 
 // Nudger hands an Intent to the intent reconciler out of band: discovery saw
@@ -53,6 +54,19 @@ func (n *Nudger) Nudge(namespace, name string) {
 		delete(n.pending, name)
 		n.mu.Unlock()
 	}
+}
+
+// restore puts back a nudge take cleared, for a hand-off that failed: the
+// reconcile's retry answers it. Discovery's listing of an unchanged issue is
+// a 304, which never nudges again, so a nudge dropped on a transient failure
+// would lose the trigger it was for.
+func (n *Nudger) restore(name string) {
+	if n == nil {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.pending[name] = true
 }
 
 // take reports whether the named Intent was nudged, and clears it.

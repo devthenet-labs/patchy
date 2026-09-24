@@ -180,8 +180,15 @@ func (p *pass) run(ctx context.Context) (ctrl.Result, error) {
 	}
 	if terminal(p.in.Status.Phase) {
 		if p.r.Nudger.take(p.in.Name) {
-			if stop, err := p.handOff(ctx); stop || err != nil {
+			stop, err := p.handOff(ctx)
+			if err != nil {
+				// Not answered yet: the hand-off stays pending for the
+				// retry, since nothing else would bring it back.
+				p.r.Nudger.restore(p.in.Name)
 				return ctrl.Result{}, err
+			}
+			if stop {
+				return ctrl.Result{}, nil
 			}
 		}
 		return ctrl.Result{}, p.syncStatusComment(ctx)

@@ -283,6 +283,68 @@ func TestRevival(t *testing.T) {
 	}
 }
 
+// TestHandOffSurvivesAFailure: a hand-off whose GitHub call fails is kept
+// for the retry, which answers it, though discovery's next listing of the
+// unchanged issue is a 304 and nudges nothing.
+func TestHandOffSurvivesAFailure(t *testing.T) {
+	tests := []struct {
+		name      string
+		end       v1alpha1.IntentPhase
+		fail      string
+		wantPhase v1alpha1.IntentPhase
+	}{
+		{"a revival whose issue read fails", v1alpha1.IntentFailed, "GetIssue", v1alpha1.IntentPlanning},
+		{"an ended intent's notice whose label removal fails", v1alpha1.IntentMerged, "RemoveLabel",
+			v1alpha1.IntentMerged},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t, testProject())
+			if tt.end == v1alpha1.IntentFailed {
+				e.jobs.output = failingBuild
+			}
+			name := e.awaiting()
+			e.gh.label(1, "patchy:approved", approver)
+			if tt.end == v1alpha1.IntentFailed {
+				e.drive(name, v1alpha1.IntentFailed, repoImage)
+			} else {
+				e.drive(name, v1alpha1.IntentInReview, repoImage)
+				e.gh.closePR(true)
+				e.drive(name, v1alpha1.IntentMerged, repoImage)
+				e.gh.mu.Lock()
+				e.gh.issues[1].state = "open" // reopened
+				e.gh.mu.Unlock()
+				e.gh.unlabel(1, "patchy:target", approver)
+			}
+			e.mustIntent(name)
+			e.jobs.output = defaultOutput
+			e.clock.Advance(time.Minute)
+			id := e.gh.label(1, "patchy:target", approver)
+			e.reconcileProject() // a full listing: the nudge
+			e.gh.failNext(tt.fail, errTransient)
+			if err := e.reconcileIntent(name); err == nil {
+				t.Fatal("the failed hand-off returned no error")
+			}
+			e.clock.Advance(time.Minute)
+			e.reconcileProject() // a 304: no nudge
+			if err := e.reconcileIntent(name); err != nil {
+				t.Fatalf("the retried hand-off: %v", err)
+			}
+			in := e.get(name)
+			if in.Status.Phase != tt.wantPhase || in.Status.LastTrigger == nil || in.Status.LastTrigger.EventID != id {
+				t.Fatalf("phase %s lastTrigger %+v, want %s with the label %d consumed", in.Status.Phase,
+					in.Status.LastTrigger, tt.wantPhase, id)
+			}
+			if tt.end == v1alpha1.IntentMerged {
+				if n := e.gh.withMarker("event-" + itoa(id)); len(n) != 1 || e.gh.hasLabel("patchy:target") {
+					t.Errorf("notices %d, label left %v; want one notice and the label removed", len(n),
+						e.gh.hasLabel("patchy:target"))
+				}
+			}
+		})
+	}
+}
+
 // TestTTL: an ended intent is deleted, in the foreground, its TTL after it
 // completed; an active one never is.
 func TestTTL(t *testing.T) {

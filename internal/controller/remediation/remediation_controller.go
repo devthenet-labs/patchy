@@ -591,11 +591,15 @@ func (r *RemediationReconciler) stampChild(
 		if extra != nil {
 			extra(&cur)
 		}
+		// The message is capped like the stage detail: the envelope's detail
+		// is unbounded (a full git status, a stderr tail), and the CRD
+		// refuses a condition message over 32768 bytes by rejecting the
+		// whole status write, which would leave the run Running.
 		meta.SetStatusCondition(&cur.Status.Conditions, metav1.Condition{
 			Type:               v1alpha1.ConditionComplete,
 			Status:             metav1.ConditionTrue,
 			Reason:             nonEmptyReason(string(result.Outcome)),
-			Message:            result.Detail,
+			Message:            agentresult.TruncateDetail(result.Detail),
 			ObservedGeneration: cur.Generation,
 		})
 		return r.Status().Update(ctx, &cur)

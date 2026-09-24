@@ -691,11 +691,15 @@ func (r *InvestigationReconciler) stampChild(
 				}
 			}
 		}
+		// The message is capped like the stage detail: the envelope's detail
+		// is unbounded (a full git status, a stderr tail), and the CRD
+		// refuses a condition message over 32768 bytes by rejecting the
+		// whole status write, which would leave the run Running.
 		meta.SetStatusCondition(&cur.Status.Conditions, metav1.Condition{
 			Type:               v1alpha1.ConditionComplete,
 			Status:             metav1.ConditionTrue,
 			Reason:             nonEmpty(string(result.Outcome), "Unknown"),
-			Message:            result.Detail,
+			Message:            agentresult.TruncateDetail(result.Detail),
 			ObservedGeneration: cur.Generation,
 		})
 		if refused {

@@ -109,12 +109,14 @@ func skewPercent(predicted, actual int64) int64 {
 // and carried to the pod as JSON, like Calibration — the runner has no
 // Kubernetes access.
 //
-// Outcome and Detail are UNTRUSTED: a run's detail can quote output from the
-// repository or the image it ran on (a git status listing, a stderr tail).
-// The prompt renders them bounded (PreviousOutcomeMaxBytes,
-// PreviousDetailMaxBytes), stripped of control characters, with the detail in
-// a fence no line of it can close, under a statement that it is data, not
-// instructions.
+// Detail is UNTRUSTED: a run's detail can quote output from the repository
+// or the image it ran on (a git status listing, a stderr tail). The prompt
+// renders it bounded (PreviousDetailMaxBytes), stripped of control
+// characters, in a fence no line of it can close, under a statement that it
+// is data, not instructions. Outcome is the controller's, named from a closed
+// vocabulary (agentresult.PreviousAttempt), so it is stated as fact — and a
+// section with no detail quotes nothing untrusted; it is still bounded
+// (PreviousOutcomeMaxBytes) and flattened onto one line here.
 type PreviousAttempt struct {
 	// Attempt is the failed run's ordinal.
 	Attempt int32 `json:"attempt"`

@@ -21,27 +21,46 @@ import (
 
 // Size caps (bytes) for CRD string fields.
 const (
-	maxReport  = 65536
-	maxDetail  = 4096
-	maxOutcome = 64
+	maxReport = 65536
+	maxDetail = 4096
 )
 
+// failureOutcomes is every outcome a failed run's stage can record: the
+// envelope's, less ok, plus "aborted", the controllers' own verdict on a run
+// that ended without one. A retry is told its predecessor's outcome only
+// from this list, because the outcome is the pod's to report — on a
+// repository-declared image the pod's process is the image's — and the
+// prompt states it as fact, outside the fenced detail.
+var failureOutcomes = map[envelope.Outcome]bool{
+	envelope.OutcomeRuntimeError:      true,
+	envelope.OutcomeTimeout:           true,
+	envelope.OutcomeBudgetExceeded:    true,
+	envelope.OutcomeReportMissing:     true,
+	envelope.OutcomeReportInvalid:     true,
+	envelope.OutcomeCommitFailed:      true,
+	envelope.OutcomeChangesetTooLarge: true,
+	envelope.OutcomeImageIncompatible: true,
+	envelope.OutcomeChangesetRejected: true,
+	"aborted":                         true,
+}
+
 // PreviousAttempt is what the retry of a failed run is told about it: the
-// run's name and ordinal, and its stage outcome and detail capped to the API
-// bounds. Nil when the run recorded no stage. The detail is untrusted text;
-// the prompt, not this, is where it is fenced.
+// run's name and ordinal, its stage outcome — "unknown" unless it is one a
+// failed run can record — and its detail capped to the API bound. Nil when
+// the run recorded no stage. The detail is untrusted text; the prompt, not
+// this, is where it is fenced.
 func PreviousAttempt(name string, attempt int32, st *v1alpha1.StageResult) *v1alpha1.PreviousAttempt {
 	if st == nil {
 		return nil
 	}
 	outcome := st.Outcome
-	if outcome == "" {
+	if !failureOutcomes[envelope.Outcome(outcome)] {
 		outcome = "unknown"
 	}
 	return &v1alpha1.PreviousAttempt{
 		Name:    name,
 		Attempt: attempt,
-		Outcome: truncate(outcome, maxOutcome),
+		Outcome: outcome,
 		Detail:  TruncateDetail(st.Detail),
 	}
 }

@@ -43,8 +43,9 @@ the prompt then omits the section entirely.
 
 `PATCHY_PREVIOUS_ATTEMPT` is the last per-Job variable: on a retry, a JSON copy of the failed attempt's
 `spec.previousAttempt` (`attempt`, `outcome`, `detail`), rendered into that stage's prompt as a "previous attempt"
-section so the agent does not repeat the failure. The detail is untrusted — it can quote the repository or its image,
-such as the `git status` behind a `commit_failed` — so the prompt caps it (64 bytes of outcome, 4 KiB of detail), drops
+section so the agent does not repeat the failure. The outcome is one the controller recognizes as a stage failure, or
+`unknown` — the pod reports its own outcome, and the prompt states it as fact. The detail is untrusted — it can quote
+the repository or its image, such as the `git status` behind a `commit_failed` — so the prompt caps it (4 KiB), drops
 control characters, and quotes it in a fence no line of it can close, stated to be data, not instructions. Absent on a
 first attempt, and the prompt then omits the section.
 

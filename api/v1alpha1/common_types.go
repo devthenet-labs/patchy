@@ -375,10 +375,12 @@ const PreviousOutcomePullRequestClosed = "pull_request_closed"
 // new attempt's prompt can say what went wrong instead of handing the agent
 // the same inputs that already failed once.
 //
-// Detail — and in principle Outcome — is UNTRUSTED: it can quote output from
-// the repository or the image the run executed on (a git status listing, a
-// stderr tail). Both are bounded here, and the prompt renders them as fenced
-// data, never as instructions.
+// Detail is UNTRUSTED: it can quote output from the repository or the image
+// the run executed on (a git status listing, a stderr tail). It is bounded
+// here, and the prompt renders it as fenced data, never as instructions.
+// Outcome is named by the controller from the outcomes a failed run can
+// record ("unknown" for anything else), because the pod reports its own
+// outcome and the prompt states it as fact.
 type PreviousAttempt struct {
 	// Name of the failed run (an Investigation or Remediation).
 	Name string `json:"name"`

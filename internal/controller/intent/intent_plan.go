@@ -108,7 +108,10 @@ func (p *pass) startPlanning(ctx context.Context, issue *ghclient.Issue, trigger
 
 // feedbackSince is the approvers' comments since since, oldest first:
 // patchy's own and anyone else's left out (non-approvers' comments never
-// reach a prompt).
+// reach a prompt), and so is any comment edited after it was posted. GitHub
+// lets anyone with write access edit an approver's comment and still names
+// the approver as its author, so an edited comment is not certainly an
+// approver's words.
 func (p *pass) feedbackSince(ctx context.Context, since time.Time) ([]*ghclient.Comment, error) {
 	if err := p.listComments(ctx, since); err != nil {
 		return nil, err
@@ -116,7 +119,7 @@ func (p *pass) feedbackSince(ctx context.Context, since time.Time) ([]*ghclient.
 	var out []*ghclient.Comment
 	for _, c := range p.comments {
 		if !c.CreatedAt.After(since) || p.isOwn(c) || p.isOwnLogin(c.UserLogin) || c.Author().IsBot() ||
-			!isApprover(p.proj, c.UserLogin) {
+			!isApprover(p.proj, c.UserLogin) || edited(c) {
 			continue
 		}
 		out = append(out, c)
@@ -320,9 +323,10 @@ func (p *pass) writeBack(ctx context.Context, run *v1alpha1.IntentRun) (bool, er
 	if err != nil {
 		return false, err
 	}
-	if c == nil || c.Body != body {
-		// Not found, or found edited before it was recorded: post the plan
-		// afresh, so what is recorded is what patchy posted.
+	if c == nil || c.Body != body || edited(c) {
+		// Not found, or found edited before it was recorded (even back to
+		// its original bytes, which an approval would refuse): post the plan
+		// afresh, so what is recorded is what patchy posted, unedited.
 		if c, err = p.r.GitHub.CreateIssueComment(ctx, p.repo(), p.number(), body); err != nil {
 			return false, fmt.Errorf("post plan r%d: %w", round, err)
 		}

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -41,6 +42,10 @@ type humanAction struct {
 	// still be owed (an approval recorded as status.approval, a replan as
 	// status.lastTrigger).
 	recorded bool
+	// edited: the command's comment was edited after it was posted. GitHub
+	// lets anyone with write access edit anyone's comment and still names
+	// the original author, so it is never taken as its author's command.
+	edited bool
 }
 
 // key names what a notice answering the action answers: its id space and id.
@@ -87,17 +92,35 @@ func (p *pass) lastTrigger() v1alpha1.IntentAction {
 	return v1alpha1.IntentAction{Source: v1alpha1.IntentActionLabel, EventID: rb.EventID, Login: rb.Login, At: rb.At}
 }
 
-// commentAnchor is the earliest time a command still to answer can date
-// from: every command before the newest consumed trigger action was
-// answered before it (actions are answered oldest first), and commands before
-// the trigger that created the Intent are not the Intent's.
-func (p *pass) commentAnchor() time.Time {
-	return p.lastTrigger().At.Time
+// seen is the newest comment the poll has settled, or nil.
+func (p *pass) seen() *v1alpha1.IntentCommentRef {
+	if c := p.in.Status.Commands; c != nil {
+		return c.Seen
+	}
+	return nil
+}
+
+// listSince is where the poll's comment listing starts: at the newest
+// trigger action consumed (commands before it were answered before it, since
+// actions are answered oldest first, and commands before the trigger that
+// created the Intent are not the Intent's), or at the newest comment already
+// settled when that is later. The thread is never listed from its start on
+// every poll. GitHub dates to the second and filters by updated_at, so the
+// listing starts a second early; commands drops by id what was already seen.
+func (p *pass) listSince() time.Time {
+	at := p.lastTrigger().At.Time
+	if s := p.seen(); s != nil && s.At.After(at) {
+		at = s.At.Time
+	}
+	return at.Add(-time.Second)
 }
 
 // poll reads the issue, answers every human action on it not yet answered,
 // oldest first, and closes the Intent when a human closed the issue. stop
-// reports that the Intent ended, so the phase step must not run.
+// reports that the Intent ended, so the phase step must not run. Each
+// command answered is recorded as seen as soon as its reply is posted, and
+// the whole listing once every command in it is answered, so a command is
+// never answered twice, even after patchy's reply to it is deleted.
 func (p *pass) poll(ctx context.Context) (stop bool, err error) {
 	p.r.memo(func() { p.r.polled[p.in.Name] = p.now })
 	p.polled = true
@@ -120,19 +143,35 @@ func (p *pass) poll(ctx context.Context) (stop bool, err error) {
 	if err != nil {
 		return false, fmt.Errorf("list the issue's events: %w", err)
 	}
-	if err := p.listComments(ctx, p.commentAnchor()); err != nil {
+	if err := p.listComments(ctx, p.listSince()); err != nil {
 		return false, err
+	}
+	for _, c := range p.comments {
+		if p.pollNewest == nil || c.ID > p.pollNewest.ID {
+			p.pollNewest = c
+		}
 	}
 	actions, err := p.gather(ctx, issue, events)
 	if err != nil {
 		return false, err
 	}
 	for _, a := range actions {
-		if err := p.settle(ctx, a, issue); err != nil {
+		answered, err := p.settle(ctx, a, issue)
+		if err != nil {
 			return false, err
 		}
 		if terminal(p.in.Status.Phase) {
 			return true, nil
+		}
+		if answered && a.source == v1alpha1.IntentActionCommand {
+			if err := p.recordSeen(ctx, a.id, a.at); err != nil {
+				return false, err
+			}
+		}
+	}
+	if c := p.pollNewest; c != nil {
+		if err := p.recordSeen(ctx, c.ID, c.CreatedAt); err != nil {
+			return false, err
 		}
 	}
 	if issue.State == "closed" {
@@ -185,12 +224,18 @@ func (p *pass) gather(ctx context.Context, issue *ghclient.Issue, events []*ghcl
 }
 
 // commands are the commands among the comments this pass listed that are
-// still to answer: no reply from patchy yet, and not superseded.
+// still to answer: newer than the newest comment already settled, not
+// before the newest trigger consumed, no reply from patchy yet, and not
+// superseded.
 func (p *pass) commands() []humanAction {
 	var out []humanAction
-	anchor := p.commentAnchor()
+	anchor := p.lastTrigger().At.Time
+	var seen int64
+	if s := p.seen(); s != nil {
+		seen = s.ID
+	}
 	for _, c := range p.comments {
-		if c.CreatedAt.Before(anchor) || p.isOwn(c) || p.isOwnLogin(c.UserLogin) {
+		if c.ID <= seen || c.CreatedAt.Before(anchor) || p.isOwn(c) || p.isOwnLogin(c.UserLogin) {
 			continue
 		}
 		cmd, ok := intentParser.Parse(c.Body)
@@ -198,9 +243,15 @@ func (p *pass) commands() []humanAction {
 			continue
 		}
 		a := humanAction{source: v1alpha1.IntentActionCommand, id: c.ID, at: c.CreatedAt, actor: c.Author(),
-			verb: cmd.Verb}
+			verb: cmd.Verb, edited: edited(c)}
 		if p.hasOwnNotice(a.key()) {
-			continue // answered
+			// Answered. A refusal to an account refused without asking
+			// GitHub is remembered here too, in case the pass that posted
+			// it stopped before recording it.
+			if refusedLocally(p.proj, a.actor) {
+				p.noteRefused(a.actor)
+			}
+			continue
 		}
 		switch a.verb {
 		case action.VerbApprove:
@@ -277,32 +328,132 @@ func newestLabeled(events []*ghclient.IssueEvent, label string, own func(string)
 }
 
 // settle answers one action. A command is acknowledged with the eyes
-// reaction and exactly one reply; a label, which has no comment to react to,
-// with a notice when it is refused (its acceptance shows on the status
-// comment).
-func (p *pass) settle(ctx context.Context, a humanAction, issue *ghclient.Issue) error {
-	if a.source == v1alpha1.IntentActionCommand {
-		if err := p.r.GitHub.React(ctx, p.repo(), a.id); err != nil && !ghclient.IsNotFound(err) {
-			return fmt.Errorf("react to comment %d: %w", a.id, err)
-		}
+// reaction and exactly one reply, with one exception: an account refused
+// without asking GitHub (a bot, or not an approver) gets its first refusal
+// on the intent and nothing after it, neither reaction nor reply, so
+// commenting repeatedly cannot make patchy write to GitHub once per comment.
+// Such an account is refused whatever its command says, an unknown verb or
+// an edited comment included. A label, which has no comment to react to, is
+// answered with a notice when it is refused (its acceptance shows on the
+// status comment). answered is false only for a command answered quietly.
+func (p *pass) settle(ctx context.Context, a humanAction, issue *ghclient.Issue) (answered bool, err error) {
+	if a.source != v1alpha1.IntentActionCommand {
+		return true, p.decide(ctx, a, issue)
 	}
-	if a.recorded {
-		return p.replyDone(ctx, a)
+	local := refusedLocally(p.proj, a.actor)
+	if local && !a.recorded && p.wasRefused(a.actor) {
+		return false, nil
+	}
+	if err := p.r.GitHub.React(ctx, p.repo(), a.id); err != nil && !ghclient.IsNotFound(err) {
+		return false, fmt.Errorf("react to comment %d: %w", a.id, err)
 	}
 	switch {
-	case a.source == v1alpha1.IntentActionCommand && !slices.Contains(command.Available(command.IntentIssue), a.verb):
+	case a.recorded:
+		return true, p.replyDone(ctx, a)
+	case local:
+		if err := p.notAllowed(ctx, a, isBot(a.actor), false, false); err != nil {
+			return false, err
+		}
+		p.noteRefused(a.actor)
+		return true, nil
+	case a.edited:
+		body, err := templates.RenderEditedCommandNotice(templates.EditedCommandNotice{
+			Namespace: p.in.Namespace, Intent: p.in.Name, Key: a.key(), Verb: a.verb,
+		})
+		return true, p.notice(ctx, a.key(), a.at, body, err)
+	case !slices.Contains(command.Available(command.IntentIssue), a.verb):
+		// An approver's: the help, once GitHub confirms their write access.
+		ok, bot, err := p.authorize(ctx, a.actor)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return true, p.notAllowed(ctx, a, bot, false, false)
+		}
 		body, err := templates.RenderUnknownCommandNotice(templates.UnknownCommandNotice{
 			Namespace: p.in.Namespace, Intent: p.in.Name, Key: a.key(), Verb: a.verb,
 		})
-		return p.notice(ctx, a.key(), a.at, body, err)
-	case a.verb == action.VerbCancel:
+		return true, p.notice(ctx, a.key(), a.at, body, err)
+	}
+	return true, p.decide(ctx, a, issue)
+}
+
+// decide applies or refuses an intent verb, a label's or an approver's
+// command.
+func (p *pass) decide(ctx context.Context, a humanAction, issue *ghclient.Issue) error {
+	switch a.verb {
+	case action.VerbCancel:
 		return p.settleCancel(ctx, a)
-	case a.verb == action.VerbApprove:
+	case action.VerbApprove:
 		return p.settleApprove(ctx, a, issue)
-	case a.verb == action.VerbReplan:
+	case action.VerbReplan:
 		return p.settleReplan(ctx, a, issue)
 	}
 	return nil
+}
+
+// wasRefused reports an account already sent a refusal on this intent, by
+// an earlier pass or this one.
+func (p *pass) wasRefused(actor ghclient.Actor) bool {
+	if actor.ID <= 0 {
+		return false
+	}
+	if p.refused[actor.ID] {
+		return true
+	}
+	c := p.in.Status.Commands
+	return c != nil && slices.Contains(c.RefusedActors, actor.ID)
+}
+
+// noteRefused remembers an account sent a refusal this pass; recordSeen
+// writes it.
+func (p *pass) noteRefused(actor ghclient.Actor) {
+	if actor.ID <= 0 {
+		return
+	}
+	if p.refused == nil {
+		p.refused = map[int64]bool{}
+	}
+	p.refused[actor.ID] = true
+}
+
+// recordSeen records that every comment up to id is settled (never moving
+// back), with the accounts refused this pass, in one status write; nothing
+// is written when neither changed. It follows the reply it records, so a
+// record never stands for a reply that was not posted, and a reply found
+// without its record is recorded by the next poll.
+func (p *pass) recordSeen(ctx context.Context, id int64, at time.Time) error {
+	next := &v1alpha1.IntentCommands{}
+	if cur := p.in.Status.Commands; cur != nil {
+		next = cur.DeepCopy()
+	}
+	changed := false
+	if id > 0 && (next.Seen == nil || id > next.Seen.ID) {
+		next.Seen = &v1alpha1.IntentCommentRef{ID: id, At: metav1.NewTime(at)}
+		changed = true
+	}
+	for _, actor := range slices.Sorted(maps.Keys(p.refused)) {
+		if !slices.Contains(next.RefusedActors, actor) {
+			next.RefusedActors = rememberActor(next.RefusedActors, actor)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return p.update(ctx, func(cur *v1alpha1.Intent) error {
+		cur.Status.Commands = next
+		return nil
+	})
+}
+
+// rememberActor adds id to ids, keeping the latest MaxIntentRefusedActors.
+func rememberActor(ids []int64, id int64) []int64 {
+	out := append(slices.Clone(ids), id)
+	if over := len(out) - v1alpha1.MaxIntentRefusedActors; over > 0 {
+		out = slices.Clone(out[over:])
+	}
+	return out
 }
 
 // replyDone posts the done reply to a command already applied.
@@ -462,9 +613,12 @@ func (p *pass) settleApprove(ctx context.Context, a humanAction, issue *ghclient
 }
 
 // approvalChanged reports whether the plan comment was edited since patchy
-// posted it (re-fetched, it no longer hashes to what was recorded; deleted
-// counts), and whether the issue changed since the plan was made (re-read,
-// its title and body no longer render to the input snapshot's digest).
+// posted it (re-fetched, it no longer hashes to what was recorded, or GitHub
+// dates an edit after its posting: patchy never edits a plan comment, and an
+// edit restoring the original bytes still moves updated_at, so a plan shown
+// edited for a while and then put back is caught; deleted counts), and
+// whether the issue changed since the plan was made (re-read, its title and
+// body no longer render to the input snapshot's digest).
 func (p *pass) approvalChanged(ctx context.Context, issue *ghclient.Issue) (planChanged, issueChanged bool, err error) {
 	pl, input := p.in.Status.Plan, p.in.Status.Input
 	c, err := p.r.GitHub.GetIssueComment(ctx, p.repo(), pl.CommentID)
@@ -474,7 +628,7 @@ func (p *pass) approvalChanged(ctx context.Context, issue *ghclient.Issue) (plan
 	case err != nil:
 		return false, false, fmt.Errorf("re-read the plan comment: %w", err)
 	default:
-		planChanged = digest([]byte(c.Body)) != pl.CommentDigest
+		planChanged = digest([]byte(c.Body)) != pl.CommentDigest || edited(c)
 	}
 	snap, err := p.inputSnapshot(ctx, input)
 	if err != nil {

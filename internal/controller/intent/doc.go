@@ -70,10 +70,20 @@
 // author. The actor must be in the Project's approvers, have write access
 // to the intent repository (ghclient.CanWrite: a public repository answers
 // "read" for everyone), and not be a bot; actions by the App's own bot are
-// never answered. An approval is accepted only if it is newer than the plan
-// comment, the plan comment re-fetched still hashes to the digest recorded
-// when it was posted, the issue re-read still renders to the input
-// snapshot's digest, and, for the label, the label is still on the issue.
+// never answered. A comment edited after it was posted is never a command:
+// GitHub lets anyone with write access edit anyone's comment and still
+// names the original author. For the same reason an edited comment never
+// reaches a replan's snapshot. An approval is accepted only if it is newer
+// than the plan comment, the plan comment re-fetched still hashes to the
+// digest recorded when it was posted, the issue re-read still renders to the
+// input snapshot's digest, and, for the label, the label is still on the
+// issue.
+//
+// A command from someone refused without asking GitHub (not an approver, or
+// a bot) is refused whatever it says, and its author gets that refusal once
+// per intent (status.commands.refusedActors); later ones get neither
+// reaction nor reply, so commenting cannot make patchy write to GitHub once
+// per comment.
 //
 // # Durable settle
 //
@@ -90,11 +100,16 @@
 //     label re-applied, /patchy replan) are consumed by status.lastTrigger,
 //     written in the same status write as their effect, and only actions
 //     GitHub dates after it are considered. An accepted approval is
-//     status.approval. Every other answered command, and every refused
-//     label, is recorded by patchy's reply marker, which the next poll finds
-//     in the same listing that carries the command. A refusal is replied to
-//     before it is recorded, so a record without a reply means the action
-//     was accepted, and the retry replies "done".
+//     status.approval. Every comment is consumed by status.commands.seen, the
+//     newest comment the poll has settled, written as soon as a command's
+//     reply is posted and for the whole listing once every command in it is
+//     answered; no later poll reads a comment at or before it, so a command
+//     is never answered twice, even after patchy's reply is deleted, and the
+//     thread is listed only from there. Until then, a command's reply marker
+//     is found in the same listing that carries the command. A refused label
+//     is recorded by its notice and the label's removal. A refusal is
+//     replied to before it is recorded, so a record without a reply means
+//     the action was accepted, and the retry replies "done".
 //   - Terminal effects come before the terminal status write: the trigger
 //     label is removed before Failed (and before Closed on a refused
 //     trigger), the issue is closed before Merged (after the summary) and

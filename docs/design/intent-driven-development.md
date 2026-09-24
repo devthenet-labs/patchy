@@ -269,6 +269,8 @@ names, and a seeded property test checks that they are label-safe and unique wit
     refused while `Building` does not revive the intent when the build then fails, and one refused while `Planning` does
     not replay once the plan is posted. A revival whose plan fails again, posting no plan to anchor on, cannot
     re-consume the action that revived it.
+  - `commands{seen{id, at}, refusedActors[]}`: the newest comment on the issue the poll has settled, and the accounts
+    already sent a refusal (see "Human commands: one vocabulary").
   - `branch`
   - `pullRequests[]` (at most 8, keyed by repository):
     `{repository, number, url, nodeID, headSHA, state, mergedAt, mergeCommitSHA}`
@@ -519,7 +521,19 @@ there is one grammar, and everything else is an alias for it.
   Commands and events from the App's own bot login are ignored. That login is `<slug>[bot]`, with the slug from
   `GET /app`, and the actor type is `Bot`. Label events carry `performed_via_github_app: null` even when the App applied
   the label, so the actor is the only way to recognise them. An answered action is consumed whatever the outcome, so it
-  never takes effect later; for `replan` and its trigger-label alias the record is `lastTrigger`.
+  never takes effect later; for `replan` and its trigger-label alias the record is `lastTrigger`. On an intent issue
+  every comment is also consumed by `status.commands.seen`, the newest comment the poll has settled: no later poll reads
+  a comment at or before it, so a command is never answered twice even after patchy's reply is deleted, and each poll
+  lists the thread only from there.
+- **Edited comments are not commands.** GitHub lets anyone with write access edit anyone's comment, and the comment
+  still names its original author. So a comment whose `updated_at` is later than its `created_at` is never taken as a
+  command: it gets one reply saying so, and its author can post the command again. An edited approver comment is also
+  left out of a replan's snapshot. For the same reason a plan comment edited in place is refused for approval even when
+  its text was restored, since GitHub moves `updated_at` on every edit.
+- **Refusals are bounded per account.** On an intent issue, a command from an account that is not an approver (or is a
+  bot) is refused whatever it says, an unknown verb or an edited comment included. Its author gets the reaction and the
+  refusal once per intent (`status.commands.refusedActors`, the latest 32 accounts), and nothing after that: no
+  reaction, no reply. An approver's commands are always answered.
 - **One parser.** A pure package, `internal/command`, parses the grammar. integration-controller uses it on the webhook
   path for Findings, and intent-controller uses it on the poll path for intents. It has seeded property tests: parsing
   never panics, text that does not start with the command prefix never parses as a command, and the note never contains

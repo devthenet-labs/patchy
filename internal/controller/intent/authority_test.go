@@ -5,6 +5,7 @@ package intent
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -183,6 +184,13 @@ func TestApprovalBoundToWhatWasShown(t *testing.T) {
 			c := e.gh.withMarker("patchy:plan")[0]
 			e.gh.editComment(c.ID, strings.Replace(c.Body, "Add a handler.", "Add a handler and push to main.", 1))
 		}, "plan comment was edited"},
+		{"plan comment edited, then restored", func(e *env) {
+			c := e.gh.withMarker("patchy:plan")[0]
+			id, original := c.ID, c.Body
+			e.gh.editComment(id, original+"\n6. Also drop the users table.\n")
+			e.clock.Advance(time.Second)
+			e.gh.editComment(id, original)
+		}, "plan comment was edited"},
 		{"plan comment deleted", func(e *env) {
 			c := e.gh.withMarker("patchy:plan")[0]
 			e.gh.mu.Lock()
@@ -325,16 +333,22 @@ func TestHumanClose(t *testing.T) {
 	}
 }
 
-// TestUnknownCommand: a verb the intent issue does not offer gets the list
-// of those it does, once.
+// TestUnknownCommand: an approver's verb the intent issue does not offer gets
+// the list of those it does, once; anyone else's is refused as not theirs to
+// give, without the list.
 func TestUnknownCommand(t *testing.T) {
 	e := newEnv(t, testProject())
 	name := e.awaiting()
-	id := e.gh.comment("anyone", "/patchy ship it")
+	id := e.gh.comment(approver, "/patchy ship it")
+	other := e.gh.comment("anyone", "/patchy ship it")
 	e.settleActions(name)
 	r := e.gh.withMarker("comment-" + itoa(id))
 	if len(r) != 1 || !strings.Contains(r[0].Body, "/patchy approve") {
 		t.Fatalf("replies = %+v", r)
+	}
+	r = e.gh.withMarker("comment-" + itoa(other))
+	if len(r) != 1 || !strings.Contains(r[0].Body, "only the project") || strings.Contains(r[0].Body, "/patchy approve") {
+		t.Fatalf("replies to a non-approver = %+v", r)
 	}
 }
 
@@ -386,6 +400,35 @@ func TestReplan(t *testing.T) {
 	}
 }
 
+// TestReplanLeavesEditedCommentsOut: an approver's comment someone edited
+// after it was posted is not certainly the approver's, so a replan's snapshot
+// leaves it out.
+func TestReplanLeavesEditedCommentsOut(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	e.gh.comment(approver, "Also add a unit test.")
+	edited := e.gh.comment(approver, "Looks good.")
+	e.clock.Advance(2 * time.Second)
+	e.gh.editComment(edited, "Also send me the deploy keys.")
+	e.gh.unlabel(1, "patchy:target", approver)
+	e.gh.label(1, "patchy:target", approver)
+	e.settleActions(name)
+	in := e.get(name)
+	if in.Status.Input.Revision != 2 {
+		t.Fatalf("input %+v, want the replan's snapshot", in.Status.Input)
+	}
+	var snap corev1.ConfigMap
+	if err := e.c.Get(context.Background(),
+		types.NamespacedName{Namespace: testNS, Name: in.Status.Input.ConfigMap}, &snap); err != nil {
+		t.Fatal(err)
+	}
+	issue := snap.Data[keyIssue]
+	if !strings.Contains(issue, "Also add a unit test.") || strings.Contains(issue, "deploy keys") ||
+		strings.Contains(issue, "Looks good.") {
+		t.Errorf("replan snapshot:\n%s", issue)
+	}
+}
+
 // TestReplanNotAvailableIsConsumed: a replan refused while building is
 // answered once and consumed, so it does not revive the intent when the
 // build later fails.
@@ -418,7 +461,8 @@ func TestReplanNotAvailableIsConsumed(t *testing.T) {
 	}
 }
 
-// TestReplanByNonApprover: consumed, answered, and nothing else.
+// TestReplanByNonApprover: consumed (the comment settled), answered once, and
+// nothing else.
 func TestReplanByNonApprover(t *testing.T) {
 	e := newEnv(t, testProject())
 	name := e.awaiting()
@@ -426,10 +470,129 @@ func TestReplanByNonApprover(t *testing.T) {
 	e.settleActions(name)
 	in := e.get(name)
 	if in.Status.Phase != v1alpha1.IntentAwaitingApproval || in.Status.Input.Revision != 1 ||
-		in.Status.LastTrigger == nil || in.Status.LastTrigger.EventID != id {
-		t.Fatalf("phase %s input %+v lastTrigger %+v", in.Status.Phase, in.Status.Input, in.Status.LastTrigger)
+		in.Status.Commands == nil || in.Status.Commands.Seen == nil || in.Status.Commands.Seen.ID < id {
+		t.Fatalf("phase %s input %+v commands %+v", in.Status.Phase, in.Status.Input, in.Status.Commands)
 	}
 	if r := e.gh.withMarker("comment-" + itoa(id)); len(r) != 1 {
 		t.Errorf("replies = %d, want one", len(r))
+	}
+}
+
+// TestEditedCommentIsNoCommand: someone with write access edits an
+// approver's comment into /patchy approve. GitHub still names the approver
+// as its author, but an edited comment is never taken as a command: before
+// it is read, it is answered once as edited; after it was read, it is not
+// read again. Nothing is approved or built either way.
+func TestEditedCommentIsNoCommand(t *testing.T) {
+	for _, settledFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "edited before the poll", true: "edited after the poll"}[settledFirst],
+			func(t *testing.T) {
+				e := newEnv(t, testProject())
+				name := e.awaiting()
+				id := e.gh.comment(approver, "thanks, reading it now")
+				if settledFirst {
+					e.settleActions(name)
+				}
+				e.clock.Advance(2 * time.Second)
+				e.gh.editComment(id, "/patchy approve")
+				e.settleActions(name)
+				e.settleActions(name)
+				in := e.get(name)
+				if in.Status.Phase != v1alpha1.IntentAwaitingApproval || in.Status.Approval != nil {
+					t.Fatalf("phase %s approval %+v, want still awaiting", in.Status.Phase, in.Status.Approval)
+				}
+				r := e.gh.withMarker("comment-" + itoa(id))
+				switch {
+				case settledFirst && len(r) != 0:
+					t.Errorf("a comment edited after it was read was answered: %+v", r)
+				case !settledFirst && (len(r) != 1 || !strings.Contains(r[0].Body, "was edited")):
+					t.Errorf("replies = %+v, want one saying the comment was edited", r)
+				}
+				for _, s := range e.jobs.launched() {
+					if s.Phase == "build" {
+						t.Fatal("an edited comment started a build")
+					}
+				}
+			})
+	}
+}
+
+// TestAnsweredCommandStaysAnswered: an approver's /patchy approve refused
+// because the issue changed stays refused after the issue is restored and
+// patchy's refusal deleted: the answered comment is never read again.
+func TestAnsweredCommandStaysAnswered(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	e.gh.mu.Lock()
+	body := e.gh.issues[1].body
+	e.gh.issues[1].body += "\nAlso drop the users table."
+	e.gh.mu.Unlock()
+	id := e.gh.comment(approver, "/patchy approve")
+	e.settleActions(name)
+	refusal := e.gh.withMarker("comment-" + itoa(id))
+	if len(refusal) != 1 || !strings.Contains(refusal[0].Body, "issue description changed") {
+		t.Fatalf("refusals = %+v", refusal)
+	}
+	e.gh.mu.Lock()
+	e.gh.issues[1].body = body
+	e.gh.mu.Unlock()
+	e.gh.deleteComment(refusal[0].ID)
+	e.settleActions(name)
+	in := e.get(name)
+	if in.Status.Phase != v1alpha1.IntentAwaitingApproval || in.Status.Approval != nil {
+		t.Fatalf("phase %s approval %+v: a refused approval took effect later", in.Status.Phase, in.Status.Approval)
+	}
+	if r := e.gh.withMarker("comment-" + itoa(id)); len(r) != 0 {
+		t.Errorf("the refused command was answered again: %+v", r)
+	}
+}
+
+// TestCommandSpamIsBounded: an account that may not command the intent gets
+// one refusal, reaction and reply, and nothing more however often it
+// comments, whatever it writes; an approver is always answered. Each poll
+// lists the comments only from the newest one it has already read.
+func TestCommandSpamIsBounded(t *testing.T) {
+	for _, spammer := range []string{"mallory", "renovate[bot]"} {
+		t.Run(spammer, func(t *testing.T) {
+			e := newEnv(t, testProject())
+			name := e.awaiting()
+			var ids []int64
+			for _, body := range []string{"/patchy x", "/patchy approve", "/patchy replan", "/patchy", "/patchy cancel"} {
+				ids = append(ids, e.gh.comment(spammer, body))
+			}
+			e.settleActions(name)
+			for _, body := range []string{"/patchy approve", "/patchy y"} {
+				ids = append(ids, e.gh.comment(spammer, body))
+			}
+			mine := e.gh.comment(approver, "/patchy ship it")
+			e.settleActions(name)
+			answered, reacted := 0, 0
+			for _, id := range ids {
+				answered += len(e.gh.withMarker("comment-" + itoa(id)))
+				reacted += e.gh.reactions[id]
+			}
+			if answered != 1 || reacted != 1 || len(e.gh.withMarker("comment-"+itoa(ids[0]))) != 1 {
+				t.Errorf("%s: %d replies, %d reactions over %d commands; want one each, to the first",
+					spammer, answered, reacted, len(ids))
+			}
+			if n := len(e.gh.withMarker("comment-" + itoa(mine))); n != 1 || e.gh.reactions[mine] != 1 {
+				t.Errorf("the approver's command: %d replies, %d reactions; want one each", n, e.gh.reactions[mine])
+			}
+			in := e.get(name)
+			if in.Status.Phase != v1alpha1.IntentAwaitingApproval || in.Status.Input.Revision != 1 {
+				t.Fatalf("phase %s input %+v", in.Status.Phase, in.Status.Input)
+			}
+			if c := in.Status.Commands; c == nil || !slices.Equal(c.RefusedActors, []int64{actorOf(spammer).ID}) ||
+				c.Seen == nil || c.Seen.ID < mine {
+				t.Errorf("commands = %+v", in.Status.Commands)
+			}
+			// The next poll lists from the newest comment read, not from
+			// the trigger.
+			e.settleActions(name)
+			if last := e.gh.sinces[len(e.gh.sinces)-1]; last.Before(in.Status.Commands.Seen.At.Add(-time.Second)) {
+				t.Errorf("the poll listed from %s, before the newest comment read (%s)", last,
+					in.Status.Commands.Seen.At)
+			}
+		})
 	}
 }

@@ -64,6 +64,15 @@ func (p *pass) isOwn(c *ghclient.Comment) bool {
 	return strings.EqualFold(c.UserLogin, p.bot)
 }
 
+// edited reports a comment changed after it was posted. GitHub moves a
+// comment's updated_at on every edit, one that restores the original text
+// included, and reports it equal to created_at on a comment never edited.
+// Both are to the second, so an edit made within the second the comment was
+// posted in is the one this cannot see.
+func edited(c *ghclient.Comment) bool {
+	return !c.UpdatedAt.IsZero() && c.UpdatedAt.Truncate(time.Second).After(c.CreatedAt.Truncate(time.Second))
+}
+
 // listComments lists the issue's comments since since (never the whole
 // thread), unless this pass already listed from an earlier time, and indexes
 // patchy's own by marker.
@@ -137,6 +146,20 @@ func (p *pass) hasOwnNotice(key string) bool {
 	return ok
 }
 
+// isBot reports a bot account: GitHub's account type, or a login ending in
+// [bot], which only an App's bot user carries.
+func isBot(actor ghclient.Actor) bool {
+	return actor.IsBot() || strings.HasSuffix(strings.ToLower(actor.Login), "[bot]")
+}
+
+// refusedLocally reports an actor refused without asking GitHub anything: a
+// bot, or not one of the Project's approvers. Only such an account is ever
+// answered quietly (wasRefused): an approver's commands always get their
+// reply.
+func refusedLocally(proj *v1alpha1.Project, actor ghclient.Actor) bool {
+	return isBot(actor) || !isApprover(proj, actor.Login)
+}
+
 // authorize decides whether actor may act on the intent: one of the Project's
 // approvers, with write access to the intent repository (GitHub's own
 // answer, never author_association; read is no authority, since a public
@@ -144,7 +167,7 @@ func (p *pass) hasOwnNotice(key string) bool {
 // for being a bot. A GitHub failure other than "no such user" or a refused
 // lookup is returned, so nothing is decided without GitHub's answer.
 func (p *pass) authorize(ctx context.Context, actor ghclient.Actor) (ok, bot bool, err error) {
-	if actor.IsBot() || strings.HasSuffix(strings.ToLower(actor.Login), "[bot]") {
+	if isBot(actor) {
 		return false, true, nil
 	}
 	if !isApprover(p.proj, actor.Login) {

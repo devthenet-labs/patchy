@@ -119,6 +119,14 @@ type pass struct {
 	commentsSince time.Time
 	listed        bool
 	own           map[string]*ghclient.Comment
+	// pollNewest is the newest comment the poll's own listing held: once
+	// every command in it is answered, the poll records it as seen. It is
+	// taken before any answer, since a later listing in the pass (a
+	// replan's feedback) can hold comments the poll never read.
+	pollNewest *ghclient.Comment
+	// refused are the accounts refused this pass without asking GitHub
+	// (refusedLocally), to be added to status.commands.refusedActors.
+	refused map[int64]bool
 }
 
 // Reconcile takes one Intent one step at a time: every step that changes the

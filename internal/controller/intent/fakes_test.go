@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"slices"
 	"strconv"
@@ -145,6 +146,8 @@ type fakeGitHub struct {
 	installedErr error
 	errs         map[string][]error
 	calls        map[string]int
+	// sinces are the since of every comment listing, in order.
+	sinces []time.Time
 }
 
 func newFakeGitHub(clock *fakeClock) *fakeGitHub {
@@ -204,8 +207,12 @@ func (f *fakeGitHub) openIssue(n int64, title, body, actor string) {
 	f.label(n, "patchy:target", actor)
 }
 
+// actorOf is the account behind login, its id derived from the login so
+// every test account has its own.
 func actorOf(login string) ghclient.Actor {
-	a := ghclient.Actor{Login: login, ID: int64(len(login)), Type: "User"}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(strings.ToLower(login)))
+	a := ghclient.Actor{Login: login, ID: int64(h.Sum32()) + 1, Type: "User"}
 	if strings.HasSuffix(login, "[bot]") {
 		a.Type = "Bot"
 	}
@@ -277,6 +284,16 @@ func (f *fakeGitHub) editComment(id int64, body string) {
 				c.Body, c.UpdatedAt = body, f.clock.Now()
 			}
 		}
+	}
+	f.version++
+}
+
+// deleteComment deletes comment id, as a human with write access may.
+func (f *fakeGitHub) deleteComment(id int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, is := range f.issues {
+		is.comments = slices.DeleteFunc(is.comments, func(c *ghclient.Comment) bool { return c.ID == id })
 	}
 	f.version++
 }
@@ -484,6 +501,7 @@ func (f *fakeGitHub) ListIssueComments(_ context.Context, _ string, number int64
 	if err := f.call("ListIssueComments"); err != nil {
 		return nil, err
 	}
+	f.sinces = append(f.sinces, since)
 	is, err := f.issue(number)
 	if err != nil {
 		return nil, err

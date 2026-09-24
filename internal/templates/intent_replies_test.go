@@ -41,6 +41,11 @@ func TestIntentReplyGoldens(t *testing.T) {
 				Namespace: "patchy", Intent: "target-1", Key: "command-4419",
 			})
 		}},
+		{"intent_notice_edited.md", func() (string, error) {
+			return RenderEditedCommandNotice(EditedCommandNotice{
+				Namespace: "patchy", Intent: "target-1", Key: "comment-4420", Verb: "approve",
+			})
+		}},
 		{"intent_notice_estimate.md", func() (string, error) {
 			return RenderEstimateNotice(EstimateNotice{
 				Namespace: "patchy", Intent: "target-1", Key: "estimate-r2", PlanRevision: 2,
@@ -95,9 +100,16 @@ func TestIntentRepliesHeadedByMarker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	edited, err := RenderEditedCommandNotice(EditedCommandNotice{
+		Namespace: "patchy", Intent: "target-1", Key: "comment-2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for body, marker := range map[string]string{
 		done:    NoticeMarker("patchy", "target-1", "command-1"),
 		summary: NoticeMarker("patchy", "target-1", SummaryKey),
+		edited:  NoticeMarker("patchy", "target-1", "comment-2"),
 	} {
 		if !strings.HasPrefix(body, marker+"\n") {
 			t.Errorf("body does not open with %q:\n%s", marker, body)

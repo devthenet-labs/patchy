@@ -77,6 +77,32 @@ func RenderUnknownCommandNotice(n UnknownCommandNotice) (string, error) {
 	})
 }
 
+// EditedCommandNotice answers a command whose comment was edited after it was
+// posted. GitHub lets anyone with write access to a repository edit anyone's
+// comment and still names the original author, so an edited comment is never
+// taken as its author's command: the author is asked to post it again.
+type EditedCommandNotice struct {
+	// Namespace, Intent and Key make the notice's marker (NoticeMarker).
+	Namespace string
+	Intent    string
+	Key       string
+	// Verb is the verb the edited comment now carries, as command.Parse
+	// left it; empty when it names none.
+	Verb string
+}
+
+// RenderEditedCommandNotice renders an EditedCommandNotice. It names no
+// actor: whoever edited the comment may not be its author.
+func RenderEditedCommandNotice(n EditedCommandNotice) (string, error) {
+	return render("intent_notice_edited.md.tmpl", struct {
+		Marker  string
+		Command string
+	}{
+		Marker:  NoticeMarker(n.Namespace, n.Intent, n.Key),
+		Command: slashCommand(n.Verb),
+	})
+}
+
 // EstimateNotice tells the approver, before they approve, that a plan's own
 // estimate of its build is more than the build will be granted. The estimate
 // never binds the build and approving does not raise the grant: the remedy is

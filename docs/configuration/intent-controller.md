@@ -131,7 +131,13 @@ An action counts only when GitHub's API shows who took it: the actor of a label 
 account must be in the Project's `approvers.logins`, have write access to the intent repository, and not be a bot.
 Anything else gets one refusal and changes nothing; a refused approve label is removed, and a trigger from anyone else
 closes the intent before it plans. A command comment gets a 👀 reaction, and every answered action gets exactly one
-reply.
+reply, never a second, even if patchy's reply is deleted.
+
+A comment edited after it was posted is never taken as a command: GitHub lets anyone with write access edit anyone's
+comment and still shows the original author. patchy answers it once, saying so, and the author can post the command
+again in a new comment. An edited comment is also left out of a replan's approver comments. An account that is not an
+approver (or is a bot) is refused whatever its command says, and gets that refusal once per intent; its later commands
+get neither a reaction nor a reply, so nobody can make patchy write to GitHub once per comment.
 
 The plan comment shows the plan's exact bytes in a code block. An approval counts only if all of these hold:
 
@@ -171,7 +177,7 @@ It writes no Finding spec, so it is not exempt from the finding admission policy
 ## Polling cost
 
 Each active intent reads about three GitHub resources per interval (its issue, its events, and its comments since the
-last trigger). An intent in review also reads its pull request. A conditional listing that has not changed returns 304,
+newest one it has already read). An intent in review also reads its pull request. A conditional listing that has not changed returns 304,
 which costs nothing against the installation's rate limit. The rate-limit floor pauses all intent polling while the
 installation's remaining core budget is below it, so intents can never starve the security flow of the requests it
 shares with them. The headers GitHub reports are not consistent from one response to the next, so the floor is a coarse

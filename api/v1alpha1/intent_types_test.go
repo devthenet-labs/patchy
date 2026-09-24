@@ -381,57 +381,16 @@ func TestSetIntentPhaseProperty(t *testing.T) {
 	var walks, trimmedWalks, blockedAfterTrim int
 	prop := func(steps [256]uint8) bool {
 		walks++
-		i := &Intent{}
-		var blockedFrom IntentPhase // the model: where the current block was entered from
-		trimmed := false
+		w := &intentWalk{t: t, i: &Intent{}}
 		for n, s := range steps {
-			before := i.DeepCopy()
-			to := walkTarget(before.Status.Phase, s)
-			now := base.Add(time.Duration(n) * time.Second)
-			err := SetIntentPhase(i, to, now)
-			legal := CanTransitionIntent(before.Status.Phase, to)
-			if (err == nil) != legal {
-				t.Logf("step %d: SetIntentPhase(%q -> %q) err = %v, legal = %v", n, before.Status.Phase, to, err, legal)
+			if !w.step(n, walkTarget(w.i.Status.Phase, s), base.Add(time.Duration(n)*time.Second)) {
 				return false
-			}
-			if err != nil && !reflect.DeepEqual(i, before) {
-				t.Logf("step %d: illegal %q -> %q mutated the intent", n, before.Status.Phase, to)
-				return false
-			}
-			if IntentTerminal(before.Status.Phase) && len(intentTransitions[before.Status.Phase]) == 0 &&
-				i.Status.Phase != before.Status.Phase {
-				t.Logf("step %d: left absorbing phase %q for %q", n, before.Status.Phase, i.Status.Phase)
-				return false
-			}
-			if !intentInvariantsHold(t, i) {
-				t.Logf("step %d: after %q -> %q", n, before.Status.Phase, to)
-				return false
-			}
-			if err == nil && to != before.Status.Phase && len(before.Status.PhaseTimes) == MaxIntentPhaseTimes {
-				trimmed = true
-			}
-			if i.Status.Phase == IntentBlocked && before.Status.Phase != IntentBlocked {
-				blockedFrom = before.Status.Phase
-			}
-			got := IntentBlockedFrom(i)
-			if i.Status.Phase != IntentBlocked {
-				if got != "" {
-					t.Logf("step %d: IntentBlockedFrom = %q in phase %q, want \"\"", n, got, i.Status.Phase)
-					return false
-				}
-				continue
-			}
-			if got != blockedFrom || !CanTransitionIntent(IntentBlocked, got) {
-				t.Logf("step %d: IntentBlockedFrom = %q, want %q, a legal resume (trimmed log: %v)", n, got, blockedFrom, trimmed)
-				return false
-			}
-			if trimmed {
-				blockedAfterTrim++
 			}
 		}
-		if trimmed {
+		if w.trimmed {
 			trimmedWalks++
 		}
+		blockedAfterTrim += w.blockedAfterTrim
 		return true
 	}
 	cfg := &quick.Config{
@@ -448,6 +407,78 @@ func TestSetIntentPhaseProperty(t *testing.T) {
 	if blockedAfterTrim == 0 {
 		t.Error("no walk checked IntentBlockedFrom after a trim: the property no longer exercises it")
 	}
+}
+
+// intentWalk is one random walk's state: the Intent, and the model the walk
+// keeps beside it — where the current block was entered from, and whether
+// the phase log has been trimmed yet.
+type intentWalk struct {
+	t                *testing.T
+	i                *Intent
+	blockedFrom      IntentPhase
+	trimmed          bool
+	blockedAfterTrim int
+}
+
+// step attempts the transition to `to` at `now` and reports whether every
+// invariant still holds, logging the first violation.
+func (w *intentWalk) step(n int, to IntentPhase, now time.Time) bool {
+	before := w.i.DeepCopy()
+	err := SetIntentPhase(w.i, to, now)
+	if !w.honoured(n, before, to, err) || !intentInvariantsHold(w.t, w.i) {
+		w.t.Logf("step %d: after %q -> %q", n, before.Status.Phase, to)
+		return false
+	}
+	if err == nil && to != before.Status.Phase && len(before.Status.PhaseTimes) == MaxIntentPhaseTimes {
+		w.trimmed = true
+	}
+	if w.i.Status.Phase == IntentBlocked && before.Status.Phase != IntentBlocked {
+		w.blockedFrom = before.Status.Phase
+	}
+	return w.blockedFromHolds(n)
+}
+
+// honoured reports whether SetIntentPhase kept its contract for one attempt:
+// an error exactly when the edge is illegal, an illegal attempt mutating
+// nothing, and nothing ever leaving Merged or Closed.
+func (w *intentWalk) honoured(n int, before *Intent, to IntentPhase, err error) bool {
+	from := before.Status.Phase
+	if legal := CanTransitionIntent(from, to); (err == nil) != legal {
+		w.t.Logf("step %d: SetIntentPhase(%q -> %q) err = %v, legal = %v", n, from, to, err, legal)
+		return false
+	}
+	if err != nil && !reflect.DeepEqual(w.i, before) {
+		w.t.Logf("step %d: illegal %q -> %q mutated the intent", n, from, to)
+		return false
+	}
+	if IntentTerminal(from) && len(intentTransitions[from]) == 0 && w.i.Status.Phase != from {
+		w.t.Logf("step %d: left absorbing phase %q for %q", n, from, w.i.Status.Phase)
+		return false
+	}
+	return true
+}
+
+// blockedFromHolds reports whether IntentBlockedFrom agrees with the walk's
+// own model: "" while not Blocked, else the phase the block was entered from,
+// which Blocked may legally resume to.
+func (w *intentWalk) blockedFromHolds(n int) bool {
+	got := IntentBlockedFrom(w.i)
+	if w.i.Status.Phase != IntentBlocked {
+		if got != "" {
+			w.t.Logf("step %d: IntentBlockedFrom = %q in phase %q, want \"\"", n, got, w.i.Status.Phase)
+			return false
+		}
+		return true
+	}
+	if got != w.blockedFrom || !CanTransitionIntent(IntentBlocked, got) {
+		w.t.Logf("step %d: IntentBlockedFrom = %q, want %q, a legal resume (trimmed log: %v)",
+			n, got, w.blockedFrom, w.trimmed)
+		return false
+	}
+	if w.trimmed {
+		w.blockedAfterTrim++
+	}
+	return true
 }
 
 // intentInvariantsHold reports whether the intent's phase bookkeeping is

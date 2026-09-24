@@ -274,9 +274,41 @@ func forbiddenInLine(r rune) bool {
 	return unicode.Is(unicode.Cf, r)
 }
 
+// sameRepository is the properties' own statement of when two repository
+// URLs name one repository: equal ignoring case once a ".git" suffix, in any
+// case, is dropped from each.
+func sameRepository(a, b string) bool {
+	trim := func(u string) string {
+		if n := len(u) - len(".git"); n >= 0 && strings.EqualFold(u[n:], ".git") {
+			return u[:n]
+		}
+		return u
+	}
+	return strings.EqualFold(trim(a), trim(b))
+}
+
+// repositoryAlias spells an existing repository URL differently — its case
+// changed, a ".git" suffix added in some case — as a model listing one
+// repository twice might.
+func repositoryAlias(r *rand.Rand, u string) string {
+	switch r.Intn(3) {
+	case 0:
+		// The scheme stays lower-case: the URL shape requires it.
+		u = "https://" + strings.ToUpper(strings.TrimPrefix(u, "https://"))
+	case 1:
+		u = strings.Replace(u, "repo", "Repo", 1)
+	}
+	return u + []string{"", ".git", ".GIT", ".Git"}[r.Intn(4)]
+}
+
 // planWithinBounds reports whether an accepted plan honours every bound the
 // contract promises.
 func planWithinBounds(p *Plan) bool {
+	for i, u := range p.Repositories {
+		if slices.ContainsFunc(p.Repositories[:i], func(v string) bool { return sameRepository(u, v) }) {
+			return false
+		}
+	}
 	ok := func(s string, maxChars int) bool {
 		return s != "" && s == strings.TrimSpace(s) && utf8.RuneCountInString(s) <= maxChars &&
 			!strings.ContainsFunc(s, forbiddenInLine)
@@ -309,6 +341,9 @@ func TestPlanParseBoundedProperty(t *testing.T) {
 		if r.Intn(4) == 0 {
 			bad := badConfidences[r.Intn(len(badConfidences))]
 			p.Confidence = &bad
+		}
+		if r.Intn(4) == 0 {
+			p.Repositories = append(p.Repositories, repositoryAlias(r, p.Repositories[r.Intn(len(p.Repositories))]))
 		}
 		raw, err := yaml.Marshal(p)
 		if err != nil {

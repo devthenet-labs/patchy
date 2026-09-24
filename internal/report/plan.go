@@ -178,7 +178,8 @@ func validRepositories(urls []string) error {
 			errs = append(errs, fmt.Errorf("repositories[%d] %q is not an https://<host>/<owner>/<name> URL", i, u))
 			continue
 		}
-		key := strings.ToLower(strings.TrimSuffix(u, ".git"))
+		// Lowercased before the suffix is cut, so ".GIT" is cut too.
+		key := strings.TrimSuffix(strings.ToLower(u), ".git")
 		if seen[key] {
 			errs = append(errs, fmt.Errorf("repositories[%d] %q is listed twice", i, u))
 		}

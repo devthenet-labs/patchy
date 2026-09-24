@@ -202,6 +202,9 @@ func TestParsePlanErrors(t *testing.T) {
 		{"repository listed twice", planWith(repos, "repositories:\n"+
 			"  - \"https://github.com/devthenet-labs/patchy-target\"\n"+
 			"  - \"https://GitHub.com/devthenet-labs/Patchy-Target.git\""), "listed twice"},
+		{"repository listed twice, one with an upper-case .GIT", planWith(repos, "repositories:\n"+
+			"  - \"https://github.com/devthenet-labs/patchy-target\"\n"+
+			"  - \"https://github.com/devthenet-labs/patchy-target.GIT\""), "listed twice"},
 		{"seventeen new dependencies", planWith(deps, items("new_dependencies", PlanMaxNewDependencies+1,
 			func(i int) string { return fmt.Sprintf("example.com/dep%d", i) })), "over 16"},
 		{"eleven questions", planWith(questions, items("questions", PlanMaxQuestions+1,

@@ -499,13 +499,23 @@ adds `revise` with its review alias, and `retry` on intent PRs.
 Status: the parser is done, and so is the Finding migration. A Finding's tracking issue takes all five verbs through
 `internal/command`, applied by `action.Apply` exactly as the status page and the CLI apply them. The webhook is
 acknowledged before it is handled and never redelivered, so the handler makes no GitHub call. It only records the
-command on the Finding's status (`status.commands.pending`, at most 8), and the Finding projection settles it with
-backoff. Settling reads the collaborator permission (`ghclient.CanWrite`), writes the spec, adds the `eyes` reaction and
-posts one reply, which the projection's comment markers keep to exactly one. It then records the comment id in
-`status.commands.consumed`, which keeps the last 32, so a redelivery or a replay never applies a command twice.
-`author_association` is no longer read. Each step is recorded as it completes, so a GitHub failure retries without
-deciding again, writing the spec again or replying again. One limit remains: a command arriving while 8 are already
-pending is not recorded, and so is never answered. That is the price of the bound.
+command on the Finding's status (`status.commands.pending`), and the Finding projection settles it with backoff.
+Settling reads the collaborator permission (`ghclient.CanWrite`), writes the spec, adds the `eyes` reaction and posts
+one reply. The answer's start is recorded before the reply is posted, and only a retry after a failure looks for an
+earlier reply, among the comments since then; the thread is never listed in full, so spam cannot make each answer cost
+more. It then records the comment id in `status.commands.consumed` (the last 32), so a redelivery or a replay never
+applies a command twice. `author_association` is no longer read. Each step is recorded as it completes, so a GitHub
+failure retries without deciding again, writing the spec again or replying again, and an answer GitHub refuses for an
+hour is given up.
+
+Anyone who can comment reaches the pending list before GitHub is asked about them, so the design bounds what a commenter
+without write access can do. The 8 pending slots are shared by account (2 each at most; a new account takes a doubled-up
+account's newest undecided slot when all 8 are held). A refusal is not kept in `consumed`, so spam cannot push a
+maintainer's command out of it, and each account gets one refusal reply per finding and then only the reaction. A
+`suspend` or `resume` that arrives after a later one was applied is answered as superseded (`lastToggle`), so the order
+they were written in holds past the pending list. One limit remains: a command that finds no slot (its account already
+has 2 pending, or 8 accounts hold one each) is not recorded, and so is never answered; it is logged. That is the price
+of the bound.
 
 ### Why polling rather than webhooks
 

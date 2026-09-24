@@ -137,20 +137,36 @@ part), and an account GitHub does not know is refused. A command from a bot, the
 ignored without a reply. The status page and the CLI keep their own RBAC checks; a command on the issue is authorised by
 the repository's write access alone.
 
-**The answer.** Every command gets an `eyes` reaction, then exactly one reply from patchy saying what happened: done;
-not available in the finding's current phase, listing the commands that are; not allowed; or, for a verb patchy does not
-know, the list of commands a tracking issue accepts. The phase gate is the status page's own: `approve` means something
-only on a held (`AwaitingApproval`) or handed-off finding, for instance, so an approval written while the finding is
-still being investigated is answered "not available" rather than kept for later. A command writes the spec only; the
-controller that owns the phase edge moves the phase, exactly as for a status-page action.
+**The answer.** A command recorded on the finding gets an `eyes` reaction, then one reply from patchy saying what
+happened: done; not available in the finding's current phase, listing the commands that are; not allowed; superseded (a
+`suspend` or `resume` written before the last one patchy applied); or, for a verb patchy does not know, the list of
+commands a tracking issue accepts. An account gets one refusal reply (not allowed, or an unknown verb) per finding: its
+later refusals there get the reaction alone, so commenting cannot make patchy post a reply per comment. The phase gate
+is the status page's own: `approve` means something only on a held (`AwaitingApproval`) or handed-off finding, for
+instance, so an approval written while the finding is still being investigated is answered "not available" rather than
+kept for later. A command writes the spec only; the controller that owns the phase edge moves the phase, exactly as for
+a status-page action.
 
 **Delivery.** GitHub's webhook is answered before it is handled and never redelivered once answered, so the webhook
-handler only records the command on the finding (`status.commands.pending`, at most 8). The finding projection then asks
-GitHub for the commenter's permission, applies the command, reacts and replies, and retries with backoff while GitHub
-fails: a command is never dropped, and never decided without GitHub's answer. Each step is recorded as it completes, so
-a retry resumes where it stopped and never applies a command twice or replies twice. Answered comment ids are kept
-(`status.commands.consumed`), so a duplicate delivery, a redelivery or a demo replay changes nothing. Pending commands
-are answered in the order they were written, whatever order their deliveries arrive in.
+handler only records the command on the finding (`status.commands.pending`). Anyone who can comment on the issue gets
+that far before GitHub is asked whether they may command it, so the 8 pending slots are shared out by account: one
+account holds at most 2, and when all 8 are held a new account's command takes the slot of the newest undecided command
+of an account holding 2. A command that finds no slot is not recorded, so it is never answered; the controller logs it.
+Comment again once the pending commands are answered, which normally takes seconds.
+
+The finding projection then asks GitHub for the commenter's permission, applies the command, reacts and replies,
+retrying with backoff while GitHub fails, so a command is never decided without GitHub's answer. Each step is recorded
+as it completes, so a retry resumes where it stopped and never applies a command twice or replies twice. Answering never
+lists the issue's whole thread, so it costs the same however many comments the issue holds. A failing answer holds up
+neither the finding's own projection nor a later command's effect, and one GitHub keeps refusing for an hour is given up
+(the command's effect, if any, stands). Answered comment ids are kept (`status.commands.consumed`, the latest 32;
+refusals are not kept, so comment spam cannot push a maintainer's command out), and a duplicate delivery, a redelivery
+or a demo replay of one changes nothing.
+
+Commands pending together take effect in the order they were written, whatever order their deliveries arrive in. A
+`suspend` or `resume` that arrives after a later one has been applied is answered as superseded rather than applied, so
+the finding stays as the last one written left it. A late `approve`, `retry` or `expedite` applies if the finding's
+phase still admits it.
 
 ## Credentials
 

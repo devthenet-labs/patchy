@@ -158,8 +158,9 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   and one the current phase does not admit (`HelpFor`); `Note` is the one note rule, event aliases included.
   Pure: it imports only the standard library and `action` (a test pins that); availability and authorisation
   are the caller's. Consumed by integration-controller for Finding tracking issues (Signals records a command on
-  `status.commands.pending`; the projection's `settleCommands` authorises it by `ghclient.CanWrite`, applies it
-  via `action.Apply`, reacts and replies once, then consumes it); intent-controller will consume it too.
+  `status.commands.pending`, slots shared by account; the projection's `settleCommands` authorises it by
+  `ghclient.CanWrite`, applies it via `action.Apply`, reacts and replies at most once without listing the thread,
+  then consumes it); intent-controller will consume it too.
 - `web` (+ `web/auth`, `web/authz`) — the status-server backend: wire types mirroring the SPA's
   `ui/src/types.ts` (keep the two in lockstep), the action handlers, SSE broker + cache-informer watcher, and
   the embedded UI (`internal/web/ui`, Vite/Preact, single-file build embedded behind the `withui` tag; `mise run

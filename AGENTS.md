@@ -129,10 +129,11 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
 - `controller/` — one engine per controller binary; the binaries are thin wiring over these:
   `controller/integration` (receiver, ingest, projection, human signals), `controller/source` (Forge +
   Repository reconcilers), `controller/context` (the enhancer chain), `controller/investigation` (gate +
-  analysis scheduler), `controller/remediation` (spawner + priority scheduler + push/PR), `controller/rollup`
-  (all-time stats + finding TTL; hosted by the remediation binary), `controller/evaluation` (Evaluation gate +
-  unit scheduler + evaluation TTL; single writer for both evaluation kinds — their phases are local enums,
-  never part of the Finding transition table).
+  analysis scheduler), `controller/remediation` (spawner + priority scheduler + push/PR; its changeset
+  validator is exported, `ValidateChangeset`, with `IntentChangesetRules` adding the intent deny list),
+  `controller/rollup` (all-time stats + finding TTL; hosted by the remediation binary), `controller/evaluation`
+  (Evaluation gate + unit scheduler + evaluation TTL; single writer for both evaluation kinds — their phases are
+  local enums, never part of the Finding transition table).
 - `kube` — the controller-runtime manager wrapper: scheme, kubeconfig/in-cluster config, leader election,
   multi-namespace cache, health probes, logr↔slog bridge. Secrets are never cached.
 - `forge` — the shared forge seam: resolve a repository URL to its covering `Forge` CR (host → orgs → repo
@@ -143,7 +144,11 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
 - `labels` — the trimmed human-facing label vocabulary the issue projection renders (one-way; never parsed back
   into state).
 - `templates` — the finding handoff/issue body, both stage prompts, and the PR body, rendered from embedded
-  templates with golden tests.
+  templates with golden tests. Also the intent side (not wired in yet): `Sanitize`/`SanitizeInline`, the one
+  pass all agent text bound for GitHub takes (hidden markup shown literally; mentions, issue references and
+  so closing keywords made inline code; seeded properties checked against goldmark as a stand-in for
+  GitHub), and the intent status/plan comments, notices, PR body ("Part of", never a closing keyword) and
+  plain-text commit message, over plain values.
 - `webhook`, `telemetry`, `cli`, `version` — service plumbing (the webhook server is used by
   integration-controller only).
 - `action` — the human-action vocabulary (the custom verbs) and the state-machine gating behind each one:
@@ -208,7 +213,9 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
 - `runnerguard` — the job controllers' side of repository-declared images, shared by investigation and
   remediation: whether a launch may run the Repository's pin (kill switch, not revived by a human, sandbox
   breaker), the pull fail-fast gated on the Job's `runner-image-source` annotation (never on config), and the
-  in-memory sandbox breaker a prepare exit 78 trips until restart (`patchy.sandbox.breaker` gauge).
+  in-memory sandbox breaker a prepare exit 78 trips until restart (`patchy.sandbox.breaker` gauge). `PinFor`
+  (beside the untouched `Pin`) is the same decision for a launch that requires the image (intent build and
+  revise runs): "" only when it copied an accepted pin, a reason otherwise.
 - `mirror` — the engine behind `patchy mirror` (CLI-only, except `imageref`, which `runnerimage` also builds
   on; no controller consumes the rest): vendored mirroring of
   upstream helm charts and OCI artifacts into one or more platform registries (mirror.yaml lists them; every

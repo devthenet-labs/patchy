@@ -38,6 +38,11 @@ func TestPinFor(t *testing.T) {
 		wantSkip string
 	}{
 		{"accepted and allowed", Guard{Enabled: true}, acceptedImage(), false, ""},
+		// The contract intent-controller relies on: a revival from Failed is a
+		// new plan and a new approval, passed as not revived, so it builds in
+		// the repository's image rather than blocking for good on
+		// SkipRevivedWork, which no Project change could clear.
+		{"an intent revived from Failed", Guard{Enabled: true}, acceptedImage(), false, ""},
 		{"nothing declared", Guard{Enabled: true}, nil, false, SkipNoImage},
 		{"not-applicable devcontainer", Guard{Enabled: true}, &v1alpha1.RunnerImage{
 			Manifest: ".devcontainer/devcontainer.json", Message: "builds its image",

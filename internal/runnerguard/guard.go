@@ -81,10 +81,21 @@ const (
 // caller blocks instead of launching.
 //
 // revived is the caller's own record that a human brought the work back
-// from a terminal state, as Revived reads one off a Finding. Like Pin, what
-// PinFor copies is a request: jobs.Client.Create decides and returns what
-// the Job runs, and a caller requiring the image must still refuse a Job
-// whose returned stamp is not the repository's.
+// from a terminal state on the understanding that the repository's image
+// may be what failed it — what Revived reads off a Finding, whose revival
+// moves it to the default image. A launch that requires the image has
+// nowhere to move, so revived refuses it with SkipRevivedWork, and nothing
+// the caller can re-evaluate clears that: the refusal holds until the
+// record does. An intent revived from Failed is therefore not revived here,
+// and intent-controller passes false for it: re-applying the trigger label
+// takes a new input snapshot, a new plan and a new approval — a fresh human
+// decision, whose build runs in whatever image the Repository then pins,
+// fixed or not — and SkipRevivedWork is not among the design's Blocked
+// causes, which a Project change can clear.
+//
+// Like Pin, what PinFor copies is a request: jobs.Client.Create decides and
+// returns what the Job runs, and a caller requiring the image must still
+// refuse a Job whose returned stamp is not the repository's.
 func (g Guard) PinFor(spec *jobs.Spec, repo *v1alpha1.Repository, revived bool) string {
 	ri := repo.Status.RunnerImage
 	switch {

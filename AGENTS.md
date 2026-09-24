@@ -216,7 +216,8 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   breaker), the pull fail-fast gated on the Job's `runner-image-source` annotation (never on config), and the
   in-memory sandbox breaker a prepare exit 78 trips until restart (`patchy.sandbox.breaker` gauge). `PinFor`
   (beside the untouched `Pin`) is the same decision for a launch that requires the image (intent build and
-  revise runs): "" only when it copied an accepted pin, a reason otherwise.
+  revise runs): "" only when it copied an accepted pin, a reason otherwise; an intent revived from Failed
+  (new plan, new approval) is passed as not revived.
 - `mirror` — the engine behind `patchy mirror` (CLI-only, except `imageref`, which `runnerimage` also builds
   on; no controller consumes the rest): vendored mirroring of
   upstream helm charts and OCI artifacts into one or more platform registries (mirror.yaml lists them; every

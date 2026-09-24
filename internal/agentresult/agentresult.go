@@ -5,7 +5,8 @@
 // shapes — the one place the float-bearing wire format meets the no-float
 // structural schemas — and a failed run's result into what its retry is told
 // about it. Both job controllers (investigation, remediation) use it so
-// cost/confidence formatting and size caps never drift apart.
+// cost/confidence formatting and size caps never drift apart, and the intent
+// flow converts its plan events here too (FromPlan).
 package agentresult
 
 import (

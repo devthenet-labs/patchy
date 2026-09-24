@@ -37,6 +37,11 @@ const (
 	// OutcomeBranchExists: the intent branch exists at a commit other than
 	// the one this run created. Nothing is forced.
 	OutcomeBranchExists = "branch_exists"
+	// OutcomeHoldExpired: the build finished while its Intent was suspended,
+	// and its Job expired (its TTL) before the suspension was lifted, taking
+	// the unpushed changeset with it. The loss is the suspension's, not the
+	// agent's, so the attempt does not count.
+	OutcomeHoldExpired = "hold_expired"
 )
 
 // roundRuns are one stage's runs of one round, by attempt.
@@ -91,17 +96,19 @@ func (rs roundRuns) counted(refused func(*v1alpha1.IntentRun) bool) int32 {
 	return n
 }
 
-// uncounted reports a failed run whose agent never ran. Its outcome is the
-// controller's own: a pod may not report image_required (podOutcome).
+// uncounted reports a failed run whose agent never ran, or whose result a
+// suspension lost. Its outcome is the controller's own: a pod may not report
+// image_required or hold_expired (podOutcome).
 func uncounted(run *v1alpha1.IntentRun) bool {
-	return run.Status.Outcome == OutcomeImageRequired || runnerguard.Refused(run.Status.Conditions)
+	return run.Status.Outcome == OutcomeImageRequired || run.Status.Outcome == OutcomeHoldExpired ||
+		runnerguard.Refused(run.Status.Conditions)
 }
 
 // imageBlocked reports a failed build run that blocks its Intent on the
 // repository image: none usable, the default image ran, or the sandbox
 // probe refused it.
 func imageBlocked(run *v1alpha1.IntentRun) bool {
-	return run.Status.Phase == v1alpha1.RunFailed && uncounted(run)
+	return run.Status.Phase == v1alpha1.RunFailed && run.Status.Outcome != OutcomeHoldExpired && uncounted(run)
 }
 
 // previousAttempt is what the next attempt is told about latest when its

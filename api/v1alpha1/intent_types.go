@@ -304,9 +304,10 @@ type IntentSpec struct {
 	RequestedBy IntentRequest `json:"requestedBy"`
 	// Suspend pauses the intent (human-written): no run is launched and
 	// nothing is written to GitHub for it until cleared. Running Jobs
-	// finish; a build that finishes meanwhile keeps its push (commit and
-	// branch) until then, and loses it if the suspension outlasts the
-	// finished Job's TTL.
+	// finish; a build that finishes meanwhile holds its push (commit and
+	// branch) until then, without its slot of the run pool, and loses it if
+	// the suspension outlasts the finished Job's TTL (the run ends
+	// hold_expired, which does not count as an attempt).
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
 }

@@ -29,6 +29,12 @@ State lives in three custom resources, all written by intent-controller alone:
 `patchy get intents`, `patchy get irun` and `patchy get proj` list them (see [the CLI](../cli.md)). Humans write only an
 Intent's `spec.suspend`; everything else happens on the issue.
 
+Suspending an intent launches nothing and writes nothing to GitHub until the suspension is cleared. A build Job already
+running finishes; its push (the commit and the branch) waits, marked `PushHeld` on its IntentRun, and gives its slot of
+the run pool to other intents meanwhile. The finished Job is kept only for `--job-ttl` (1h by default): a suspension that
+outlasts it loses the unpushed changeset, and the run ends `hold_expired`. That costs the agent's spend but not one of
+the build's attempts, and clearing the suspension starts the next one.
+
 ## Flags
 
 The [shared flags](index.md#shared-flags-every-controller), plus the settings below. They carry an `intent-` prefix no

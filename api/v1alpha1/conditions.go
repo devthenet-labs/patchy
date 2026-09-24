@@ -83,6 +83,13 @@ const (
 	// after a check-fix round with the same failure signature (slice 1b).
 	ConditionChecksFailing = "ChecksFailing"
 
+	// ConditionPushHeld marks a Running build IntentRun whose Job has
+	// finished while its Intent is suspended: the push waits for the
+	// suspension to be lifted. Its agent no longer runs, so it holds no slot
+	// of the run pool, and while it waits its Job is not read again. Set by
+	// intent-controller's run reconciler, and False once the run settles.
+	ConditionPushHeld = "PushHeld"
+
 	// ConditionIntentNameConflict marks a Project, True while one of its
 	// trigger-labelled issues cannot become an Intent because the name
 	// <project>-<issue> is held by an Intent for an issue of another

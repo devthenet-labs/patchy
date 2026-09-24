@@ -89,6 +89,12 @@ func (r *RunReconciler) settle(ctx context.Context, run *v1alpha1.IntentRun, res
 		if res.sandboxRefused {
 			meta.SetStatusCondition(&cur.Status.Conditions, runnerguard.RefusedCondition(cur.Generation))
 		}
+		if meta.IsStatusConditionTrue(cur.Status.Conditions, v1alpha1.ConditionPushHeld) {
+			meta.SetStatusCondition(&cur.Status.Conditions, metav1.Condition{
+				Type: v1alpha1.ConditionPushHeld, Status: metav1.ConditionFalse, Reason: "Settled",
+				Message: "the run settled: " + reason, ObservedGeneration: cur.Generation,
+			})
+		}
 	}); err != nil {
 		return err
 	}

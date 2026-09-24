@@ -122,7 +122,9 @@ func (r *RunReconciler) schedule(ctx context.Context) (ctrl.Result, error) {
 		run := &list.Items[i]
 		switch run.Status.Phase {
 		case v1alpha1.RunRunning:
-			running++
+			if holdsSlot(run) {
+				running++
+			}
 		case v1alpha1.RunPending, "":
 			if run.DeletionTimestamp.IsZero() && r.launchable(ctx, run) {
 				pending = append(pending, schedule.Candidate{
@@ -147,6 +149,20 @@ func (r *RunReconciler) schedule(ctx context.Context) (ctrl.Result, error) {
 		}
 	}
 	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+}
+
+// holdsSlot reports a Running run that occupies a slot of the pool: every
+// one but a build whose Job finished while its Intent is suspended
+// (PushHeld). The pool bounds the agents running at once, and that one's
+// agent is done; what it still owes is its push.
+func holdsSlot(run *v1alpha1.IntentRun) bool {
+	return !pushHeld(run)
+}
+
+// pushHeld reports a build run marked held: its Job finished while its
+// Intent was suspended.
+func pushHeld(run *v1alpha1.IntentRun) bool {
+	return meta.IsStatusConditionTrue(run.Status.Conditions, v1alpha1.ConditionPushHeld)
 }
 
 // launchable reports a pending run that could launch now: its input and
@@ -204,7 +220,7 @@ func (r *RunReconciler) grant(ctx context.Context, name string, maxConcurrent in
 	}
 	running := 0
 	for i := range list.Items {
-		if list.Items[i].Status.Phase == v1alpha1.RunRunning {
+		if list.Items[i].Status.Phase == v1alpha1.RunRunning && holdsSlot(&list.Items[i]) {
 			running++
 		}
 	}
@@ -440,14 +456,28 @@ func (r *RunReconciler) requeuePending(ctx context.Context, run *v1alpha1.Intent
 func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (ctrl.Result, error) {
 	if run.Status.PushedCommit != "" {
 		// The commit was created and recorded; only the branch may be owed.
-		err := r.createBranch(ctx, run)
-		if errors.Is(err, errHeld) {
-			return r.hold(ctx, run)
+		return r.heldOr(r.createBranch(ctx, run))
+	}
+	if pushHeld(run) {
+		// Held for a suspension: its Job is read again only once the
+		// suspension is lifted, so a held build costs one uncached read per
+		// interval rather than its whole log and transcript.
+		switch err := r.pushGate(ctx, run); {
+		case errors.Is(err, errHeld):
+			return r.heldOr(err)
+		case errors.Is(err, errIntentEnded):
+			return ctrl.Result{}, r.endedBeforePush(ctx, run, result{keep: true})
+		case err != nil:
+			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, err
 	}
 	st, err := r.Jobs.Status(ctx, run.Status.JobRef.Name)
 	if kerrors.IsNotFound(err) {
+		if pushHeld(run) {
+			return ctrl.Result{}, r.settle(ctx, run, result{outcome: OutcomeHoldExpired, keep: true,
+				detail: "the build finished while its intent was suspended, and its Job expired before the " +
+					"suspension was lifted, taking the unpushed changeset with it; the attempt does not count"})
+		}
 		return ctrl.Result{}, r.settle(ctx, run, result{outcome: OutcomeAborted,
 			detail: "agent job vanished before reporting"})
 	}
@@ -489,9 +519,15 @@ func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (c
 	if run.Spec.Stage == v1alpha1.IntentStagePlan {
 		return ctrl.Result{}, r.collectPlan(ctx, run, out.Events, transcript)
 	}
-	err = r.collectBuild(ctx, run, out.Events, transcript)
+	return r.heldOr(r.collectBuild(ctx, run, out.Events, transcript))
+}
+
+// heldOr is the result of a collect that ended with err: a build held for a
+// suspension is looked at again after a poll interval (and at once when the
+// suspension is lifted, through the Intent watch).
+func (r *RunReconciler) heldOr(err error) (ctrl.Result, error) {
 	if errors.Is(err, errHeld) {
-		return r.hold(ctx, run)
+		return ctrl.Result{RequeueAfter: r.Settings.withDefaults().PollInterval}, nil
 	}
 	return ctrl.Result{}, err
 }
@@ -547,13 +583,38 @@ func (r *RunReconciler) endedBeforePush(ctx context.Context, run *v1alpha1.Inten
 	return r.settle(ctx, run, res)
 }
 
-// hold leaves a build whose push waits on a suspension Running. Clearing
-// the suspension re-queues it (the Intent watch); until then it is looked at
-// once per poll interval. A suspension that outlasts the Job's TTL loses the
-// Job, and with it the unpushed changeset: the run then aborts.
-func (r *RunReconciler) hold(ctx context.Context, run *v1alpha1.IntentRun) (ctrl.Result, error) {
+// hold marks a build whose push waits on a suspension PushHeld, once,
+// recording what its push would record (the report, usage and transcript;
+// res is nil once the commit recorded them), and returns errHeld. The mark
+// frees its slot and keeps later passes from reading its Job until the
+// suspension is lifted; the run stays Running. A suspension that outlasts the
+// Job's TTL loses the Job, and with it the unpushed changeset: the run then
+// ends hold_expired, which does not count as an attempt.
+func (r *RunReconciler) hold(ctx context.Context, run *v1alpha1.IntentRun, res *result) error {
+	if pushHeld(run) {
+		return errHeld
+	}
+	if err := r.updateRun(ctx, run, func(cur *v1alpha1.IntentRun) {
+		meta.SetStatusCondition(&cur.Status.Conditions, metav1.Condition{
+			Type: v1alpha1.ConditionPushHeld, Status: metav1.ConditionTrue, Reason: "IntentSuspended",
+			Message: "the build finished while its intent is suspended; " +
+				"its push waits for the suspension to be lifted",
+			ObservedGeneration: cur.Generation,
+		})
+		if res != nil {
+			cur.Status.Report = agentresult.TruncateReport(res.report)
+			if res.transcript != nil {
+				cur.Status.Transcript = res.transcript
+			}
+			if res.stage != nil {
+				cur.Status.Usage = podUsage(res.stage)
+			}
+		}
+	}); err != nil {
+		return err
+	}
 	r.log().LogAttrs(ctx, slog.LevelInfo, "intent suspended; the build's push waits", slog.String("run", run.Name))
-	return ctrl.Result{RequeueAfter: r.Settings.withDefaults().PollInterval}, nil
+	return errHeld
 }
 
 // podOutcomes are the outcomes an agent pod may report for a stage that did
@@ -708,6 +769,8 @@ func (r *RunReconciler) push(ctx context.Context, run *v1alpha1.IntentRun, ev *e
 	switch err := r.pushGate(ctx, run); {
 	case errors.Is(err, errIntentEnded):
 		return r.endedBeforePush(ctx, run, res)
+	case errors.Is(err, errHeld):
+		return r.hold(ctx, run, &res)
 	case err != nil:
 		return err
 	}
@@ -759,6 +822,8 @@ func (r *RunReconciler) createBranch(ctx context.Context, run *v1alpha1.IntentRu
 	switch err := r.pushGate(ctx, run); {
 	case errors.Is(err, errIntentEnded):
 		return r.endedBeforePush(ctx, run, result{keep: true})
+	case errors.Is(err, errHeld):
+		return r.hold(ctx, run, nil)
 	case err != nil:
 		return err
 	}

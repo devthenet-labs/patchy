@@ -1045,6 +1045,137 @@ func TestSuspendHoldsThePush(t *testing.T) {
 	}
 }
 
+// buildLaunched drives an approved intent until its first build Job is
+// launched, not yet collected, and returns that run.
+func (e *env) buildLaunched(name string) v1alpha1.IntentRun {
+	e.t.Helper()
+	ctx := context.Background()
+	for range 30 {
+		if runs := e.runsOf(name, v1alpha1.IntentStageBuild); len(runs) > 0 && runs[0].Status.JobRef != nil {
+			return runs[0]
+		}
+		_ = e.reconcileIntent(name)
+		e.readyRepositories(repoImage)
+		_, _ = e.runs.Reconcile(ctx, req(runSchedulerRequest))
+		for _, r := range e.intentRuns(name) {
+			_, _ = e.runs.Reconcile(ctx, req(r.Name))
+		}
+		e.clock.Advance(time.Minute)
+	}
+	e.t.Fatal("the build never launched")
+	return v1alpha1.IntentRun{}
+}
+
+// suspend sets the intent's spec.suspend, as a human may.
+func (e *env) suspend(name string, on bool) {
+	e.t.Helper()
+	in := e.get(name)
+	in.Spec.Suspend = on
+	if err := e.c.Update(context.Background(), in); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// TestHeldBuildFreesItsSlot: a build that finishes while its intent is
+// suspended is read once: its transcript, usage and report are recorded with
+// the PushHeld mark, later passes read nothing of its Job, and its slot is
+// free for another run, since its agent is done. Once the suspension is
+// lifted it is pushed.
+func TestHeldBuildFreesItsSlot(t *testing.T) {
+	e := newEnv(t, testProject())
+	e.jobs.output = func(spec jobs.Spec) jobs.RunOutput {
+		out := defaultOutput(spec)
+		out.Turns = []transcript.Turn{{Seq: 1, Role: transcript.RoleAssistant, Kind: transcript.KindText, Text: "done"}}
+		return out
+	}
+	ctx := context.Background()
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	build := e.buildLaunched(name)
+	e.suspend(name, true)
+	before := e.jobs.results
+	for range 4 {
+		if _, err := e.runs.Reconcile(ctx, req(build.Name)); err != nil {
+			t.Fatal(err)
+		}
+		e.clock.Advance(time.Minute)
+	}
+	if n := e.jobs.results - before; n != 1 {
+		t.Errorf("the held build's Job log was read %d times, want once", n)
+	}
+	run := e.runsOf(name, v1alpha1.IntentStageBuild)[0]
+	if run.Status.Phase != v1alpha1.RunRunning || !pushHeld(&run) || run.Status.Transcript == nil ||
+		run.Status.Usage.InputTokens != 10 || run.Status.Report == "" {
+		t.Fatalf("held run = %s, held %v, transcript %v, usage %+v, report %d bytes; want Running, held, "+
+			"with what the build reported", run.Status.Phase, pushHeld(&run), run.Status.Transcript,
+			run.Status.Usage, len(run.Status.Report))
+	}
+	if len(e.gh.commits) != 0 {
+		t.Fatal("a suspended intent's build was pushed")
+	}
+
+	// Another intent's run takes the one slot.
+	e.pendingRun("target-9-plan-r1-a1", "target-9", v1alpha1.IntentStagePlan)
+	e.readyRepositories(repoImage)
+	if _, err := e.runs.Reconcile(ctx, req(runSchedulerRequest)); err != nil {
+		t.Fatal(err)
+	}
+	var other v1alpha1.IntentRun
+	if err := e.c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "target-9-plan-r1-a1"}, &other); err != nil {
+		t.Fatal(err)
+	}
+	if other.Status.Phase != v1alpha1.RunRunning {
+		t.Errorf("another run is %q beside the held build in a pool of one, want granted", other.Status.Phase)
+	}
+
+	e.suspend(name, false)
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	run = e.runsOf(name, v1alpha1.IntentStageBuild)[0]
+	if run.Status.Phase != v1alpha1.RunComplete || pushHeld(&run) || len(e.gh.commits) != 1 {
+		t.Errorf("after the resume: run %s (held %v), commits %d; want it pushed once", run.Status.Phase,
+			pushHeld(&run), len(e.gh.commits))
+	}
+}
+
+// TestHeldBuildLostToItsJobTTL: a build held past its Job's TTL loses its
+// unpushed changeset, but not an attempt: the run ends hold_expired, the next
+// attempt is not told of a failure, and a later failed attempt still leaves
+// one to try.
+func TestHeldBuildLostToItsJobTTL(t *testing.T) {
+	e := newEnv(t, testProject())
+	e.jobs.output = func(spec jobs.Spec) jobs.RunOutput {
+		if spec.Phase == "build" && spec.Attempt == 2 {
+			return failingBuild(spec)
+		}
+		return defaultOutput(spec)
+	}
+	ctx := context.Background()
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	build := e.buildLaunched(name)
+	e.suspend(name, true)
+	if _, err := e.runs.Reconcile(ctx, req(build.Name)); err != nil {
+		t.Fatal(err)
+	}
+	e.jobs.gone = map[string]bool{build.Status.JobRef.Name: true}
+	e.suspend(name, false)
+	in := e.drive(name, v1alpha1.IntentInReview, repoImage)
+	runs := e.runsOf(name, v1alpha1.IntentStageBuild)
+	if len(runs) != 3 {
+		t.Fatalf("build runs = %d, want the expired one, a failed one and the one that built", len(runs))
+	}
+	if r := runs[0]; r.Status.Phase != v1alpha1.RunFailed || r.Status.Outcome != OutcomeHoldExpired || pushHeld(&r) {
+		t.Errorf("first run = %s %s (held %v), want failed hold_expired", r.Status.Phase, r.Status.Outcome, pushHeld(&r))
+	}
+	if runs[1].Spec.PreviousAttempt != nil {
+		t.Errorf("the attempt after the expired one was told of a failure: %+v", runs[1].Spec.PreviousAttempt)
+	}
+	if len(in.Status.PullRequests) != 1 || len(e.gh.commits) != 1 {
+		t.Errorf("pull requests %d, commits %d; want the third attempt's", len(in.Status.PullRequests),
+			len(e.gh.commits))
+	}
+}
+
 // activeIntent is a cache that has not yet seen the Intent end: it reads the
 // Intent as Building.
 type activeIntent struct {

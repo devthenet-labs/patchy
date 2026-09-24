@@ -420,7 +420,7 @@ spec:
                 pattern: ^([0-9a-f]{40}|[0-9a-f]{64})$
                 type: string
               conditions:
-                description: Conditions of the run (Complete, SandboxRefused).
+                description: Conditions of the run (Complete, SandboxRefused, PushHeld).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -514,8 +514,10 @@ spec:
               outcome:
                 description: |-
                   Outcome is the envelope outcome vocabulary, plus the controller's
-                  own: changeset_rejected, branch_exists, head_moved, and aborted for a
-                  run killed with no envelope.
+                  own: changeset_rejected, branch_exists, head_moved, aborted for a run
+                  killed with no envelope, and hold_expired for a build whose Job
+                  expired while its push waited on a suspension (not counted as an
+                  attempt).
                 maxLength: 64
                 type: string
               phase:

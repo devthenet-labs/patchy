@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/go-github/v90/github"
+	batchv1 "k8s.io/api/batch/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -706,6 +707,10 @@ type fakeJobs struct {
 	defaultOn bool // report the default image even when the spec pinned one
 	output    func(spec jobs.Spec) jobs.RunOutput
 	createErr error
+	// results counts the Result calls: each reads a Job's whole log.
+	results int
+	// gone are the Jobs that no longer exist (their TTL ran out).
+	gone map[string]bool
 }
 
 func newFakeJobs() *fakeJobs {
@@ -732,12 +737,19 @@ func (j *fakeJobs) Create(_ context.Context, spec jobs.Spec, env map[string]stri
 func (j *fakeJobs) Result(_ context.Context, name string) (jobs.RunOutput, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	j.results++
+	if j.gone[name] {
+		return jobs.RunOutput{}, kerrors.NewNotFound(batchv1.Resource("jobs"), name)
+	}
 	return j.output(j.specs[name]), nil
 }
 
 func (j *fakeJobs) Status(_ context.Context, name string) (jobs.Status, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.gone[name] {
+		return jobs.Status{}, kerrors.NewNotFound(batchv1.Resource("jobs"), name)
+	}
 	if st, ok := j.status[name]; ok {
 		return st, nil
 	}

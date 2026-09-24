@@ -475,6 +475,92 @@ evaluationController:
     networkPolicy:
         create: true
 
+# ---- intent-controller -------------------------------------------------------
+# Intent-driven development (templates/intent-controller.yaml): polls each
+# Project's intent repository for issues carrying its trigger label, plans the
+# work in a read-only agent Job, posts the plan for an approver, builds the
+# approved plan in the application repository's own image, pushes it to a
+# branch it creates once (patchy-intent/<intent>) and opens the pull request.
+# OPTIONAL and off by default; the Projects themselves come from the
+# patchy-config chart's `projects` array. It polls GitHub rather than taking
+# webhooks, so it adds no inbound surface.
+#
+# Intents run on brokered claude only, so enabling this also deploys the
+# egress broker and the claude egress policies, whatever agent.runners.claude
+# says; the runner image and provider are agent.runners.claude's. Builds need
+# an accepted repository-declared image (agent.repositoryImages): without it
+# every build blocks on ImageRequired unless its Project sets
+# requireRepositoryImage: false.
+intentController:
+    enabled: false
+    # Override of <prefix>/intent-controller; same shape as
+    # <controller>.image (repository / tag / digest).
+    image: {}
+    config:
+        # How often each Project's intent repository and each active intent's
+        # issue are polled. A listing that has not changed costs nothing
+        # (conditional requests), but every active intent reads its issue.
+        pollInterval: 60s
+        # How often an intent awaiting approval polls its issue's events.
+        approvalPollInterval: 30s
+        # How often an intent in review polls its pull request.
+        prPollInterval: 60s
+        # Intent agent Jobs running at once: a pool of its own, separate from
+        # remediation's.
+        maxConcurrentRuns: 1
+        # Pause intent polling while the GitHub installation has fewer core
+        # requests left than this, so intents never starve the security
+        # flow's share of the rate limit. 0 disables the floor.
+        rateLimitFloor: 1000
+        # Ended intents are deleted this long after completion (everything
+        # they own cascades); "0s" keeps them forever.
+        intentTTL: 336h
+        # activeDeadlineSeconds on every intent Job: at least both stage
+        # timeouts (the controller refuses to start otherwise), and inside
+        # the broker caller token's lifetime (105m).
+        jobDeadline: 90m
+        # The per-stage ceilings. A Project's limits may lower them, never
+        # raise them. The models must resolve to the claude harness.
+        plan:
+            model: anthropic/claude-sonnet-5
+            maxTurns: 40
+            tokenBudget: 200000
+            timeout: 20m
+        build:
+            model: anthropic/claude-sonnet-5
+            maxTurns: 150
+            tokenBudget: 800000
+            timeout: 60m
+        # Extra PATCHY_* keys for the intent controller only.
+        extra: {}
+    # The Secrets your Forges reference (spec.secretRef): intent-controller's
+    # `secrets get` is restricted to exactly these names. Required and
+    # non-empty — RBAC reads an empty resourceNames list as every Secret.
+    forgeSecrets:
+        - patchy-github
+    resources:
+        requests:
+            cpu: 50m
+            memory: 96Mi
+        limits:
+            cpu: 500m
+            memory: 256Mi
+    podAnnotations: {}
+    podLabels: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    serviceAccount:
+        create: true
+        name: ""
+        annotations: {}
+    # Probes in; DNS, the Kubernetes API and GitHub (TCP 443/6443) out.
+    # extraEgress appends verbatim NetworkPolicy egress rules — a Forge's
+    # egress proxy on a port other than 443, say.
+    networkPolicy:
+        create: true
+        extraEgress: []
+
 # ---- status-server ----------------------------------------------------------
 # The human-facing status page (templates/status-server.yaml): the findings
 # board/detail with the approve/retry/expedite/suspend/resume actions, and the rollup
@@ -899,7 +985,8 @@ agent:
         # Most files (upserts plus deletes) a changeset from a
         # repository-image run may touch before remediation-controller
         # rejects it without any forge call. Default-image runs are not
-        # capped.
+        # capped. intent-controller holds every build to it, whatever image
+        # ran it.
         changesetMaxEntries: 500
         # Name of a kubernetes.io/dockerconfigjson Secret in the RELEASE
         # namespace that source-controller resolves declared images with

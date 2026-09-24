@@ -44,7 +44,10 @@ type Kind struct {
 
 // Kinds are the nouns, in the order `patchy api-resources`-style help lists
 // them: the pipeline state machine first, then its configuration. `get all`
-// prints them in this order too, so the sequence is the pipeline's own.
+// prints them in this order too, so the sequence is the pipeline's own. The
+// intent flow's state follows the finding flow's, and its Project comes last
+// with the rest of the configuration. The CLI only reads those three: it has
+// no verb that acts on an intent.
 var Kinds = []Kind{
 	{
 		Singular: "finding",
@@ -88,6 +91,22 @@ var Kinds = []Kind{
 		NewList:  func() client.ObjectList { return &v1alpha1.RepositoryList{} },
 	},
 	{
+		// The CRD declares no shortName for Intent.
+		Singular: "intent",
+		Plural:   "intents",
+		Title:    "Intents",
+		New:      func() client.Object { return &v1alpha1.Intent{} },
+		NewList:  func() client.ObjectList { return &v1alpha1.IntentList{} },
+	},
+	{
+		Singular: "intentrun",
+		Plural:   "intentruns",
+		Title:    "Intent runs",
+		Aliases:  []string{"irun"},
+		New:      func() client.Object { return &v1alpha1.IntentRun{} },
+		NewList:  func() client.ObjectList { return &v1alpha1.IntentRunList{} },
+	},
+	{
 		Singular: "integration",
 		Plural:   "integrations",
 		Title:    "Integrations",
@@ -100,6 +119,14 @@ var Kinds = []Kind{
 		Title:    "Forges",
 		New:      func() client.Object { return &v1alpha1.Forge{} },
 		NewList:  func() client.ObjectList { return &v1alpha1.ForgeList{} },
+	},
+	{
+		Singular: "project",
+		Plural:   "projects",
+		Title:    "Projects",
+		Aliases:  []string{"proj"},
+		New:      func() client.Object { return &v1alpha1.Project{} },
+		NewList:  func() client.ObjectList { return &v1alpha1.ProjectList{} },
 	},
 }
 

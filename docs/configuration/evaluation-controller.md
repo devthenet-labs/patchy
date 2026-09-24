@@ -1,10 +1,10 @@
 # evaluation-controller
 
-The remote skill-evaluation engine, and the one **optional** controller: deployments that never submit remote
-evaluations simply do not run it. It serves the [evolve](https://github.com/bitwise-media-group/evolve)-facing HTTP API
-(workspace upload, submission, snapshot, SSE monitoring, cancellation) and runs the reconcilers that expand each
-submitted `Evaluation` into `EvaluationUnit` children, schedule them through the sandboxed agent-Job machinery with
-bounded concurrency, collect each pod's result stream, and expire finished evaluations on a TTL.
+The remote skill-evaluation engine, and an **optional** controller: deployments that never submit remote evaluations
+simply do not run it. It serves the [evolve](https://github.com/bitwise-media-group/evolve)-facing HTTP API (workspace
+upload, submission, snapshot, SSE monitoring, cancellation) and runs the reconcilers that expand each submitted
+`Evaluation` into `EvaluationUnit` children, schedule them through the sandboxed agent-Job machinery with bounded
+concurrency, collect each pod's result stream, and expire finished evaluations on a TTL.
 
 ```sh
 evaluation-controller serve --namespace patchy --auth-config /etc/patchy/auth/config.yaml

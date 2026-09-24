@@ -443,6 +443,188 @@ notes_has notes-codex "$codexsecret" yes
 notes notes-eval-off --set evaluationController.runners.codex.enabled=true
 notes_has notes-eval-off "patchy-openai" no
 
+# ---- intent controller: off by default --------------------------------------
+it='select(.kind == "Deployment" and .metadata.name == "patchy-intent-controller") | .spec.template'
+icm='select(.kind == "ConfigMap" and .metadata.name == "patchy-intent-controller-config") | .data'
+expect default 'select(.metadata.labels["app.kubernetes.io/name"] == "intent-controller") | .kind' ""
+expect default "select(.kind == \"ConfigMap\") | (.data // {}) | keys | .[] | select(test(\"^PATCHY_INTENT_\"))" ""
+
+# ---- intent controller on: the Deployment, its identity and its grants ------
+ifx=$fixtures/intent-controller.yaml
+render intent -f "$ifx"
+expect intent "$it | .spec.containers[0].image | split(\":\") | .[0]" ghcr.io/devthenet-labs/patchy/intent-controller
+expect intent "$it | .spec.serviceAccountName" patchy-intent-controller
+expect intent "$it | .spec.containers[0].envFrom[] | .configMapRef.name" patchy-intent-controller-config
+expect intent "$it | .spec.containers[0].ports[] | .name + \" \" + (.containerPort | tostring)" "health 8081"
+expect intent "$it | .metadata.labels[\"app.kubernetes.io/component\"]" controller
+expect intent 'select(.kind == "ServiceAccount" and .metadata.name == "patchy-intent-controller") | .metadata.namespace' patchy
+# Every binding names that ServiceAccount, every Role it references is
+# rendered, and there is no ClusterRole: the design's tightest posture.
+expect intent 'select((.kind == "RoleBinding" or .kind == "ClusterRoleBinding") and .metadata.labels["app.kubernetes.io/name"] == "intent-controller") | .roleRef.kind + "/" + .roleRef.name + " <- " + (.subjects[] | .kind + " " + .namespace + "/" + .name)' \
+  "Role/patchy-intent-controller <- ServiceAccount patchy/patchy-intent-controller
+Role/patchy-intent-controller-jobs <- ServiceAccount patchy/patchy-intent-controller"
+expect intent 'select((.kind == "Role" or .kind == "ClusterRole") and .metadata.labels["app.kubernetes.io/name"] == "intent-controller") | .kind + "/" + .metadata.name + " " + (.metadata.namespace // "-")' \
+  "Role/patchy-intent-controller patchy
+Role/patchy-intent-controller-jobs patchy-agents"
+# The release-namespace Role, rule by rule: exactly the verbs the engine uses.
+irole='select(.kind == "Role" and .metadata.name == "patchy-intent-controller") | .rules[]'
+expect intent "$irole | (.resources | join(\",\")) + \" \" + (.verbs | join(\",\"))" \
+  "projects get,list,watch
+projects/status update
+intents create,get,list,watch,delete
+intents/status,intents/finalizers update
+intentruns create,get,list,watch,update
+intentruns/status,intentruns/finalizers update
+repositories create,get,list,watch,delete
+forges get,list,watch
+configmaps create,get,list,watch,update
+secrets get
+leases get,create,update
+events create,patch"
+# secrets get only on the named Forge Secrets; no other rule names secrets.
+expect intent "$irole | select(.resources[0] == \"secrets\") | .resourceNames | join(\",\")" \
+  "patchy-github,patchy-github-enterprise"
+expect intent "$irole | select(.resourceNames == null) | .resources[] | select(. == \"secrets\")" ""
+# The agents-namespace Role is a copy of the shared agent-jobs Role.
+if [ -z "$(get intent 'select(.kind == "Role" and .metadata.name == "patchy-intent-controller-jobs") | .rules')" ] ||
+  [ "$(get intent 'select(.kind == "Role" and .metadata.name == "patchy-intent-controller-jobs") | .rules')" != \
+    "$(get intent 'select(.kind == "Role" and .metadata.name == "patchy-agent-jobs") | .rules')" ]; then
+  fail "intent: patchy-intent-controller-jobs is not a copy of the agent-jobs Role"
+fi
+# NetworkPolicy: probes in; DNS and TCP 443/6443 out, like the job controllers.
+inp='select(.kind == "NetworkPolicy" and .metadata.name == "patchy-intent-controller") | .spec'
+expect intent "$inp | .ingress[].ports[] | .protocol + \"/\" + (.port | tostring)" "TCP/8081"
+expect intent "$inp | .egress[].ports[] | .protocol + \"/\" + (.port | tostring)" "UDP/53
+TCP/53
+TCP/443
+TCP/6443"
+
+# ---- intent controller on: its ConfigMap holds only what it binds -----------
+# Brokered claude only, whatever agent.runners enables for findings.
+cm intent intent-controller PATCHY_HARNESSES claude
+expect intent "$icm | .PATCHY_CLAUDE_AGENT_IMAGE | split(\":\") | .[0]" ghcr.io/devthenet-labs/patchy/claude-agent-runner
+cm intent intent-controller PATCHY_BROKER_URL http://patchy-egress-broker.patchy.svc.cluster.local:8080
+cm intent intent-controller PATCHY_CLAUDE_PROVIDER anthropic
+cm intent intent-controller PATCHY_AGENT_NAMESPACE patchy-agents
+cm intent intent-controller PATCHY_AGENT_SERVICE_ACCOUNT patchy-agent
+cm intent intent-controller PATCHY_JOB_TTL 1h
+# The finding job controllers' keys stay theirs: the intent Job deadline is
+# its own, it runs no other harness, and it has no model allowlist.
+for key in PATCHY_JOB_DEADLINE PATCHY_MODEL_ALLOWLIST PATCHY_CODEX_AGENT_IMAGE PATCHY_COPILOT_AGENT_IMAGE \
+  PATCHY_INVESTIGATE_MODEL PATCHY_REMEDIATE_MODEL PATCHY_MAX_ATTEMPTS PATCHY_LISTEN_ADDR \
+  PATCHY_REPOSITORY_IMAGES PATCHY_AGENT_EPHEMERAL_STORAGE PATCHY_CHANGESET_MAX_ENTRIES; do
+  cm intent intent-controller "$key" null
+done
+# Its own keys equal the kustomize component's, which
+# cmd/intent-controller/serve_test.go holds to the binary's flags and
+# defaults — so every chart key is one the binary binds.
+component=deploy/kustomize/components/intent-controller/configmap.yaml
+ckeys=$(yq '.data | keys | .[] | select(test("^PATCHY_INTENT_"))' "$component" | sort)
+expect intent "$icm | keys | .[] | select(test(\"^PATCHY_INTENT_\"))" "$ckeys"
+for key in $ckeys; do
+  cm intent intent-controller "$key" "$(yq ".data.$key" "$component")"
+done
+# The finding controllers are not touched by the flag...
+for c in integration-controller source-controller context-controller investigation-controller remediation-controller; do
+  csum="select(.kind == \"Deployment\" and .metadata.name == \"patchy-$c\") | .spec.template.metadata.annotations[\"checksum/config\"]"
+  if [ "$(get default "$csum")" != "$(get intent "$csum")" ]; then
+    fail "intent: enabling the intent controller changed $c's config"
+  fi
+done
+# ...and a config change rolls the intent controller.
+render intent-tuned -f "$ifx" --set intentController.config.plan.maxTurns=10 \
+  --set intentController.config.intentTTL=0s --set intentController.config.rateLimitFloor=0 \
+  --set intentController.config.logLevel=debug --set intentController.config.extra.PATCHY_INTENT_POLL_INTERVAL=2m
+cm intent-tuned intent-controller PATCHY_INTENT_PLAN_MAX_TURNS 10
+cm intent-tuned intent-controller PATCHY_INTENT_TTL 0s
+cm intent-tuned intent-controller PATCHY_INTENT_RATE_LIMIT_FLOOR 0
+cm intent-tuned intent-controller PATCHY_LOG_LEVEL debug
+cm intent-tuned intent-controller PATCHY_INTENT_POLL_INTERVAL 2m
+if [ "$(get intent "$it | .metadata.annotations[\"checksum/config\"]")" = \
+  "$(get intent-tuned "$it | .metadata.annotations[\"checksum/config\"]")" ]; then
+  fail "intent-tuned: checksum/config did not change, so an upgrade would not roll the controller"
+fi
+
+# ---- intent controller on: repository images reach it -----------------------
+render intent-ri -f "$ifx" -f "$fixtures/repository-images.yaml"
+cm intent-ri intent-controller PATCHY_REPOSITORY_IMAGES true
+cm intent-ri intent-controller PATCHY_AGENT_EPHEMERAL_STORAGE 8Gi
+cm intent-ri intent-controller PATCHY_CHANGESET_MAX_ENTRIES 500
+cm intent-ri intent-controller PATCHY_REPOSITORY_IMAGE_REGISTRIES null
+cm intent-ri intent-controller DOCKER_CONFIG null
+# The global egress proxy reaches it too: it talks to GitHub.
+render intent-proxy -f "$ifx" --set proxy.httpsProxy=http://proxy.example.com:3128
+cm intent-proxy intent-controller HTTPS_PROXY http://proxy.example.com:3128
+cm intent-proxy intent-controller NO_PROXY localhost,127.0.0.1,.svc,.cluster.local
+
+# ---- intent controller on: claude everywhere it runs ------------------------
+# Intents run on claude even when the finding fleet does not: the broker
+# deploys, the agent egress admits it, and each egress dialect keeps a claude
+# policy for the intent pods.
+render intent-codex -f "$ifx" --set agent.runners.claude.enabled=false --set agent.runners.codex.enabled=true
+expect intent-codex 'select(.kind == "Deployment" and .metadata.name == "patchy-egress-broker") | .kind' Deployment
+expect intent-codex 'select(.kind == "NetworkPolicy" and .metadata.name == "patchy-agents-egress") | .spec.egress[].to[].podSelector.matchLabels["app.kubernetes.io/name"] | select(. == "egress-broker")' \
+  egress-broker
+cm intent-codex intent-controller PATCHY_HARNESSES claude
+cm intent-codex investigation-controller PATCHY_HARNESSES codex
+render intent-codex-cilium -f "$ifx" --set agent.networkPolicy.mode=cilium \
+  --set agent.runners.claude.enabled=false --set agent.runners.codex.enabled=true
+expect intent-codex-cilium "$hnp" "CiliumNetworkPolicy/patchy-agent-egress-claude
+CiliumNetworkPolicy/patchy-agent-egress-codex"
+render intent-codex-istio -f "$ifx" --set agent.networkPolicy.mode=istio \
+  --set agent.runners.claude.enabled=false --set agent.runners.codex.enabled=true
+expect intent-codex-istio "$hnp" "ServiceEntry/patchy-agent-codex
+Sidecar/patchy-agent-egress-claude
+Sidecar/patchy-agent-egress-codex"
+# ...and with the controller off, claude disabled for findings is claude off.
+render intent-off-codex --set agent.runners.claude.enabled=false --set agent.runners.codex.enabled=true
+expect intent-off-codex 'select(.kind == "Deployment" and .metadata.name == "patchy-egress-broker") | .kind' ""
+
+# ---- intent controller variants ----------------------------------------------
+# A bring-your-own ServiceAccount: not rendered, but still what runs and binds.
+render intent-own-sa -f "$ifx" --set intentController.serviceAccount.create=false \
+  --set intentController.serviceAccount.name=intents
+expect intent-own-sa 'select(.kind == "ServiceAccount" and .metadata.labels["app.kubernetes.io/name"] == "intent-controller") | .metadata.name' ""
+expect intent-own-sa "$it | .spec.serviceAccountName" intents
+expect intent-own-sa 'select(.kind == "RoleBinding" and .metadata.labels["app.kubernetes.io/name"] == "intent-controller") | .subjects[].name' \
+  "intents
+intents"
+# Without its NetworkPolicy the component still renders.
+render intent-no-np -f "$ifx" --set intentController.networkPolicy.create=false
+expect intent-no-np "$inp | .podSelector" ""
+expect intent-no-np "$it | .spec.serviceAccountName" patchy-intent-controller
+render intent-extra-egress -f "$ifx" \
+  --set-json 'intentController.networkPolicy.extraEgress=[{"ports":[{"protocol":"TCP","port":3128}]}]'
+expect intent-extra-egress "$inp | .egress[].ports[] | select(.port == 3128) | .protocol" TCP
+
+# ---- intent controller guards -------------------------------------------------
+# An empty resourceNames list grants every Secret, so it must never render:
+# the schema refuses it, and the template refuses it again when the schema
+# is skipped.
+expect_fail "intent without forge secrets" "missing property 'forgeSecrets'" \
+  -f "$ifx" --set-json 'intentController.forgeSecrets=null'
+expect_fail "intent with an empty forge secret list" "intentController/forgeSecrets" \
+  -f "$ifx" --set-json 'intentController.forgeSecrets=[]'
+expect_fail "intent without forge secrets, schema skipped" \
+  "intentController.enabled requires intentController.forgeSecrets" \
+  -f "$ifx" --set-json 'intentController.forgeSecrets=[]' --skip-schema-validation
+expect_fail "intent with a malformed forge secret" "intentController/forgeSecrets/0" \
+  -f "$ifx" --set-json 'intentController.forgeSecrets=["Not A Name"]'
+expect_fail "intent with a unitless TTL" "intentController/config/intentTTL" \
+  -f "$ifx" --set intentController.config.intentTTL=0
+expect_fail "intent with a zero-turn stage" "intentController/config/build/maxTurns" \
+  -f "$ifx" --set intentController.config.build.maxTurns=0
+
+# ---- ...and the install NOTES say what it still needs ------------------------
+notes notes-intent -f "$ifx"
+notes_has notes-intent "intent-controller is enabled" yes
+notes_has notes-intent "patchy-github, patchy-github-enterprise" yes
+notes_has notes-intent "every intent build blocks on" yes
+notes notes-intent-ri -f "$ifx" -f "$fixtures/repository-images.yaml"
+notes_has notes-intent-ri "every intent build blocks on" no
+notes notes-intent-off
+notes_has notes-intent-off "intent-controller" no
+
 # ---- egress broker limits ---------------------------------------------------
 render limits -f "$fixtures/broker-limits.yaml"
 cm limits egress-broker PATCHY_REQUESTS_PER_POD 2000

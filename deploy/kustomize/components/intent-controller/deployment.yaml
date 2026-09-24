@@ -1,0 +1,94 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: patchy-intent-controller
+    namespace: patchy
+    labels:
+        app: intent-controller
+        app.kubernetes.io/name: intent-controller
+        app.kubernetes.io/part-of: patchy
+        app.kubernetes.io/component: controller
+spec:
+    replicas: 1
+    strategy:
+        type: Recreate
+    selector:
+        matchLabels:
+            app.kubernetes.io/name: intent-controller
+            app.kubernetes.io/part-of: patchy
+    template:
+        metadata:
+            labels:
+                app: intent-controller
+                app.kubernetes.io/name: intent-controller
+                app.kubernetes.io/part-of: patchy
+                # Selected by the base patchy-controllers NetworkPolicy.
+                app.kubernetes.io/component: controller
+        spec:
+            serviceAccountName: patchy-intent-controller
+            securityContext:
+                runAsNonRoot: true
+                runAsUser: 65532
+                runAsGroup: 65532
+                fsGroup: 65532
+                seccompProfile:
+                    type: RuntimeDefault
+            containers:
+                - name: controller
+                  # Built from Dockerfile.controller (repo root)
+                  # (TARGET=intent-controller in .goreleaser.yaml).
+                  image: ghcr.io/devthenet-labs/patchy/intent-controller:latest
+                  args: ["serve"]
+                  # The shared settings first, then its own: a key in both
+                  # takes the later source's value.
+                  envFrom:
+                      - configMapRef:
+                            name: patchy-config
+                      - configMapRef:
+                            name: patchy-intent-controller-config
+                  env:
+                      - name: POD_NAMESPACE
+                        valueFrom:
+                            fieldRef:
+                                fieldPath: metadata.namespace
+                  ports:
+                      - name: health
+                        containerPort: 8081
+                        protocol: TCP
+                  livenessProbe:
+                      httpGet:
+                          path: /healthz
+                          port: health
+                      initialDelaySeconds: 5
+                      periodSeconds: 20
+                  readinessProbe:
+                      httpGet:
+                          path: /readyz
+                          port: health
+                      initialDelaySeconds: 2
+                      periodSeconds: 10
+                  resources:
+                      requests:
+                          cpu: 50m
+                          memory: 96Mi
+                      limits:
+                          cpu: 500m
+                          memory: 256Mi
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                          drop: ["ALL"]
+                      seccompProfile:
+                          type: RuntimeDefault
+                  volumeMounts:
+                      - name: tmp
+                        mountPath: /tmp
+            volumes:
+                # The root filesystem is read-only; Go's os.CreateTemp wants a
+                # writable /tmp.
+                - name: tmp
+                  emptyDir: {}

@@ -1,11 +1,11 @@
 # Configuration
 
-The six controllers (the [evaluation-controller](evaluation-controller.md) is the optional one), the
-[status-server](status-server.md) and the [egress-broker](egress-broker.md) share one configuration system; the
-agent-runner is deliberately different. There are no config files — configuration is flags and environment only, and the
-GitHub credentials are **not** configuration: they live in Secrets referenced by your `Integration` and `Forge` custom
-resources ([secrets and CRs](../getting-started/install.md#create-the-secrets)), read on demand through the Kubernetes
-API.
+The seven controllers (the [evaluation-controller](evaluation-controller.md) and the
+[intent-controller](intent-controller.md) are the optional ones), the [status-server](status-server.md) and the
+[egress-broker](egress-broker.md) share one configuration system; the agent-runner is deliberately different. There are
+no config files — configuration is flags and environment only, and the GitHub credentials are **not** configuration:
+they live in Secrets referenced by your `Integration` and `Forge` custom resources
+([secrets and CRs](../getting-started/install.md#create-the-secrets)), read on demand through the Kubernetes API.
 
 ## Flags, environment, precedence
 
@@ -69,6 +69,8 @@ standard `OTEL_*` variables select exporters. See [Observability](../observabili
 - [remediation-controller](remediation-controller.md) — queue, priority weights, remediation Jobs, push/PR, TTL
 - [evaluation-controller](evaluation-controller.md) — optional: the evaluation API, Evaluation/EvaluationUnit
   reconcilers, evaluation Jobs, TTL
+- [intent-controller](intent-controller.md) — optional: intent-driven development, Projects, plan and build Jobs, the
+  intent-side GitHub writes, TTL
 - [agent-runner](agent-runner.md) — the in-pod environment contract
 - [egress-broker](egress-broker.md) — the proxy all claude model traffic goes through: routes, credentials, limits
 - [status-server](status-server.md) — the status page's flags, authentication and authorization

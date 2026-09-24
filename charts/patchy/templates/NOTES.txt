@@ -64,6 +64,21 @@ routing to the {{ include "patchy.fullname" . }}-integration-controller
 Service — then point the GitHub App's single webhook URL at
 https://<host>/github/webhooks.
 {{- end }}
+{{- if .Values.intentController.enabled }}
+
+intent-controller is enabled. It does nothing until a Project exists: add
+one per project to the patchy-config chart's `projects` array, then check
+`kubectl get projects -n {{ .Release.Namespace }}` reports Ready. It reads only
+the Forge Secrets named in intentController.forgeSecrets
+({{ join ", " .Values.intentController.forgeSecrets }}): the Projects of a Forge referencing any other Secret never
+become Ready, and its log shows the refused read.
+{{- if not (.Values.agent.repositoryImages | default dict).enabled }}
+
+NOTE: agent.repositoryImages is off, so every intent build blocks on
+ImageRequired unless its Project sets requireRepositoryImage: false. Builds
+are meant to run in the application repository's own image.
+{{- end }}
+{{- end }}
 {{- $egressMode := include "patchy.egressMode" . }}
 {{- if eq $egressMode "none" }}
 

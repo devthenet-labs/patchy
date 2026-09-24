@@ -109,28 +109,31 @@ app.kubernetes.io/managed-by: patchy
 
 {{/*
 Whether the egress credential broker deploys: exactly when a claude runner is
-enabled anywhere (findings or evaluations). There is deliberately no separate
-enabled knob — claude runs proxy-only, so claude ⇒ broker, and a fake-only
-dev/e2e values file renders none of it. Returns a non-empty string for yes.
+enabled anywhere (findings, evaluations or intents). There is deliberately no
+separate enabled knob — claude runs proxy-only, so claude ⇒ broker, and a
+fake-only dev/e2e values file renders none of it. intent-controller runs
+brokered claude and nothing else, so enabling it enables claude whatever
+agent.runners.claude says. Returns a non-empty string for yes.
 */}}
 {{- define "patchy.brokerEnabled" -}}
-{{- if or .Values.agent.runners.claude.enabled (and .Values.evaluationController.enabled .Values.evaluationController.runners.claude.enabled) -}}
+{{- if or .Values.agent.runners.claude.enabled (and .Values.evaluationController.enabled .Values.evaluationController.runners.claude.enabled) .Values.intentController.enabled -}}
 yes
 {{- end -}}
 {{- end }}
 
 {{/*
-Whether a harness runs anywhere (findings or evaluations), by the same rule
-as patchy.brokerEnabled. Evaluation Jobs carry the same harness label as
-finding Jobs, so the per-harness egress policies (Cilium, GKE FQDN, Istio)
-render for a harness enabled on either fleet; hosts and dnsPatterns still
-come from agent.runners.<id>. Takes (dict "root" $ "id" $id); returns a
-non-empty string for yes.
+Whether a harness runs anywhere (findings, evaluations or intents), by the
+same rule as patchy.brokerEnabled. Evaluation and intent Jobs carry the same
+harness label as finding Jobs, so the per-harness egress policies (Cilium,
+GKE FQDN, Istio) render for a harness enabled on any fleet; hosts and
+dnsPatterns still come from agent.runners.<id>. Intents run on claude only.
+Takes (dict "root" $ "id" $id); returns a non-empty string for yes.
 */}}
 {{- define "patchy.harnessEnabled" -}}
 {{- $agent := index .root.Values.agent.runners .id | default dict -}}
 {{- $eval := index .root.Values.evaluationController.runners .id | default dict -}}
-{{- if or $agent.enabled (and .root.Values.evaluationController.enabled $eval.enabled) -}}
+{{- $intent := and .root.Values.intentController.enabled (eq .id "claude") -}}
+{{- if or $agent.enabled (and .root.Values.evaluationController.enabled $eval.enabled) $intent -}}
 yes
 {{- end -}}
 {{- end }}

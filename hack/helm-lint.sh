@@ -72,6 +72,26 @@ helm template patchy charts/patchy -f hack/testdata/chart-render/evaluation-cont
   --set agent.runners.claude.enabled=false --set agent.runners.codex.enabled=true \
   --set evaluationController.runners.codex.enabled=true >/dev/null
 
+# The optional intent controller (default off): its own template under every
+# egress mode, with repository images on, beside the evaluation controller,
+# and as the only fleet that runs claude (which still deploys the broker).
+helm lint charts/patchy -f hack/testdata/chart-render/intent-controller.yaml
+helm template patchy charts/patchy -f hack/testdata/chart-render/intent-controller.yaml >/dev/null
+helm template patchy charts/patchy -f hack/testdata/chart-render/intent-controller.yaml \
+  --set agent.networkPolicy.mode=cilium >/dev/null
+helm template patchy charts/patchy -f hack/testdata/chart-render/intent-controller.yaml \
+  --set agent.networkPolicy.mode=gke >/dev/null
+helm template patchy charts/patchy -f hack/testdata/chart-render/intent-controller.yaml \
+  --set agent.networkPolicy.mode=istio >/dev/null
+helm lint charts/patchy -f hack/testdata/chart-render/intent-controller.yaml \
+  -f hack/testdata/chart-render/repository-images.yaml
+helm template patchy charts/patchy -f hack/testdata/chart-render/intent-controller.yaml \
+  -f hack/testdata/chart-render/repository-images.yaml >/dev/null
+helm template patchy charts/patchy -f hack/testdata/chart-render/intent-controller.yaml \
+  -f hack/testdata/chart-render/evaluation-controller.yaml >/dev/null
+helm template patchy charts/patchy -f hack/testdata/chart-render/intent-controller.yaml \
+  --set agent.runners.claude.enabled=false --set agent.runners.codex.enabled=true >/dev/null
+
 # The CR chart: the empty default plus a populated render of every array.
 helm lint charts/patchy-config
 helm template patchy-config charts/patchy-config >/dev/null

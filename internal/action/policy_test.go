@@ -152,21 +152,34 @@ func TestAdmissionPolicyExemptsEveryController(t *testing.T) {
 	}
 	policy := string(raw)
 
-	accounts, err := os.ReadFile("../../deploy/kustomize/base/serviceaccount.yaml")
-	if err != nil {
-		t.Fatalf("read serviceaccounts: %v", err)
+	// The base's identities, and those of the opt-in components that add a
+	// controller.
+	var accounts strings.Builder
+	for _, path := range []string{
+		"../../deploy/kustomize/base/serviceaccount.yaml",
+		"../../deploy/kustomize/components/intent-controller/serviceaccount.yaml",
+	} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read serviceaccounts: %v", err)
+		}
+		accounts.Write(raw)
+		accounts.WriteByte('\n')
 	}
 
-	for line := range strings.SplitSeq(string(accounts), "\n") {
+	for line := range strings.SplitSeq(accounts.String(), "\n") {
 		name := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "name:"))
 		// The agent SA runs in the agents namespace and never touches the API.
 		// The evaluation controller owns the Evaluation/EvaluationUnit kinds
 		// only — it never writes Finding spec, so it needs no exemption. The
 		// egress broker's whole Kubernetes surface is TokenReview — it never
-		// reads or writes any patchy kind at all.
+		// reads or writes any patchy kind at all. The intent controller writes
+		// no Finding spec: it owns the Project/Intent/IntentRun kinds and
+		// creates Repositories, and nothing of a Finding.
 		if !strings.HasPrefix(name, "patchy-") || name == "patchy-agent" ||
 			name == "patchy-evaluation-controller" ||
 			name == "patchy-egress-broker" ||
+			name == "patchy-intent-controller" ||
 			strings.Contains(line, "app.kubernetes.io") {
 			continue
 		}

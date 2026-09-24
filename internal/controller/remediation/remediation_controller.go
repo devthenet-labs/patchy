@@ -50,8 +50,9 @@ type CRRunner interface {
 // push (Git Data API, scoped write token) and the pull request. It wraps
 // internal/forge + internal/ghpush; tests substitute a fake.
 type ForgeWriter interface {
-	// Push replays the changeset as branch on the repository.
-	Push(ctx context.Context, namespace, repoURL, branch string, cs *envelope.Changeset) error
+	// Push replays the changeset as branch on the repository and returns
+	// the SHA of the commit the branch now points at.
+	Push(ctx context.Context, namespace, repoURL, branch string, cs *envelope.Changeset) (commit string, err error)
 	// EnsurePR opens (or finds, idempotently by head branch) the pull
 	// request for branch.
 	EnsurePR(ctx context.Context, namespace, repoURL, branch, title, body string) (number int64, url string, err error)
@@ -423,7 +424,8 @@ func (r *RemediationReconciler) succeed(
 		return r.fail(ctx, rem, string(envelope.OutcomeChangesetRejected), err.Error(), &result.Stage, transcript)
 	}
 	branch := "patchy/" + fnd.Name
-	if err := r.Forge.Push(ctx, rem.Namespace, fnd.Spec.Repository.URL, branch, result.Changeset); err != nil {
+	commit, err := r.Forge.Push(ctx, rem.Namespace, fnd.Spec.Repository.URL, branch, result.Changeset)
+	if err != nil {
 		return fmt.Errorf("push remediation branch: %w", err)
 	}
 
@@ -447,6 +449,7 @@ func (r *RemediationReconciler) succeed(
 	if err := r.stampChild(ctx, rem, result, v1alpha1.RunComplete, transcript, func(cur *v1alpha1.Remediation) {
 		cur.Status.Success = true
 		cur.Status.Branch = branch
+		cur.Status.PushedCommit = commit
 		cur.Status.Confidence = agentresult.FormatConfidence(result.Confidence)
 		cur.Status.PullRequest = &v1alpha1.PullRequestRef{Number: number, URL: url}
 	}); err != nil {

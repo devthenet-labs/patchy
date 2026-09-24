@@ -25,25 +25,27 @@ func New(baseURL string, opts ...ghclient.Option) *Pusher {
 	return &Pusher{baseURL: baseURL, opts: opts}
 }
 
-// Push creates one commit from the changeset on top of its base SHA and
-// points branch at it. The short-lived write token lives only for this call
-// and is never persisted.
+// Push creates one commit from the changeset on top of its base SHA, points
+// branch at it, and returns the commit's SHA. The short-lived write token
+// lives only for this call and is never persisted.
 func (p *Pusher) Push(ctx context.Context, repo ghclient.Repo, token, branch string,
-	cs *envelope.Changeset) error {
+	cs *envelope.Changeset) (string, error) {
 	client, err := ghclient.NewToken(token, p.baseURL, p.opts...)
 	if err != nil {
-		return fmt.Errorf("ghpush: %w", err)
+		return "", fmt.Errorf("ghpush: %w", err)
 	}
 	req := ghclient.BranchPush{
-		Branch:  branch,
-		BaseSHA: cs.BaseSHA,
-		Message: cs.CommitMessage,
-		Deletes: cs.Deletes,
+		Branch: branch,
+		CommitRequest: ghclient.CommitRequest{
+			BaseSHA: cs.BaseSHA,
+			Message: cs.CommitMessage,
+			Deletes: cs.Deletes,
+		},
 	}
 	for _, up := range cs.Upserts {
 		content, err := base64.StdEncoding.DecodeString(up.ContentB64)
 		if err != nil {
-			return fmt.Errorf("ghpush: decode %s: %w", up.Path, err)
+			return "", fmt.Errorf("ghpush: decode %s: %w", up.Path, err)
 		}
 		req.Files = append(req.Files, ghclient.CommitFile{Path: up.Path, Mode: up.Mode, Content: content})
 	}

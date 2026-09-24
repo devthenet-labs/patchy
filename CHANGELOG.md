@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.9](https://github.com/devthenet-labs/patchy/compare/v0.11.8...v0.11.9) (2026-09-24)
+
+
+### Bug Fixes
+
+* **integration:** post each tracking comment and notice exactly once ([#31](https://github.com/devthenet-labs/patchy/issues/31)) ([6edd73b](https://github.com/devthenet-labs/patchy/commit/6edd73b2fa655bed03d0d2ed8a69f46c6e1b2945))
+* **integration:** skip code-scanning reopens of code a merged fix replaced ([#33](https://github.com/devthenet-labs/patchy/issues/33)) ([021c7ad](https://github.com/devthenet-labs/patchy/commit/021c7ade30a1a5d81fa37a3a2b0fb118792d7d9d))
+* tell a retried stage why the previous attempt failed ([#32](https://github.com/devthenet-labs/patchy/issues/32)) ([73a33da](https://github.com/devthenet-labs/patchy/commit/73a33daa6186e9a7df39f152e3f24e613a24ae80))
+
 ## [0.11.8](https://github.com/devthenet-labs/patchy/compare/v0.11.7...v0.11.8) (2026-09-23)
 
 

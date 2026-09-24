@@ -4,6 +4,7 @@
 package intent
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -166,6 +167,62 @@ func TestApprovalDuringPlanRecordRetry(t *testing.T) {
 	in := e.drive(name, v1alpha1.IntentBuilding, repoImage)
 	if ap := in.Status.Approval; ap == nil || ap.EventID != id || ap.Source != v1alpha1.IntentActionLabel {
 		t.Fatalf("approval = %+v, want the label %d", ap, id)
+	}
+	if n := len(e.gh.withMarker("patchy:plan")); n != 1 {
+		t.Errorf("plan comments = %d, want exactly one", n)
+	}
+}
+
+// TestCommandApprovalDuringPlanRecordRetry: /patchy approve, made after the
+// plan comment was posted but while its record is still being retried (the
+// poll runs before the write-back is), waits for the record as the label
+// does, and is then accepted, answered once as done and never as not
+// available. A command after it in the same listing is answered meanwhile,
+// and only once.
+func TestCommandApprovalDuringPlanRecordRetry(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.newIntent(approver)
+	e.failStatusIf = func(in *v1alpha1.Intent) bool {
+		return in.Status.Plan != nil && in.Status.Plan.CommentID != 0
+	}
+	for range 30 {
+		if e.failed > 0 {
+			break
+		}
+		_ = e.reconcileIntent(name)
+		e.readyRepositories("")
+		e.runRuns()
+		e.clock.Advance(time.Minute)
+	}
+	if e.failed == 0 {
+		t.Fatal("the plan comment was never recorded")
+	}
+	e.clock.Advance(time.Second)
+	approve := e.gh.comment(approver, "/patchy approve")
+	e.clock.Advance(time.Second)
+	unknown := e.gh.comment(approver, "/patchy frobnicate")
+	// The status write keeps failing for as long as the poll takes to read
+	// the approval, which must not answer it.
+	e.failStatusIf = func(in *v1alpha1.Intent) bool {
+		return in.Status.Plan != nil && in.Status.Plan.CommentID != 0
+	}
+	_ = e.reconcileIntent(name)
+	if in := e.get(name); in.Status.Phase != v1alpha1.IntentPlanning {
+		t.Fatalf("phase = %s, want the plan's record still retried", in.Status.Phase)
+	}
+	if n := len(e.gh.withMarker(fmt.Sprintf("comment-%d", approve))); n != 0 {
+		t.Fatalf("the approval was answered (%d) before the plan's posting was recorded", n)
+	}
+	in := e.drive(name, v1alpha1.IntentBuilding, repoImage)
+	if ap := in.Status.Approval; ap == nil || ap.EventID != approve || ap.Source != v1alpha1.IntentActionCommand {
+		t.Fatalf("approval = %+v, want the command %d", ap, approve)
+	}
+	e.settleActions(name)
+	for id, want := range map[int64]string{approve: "is done", unknown: "frobnicate"} {
+		replies := e.gh.withMarker(fmt.Sprintf("comment-%d", id))
+		if len(replies) != 1 || !strings.Contains(replies[0].Body, want) {
+			t.Errorf("replies to comment %d = %+v, want one saying %q", id, replies, want)
+		}
 	}
 	if n := len(e.gh.withMarker("patchy:plan")); n != 1 {
 		t.Errorf("plan comments = %d, want exactly one", n)

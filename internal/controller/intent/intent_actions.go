@@ -194,6 +194,16 @@ func (p *pass) poll(ctx context.Context) (stop bool, err error) {
 	if err != nil {
 		return false, err
 	}
+	if p.deferred != 0 {
+		// A command waits for a later poll: the listing is settled only up
+		// to it, so the next poll reads it again.
+		p.pollNewest = nil
+		for _, c := range p.comments {
+			if c.ID < p.deferred && (p.pollNewest == nil || c.ID > p.pollNewest.ID) {
+				p.pollNewest = c
+			}
+		}
+	}
 	if stop, err := p.answer(ctx, actions, issue); stop || err != nil {
 		return stop, err
 	}
@@ -221,7 +231,9 @@ func (p *pass) poll(ctx context.Context) (stop bool, err error) {
 
 // answer settles the actions gathered, oldest first, recording each command
 // answered as seen as soon as its reply is posted, and then the whole
-// listing; stop reports that an action ended the Intent.
+// listing; stop reports that an action ended the Intent. Nothing at or after
+// a deferred command is recorded as seen: a command answered after it is
+// found answered again by its reply's marker.
 func (p *pass) answer(ctx context.Context, actions []humanAction, issue *ghclient.Issue) (stop bool, err error) {
 	for _, a := range actions {
 		answered, err := p.settle(ctx, a, issue)
@@ -231,7 +243,7 @@ func (p *pass) answer(ctx context.Context, actions []humanAction, issue *ghclien
 		if terminal(p.in.Status.Phase) {
 			return true, nil
 		}
-		if answered && a.source == v1alpha1.IntentActionCommand {
+		if answered && a.source == v1alpha1.IntentActionCommand && (p.deferred == 0 || a.id < p.deferred) {
 			if err := p.recordSeen(ctx, a.id, a.at); err != nil {
 				return false, err
 			}
@@ -309,6 +321,16 @@ func (p *pass) commands() []humanAction {
 		case action.VerbApprove:
 			if ap := p.in.Status.Approval; ap != nil && ap.Source == a.source && ap.EventID == a.id {
 				a.recorded = true
+			} else if p.approvalPending() && !a.edited && !refusedLocally(p.proj, a.actor) {
+				// The plan may already be on the issue, its posting not yet
+				// recorded (a write being retried, a restart): the approver
+				// may have read it. The approval waits for the record, as the
+				// approve label does, rather than being told the plan is
+				// not there.
+				if p.deferred == 0 || a.id < p.deferred {
+					p.deferred = a.id
+				}
+				continue
 			}
 		case action.VerbReplan:
 			if lt := p.in.Status.LastTrigger; lt != nil && lt.Source == a.source && lt.EventID == a.id {
@@ -322,6 +344,14 @@ func (p *pass) commands() []humanAction {
 		out = append(out, a)
 	}
 	return out
+}
+
+// approvalPending reports a plan recorded while planning whose posting for
+// approval is not recorded yet: writeBack posts it and then records it, and a
+// retry of that record finds the comment it posted.
+func (p *pass) approvalPending() bool {
+	pl := p.in.Status.Plan
+	return p.in.Status.Phase == v1alpha1.IntentPlanning && pl != nil && pl.PostedAt == nil
 }
 
 // approveLabelAction is the approve label event still to answer while the

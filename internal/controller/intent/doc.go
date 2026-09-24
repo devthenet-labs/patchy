@@ -106,7 +106,10 @@
 //     answered; no later poll reads a comment at or before it, so a command
 //     is never answered twice, even after patchy's reply is deleted, and the
 //     thread is listed only from there. Until then, a command's reply marker
-//     is found in the same listing that carries the command. A refused label
+//     is found in the same listing that carries the command. An approver's
+//     /patchy approve made while the plan is recorded but its posting not
+//     yet waits for that record, as the approve label does: the listing is
+//     settled only up to it, and a later poll answers it. A refused label
 //     is recorded by its notice and the label's removal. A refusal is
 //     replied to before it is recorded, so a record without a reply means
 //     the action was accepted, and the retry replies "done".

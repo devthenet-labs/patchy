@@ -130,6 +130,10 @@ type pass struct {
 	// taken before any answer, since a later listing in the pass (a
 	// replan's feedback) can hold comments the poll never read.
 	pollNewest *ghclient.Comment
+	// deferred is the oldest command the poll leaves for a later one (an
+	// approval made while the plan is recorded but its posting not yet):
+	// neither it nor anything after it is recorded as seen. 0 when none.
+	deferred int64
 	// refused are the accounts refused this pass without asking GitHub
 	// (refusedLocally), to be added to status.commands.refusedActors.
 	refused map[int64]bool

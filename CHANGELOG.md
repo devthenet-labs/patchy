@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.1](https://github.com/devthenet-labs/patchy/compare/v0.12.0...v0.12.1) (2026-09-24)
+
+
+### Features
+
+* **intent:** intent-controller for slice 1a (core, wiring, e2e) ([#51](https://github.com/devthenet-labs/patchy/issues/51)) ([4b3c8a9](https://github.com/devthenet-labs/patchy/commit/4b3c8a99478b62a02224aae4803c6d5515ce622d))
+
+
+### Bug Fixes
+
+* **integration:** quiet only commenters who fail the write-access check ([#50](https://github.com/devthenet-labs/patchy/issues/50)) ([442d9dc](https://github.com/devthenet-labs/patchy/commit/442d9dc34b13f83d1627f8fbc243d3fc7da61b00))
+
 ## [0.12.0](https://github.com/devthenet-labs/patchy/compare/v0.11.11...v0.12.0) (2026-09-24)
 
 

@@ -5,6 +5,8 @@ package jobs
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -145,6 +147,77 @@ func checkEvalAgent(t *testing.T, agent corev1.Container) {
 	if sec == nil || sec.RunAsUser == nil || *sec.RunAsUser != 65532 {
 		t.Error("agent container does not run as 65532")
 	}
+}
+
+// TestOperatorEnvCannotShadowEvalHandoff: an evaluation agent container
+// sets HOME and the EVOLVE_* handoff itself, and Runner.Env carries the
+// operator's provider env (--claude-provider-env, the chart's provider
+// `env`), so an operator entry of one of those names must never reach the
+// pod. A copy would be a second entry, and the kubelet takes the last one:
+// EVOLVE_UNIT_FILE=/tmp/x would point evolve exec-unit away from the unit
+// it was handed and fail every evaluation unit. Both claude runner shapes
+// (a Secret credential and the brokered one) build the same env.
+func TestOperatorEnvCannotShadowEvalHandoff(t *testing.T) {
+	wantNames := []string{"EVOLVE_BUNDLE_DIR", "EVOLVE_UNIT_FILE", "HOME"}
+	if got := EvalJobEnvNames(); !slices.Equal(got, wantNames) {
+		t.Errorf("EvalJobEnvNames() = %v, want %v", got, wantNames)
+	}
+	shapes := []struct {
+		name string
+		cfg  func() Config
+	}{
+		{"secret", testConfig},
+		{"brokered", brokeredConfig},
+	}
+	for _, shape := range shapes {
+		own := envMap(evalAgentFor(t, shape.cfg()))
+		for _, name := range EvalJobEnvNames() {
+			t.Run(shape.name+"/"+name, func(t *testing.T) {
+				cfg := shape.cfg()
+				claude := cfg.Runners["claude"]
+				claude.Env = maps.Clone(claude.Env)
+				if claude.Env == nil {
+					claude.Env = map[string]string{}
+				}
+				claude.Env[name] = "/tmp/operator"
+				cfg.Runners["claude"] = claude
+
+				agent := evalAgentFor(t, cfg)
+				var got []corev1.EnvVar
+				seen := map[string]bool{}
+				for _, e := range agent.Env {
+					if seen[e.Name] {
+						t.Errorf("eval agent env lists %s twice", e.Name)
+					}
+					seen[e.Name] = true
+					if e.Name == name {
+						got = append(got, e)
+					}
+				}
+				want := []corev1.EnvVar{{Name: name, Value: own[name].Value}}
+				if !slices.Equal(got, want) {
+					t.Errorf("%s entries = %+v, want only the Job's own %+v", name, got, want)
+				}
+			})
+		}
+	}
+}
+
+// evalAgentFor creates the standard evaluation Job under cfg and returns its
+// agent container.
+func evalAgentFor(t *testing.T, cfg Config) corev1.Container {
+	t.Helper()
+	cs := fake.NewClientset()
+	c := New(cs, cfg, nil)
+	name, err := c.CreateEval(context.Background(), testEvalSpec())
+	if err != nil {
+		t.Fatalf("CreateEval: %v", err)
+	}
+	job, err := cs.BatchV1().Jobs(cfg.Namespace).Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	return job.Spec.Template.Spec.Containers[0]
 }
 
 func TestCreateEvalIsIdempotent(t *testing.T) {

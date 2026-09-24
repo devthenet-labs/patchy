@@ -167,8 +167,10 @@ type Runner struct {
 	// below. The Secret* fields are ignored when set.
 	Brokered bool
 	// Env is per-runner gateway/provider environment (base-URL overrides,
-	// skip-auth switches, the model map), values only, controller-built.
-	// It wins over Config.Env but can never name a credential channel.
+	// skip-auth switches, the model map, the operator's provider env),
+	// values only, controller-built. It wins over Config.Env but can never
+	// name a credential channel, nor a name the Job sets itself
+	// (PerJobEnvNames on a finding Job, EvalJobEnvNames on an evaluation one).
 	Env map[string]string
 	// Inject names the binaries this runner image contributes to a Job that
 	// runs a repository-declared image instead: the prepare init copies each
@@ -703,16 +705,37 @@ func (c *Client) agentContainer(runner Runner, spec Spec, res corev1.ResourceReq
 // GITHUB_TOKEN: copilot authenticates with a GitHub token, so the name that
 // carries its model credential is also a name the no-GitHub-token invariant
 // has to keep out of the controller-global Env.
-// The per-Job harness/model vars are reserved too: they are resolved per Job
-// and set from the Spec, so a controller-global Env copy must never shadow
-// them. So is the injected-binary directory, which only a Job that injects
-// sets: on the default image it would send agent-runner looking for an
-// injected CLI that was never copied. The gateway names a brokered runner's Env owns (base-URL overrides,
-// skip-auth switches, the caller-token channel) are folded in below from
-// provider.GatewayEnvNames — Config.Env can never shadow those either. The
-// proxy variables are reserved because a proxy would redirect the broker
-// traffic: nothing but the gateway env decides where a pod's model calls go.
+// The per-Job names (perJobEnv) are folded in below, and so are the gateway
+// names a brokered runner's Env owns (base-URL overrides, skip-auth
+// switches, the caller-token channel) from provider.GatewayEnvNames —
+// Config.Env can never shadow those either. The proxy variables are
+// reserved because a proxy would redirect the broker traffic: nothing but
+// the gateway env decides where a pod's model calls go.
 var reservedEnv = map[string]bool{
+	"ANTHROPIC_API_KEY":       true,
+	"CLAUDE_CODE_OAUTH_TOKEN": true,
+	"ANTHROPIC_AUTH_TOKEN":    true,
+	"OPENAI_API_KEY":          true,
+	"CODEX_API_KEY":           true,
+	"CODEX_ACCESS_TOKEN":      true,
+	"COPILOT_GITHUB_TOKEN":    true,
+	"GH_TOKEN":                true,
+	"GITHUB_TOKEN":            true,
+}
+
+// perJobEnv are the names a finding Job sets itself: HOME, the workspace,
+// and what agentEnv reads off the Spec (repository, phase, finding, base
+// SHA, the stage's harness and model, the budget grant, the estimate
+// calibration and the previous attempt). The injected-binary directory is
+// one too, set only by a Job that injects: on the default image it would
+// send agent-runner looking for an injected CLI that was never copied.
+// Unlike the gateway names, these are refused on Runner.Env as well as on
+// Config.Env, since Runner.Env carries the operator's provider env: a copy
+// there would be a second, conflicting entry on a Job that sets the name
+// (Kubernetes leaves the winner undefined), a value the Spec never carried
+// on one that does not, and on a repository-image Job the stand-in for the
+// blank that keeps an image's ENV from reaching agent-runner.
+var perJobEnv = map[string]bool{
 	"HOME":                        true,
 	"PATCHY_WORKSPACE":            true,
 	"PATCHY_REPO":                 true,
@@ -726,19 +749,12 @@ var reservedEnv = map[string]bool{
 	"PATCHY_GRANTED_MAX_TURNS":    true,
 	"PATCHY_GRANTED_TOKEN_BUDGET": true,
 	"PATCHY_CALIBRATION":          true,
+	"PATCHY_PREVIOUS_ATTEMPT":     true,
 	agentrun.BinDirEnv:            true,
-	"ANTHROPIC_API_KEY":           true,
-	"CLAUDE_CODE_OAUTH_TOKEN":     true,
-	"ANTHROPIC_AUTH_TOKEN":        true,
-	"OPENAI_API_KEY":              true,
-	"CODEX_API_KEY":               true,
-	"CODEX_ACCESS_TOKEN":          true,
-	"COPILOT_GITHUB_TOKEN":        true,
-	"GH_TOKEN":                    true,
-	"GITHUB_TOKEN":                true,
 }
 
 func init() {
+	maps.Copy(reservedEnv, perJobEnv)
 	for _, name := range provider.GatewayEnvNames {
 		reservedEnv[name] = true
 	}
@@ -775,6 +791,14 @@ var proxyEnv = []string{
 // Job's own reservations are one list.
 func ReservedEnvNames() []string {
 	return slices.Sorted(maps.Keys(reservedEnv))
+}
+
+// PerJobEnvNames returns the names a finding Job sets itself (perJobEnv),
+// sorted: a subset of ReservedEnvNames that Runner.Env may not name either.
+// runnercfg refuses them in the operator's provider env at startup, so a
+// clash is an error the operator sees rather than an entry dropped here.
+func PerJobEnvNames() []string {
+	return slices.Sorted(maps.Keys(perJobEnv))
 }
 
 // scrubEnv are the names blanked, with an explicit empty value, in the
@@ -944,7 +968,8 @@ func (c *Client) agentEnv(runner Runner, spec Spec) []corev1.EnvVar {
 	// The controller-global Env under the full reserved filter, then the
 	// per-runner gateway env on top (runner wins). Runner.Env is
 	// controller-built, so it may name the reserved gateway vars — that is
-	// its purpose — but never a credential channel.
+	// its purpose — but never a credential channel, nor a name the Job sets
+	// above: it carries the operator's provider env too.
 	extra := make(map[string]string, len(c.cfg.Env)+len(runner.Env))
 	for k, v := range c.cfg.Env {
 		if !reservedEnv[k] {
@@ -952,7 +977,7 @@ func (c *Client) agentEnv(runner Runner, spec Spec) []corev1.EnvVar {
 		}
 	}
 	for k, v := range runner.Env {
-		if !credentialChannelEnv[k] {
+		if !credentialChannelEnv[k] && !perJobEnv[k] {
 			extra[k] = v
 		}
 	}

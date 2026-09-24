@@ -402,6 +402,79 @@ func TestSecretEnvFlagsMatchAcceptedChannels(t *testing.T) {
 	}
 }
 
+// TestClaudeProviderEnvRefusesPerJobNames: the operator's provider env
+// reaches the agent pod through the claude runner's Env, so a name a Job
+// sets itself must fail startup, naming the flag and the variable, rather
+// than be dropped from every Job without a word. That covers both fleets'
+// names (a finding retry's PATCHY_PREVIOUS_ATTEMPT, the Spec's PATCHY_REPO,
+// an evaluation's EVOLVE_UNIT_FILE, HOME) on both fleets' controllers,
+// since the chart stamps one provider env into all of them. Any other name
+// still passes through: HTTPS_PROXY is provider.Validate's own benign
+// example.
+func TestClaudeProviderEnvRefusesPerJobNames(t *testing.T) {
+	fleets := []struct {
+		name    string
+		runners func(t *testing.T, env string) (map[string]jobs.Runner, error)
+	}{
+		{"finding", func(t *testing.T, env string) (map[string]jobs.Runner, error) {
+			return Runners(newOpts(t, "--claude-agent-image", "claude:1",
+				"--broker-url", "http://broker:8080", "--claude-provider-env", env))
+		}},
+		{"evolve", func(t *testing.T, env string) (map[string]jobs.Runner, error) {
+			return EvolveRunners(newEvolveOpts(t, "--evolve-claude-image", "evolve-claude:1",
+				"--broker-url", "http://broker:8080", "--claude-provider-env", env))
+		}},
+	}
+	names := slices.Compact(slices.Sorted(slices.Values(
+		slices.Concat(jobs.PerJobEnvNames(), jobs.EvalJobEnvNames()))))
+	for _, want := range []string{"PATCHY_PREVIOUS_ATTEMPT", "HOME", "EVOLVE_UNIT_FILE", "EVOLVE_BUNDLE_DIR"} {
+		if !slices.Contains(names, want) {
+			t.Errorf("refused names %v lack %s", names, want)
+		}
+	}
+	for _, fleet := range fleets {
+		for _, name := range names {
+			t.Run(fleet.name+"/"+name, func(t *testing.T) {
+				runners, err := fleet.runners(t, name+"=operator")
+				if err == nil {
+					t.Fatalf("runners succeeded with claude Env %v, want %s refused", runners["claude"].Env, name)
+				}
+				for _, want := range []string{"--claude-provider-env", name} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q does not mention %q", err, want)
+					}
+				}
+			})
+		}
+		t.Run(fleet.name+"/other names pass through", func(t *testing.T) {
+			runners, err := fleet.runners(t, "HTTPS_PROXY=http://proxy:3128")
+			if err != nil {
+				t.Fatalf("runners: %v", err)
+			}
+			if got := runners["claude"].Env["HTTPS_PROXY"]; got != "http://proxy:3128" {
+				t.Errorf("claude Env HTTPS_PROXY = %q, want the operator's value", got)
+			}
+		})
+	}
+}
+
+// newEvolveOpts is newOpts for the evaluation controller's flag surface.
+func newEvolveOpts(t *testing.T, args ...string) *cli.Options {
+	t.Helper()
+	o := cli.NewOptions()
+	cmd := &cobra.Command{Use: "test", RunE: func(*cobra.Command, []string) error { return nil }}
+	o.Bind(cmd)
+	RegisterEvolveFlags(cmd.Flags())
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if err := o.Load(cmd); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return o
+}
+
 // TestEvolveRunnersNeverInject: evaluation Jobs have no pinned tree to read a
 // declaration from and always run their harness's image, so the evolve
 // fleet's brokered claude runner, unlike the finding one, injects nothing.

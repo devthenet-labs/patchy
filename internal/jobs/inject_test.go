@@ -438,8 +438,9 @@ func TestReservedEnvNames(t *testing.T) {
 		t.Errorf("ReservedEnvNames() = %v, want sorted", names)
 	}
 	for _, want := range slices.Concat(
-		[]string{"GITHUB_TOKEN", "ANTHROPIC_API_KEY", "PATCHY_REPO", "HOME"},
-		provider.GatewayEnvNames, proxyEnv,
+		[]string{"GITHUB_TOKEN", "ANTHROPIC_API_KEY", "PATCHY_REPO", "HOME",
+			"PATCHY_CALIBRATION", "PATCHY_PREVIOUS_ATTEMPT"},
+		PerJobEnvNames(), provider.GatewayEnvNames, proxyEnv,
 	) {
 		if !slices.Contains(names, want) {
 			t.Errorf("ReservedEnvNames() lacks %s", want)
@@ -675,20 +676,30 @@ func TestDefaultJobKeepsOperatorEnv(t *testing.T) {
 // TestPropertyNoDuplicateEnv: whatever names the operator's Config.Env
 // carries — owned, scrubbed, gateway, reserved, patchy's own or unrelated —
 // and whatever the runner's gateway Env renders beside them, no container
-// of any Job, injected or default, ever lists a name twice. Runner.Env is
-// drawn from what provider.Env can render (the gateway names bar the
-// broker token file, which the Job sets itself) plus the injection-owned
-// and scrubbed names, since those must be taken over from it too. Seeded
-// so the gate is deterministic.
+// of any Job, injected or default, ever lists a name twice, whichever of
+// the Spec's conditional per-Job values (harness and model, the budget
+// grant, the calibration, the previous attempt) the Job sets. Runner.Env
+// carries the operator's provider env, so it is drawn from the same pool
+// as Config.Env bar the broker token file, a gateway name the Job sets
+// itself and provider.Validate refuses. Seeded so the gate is
+// deterministic; TestOperatorEnvCannotShadowPerJobHandoff pins the
+// counterexample the Spec's per-Job values surfaced once they varied (a
+// retry's PATCHY_PREVIOUS_ATTEMPT listed twice).
 func TestPropertyNoDuplicateEnv(t *testing.T) {
 	rng := rand.New(rand.NewSource(20260923))
 	owned := []string{"PATH", "PATCHY_BIN_DIR", "GIT_CONFIG_NOSYSTEM", "DISABLE_AUTOUPDATER"}
 	operatorNames := slices.Concat(owned, []string{"HOME", "PATCHY_INVESTIGATE_TIMEOUT", "EDITOR", "LANG"},
 		scrubEnv, provider.GatewayEnvNames, agentrun.ConfigEnvKeys(), ReservedEnvNames())
-	runnerNames := slices.Concat(owned, scrubEnv, []string{"EDITOR"},
-		slices.DeleteFunc(slices.Clone(provider.GatewayEnvNames), func(n string) bool {
-			return n == "PATCHY_BROKER_TOKEN_FILE"
-		}))
+	runnerNames := slices.DeleteFunc(slices.Clone(operatorNames), func(n string) bool {
+		return n == "PATCHY_BROKER_TOKEN_FILE"
+	})
+	// either picks a set or an unset value for one conditional Spec field.
+	either := func(set string) string {
+		if rng.Intn(2) == 0 {
+			return ""
+		}
+		return set
+	}
 	for i := range 1000 {
 		cfg := injectedConfig()
 		cfg.AllowRepositoryImages = rng.Intn(3) != 0
@@ -701,13 +712,22 @@ func TestPropertyNoDuplicateEnv(t *testing.T) {
 			claude.Env[runnerNames[rng.Intn(len(runnerNames))]] = "runner"
 		}
 		cfg.Runners["claude"] = claude
-		pod := buildJobForTest(t, cfg, injectedSpec()).Spec.Template.Spec
+		spec := injectedSpec()
+		if rng.Intn(2) == 0 {
+			spec.Phase, spec.Kind = "remediate", "remediation"
+		}
+		spec.Model = either(spec.Model)
+		spec.Calibration = either(`{"estimates":1}`)
+		spec.PreviousAttempt = either(`{"attempt":1}`)
+		spec.MaxTurns = int32(rng.Intn(2) * 120)
+		spec.TokenBudget = int64(rng.Intn(2) * 400000)
+		pod := buildJobForTest(t, cfg, spec).Spec.Template.Spec
 		for _, ct := range append(pod.InitContainers, pod.Containers...) {
 			seen := map[string]bool{}
 			for _, e := range ct.Env {
 				if seen[e.Name] {
-					t.Fatalf("iteration %d: %s env lists %s twice\n  config env: %v\n  runner env: %v",
-						i, ct.Name, e.Name, cfg.Env, claude.Env)
+					t.Fatalf("iteration %d: %s env lists %s twice\n  config env: %v\n  runner env: %v\n  spec: %+v",
+						i, ct.Name, e.Name, cfg.Env, claude.Env, spec)
 				}
 				seen[e.Name] = true
 			}

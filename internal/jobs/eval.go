@@ -234,19 +234,48 @@ var evalBrokeredCommand = []string{"/bin/sh", "-c",
 	`export ANTHROPIC_CUSTOM_HEADERS="` + provider.BrokerTokenHeader + `: $(cat ` + brokerTokenPath +
 		`)"; exec evolve exec-unit`}
 
+// evalOwnEnv is the env an evaluation agent container sets itself: HOME
+// (writable under readOnlyRootFilesystem) and where the prepare init staged
+// the unit and the bundle. Runner.Env may not name any of it, since it
+// carries the operator's provider env: a copy would be a second entry, and
+// the kubelet takes the last one, pointing evolve exec-unit away from the
+// unit it was handed.
+func evalOwnEnv() []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "HOME", Value: workspaceDir},
+		{Name: "EVOLVE_UNIT_FILE", Value: evalUnitFilePath},
+		{Name: "EVOLVE_BUNDLE_DIR", Value: evalBundleDir},
+	}
+}
+
+// EvalJobEnvNames returns the names an evaluation Job's agent container
+// sets itself (evalOwnEnv), sorted. It is PerJobEnvNames' counterpart for
+// the evolve fleet: Runner.Env may not name them, and runnercfg refuses them
+// in the operator's provider env at startup so a clash is an error the
+// operator sees rather than an entry dropped here.
+func EvalJobEnvNames() []string {
+	env := evalOwnEnv()
+	names := make([]string, 0, len(env))
+	for _, e := range env {
+		names = append(names, e.Name)
+	}
+	slices.Sort(names)
+	return names
+}
+
 // evalAgentContainer runs the in-pod evolve client. The pod IS the sandbox:
 // a non-brokered runner's only credential is the model key, injected through
 // the same Secret channel as the finding runners; a brokered runner gets no
 // credential at all — the gateway env plus the projected caller token (and
 // the non-secret placeholder the CLI's login gate demands).
 func (c *Client) evalAgentContainer(runner Runner, res corev1.ResourceRequirements) corev1.Container {
-	env := []corev1.EnvVar{
-		{Name: "HOME", Value: workspaceDir},
-		{Name: "EVOLVE_UNIT_FILE", Value: evalUnitFilePath},
-		{Name: "EVOLVE_BUNDLE_DIR", Value: evalBundleDir},
+	env := evalOwnEnv()
+	own := make(map[string]bool, len(env))
+	for _, e := range env {
+		own[e.Name] = true
 	}
 	for _, k := range slices.Sorted(maps.Keys(runner.Env)) {
-		if !credentialChannelEnv[k] {
+		if !credentialChannelEnv[k] && !own[k] {
 			env = append(env, corev1.EnvVar{Name: k, Value: runner.Env[k]})
 		}
 	}

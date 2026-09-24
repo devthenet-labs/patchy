@@ -62,7 +62,8 @@ const (
 	IntentRevising IntentPhase = "Revising"
 	// IntentBlocked: a limit or a precondition stops progress (revision
 	// limit, cost ceiling, missing or rejected repository image, tripped
-	// sandbox breaker, repeated check failure); the conditions say which.
+	// sandbox breaker, an intent branch that is not patchy's, repeated check
+	// failure); the conditions say which.
 	// Re-evaluated when the Project changes, so raising a limit resumes the
 	// intent in the phase it was blocked from (IntentBlockedFrom).
 	IntentBlocked IntentPhase = "Blocked"
@@ -546,7 +547,8 @@ type IntentStatus struct {
 	// +kubebuilder:validation:MaxItems=64
 	PhaseTimes []IntentPhaseTime `json:"phaseTimes,omitempty"`
 	// Conditions of the intent: BudgetExhausted, RevisionLimitReached,
-	// ImageRequired, ApprovalRejected and (slice 1b) ChecksFailing.
+	// ImageRequired, BranchConflict, ApprovalRejected and (slice 1b)
+	// ChecksFailing.
 	// +optional
 	// +listType=map
 	// +listMapKey=type

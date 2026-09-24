@@ -170,6 +170,12 @@ The build receives only the approved plan, never the issue. The pull request com
 patchy creates once and never forces. Its body says `Part of <intent repository>#<n>` and carries no closing keyword.
 patchy closes the issue itself when the pull request merges.
 
+patchy never deletes an intent branch, and an intent's name comes back once its issue becomes an intent again (reopened
+and labelled after the TTL deleted the first). Before a build launches, patchy reads `patchy-intent/<intent>`: if it
+exists at a commit this intent did not push, the intent is `Blocked` with `BranchConflict` before any build is spent,
+and resumes once someone deletes the branch. Delete a merged intent's branch (or let GitHub delete head branches on
+merge) to keep that from happening.
+
 ## Permissions
 
 intent-controller is the second code path that writes to a forge (remediation-controller is the first), and its posture

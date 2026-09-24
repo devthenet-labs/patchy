@@ -473,19 +473,64 @@ func TestChangesetOnAnotherBase(t *testing.T) {
 	}
 }
 
-// TestBranchExists: an intent branch someone else holds is never forced.
+// TestBranchExists: an intent branch that is not the Intent's own (an
+// earlier Intent under the same name left it; nothing deletes it when an
+// intent ends) is never forced, and no build is spent on a push that would
+// fail against it: the intent blocks on BranchConflict before any build Job,
+// and resumes, building once, when the branch is deleted.
 func TestBranchExists(t *testing.T) {
 	e := newEnv(t, testProject())
-	e.gh.branches["patchy-intent/target-1"] = strings.Repeat("7", 40)
+	stale := strings.Repeat("7", 40)
+	e.gh.branches["patchy-intent/target-1"] = stale
 	name := e.awaiting()
 	e.gh.label(1, "patchy:approved", approver)
-	e.drive(name, v1alpha1.IntentFailed, repoImage)
-	for _, r := range e.runsOf(name, v1alpha1.IntentStageBuild) {
-		if r.Status.Outcome != OutcomeBranchExists {
-			t.Errorf("run %s outcome = %s, want branch_exists", r.Name, r.Status.Outcome)
-		}
+	in := e.drive(name, v1alpha1.IntentBlocked, repoImage)
+	c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionBranchConflict)
+	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != ReasonBranchExists || !strings.Contains(c.Message, stale) {
+		t.Fatalf("BranchConflict = %+v, want the stale branch named", c)
 	}
-	if got := e.gh.branches["patchy-intent/target-1"]; got != strings.Repeat("7", 40) {
+	if n := len(e.runsOf(name, v1alpha1.IntentStageBuild)); n != 0 {
+		t.Fatalf("build runs = %d beside a branch that is not the intent's, want none", n)
+	}
+	e.settleActions(name)
+	if in := e.get(name); in.Status.Phase != v1alpha1.IntentBlocked || len(e.jobs.launched()) != 1 {
+		t.Fatalf("phase %s, %d jobs while the branch stands; want Blocked and the plan's alone", in.Status.Phase,
+			len(e.jobs.launched()))
+	}
+	st := e.gh.withMarker("patchy:intent")
+	if len(st) != 1 || !strings.Contains(st[0].Body, "Delete the branch") {
+		t.Errorf("the status comment does not say what lifts the block: %+v", st)
+	}
+	if got := e.gh.branches["patchy-intent/target-1"]; got != stale {
+		t.Errorf("the existing branch was moved to %s", got)
+	}
+
+	delete(e.gh.branches, "patchy-intent/target-1")
+	in = e.drive(name, v1alpha1.IntentInReview, repoImage)
+	if meta.IsStatusConditionTrue(in.Status.Conditions, v1alpha1.ConditionBranchConflict) {
+		t.Error("BranchConflict is still True")
+	}
+	if runs := e.runsOf(name, v1alpha1.IntentStageBuild); len(runs) != 1 || len(e.gh.commits) != 1 {
+		t.Errorf("build runs %d, commits %d; want one build, pushed once", len(runs), len(e.gh.commits))
+	}
+}
+
+// TestBranchCreatedDuringTheBuild: a branch that appears while the build runs
+// still fails that build branch_exists, never forced; the next attempt is not
+// spent on it but blocked.
+func TestBranchCreatedDuringTheBuild(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	e.buildLaunched(name)
+	stale := strings.Repeat("7", 40)
+	e.gh.branches["patchy-intent/target-1"] = stale
+	e.drive(name, v1alpha1.IntentBlocked, repoImage)
+	runs := e.runsOf(name, v1alpha1.IntentStageBuild)
+	if len(runs) != 1 || runs[0].Status.Outcome != OutcomeBranchExists {
+		t.Fatalf("build runs = %+v, want the one, branch_exists", runs)
+	}
+	if got := e.gh.branches["patchy-intent/target-1"]; got != stale {
 		t.Errorf("the existing branch was moved to %s", got)
 	}
 }

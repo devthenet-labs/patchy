@@ -60,9 +60,9 @@ const (
 	// deleted), the close waits. Removed as the finding leaves review.
 	ConditionReviewClosePending = "ReviewClosePending"
 
-	// Intent conditions, all set by intent-controller. The first three
-	// explain a Blocked intent; raising the limit or fixing the image
-	// clears them and resumes it.
+	// Intent conditions, all set by intent-controller. The first three, and
+	// BranchConflict, explain a Blocked intent; raising the limit, fixing the
+	// image or clearing the branch clears them and resumes it.
 
 	// ConditionBudgetExhausted marks an Intent whose spend reached its
 	// Project's maxCostMicroUSD ceiling.
@@ -82,6 +82,12 @@ const (
 	// ConditionChecksFailing marks an Intent whose named check failed again
 	// after a check-fix round with the same failure signature (slice 1b).
 	ConditionChecksFailing = "ChecksFailing"
+	// ConditionBranchConflict marks a Blocked Intent whose branch
+	// patchy-intent/<intent> is not patchy's to use: it exists at a commit
+	// none of the Intent's runs pushed (left by an earlier Intent under the
+	// same name, or made by someone else; reason BranchExists). Nothing is
+	// forced: the block lifts once the branch is gone.
+	ConditionBranchConflict = "BranchConflict"
 
 	// ConditionPushHeld marks a Running build IntentRun whose Job has
 	// finished while its Intent is suspended: the push waits for the

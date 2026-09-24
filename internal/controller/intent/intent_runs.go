@@ -157,6 +157,11 @@ func (p *pass) launch(ctx context.Context, stage v1alpha1.IntentStage, round, at
 	if attempt > v1alpha1.MaxIntentRunAttempt {
 		return true, p.fail(ctx)
 	}
+	if stage == v1alpha1.IntentStageBuild {
+		if blocked, err := p.blockOnBranch(ctx); blocked || err != nil {
+			return blocked, err
+		}
+	}
 	run, err := p.createRun(ctx, stage, round, attempt, prev)
 	if errors.Is(err, errRepositoryGone) {
 		p.r.log().LogAttrs(ctx, slog.LevelWarn, "the approved plan's repository left the project; the intent fails",
@@ -167,6 +172,27 @@ func (p *pass) launch(ctx context.Context, stage v1alpha1.IntentStage, round, at
 		return false, err
 	}
 	return p.ensureActive(ctx, run)
+}
+
+// blockOnBranch blocks the Intent, before a build is spent, when its branch
+// is not patchy's to use (branchConflict): the block lifts once the branch is
+// gone.
+func (p *pass) blockOnBranch(ctx context.Context) (bool, error) {
+	repo, ok := p.runRepository(v1alpha1.IntentStageBuild)
+	if !ok {
+		return false, nil // createRun reports it
+	}
+	sha, err := p.branchConflict(ctx, repo.URL)
+	if err != nil || sha == "" {
+		return false, err
+	}
+	branch := branchName(p.in.Name)
+	p.r.log().LogAttrs(ctx, slog.LevelWarn, "the intent branch exists at a commit this intent did not push",
+		slog.String("intent", p.in.Name), slog.String("branch", branch), slog.String("commit", sha))
+	return true, p.block(ctx, v1alpha1.ConditionBranchConflict, ReasonBranchExists,
+		fmt.Sprintf("the branch %s already exists in %s at %s, a commit this intent did not push (an earlier "+
+			"intent under this name, or someone else, made it); patchy never moves it, and builds nothing "+
+			"while it stands. Delete the branch to resume.", branch, repoSlug(repo.URL), sha))
 }
 
 // createRun creates the run under its deterministic name (the lease), or

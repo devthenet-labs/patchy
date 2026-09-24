@@ -624,7 +624,13 @@ func (f *fakeGitHub) HeadSHA(_ context.Context, _, branch string) (string, error
 	if err := f.call("HeadSHA"); err != nil {
 		return "", err
 	}
-	return f.heads[branch], nil
+	if sha, ok := f.heads[branch]; ok {
+		return sha, nil
+	}
+	if sha, ok := f.branches[branch]; ok {
+		return sha, nil
+	}
+	return "", ghError(http.StatusNotFound, "Not Found")
 }
 
 func (f *fakeGitHub) CreateCommit(_ context.Context, _ string, req ghclient.CommitRequest) (string, error) {

@@ -149,11 +149,15 @@ func (s *Server) getRef(w http.ResponseWriter, r *http.Request) {
 	sha, ok := s.git.refs[ref]
 	s.mu.Unlock()
 	if !ok {
-		if !strings.HasPrefix(ref, "heads/") {
+		// Every un-pushed branch sits at the fixed base, except an intent
+		// branch, which (as on GitHub) exists only once it is created:
+		// intent-controller reads it before a build to find one an earlier
+		// intent left behind.
+		if !strings.HasPrefix(ref, "heads/") || strings.HasPrefix(ref, "heads/patchy-intent/") {
 			http.NotFound(w, r)
 			return
 		}
-		sha = BaseSHA // every un-pushed branch sits at the fixed base
+		sha = BaseSHA
 	}
 	writeJSON(w, map[string]any{
 		"ref":    "refs/" + ref,

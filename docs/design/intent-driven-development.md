@@ -476,6 +476,13 @@ TTL deletes it along with the Intent. A new Intent could also meet the objects o
   its `intentRef` UID, which the schema requires, and a ConfigMap or Repository by the UID of its controller owner
   reference (this Intent, or one of this Intent's runs). Anything else is left alone, and the create is retried after a
   backoff.
+- **The branch outlives its Intent.** Nothing deletes `patchy-intent/<intent>` when an intent ends (GitHub keeps a
+  merged or closed pull request's head branch unless the repository deletes it on merge), and the branch is named after
+  the Intent alone, so a name taken again meets its first holder's branch. Before a build launches, intent-controller
+  reads the branch: when it exists at a commit none of this Intent's runs pushed (a namesake's, or someone else's), the
+  Intent goes to `Blocked` with `BranchConflict` before any agent runs, since the build would spend its grant and then
+  fail `branch_exists`. The block lifts once a human deletes the branch; it is never forced or adopted. A branch that
+  appears while the build runs still fails that build `branch_exists`, and the next attempt blocks instead of building.
 - **A name held by another repository's issue is reported, never skipped silently.** On AlreadyExists, discovery reads
   the existing Intent. If its `spec.issue.repository` is the Project's intent repository (compared as forges compare
   URLs: case-insensitively, with any `.git` suffix dropped), the issue already has its Intent. If it is not, the name is

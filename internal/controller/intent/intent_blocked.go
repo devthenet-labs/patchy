@@ -15,10 +15,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/ghclient"
 )
 
 // blockingConditions are the conditions that hold an Intent Blocked.
-var blockingConditions = []string{v1alpha1.ConditionBudgetExhausted, v1alpha1.ConditionImageRequired}
+var blockingConditions = []string{
+	v1alpha1.ConditionBudgetExhausted, v1alpha1.ConditionImageRequired, v1alpha1.ConditionBranchConflict,
+}
+
+// ReasonBranchExists is the BranchConflict reason for patchy-intent/<intent>
+// existing at a commit none of the Intent's runs pushed.
+const ReasonBranchExists = "BranchExists"
 
 // block moves the Intent to Blocked with the condition saying why, in one
 // status write, and remembers the Project generation it was blocked under.
@@ -75,7 +82,10 @@ func (p *pass) blocked(ctx context.Context) (bool, error) {
 		if stage == v1alpha1.IntentStageBuild {
 			refused = nil
 		}
-		if rs.counted(refused) < p.set.MaxAttempts && rs.next() <= v1alpha1.MaxIntentRunAttempt {
+		// A round whose latest run completed (a build blocked opening its
+		// pull request) resumes to that run's result, with no new one.
+		done := rs.latest() != nil && rs.latest().Status.Phase == v1alpha1.RunComplete
+		if !done && rs.counted(refused) < p.set.MaxAttempts && rs.next() <= v1alpha1.MaxIntentRunAttempt {
 			run, err = p.createRun(ctx, stage, round, rs.next(), p.previousAttempt(rs.latest()))
 			switch {
 			case errors.Is(err, errRepositoryGone):
@@ -103,15 +113,45 @@ func (p *pass) blocked(ctx context.Context) (bool, error) {
 }
 
 // blockHolds reports whether any block still holds: the spend still at the
-// ceiling; a repository-image block still in force (the Project still
-// requires the image, and repository images are still off or the breaker
-// still tripped, or else neither the Project nor the default branch changed
-// since the block).
+// ceiling; the intent branch still not patchy's to use; a repository-image
+// block still in force (the Project still requires the image, and repository
+// images are still off or the breaker still tripped, or else neither the
+// Project nor the default branch changed since the block).
 func (p *pass) blockHolds(ctx context.Context) (bool, error) {
 	if meta.IsStatusConditionTrue(p.in.Status.Conditions, v1alpha1.ConditionBudgetExhausted) &&
 		p.in.Status.Usage.CostMicroUSD >= maxCostMicroUSD(p.proj) {
 		return true, nil
 	}
+	if holds, err := p.branchBlockHolds(ctx); holds || err != nil {
+		return holds, err
+	}
+	return p.imageBlockHolds(ctx)
+}
+
+// branchBlockHolds reports a BranchConflict block still in force: read only
+// when the poll is due, and under the app repository's rate floor, as every
+// poll is; until then the block holds.
+func (p *pass) branchBlockHolds(ctx context.Context) (bool, error) {
+	c := meta.FindStatusCondition(p.in.Status.Conditions, v1alpha1.ConditionBranchConflict)
+	if c == nil || c.Status != metav1.ConditionTrue {
+		return false, nil
+	}
+	repo, ok := p.runRepository(v1alpha1.IntentStageBuild)
+	if !ok {
+		return false, nil // the resumed phase fails the intent
+	}
+	if !p.polled {
+		return true, nil
+	}
+	if ok, err := p.rateOK(ctx, repo.URL); err != nil || !ok {
+		return true, err
+	}
+	sha, err := p.branchConflict(ctx, repo.URL)
+	return sha != "", err
+}
+
+// imageBlockHolds reports an ImageRequired block still in force.
+func (p *pass) imageBlockHolds(ctx context.Context) (bool, error) {
 	c := meta.FindStatusCondition(p.in.Status.Conditions, v1alpha1.ConditionImageRequired)
 	if c == nil || c.Status != metav1.ConditionTrue {
 		return false, nil
@@ -140,6 +180,30 @@ func (p *pass) blockHolds(ctx context.Context) (bool, error) {
 		return true, nil
 	}
 	return p.headUnmoved(ctx)
+}
+
+// branchConflict is the commit patchy-intent/<intent> points at in repoURL
+// when none of this Intent's runs pushed it, or "": the branch is absent, or
+// it is this Intent's own. Nothing deletes an intent's branch when it ends,
+// and an Intent's name is reused once the TTL deletes it (a reopened issue
+// labelled again), so an earlier Intent's branch can still stand; someone
+// with write access may also have created it. A build would spend its whole
+// grant and then fail branch_exists, since the branch is never forced.
+func (p *pass) branchConflict(ctx context.Context, repoURL string) (string, error) {
+	branch := branchName(p.in.Name)
+	head, err := p.r.GitHub.HeadSHA(ctx, repoURL, branch)
+	switch {
+	case ghclient.IsNotFound(err):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("read the branch %s: %w", branch, err)
+	}
+	for _, run := range p.runs {
+		if run.Status.PushedCommit != "" && run.Status.PushedCommit == head {
+			return "", nil
+		}
+	}
+	return head, nil
 }
 
 // headUnmoved reports whether the default branch still points where the

@@ -16,8 +16,12 @@
 // repository owner what patchy did with the agent image the repository
 // declared (used, not applicable, rejected, or failed in a run), so falling
 // back to the default image is never silent. Human signals on the tracking
-// item (/approve comments, issue close/reopen, pull-request merge) flow back
-// as Finding writes.
+// item (issue close/reopen, pull-request merge, and "/patchy <verb>"
+// commands in internal/command's grammar) flow back as Finding writes. A
+// command is only recorded by the webhook handler, which never calls
+// GitHub; the projection authorises it (write access to the repository),
+// applies it through internal/action as the status page does, and answers
+// it once (settleCommands).
 //
 // v1alpha1 simplification: one issues-enabled Integration and one
 // code-scanning-enabled Integration per namespace (they are usually the same

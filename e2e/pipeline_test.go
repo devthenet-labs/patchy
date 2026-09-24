@@ -805,14 +805,16 @@ func TestSignalsRollupTTL(t *testing.T) {
 	}
 
 	// The finding a human /approve releases (repository-less: it queues but
-	// spawns nothing, which is all this test needs).
+	// spawns nothing, which is all this test needs). Its tracking issue is
+	// on the fake, as patchy opened it: the approval is answered there.
+	heldIssue := gh.OpenIssue("acme", "shop", "Reflected cross-site scripting", "", nil, fakegithub.PATUser)
+	heldURL := fmt.Sprintf("https://github.com/acme/shop/issues/%d", heldIssue)
 	held := fabricateFinding(t, cl, "finding-dddddddddd-1", v1alpha1.LevelHigh, "",
 		func(st *v1alpha1.FindingStatus) {
 			st.Phase = v1alpha1.PhaseAwaitingApproval
 			st.PhaseTimes = []v1alpha1.PhaseTime{{Phase: v1alpha1.PhaseAwaitingApproval, At: now}}
 			st.Tracking = &v1alpha1.TrackingStatus{
-				Integration: "github", IssueNumber: 102,
-				URL: "https://github.com/acme/shop/issues/102", State: "open",
+				Integration: "github", IssueNumber: int64(heldIssue), URL: heldURL, State: "open",
 			}
 			st.Investigation = &v1alpha1.InvestigationSummary{
 				Name: "finding-dddddddddd-1-inv-1", Attempt: 1,
@@ -836,8 +838,12 @@ func TestSignalsRollupTTL(t *testing.T) {
 		return cur.Status.Phase == v1alpha1.PhaseRemediated && cur.Status.CompletedAt != nil
 	})
 
-	// The /approve comment queues the held finding.
-	deliver(t, webhookURL, "issue_comment", fixture(t, "issue_comment.approve.json"))
+	// The legacy /approve comment, from a collaborator with write access,
+	// queues the held finding.
+	gh.SetRole("octocat", "write")
+	octocat := fakegithub.Actor{Login: "octocat", ID: 583231, Type: "User"}
+	approveID := gh.CommentAs(heldIssue, "/approve", octocat)
+	deliver(t, webhookURL, "issue_comment", commentDelivery(t, heldURL, heldIssue, approveID, "/approve", octocat))
 	eventually(t, "the approval to queue the held finding", func() bool {
 		var cur v1alpha1.Finding
 		if err := cl.client.Get(ctx, client.ObjectKeyFromObject(held), &cur); err != nil {

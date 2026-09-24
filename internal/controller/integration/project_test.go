@@ -59,6 +59,21 @@ type fakeTracker struct {
 	// onIssueRead, when set, is called once, after the next GetIssue has
 	// read its answer and before it returns it: what changes meanwhile.
 	onIssueRead func()
+
+	// perms are CollaboratorPermission's answers by login: a login with none
+	// reads "read", as every account does on a public repository, and one
+	// in missing is no account (404). permErrs fail its first calls, in
+	// order; permReads records each login asked about.
+	perms     map[string]string
+	missing   map[string]bool
+	permErrs  []error
+	permReads []string
+	// reactions are each comment's reactions, by comment id; reactErrs fail
+	// CreateIssueCommentReaction's first calls, in order.
+	reactions map[int64][]string
+	reactErrs []error
+	// commentErrs fail CreateComment's first calls, in order.
+	commentErrs []error
 }
 
 func newFakeTracker() *fakeTracker {
@@ -67,6 +82,9 @@ func newFakeTracker() *fakeTracker {
 		issues:        map[int]*ghclient.Issue{},
 		issueComments: map[int][]*ghclient.Comment{},
 		unlisted:      map[int64]bool{},
+		perms:         map[string]string{},
+		missing:       map[string]bool{},
+		reactions:     map[int64][]string{},
 	}
 }
 
@@ -139,6 +157,11 @@ func (f *fakeTracker) Comment(ctx context.Context, repo ghclient.Repo, number in
 }
 
 func (f *fakeTracker) CreateComment(_ context.Context, _ ghclient.Repo, number int, body string) (int64, error) {
+	if len(f.commentErrs) > 0 {
+		err := f.commentErrs[0]
+		f.commentErrs = f.commentErrs[1:]
+		return 0, err
+	}
 	if f.onPost != nil {
 		f.onPost()
 	}
@@ -220,6 +243,37 @@ func (f *fakeTracker) GetPullRequest(_ context.Context, repo ghclient.Repo, numb
 		return nil, notFound(fmt.Sprintf("get PR %s#%d", repo, number))
 	}
 	return pr, nil
+}
+
+func (f *fakeTracker) CollaboratorPermission(_ context.Context, repo ghclient.Repo, login string) (string, error) {
+	f.permReads = append(f.permReads, login)
+	if len(f.permErrs) > 0 {
+		err := f.permErrs[0]
+		f.permErrs = f.permErrs[1:]
+		return "", err
+	}
+	if f.missing[login] {
+		return "", fmt.Errorf("permission of %s on %s: %w: %w", login, repo, ghclient.ErrNoSuchUser,
+			notFound("collaborator permission"))
+	}
+	if p, ok := f.perms[login]; ok {
+		return p, nil
+	}
+	return ghclient.PermissionRead, nil
+}
+
+func (f *fakeTracker) CreateIssueCommentReaction(
+	_ context.Context, _ ghclient.Repo, commentID int64, content string,
+) error {
+	if len(f.reactErrs) > 0 {
+		err := f.reactErrs[0]
+		f.reactErrs = f.reactErrs[1:]
+		return err
+	}
+	if !slices.Contains(f.reactions[commentID], content) {
+		f.reactions[commentID] = append(f.reactions[commentID], content)
+	}
+	return nil
 }
 
 // projectable is a Finding ready for projection.
@@ -497,7 +551,7 @@ func TestProjectAwaitingApprovalNotifies(t *testing.T) {
 
 	notices := 0
 	for _, cm := range tracker.comments {
-		if strings.Contains(cm, "/approve") {
+		if strings.Contains(cm, "`/patchy approve`") {
 			notices++
 		}
 	}

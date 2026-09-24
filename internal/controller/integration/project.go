@@ -22,6 +22,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/action"
+	"github.com/bitwise-media-group/patchy/internal/command"
 	"github.com/bitwise-media-group/patchy/internal/generic"
 	"github.com/bitwise-media-group/patchy/internal/ghas"
 	"github.com/bitwise-media-group/patchy/internal/ghclient"
@@ -81,6 +83,8 @@ type trackerClient interface {
 	DismissAlert(ctx context.Context, repo ghclient.Repo, number int, reason, comment string) error
 	GetAlert(ctx context.Context, repo ghclient.Repo, number int) (*ghclient.Alert, error)
 	GetPullRequest(ctx context.Context, repo ghclient.Repo, number int) (*ghclient.PullRequest, error)
+	CollaboratorPermission(ctx context.Context, repo ghclient.Repo, login string) (string, error)
+	CreateIssueCommentReaction(ctx context.Context, repo ghclient.Repo, commentID int64, content string) error
 }
 
 // FindingReconciler projects each Finding (and its children's results) onto
@@ -151,6 +155,18 @@ func (r *FindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// read yet retries on the reconcile's backoff, and one with no
 	// Integration to read it through waits (projecting as it does).
 	settled, wait, err := r.settleReview(ctx, &fnd)
+	if err != nil || settled {
+		return ctrl.Result{RequeueAfter: wait}, err
+	}
+	if wait > 0 && (requeue == 0 || wait < requeue) {
+		requeue = wait
+	}
+
+	// Ahead of the projection too, and for the same reasons: a command
+	// answered is re-queued by its own writes, one GitHub cannot yet
+	// authorise or answer retries on the backoff, and one with no
+	// Integration to read GitHub through waits.
+	settled, wait, err = r.settleCommands(ctx, &fnd)
 	if err != nil || settled {
 		return ctrl.Result{RequeueAfter: wait}, err
 	}
@@ -532,7 +548,8 @@ func (r *FindingReconciler) projectPhase(
 	switch phase {
 	case v1alpha1.PhaseAwaitingApproval:
 		notice := "patchy is holding this remediation for human approval. " +
-			"Comment `" + r.approveCommand(ctx, fnd) + "` to let it proceed."
+			"Comment `" + command.Prefix + " " + action.VerbApprove + "` to let it proceed " +
+			"(anyone with write access to this repository can)."
 		if err := notify(ctx, tracker, repo, number, fnd.Status.Owners, post, notice); err != nil {
 			return err
 		}
@@ -859,20 +876,6 @@ func phaseLabel(p v1alpha1.Phase) string {
 		b.WriteRune(r)
 	}
 	return b.String()
-}
-
-// approveCommand is the integration's configured approve comment.
-func (r *FindingReconciler) approveCommand(ctx context.Context, fnd *v1alpha1.Finding) string {
-	var integ v1alpha1.Integration
-	if fnd.Spec.TrackingRef != nil {
-		key := types.NamespacedName{Namespace: fnd.Namespace, Name: fnd.Spec.TrackingRef.Name}
-		if err := r.Get(ctx, key, &integ); err == nil &&
-			integ.Spec.GitHub != nil && integ.Spec.GitHub.Issues != nil &&
-			integ.Spec.GitHub.Issues.ApproveComment != "" {
-			return integ.Spec.GitHub.Issues.ApproveComment
-		}
-	}
-	return "/approve"
 }
 
 // noticeReason explains a hand-off from the finding's state.

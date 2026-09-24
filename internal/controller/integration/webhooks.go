@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/command"
 	"github.com/bitwise-media-group/patchy/internal/forge"
 	"github.com/bitwise-media-group/patchy/internal/ghclient"
 	"github.com/bitwise-media-group/patchy/internal/webhook"
@@ -34,17 +35,16 @@ const TrackingURLIndex = "status.tracking.url"
 // settle it only when the PR is the one recorded for it: isRecordedPR).
 const BranchPrefix = "patchy/"
 
-// approverAssociations are the author associations allowed to /approve.
-var approverAssociations = []string{"OWNER", "MEMBER", "COLLABORATOR"}
-
 // Signals applies human actions on tracking items to Findings: the writer of
 // edges 16/17 (the recorded PR merged/closed), 19 (issue reopened after
-// dismissal), 20 (issue closed by a human), and of spec.approval. A close
-// during review that the delivery alone cannot settle is kept on the finding
-// instead (ConditionReviewClosePending), for the projection to settle
-// against the recorded PR (FindingReconciler.settleReview). Signals itself
-// never calls GitHub: a delivery is answered before it is handled, so
-// nothing retries a handler that fails.
+// dismissal) and 20 (issue closed by a human). A close during review that
+// the delivery alone cannot settle is kept on the finding instead
+// (ConditionReviewClosePending), for the projection to settle against the
+// recorded PR (FindingReconciler.settleReview); a command comment is kept
+// likewise (status.commands), for the projection to authorise, apply and
+// answer (FindingReconciler.settleCommands). Signals itself never calls
+// GitHub: a delivery is answered before it is handled, so nothing retries a
+// handler that fails.
 type Signals struct {
 	client.Client
 	// Namespace the Findings live in.
@@ -118,72 +118,115 @@ func (s *Signals) issues(ctx context.Context, payload []byte) error {
 	})
 }
 
-// comment handles the approve command: an authorized commenter sets
-// spec.approval; remediation-controller reacts to the spec change.
+// comment records a human command made on a tracking issue: a comment that
+// opens with "/patchy <verb>" (internal/command's grammar), or the
+// deprecated approve comment. It records the command on the finding's
+// status (status.commands.pending) and does nothing more: whether the
+// commenter may issue it is for GitHub to say, and a delivery is answered
+// before it is handled, so a GitHub call that failed here would lose the
+// command for good. The projection settles it instead
+// (FindingReconciler.settleCommands), retrying until GitHub answers.
+//
+// A command from a bot is ignored, the App's own "<slug>[bot]" among them,
+// and so is one already recorded or answered: a duplicate or redelivered
+// delivery, or a demo replay.
 func (s *Signals) comment(ctx context.Context, integ *v1alpha1.Integration, payload []byte) error {
 	var ev struct {
 		Action  string   `json:"action"`
 		Issue   issueRef `json:"issue"`
 		Comment struct {
-			Body              string `json:"body"`
-			AuthorAssociation string `json:"author_association"`
-			User              struct {
+			ID   int64  `json:"id"`
+			Body string `json:"body"`
+			User struct {
 				Login string `json:"login"`
+				ID    int64  `json:"id"`
+				Type  string `json:"type"`
 			} `json:"user"`
 		} `json:"comment"`
 	}
 	if err := json.Unmarshal(payload, &ev); err != nil {
 		return fmt.Errorf("decode issue_comment event: %w", err)
 	}
-	command := "/approve"
-	if integ.Spec.GitHub != nil && integ.Spec.GitHub.Issues != nil && integ.Spec.GitHub.Issues.ApproveComment != "" {
-		command = integ.Spec.GitHub.Issues.ApproveComment
-	}
-	body := strings.TrimSpace(ev.Comment.Body)
-	if ev.Action != "created" || (body != command && !strings.HasPrefix(body, command+" ")) {
+	if ev.Action != "created" {
 		return nil
 	}
-	if !slices.Contains(approverAssociations, ev.Comment.AuthorAssociation) {
-		s.log().LogAttrs(ctx, slog.LevelInfo, "approve from unauthorized association",
-			slog.String("association", ev.Comment.AuthorAssociation),
-			slog.String("login", ev.Comment.User.Login))
+	parser := command.Parser{Surface: command.FindingIssue, ApproveAlias: approveAlias(integ)}
+	cmd, ok := parser.Parse(ev.Comment.Body)
+	if !ok {
+		return nil
+	}
+	actor := v1alpha1.CommandActor{Login: ev.Comment.User.Login, ID: ev.Comment.User.ID, Type: ev.Comment.User.Type}
+	attrs := make([]slog.Attr, 0, 4) // the finding joins them once resolved
+	attrs = append(attrs,
+		slog.Int64("comment", ev.Comment.ID), slog.String("login", actor.Login), slog.String("verb", cmd.Verb))
+	switch {
+	case isBot(actor):
+		s.log().LogAttrs(ctx, slog.LevelInfo, "command from a bot ignored", attrs...)
+		return nil
+	case ev.Comment.ID <= 0 || actor.Login == "":
+		s.log().LogAttrs(ctx, slog.LevelWarn, "command delivery names no comment or author; ignored", attrs...)
 		return nil
 	}
 	fnd, err := s.findByIssueURL(ctx, ev.Issue.HTMLURL)
 	if err != nil || fnd == "" {
 		return err
 	}
-	note := strings.TrimSpace(strings.TrimPrefix(body, command))
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var cur v1alpha1.Finding
-		if err := s.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: fnd}, &cur); err != nil {
-			return client.IgnoreNotFound(err)
+	attrs = append(attrs, slog.String("finding", fnd))
+	pending := v1alpha1.FindingCommand{
+		CommentID:  ev.Comment.ID,
+		Actor:      actor,
+		Verb:       cmd.Verb,
+		Note:       cmd.Note,
+		Legacy:     cmd.Alias != "",
+		ReceivedAt: metav1.NewTime(s.now()),
+	}
+	return s.updateFinding(ctx, fnd, func(cur *v1alpha1.Finding) error {
+		cmds := cur.Status.Commands
+		switch {
+		case commandSeen(cmds, pending.CommentID):
+			return nil // a duplicate or redelivered delivery, or a replay
+		case cmds != nil && len(cmds.Pending) >= v1alpha1.MaxPendingCommands:
+			s.log().LogAttrs(ctx, slog.LevelWarn, "too many commands pending on the finding; not recorded", attrs...)
+			return nil
+		case cmds == nil:
+			cmds = &v1alpha1.FindingCommands{}
+			cur.Status.Commands = cmds
 		}
-		// First approval wins — except a HandedOff finding whose recorded
-		// approval predates completion: that approval can never revive it
-		// (remediation-controller requires approval newer than completedAt),
-		// so a fresh /approve replaces it.
-		if cur.Spec.Approval != nil && !staleApproval(&cur) {
-			return nil // first approval wins
-		}
-		cur.Spec.Approval = &v1alpha1.Approval{
-			By:   ev.Comment.User.Login,
-			At:   metav1.NewTime(s.now()),
-			Note: truncate(note, 1024),
-		}
-		return s.Update(ctx, &cur)
+		cmds.Pending = append(cmds.Pending, pending)
+		s.log().LogAttrs(ctx, slog.LevelInfo, "command recorded", attrs...)
+		return nil
 	})
 }
 
-// staleApproval reports a HandedOff finding whose approval is too old to
-// revive it (not newer than status.completedAt). Keep in lockstep with the
-// status server's copy in internal/web/actions.go.
-func staleApproval(f *v1alpha1.Finding) bool {
-	if f.Status.Phase != v1alpha1.PhaseHandedOff || f.Spec.Approval == nil {
+// approveAlias is the Integration's configured approve comment; empty means
+// the parser's default, "/approve".
+func approveAlias(integ *v1alpha1.Integration) string {
+	if integ == nil || integ.Spec.GitHub == nil || integ.Spec.GitHub.Issues == nil {
+		return ""
+	}
+	return integ.Spec.GitHub.Issues.ApproveComment
+}
+
+// isBot reports a bot account: GitHub's Bot type, which every App's
+// "<slug>[bot]" user carries, or a login of that form.
+func isBot(a v1alpha1.CommandActor) bool {
+	return a.Type == "Bot" || strings.HasSuffix(a.Login, "[bot]")
+}
+
+// commandSeen reports whether the command in comment id is already recorded
+// or answered on the finding. The consumed list keeps the largest ids
+// answered, so once it is full an id below all of them is older than every
+// command it remembers: GitHub's ids grow with creation, and that comment
+// was answered long ago.
+func commandSeen(cmds *v1alpha1.FindingCommands, id int64) bool {
+	if cmds == nil {
 		return false
 	}
-	done := f.Status.CompletedAt
-	return done != nil && !f.Spec.Approval.At.After(done.Time)
+	if slices.ContainsFunc(cmds.Pending, func(c v1alpha1.FindingCommand) bool { return c.CommentID == id }) ||
+		slices.Contains(cmds.Consumed, id) {
+		return true
+	}
+	return len(cmds.Consumed) >= v1alpha1.MaxConsumedCommands && id < slices.Min(cmds.Consumed)
 }
 
 // repoRef is a delivery's reference to a repository.

@@ -8,7 +8,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"time"
 )
 
@@ -25,8 +27,22 @@ func (s *Server) tarballRedirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, loc, http.StatusFound)
 }
 
+// SetRepoFile adds a file to owner/repo's tree, served in its tarball beside
+// the fixed ones (a repository's .patchy/agent.yaml, say); setting a path
+// again replaces its content.
+func (s *Server) SetRepoFile(owner, repo, path, content string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := repoKey(owner, repo)
+	if s.repoFiles[key] == nil {
+		s.repoFiles[key] = map[string]string{}
+	}
+	s.repoFiles[key][path] = content
+}
+
 // tarball serves the archive itself: a deterministic tree-only tar.gz with
-// GitHub's top-level "<owner>-<repo>-<sha7>/" directory.
+// GitHub's top-level "<owner>-<repo>-<sha7>/" directory, holding the fixed
+// files and then those SetRepoFile added, by path.
 func (s *Server) tarball(w http.ResponseWriter, r *http.Request) {
 	owner, repo := r.PathValue("owner"), r.PathValue("repo")
 	top := fmt.Sprintf("%s-%s-%s/", owner, repo, HeadSHA[:7])
@@ -40,6 +56,12 @@ func (s *Server) tarball(w http.ResponseWriter, r *http.Request) {
 		{top + "README.md", "# " + owner + "/" + repo + "\n"},
 		{top + "app.js", "vulnerable();\n"},
 	}
+	s.mu.Lock()
+	extra := s.repoFiles[repoKey(owner, repo)]
+	for _, path := range slices.Sorted(maps.Keys(extra)) {
+		files = append(files, struct{ name, body string }{top + path, extra[path]})
+	}
+	s.mu.Unlock()
 	for _, f := range files {
 		_ = tw.WriteHeader(&tar.Header{
 			Name: f.name, Mode: 0o644, Size: int64(len(f.body)), ModTime: time.Unix(0, 0),

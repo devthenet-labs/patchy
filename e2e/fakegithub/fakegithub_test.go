@@ -4,6 +4,8 @@
 package fakegithub_test
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -11,8 +13,10 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -680,4 +684,233 @@ func rawIssueNumbers(t *testing.T, url string) []int {
 		out = append(out, is.Number)
 	}
 	return out
+}
+
+// TestRepositoryLabels: EnsureLabel creates a missing label once, leaves an
+// existing one exactly as a human styled it (found case-insensitively, as
+// GitHub finds labels), and needs the issues permission.
+func TestRepositoryLabels(t *testing.T) {
+	srv, _, _ := newFake(t)
+	app := newApp(t, srv)
+	ctx := context.Background()
+	c := scopedClient(t, srv, app, intents, ghclient.TokenPerms{Issues: ghclient.PermWrite})
+	srv.SeedRepoLabel(intents.Owner, intents.Name, "patchy:approved", "ffffff")
+
+	steps := []struct {
+		name, label string
+		wantCreated bool
+	}{
+		{"a missing label is created", "patchy:target", true},
+		{"then found", "patchy:target", false},
+		{"found case-insensitively", "PATCHY:TARGET", false},
+		{"a human's label is kept", "patchy:approved", false},
+	}
+	for _, step := range steps {
+		created, err := c.EnsureLabel(ctx, intents, step.label, "5319e7", "patchy: plan this")
+		if err != nil || created != step.wantCreated {
+			t.Errorf("%s: EnsureLabel(%s) = %v, %v, want %v", step.name, step.label, created, err, step.wantCreated)
+		}
+	}
+	want := []fakegithub.RepoLabel{
+		{ID: 1, Name: "patchy:approved", Color: "ffffff"},
+		{ID: 2, Name: "patchy:target", Color: "5319e7", Description: "patchy: plan this"},
+	}
+	if got := srv.RepoLabels(intents.Owner, intents.Name); !reflect.DeepEqual(got, want) {
+		t.Errorf("labels = %+v, want %+v", got, want)
+	}
+	if got := srv.RepoLabels(target.Owner, target.Name); len(got) != 0 {
+		t.Errorf("labels of another repository = %+v, want none", got)
+	}
+
+	contents := scopedClient(t, srv, app, intents, ghclient.TokenPerms{Contents: ghclient.PermWrite})
+	if _, err := contents.EnsureLabel(ctx, intents, "patchy:other", "", ""); !ghclient.IsForbidden(err) {
+		t.Errorf("EnsureLabel with a contents token error = %v, want 403", err)
+	}
+}
+
+// TestRateRemaining: GET /rate_limit reports the core budget, which a test
+// can spend down.
+func TestRateRemaining(t *testing.T) {
+	srv, c, _ := newFake(t)
+	ctx := context.Background()
+	if got, err := c.RateRemaining(ctx); err != nil || got != 5000 {
+		t.Errorf("RateRemaining() = %d, %v, want 5000", got, err)
+	}
+	srv.SetRateRemaining(12)
+	if got, err := c.RateRemaining(ctx); err != nil || got != 12 {
+		t.Errorf("RateRemaining() after spending = %d, %v, want 12", got, err)
+	}
+}
+
+// TestStoredComment: a posted comment comes back as GitHub stored it — its
+// id, body, author, created_at and page anchor — which is what an approval
+// later re-hashes and orders against.
+func TestStoredComment(t *testing.T) {
+	srv, _, clk := newFake(t)
+	ctx := context.Background()
+	n := srv.OpenIssue(intents.Owner, intents.Name, "t", "b", nil, human)
+	got, err := botClient(t, srv).CreateIssueComment(ctx, intents, n, "<!-- patchy:plan x -->\nthe plan")
+	if err != nil {
+		t.Fatalf("CreateIssueComment() error = %v", err)
+	}
+	wantURL := "https://github.com/devthenet-labs/intents/issues/101#issuecomment-1"
+	if got.ID != 1 || got.Body != "<!-- patchy:plan x -->\nthe plan" || got.UserLogin != fakegithub.BotLogin ||
+		got.UserType != "Bot" || !got.CreatedAt.Equal(clk.now()) || got.HTMLURL != wantURL || got.ViaApp != "patchy" {
+		t.Errorf("stored comment = %+v, want id 1 by %s at %v, %s, via the App", got, fakegithub.BotLogin, clk.now(), wantURL)
+	}
+	stored := srv.IssueComments(n)
+	if len(stored) != 1 || stored[0].ID != got.ID || stored[0].User != fakegithub.Bot || stored[0].Body != got.Body {
+		t.Errorf("IssueComments() = %+v, want the one posted", stored)
+	}
+}
+
+// TestPullRequestIdentity: a pull request carries its own node id and the
+// head commit its branch points at, on create, read and find alike, and
+// the merge leaves both behind.
+func TestPullRequestIdentity(t *testing.T) {
+	srv, c, _ := newFake(t)
+	ctx := context.Background()
+	const branch = "patchy-intent/target-1"
+	sha, err := c.CreateCommit(ctx, target, ghclient.CommitRequest{
+		BaseSHA: fakegithub.BaseSHA, Message: "build",
+		Files: []ghclient.CommitFile{{Path: "VERSION", Mode: "100644", Content: []byte("0.1.0\n")}},
+	})
+	if err != nil {
+		t.Fatalf("CreateCommit() error = %v", err)
+	}
+	if err := c.CreateBranchRef(ctx, target, branch, sha); err != nil {
+		t.Fatalf("CreateBranchRef() error = %v", err)
+	}
+	pr, err := c.CreatePR(ctx, target, ghclient.PRRequest{Title: "target: v", Head: branch, Base: "main", Body: "Part of x"})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	wantNode := "PR_fake" + strconv.Itoa(pr.Number)
+	if pr.NodeID != wantNode || pr.HeadSHA != sha {
+		t.Errorf("CreatePR() = %+v, want node %s head %s", pr, wantNode, sha)
+	}
+	found, err := c.FindPRByHead(ctx, target, branch)
+	if err != nil || found == nil || found.Number != pr.Number || found.NodeID != wantNode || found.HeadSHA != sha {
+		t.Errorf("FindPRByHead() = %+v, %v, want #%d %s %s", found, err, pr.Number, wantNode, sha)
+	}
+	got, err := c.GetPullRequest(ctx, target, pr.Number)
+	if err != nil || got.NodeID != wantNode || got.HeadSHA != sha || got.State != "open" || got.Merged {
+		t.Errorf("GetPullRequest() = %+v, %v, want open %s at %s", got, err, wantNode, sha)
+	}
+	snap, ok := srv.Pull(pr.Number)
+	want := fakegithub.PullRequest{
+		Number: pr.Number, Repository: "devthenet-labs/patchy-target", NodeID: wantNode, Title: "target: v",
+		Body: "Part of x", Head: branch, HeadSHA: sha, Base: "main", State: "open",
+	}
+	if !ok || snap != want {
+		t.Errorf("Pull() = %+v, %v, want %+v", snap, ok, want)
+	}
+
+	srv.MergePull(pr.Number, branch, "mergedsha")
+	got, err = c.GetPullRequest(ctx, target, pr.Number)
+	if err != nil || !got.Merged || got.MergeCommitSHA != "mergedsha" || got.NodeID != wantNode || got.HeadSHA != sha {
+		t.Errorf("GetPullRequest() after merge = %+v, %v, want merged at mergedsha, %s, head %s", got, err, wantNode, sha)
+	}
+}
+
+// TestRefWriteLog: every ref create and update is recorded as asked and as
+// answered, so a test can prove a branch was created once and never forced
+// — and see the Finding push's forced move for what it is.
+func TestRefWriteLog(t *testing.T) {
+	srv, c, _ := newFake(t)
+	ctx := context.Background()
+	commit := func(parent string) string {
+		t.Helper()
+		sha, err := c.CreateCommit(ctx, target, ghclient.CommitRequest{
+			BaseSHA: parent, Message: "m", Files: []ghclient.CommitFile{{Path: "a", Mode: "100644", Content: []byte(parent)}},
+		})
+		if err != nil {
+			t.Fatalf("CreateCommit() error = %v", err)
+		}
+		return sha
+	}
+	build := commit(fakegithub.BaseSHA)
+	next := commit(build)
+	if err := c.CreateBranchRef(ctx, target, "patchy-intent/target-1", build); err != nil {
+		t.Fatalf("CreateBranchRef() error = %v", err)
+	}
+	if err := c.CreateBranchRef(ctx, target, "patchy-intent/target-1", build); err != nil {
+		t.Fatalf("CreateBranchRef() again error = %v", err)
+	}
+	if err := c.FastForwardRef(ctx, target, "patchy-intent/target-1", next); err != nil {
+		t.Fatalf("FastForwardRef() error = %v", err)
+	}
+	for range 2 {
+		if _, err := c.PushBranch(ctx, target, ghclient.BranchPush{Branch: "patchy/issue-9", CommitRequest: ghclient.CommitRequest{
+			BaseSHA: fakegithub.BaseSHA, Message: "fix",
+		}}); err != nil {
+			t.Fatalf("PushBranch() error = %v", err)
+		}
+	}
+
+	got := srv.RefWrites()
+	if len(got) != 6 {
+		t.Fatalf("ref writes = %+v, want 6", got)
+	}
+	want := []fakegithub.RefWrite{
+		{Op: "create", Ref: "heads/patchy-intent/target-1", SHA: build, Status: http.StatusCreated},
+		{Op: "create", Ref: "heads/patchy-intent/target-1", SHA: build, Status: http.StatusUnprocessableEntity},
+		{Op: "update", Ref: "heads/patchy-intent/target-1", SHA: next, Status: http.StatusOK},
+		{Op: "create", Ref: "heads/patchy/issue-9", SHA: got[3].SHA, Status: http.StatusCreated},
+		{Op: "create", Ref: "heads/patchy/issue-9", SHA: got[4].SHA, Status: http.StatusUnprocessableEntity},
+		{Op: "update", Ref: "heads/patchy/issue-9", SHA: got[4].SHA, Force: true, Status: http.StatusOK},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ref writes = %+v, want %+v", got, want)
+	}
+	pushed, ok := srv.CommitOf(next)
+	if !ok || !reflect.DeepEqual(pushed.Parents, []string{build}) || string(pushed.Files["a"]) != build {
+		t.Errorf("CommitOf(%s) = %+v, %v, want parent %s and file a", next, pushed, ok, build)
+	}
+}
+
+// TestRepoFilesInTarball: a file a test adds to a repository's tree is in
+// that repository's tarball, under GitHub's top-level directory, and in no
+// other repository's.
+func TestRepoFilesInTarball(t *testing.T) {
+	srv, c, _ := newFake(t)
+	ctx := context.Background()
+	srv.SetRepoFile(target.Owner, target.Name, ".patchy/agent.yaml", "image: registry.example/app:v1\n")
+	files := func(repo ghclient.Repo) map[string]string {
+		t.Helper()
+		rc, err := c.Tarball(ctx, repo, fakegithub.HeadSHA)
+		if err != nil {
+			t.Fatalf("Tarball(%s) error = %v", repo, err)
+		}
+		defer func() { _ = rc.Close() }()
+		gz, err := gzip.NewReader(rc)
+		if err != nil {
+			t.Fatalf("gzip: %v", err)
+		}
+		tr := tar.NewReader(gz)
+		out := map[string]string{}
+		for {
+			hdr, err := tr.Next()
+			if errors.Is(err, io.EOF) {
+				return out
+			}
+			if err != nil {
+				t.Fatalf("tar: %v", err)
+			}
+			body, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatalf("tar body: %v", err)
+			}
+			out[hdr.Name] = string(body)
+		}
+	}
+	top := "devthenet-labs-patchy-target-" + fakegithub.HeadSHA[:7] + "/"
+	if got := files(target)[top+".patchy/agent.yaml"]; got != "image: registry.example/app:v1\n" {
+		t.Errorf("tarball agent.yaml = %q, want the added file", got)
+	}
+	for name := range files(intents) {
+		if strings.HasSuffix(name, ".patchy/agent.yaml") {
+			t.Errorf("another repository's tarball carries %s", name)
+		}
+	}
 }

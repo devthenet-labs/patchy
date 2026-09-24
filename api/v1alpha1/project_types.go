@@ -7,6 +7,51 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// The intent name budget. Intent and IntentRun names are written into label
+// values — LabelIntent and LabelIntentRun on the Repositories
+// intent-controller creates, and the jobs package's LabelOwner and
+// LabelFinding on each agent Job and transcript — which Kubernetes caps at 63
+// characters, and a Job is mapped back to its run by that exact value. So
+// every derived name must fit in 63 characters untruncated. The longest is a
+// build run's (IntentRunName):
+//
+//	<project>-<issue>-bld-r<round>-<repository key>-a<attempt>
+//	   25    +1+ 7  + 6  +  3   +1+      16        +2+   2    = 63
+//
+// Each part is bounded where it is written: the Project's name and its
+// repositories' keys by the Project schema, the issue number by the Intent
+// schema, the round and attempt by the IntentRun schema, which also refuses
+// any IntentRun name over 63 as a backstop. The Intent name itself
+// (<project>-<issue>, CEL-enforced) is at most 33 characters, and the derived
+// trigger label patchy:<project> at most 32, inside GitHub's 50.
+const (
+	// MaxProjectNameLength bounds a Project's name.
+	MaxProjectNameLength = 25
+	// MaxRepositoryKeyLength bounds a Project repository's key.
+	MaxRepositoryKeyLength = 16
+	// MaxIntentIssueNumber bounds an intent issue's number (seven digits).
+	MaxIntentIssueNumber = 9999999
+	// MaxIntentRound bounds an IntentRun's round, and the Intent revisions
+	// and counters it is taken from (three digits).
+	MaxIntentRound = 999
+	// MaxIntentRunAttempt bounds an IntentRun's attempt (two digits).
+	MaxIntentRunAttempt = 16
+)
+
+// DefaultTriggerLabelPrefix prefixes the trigger label a Project derives from
+// its name when spec.labels.trigger is unset: patchy:<project name>.
+const DefaultTriggerLabelPrefix = "patchy:"
+
+// ProjectTriggerLabel returns the label that starts an intent for the Project
+// (and names it): spec.labels.trigger when set, else patchy:<project name>,
+// which the name budget keeps inside GitHub's 50-character label limit.
+func ProjectTriggerLabel(p *Project) string {
+	if p.Spec.Labels.Trigger != "" {
+		return p.Spec.Labels.Trigger
+	}
+	return DefaultTriggerLabelPrefix + p.Name
+}
+
 // Project defaults. The schema applies each one server-side (the
 // +kubebuilder:default markers below carry the same literals, and the schema
 // envtest pins the two together); they are exported for code that reads a
@@ -77,10 +122,10 @@ type ProjectApprovers struct {
 type ProjectRepository struct {
 	// Name is the repository's short key within the Project, used in the
 	// names of the IntentRuns and Repositories created for it
-	// (<intent>-bld-<name>-a<n>), hence a DNS label of at most 32
-	// characters.
+	// (<intent>-bld-r<round>-<name>-a<n>), hence a DNS label of at most 16
+	// characters (MaxRepositoryKeyLength; see the name budget).
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:MaxLength=16
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Name string `json:"name"`
 	// URL is the repository's https URL (https://github.com/<owner>/<name>).
@@ -279,10 +324,11 @@ type ProjectStatus struct {
 // Project is operator configuration for intent-driven development: an intent
 // repository whose trigger-labelled issues become Intents, the approvers
 // whose actions count, the application repositories the work is built in,
-// and the limits on what it may spend. Its name is at most 63 characters: it
-// prefixes every Intent's name (<project>-<issue>) and Intent.spec.project
-// holds it.
-// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 63",message="Project names are at most 63 characters"
+// and the limits on what it may spend. Its name is at most 25 characters
+// (MaxProjectNameLength): it prefixes every Intent's and IntentRun's name,
+// which are written into 63-character label values (see the name budget),
+// and Intent.spec.project holds it.
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 25",message="Project names are at most 25 characters, so every Intent and IntentRun name derived from them fits in a label value"
 type Project struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

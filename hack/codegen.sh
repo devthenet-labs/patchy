@@ -93,7 +93,7 @@ cat >"$schema" <<'EOF'
             "additionalProperties": false,
             "required": ["name", "spec"],
             "properties": {
-                "name": { "type": "string", "minLength": 1, "maxLength": 63 },
+                "name": { "type": "string", "minLength": 1, "maxLength": 25 },
                 "spec": { "$ref": "#/definitions/projectSpec" }
             }
         },

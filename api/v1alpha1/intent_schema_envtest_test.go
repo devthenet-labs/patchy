@@ -158,7 +158,12 @@ func testProjectBounds(ctx context.Context, t *testing.T, c client.Client) {
 				patchyv1.ProjectRepository{Name: "app0", URL: "https://github.com/acme/other"})
 		}, true},
 		{"repository key not a DNS label", func(p *patchyv1.Project) { p.Spec.Repositories[0].Name = "Shop" }, true},
-		{"repository key over 32", func(p *patchyv1.Project) { p.Spec.Repositories[0].Name = strings.Repeat("a", 33) }, true},
+		{"repository key at the name budget", func(p *patchyv1.Project) {
+			p.Spec.Repositories[0].Name = strings.Repeat("a", patchyv1.MaxRepositoryKeyLength)
+		}, false},
+		{"repository key past the name budget", func(p *patchyv1.Project) {
+			p.Spec.Repositories[0].Name = strings.Repeat("a", patchyv1.MaxRepositoryKeyLength+1)
+		}, true},
 		{"plain http repository", func(p *patchyv1.Project) {
 			p.Spec.Repositories[0].URL = "http://github.com/acme/shop"
 		}, true},
@@ -205,8 +210,14 @@ func testProjectBounds(ctx context.Context, t *testing.T, c client.Client) {
 		{"check timeout of one hour", func(p *patchyv1.Project) {
 			p.Spec.Checks.Timeout = &metav1.Duration{Duration: time.Hour}
 		}, false},
-		{"a 63-character name", func(p *patchyv1.Project) { p.Name = strings.Repeat("p", 63) }, false},
-		{"a 64-character name", func(p *patchyv1.Project) { p.Name = strings.Repeat("p", 64) }, true},
+		// The name budget: every Intent and IntentRun name derived from the
+		// Project's must fit in a label value.
+		{"a name at the name budget", func(p *patchyv1.Project) {
+			p.Name = strings.Repeat("p", patchyv1.MaxProjectNameLength)
+		}, false},
+		{"a name past the name budget", func(p *patchyv1.Project) {
+			p.Name = strings.Repeat("p", patchyv1.MaxProjectNameLength+1)
+		}, true},
 	}
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -255,15 +266,17 @@ func testProjectStatus(ctx context.Context, t *testing.T, c client.Client) {
 	})
 }
 
-func schemaIntent(name string) *patchyv1.Intent {
+// schemaIntent is a valid Intent for issue `issue` of Project target, named
+// as the schema requires (<project>-<issue>).
+func schemaIntent(issue int64) *patchyv1.Intent {
 	return &patchyv1.Intent{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: patchyv1.IntentName("target", issue), Namespace: "default"},
 		Spec: patchyv1.IntentSpec{
 			Project: "target",
 			Issue: patchyv1.IntentIssue{
 				Repository: "https://github.com/acme/intents",
-				Number:     1,
-				URL:        "https://github.com/acme/intents/issues/1",
+				Number:     issue,
+				URL:        fmt.Sprintf("https://github.com/acme/intents/issues/%d", issue),
 			},
 			RequestedBy: patchyv1.IntentRequest{Login: "octocat", At: schemaNow, EventID: 42},
 		},
@@ -299,6 +312,7 @@ func fullIntentStatus() patchyv1.IntentStatus {
 			URL: "https://github.com/acme/shop/pull/7", NodeID: "PR_kwDOAbCdEf", HeadSHA: schemaSHA,
 			State: "merged", MergedAt: schemaNow.DeepCopy(), MergeCommitSHA: schemaSHA,
 		}},
+		Rounds:     3,
 		Revisions:  1,
 		CheckFixes: 1,
 		Usage: patchyv1.IntentUsage{
@@ -316,7 +330,7 @@ func fullIntentStatus() patchyv1.IntentStatus {
 func testIntentSchema(ctx context.Context, t *testing.T, c client.Client) {
 	t.Helper()
 	key := client.ObjectKey{Name: "target-1", Namespace: "default"}
-	if err := c.Create(ctx, schemaIntent(key.Name)); err != nil {
+	if err := c.Create(ctx, schemaIntent(1)); err != nil {
 		t.Fatalf("Create(intent) = %v, want nil", err)
 	}
 	fresh := func(t *testing.T) *patchyv1.Intent {
@@ -361,22 +375,44 @@ func testIntentSchema(ctx context.Context, t *testing.T, c client.Client) {
 		})
 	}
 
+	// Each case mutates a valid spec and is then named from it as the
+	// schema requires, unless it names itself.
 	for n, tt := range []struct {
 		name    string
 		mutate  func(*patchyv1.IntentSpec)
+		rename  string
 		wantErr bool
 	}{
-		{"a bot requester", func(s *patchyv1.IntentSpec) { s.RequestedBy.Login = "github-actions[bot]" }, false},
-		{"a requester with a space", func(s *patchyv1.IntentSpec) { s.RequestedBy.Login = "octo cat" }, true},
-		{"issue number zero", func(s *patchyv1.IntentSpec) { s.Issue.Number = 0 }, true},
-		{"requester event zero", func(s *patchyv1.IntentSpec) { s.RequestedBy.EventID = 0 }, true},
-		{"issue repository not a url", func(s *patchyv1.IntentSpec) { s.Issue.Repository = "acme/intents" }, true},
-		{"issue url not https", func(s *patchyv1.IntentSpec) { s.Issue.URL = "javascript:alert(1)" }, true},
-		{"project over 63", func(s *patchyv1.IntentSpec) { s.Project = strings.Repeat("p", 64) }, true},
+		{"a bot requester", func(s *patchyv1.IntentSpec) { s.RequestedBy.Login = "github-actions[bot]" }, "", false},
+		{"a requester with a space", func(s *patchyv1.IntentSpec) { s.RequestedBy.Login = "octo cat" }, "", true},
+		{"issue number zero", func(s *patchyv1.IntentSpec) { s.Issue.Number = 0 }, "", true},
+		{"requester event zero", func(s *patchyv1.IntentSpec) { s.RequestedBy.EventID = 0 }, "", true},
+		{"issue repository not a url", func(s *patchyv1.IntentSpec) { s.Issue.Repository = "acme/intents" }, "", true},
+		{"issue url not https", func(s *patchyv1.IntentSpec) { s.Issue.URL = "javascript:alert(1)" }, "", true},
+		// The name budget: the Intent name is at most 33 characters.
+		{"the longest project and issue", func(s *patchyv1.IntentSpec) {
+			s.Project, s.Issue.Number = strings.Repeat("p", patchyv1.MaxProjectNameLength), patchyv1.MaxIntentIssueNumber
+		}, "", false},
+		{"a project past the name budget", func(s *patchyv1.IntentSpec) {
+			s.Project = strings.Repeat("p", patchyv1.MaxProjectNameLength+1)
+		}, "", true},
+		{"an issue number past seven digits", func(s *patchyv1.IntentSpec) {
+			s.Issue.Number = patchyv1.MaxIntentIssueNumber + 1
+		}, "", true},
+		{"a name other than <project>-<issue>", func(*patchyv1.IntentSpec) {}, "target-other", true},
+		{"a name for another issue", func(*patchyv1.IntentSpec) {}, "target-2", true},
+		{"a name for another project", func(*patchyv1.IntentSpec) {}, "targets-1", true},
+		{"a name with no issue", func(*patchyv1.IntentSpec) {}, "target-", true},
+		{"a name padding the issue with a zero", func(s *patchyv1.IntentSpec) { s.Issue.Number = 7 }, "target-07", true},
+		{"a name carrying a suffix", func(s *patchyv1.IntentSpec) { s.Issue.Number = 8 }, "target-8-x", true},
 	} {
 		t.Run("create with "+tt.name, func(t *testing.T) {
-			i := schemaIntent(fmt.Sprintf("target-spec-%d", n))
+			i := schemaIntent(int64(100 + n))
 			tt.mutate(&i.Spec)
+			i.Name = patchyv1.IntentName(i.Spec.Project, i.Spec.Issue.Number)
+			if tt.rename != "" {
+				i.Name = tt.rename
+			}
 			if err := c.Create(ctx, i); (err != nil) != tt.wantErr {
 				t.Errorf("Create(intent: %s) = %v, wantErr %v", tt.name, err, tt.wantErr)
 			}
@@ -435,6 +471,18 @@ func testIntentSchema(ctx context.Context, t *testing.T, c client.Client) {
 		}, true},
 		{"a negative cost", func(s *patchyv1.IntentStatus) { s.Usage.CostMicroUSD = -1 }, true},
 		{"a plan revision of zero", func(s *patchyv1.IntentStatus) { s.Plan.Revision = 0 }, true},
+		// Rounds and revisions name runs, so they stay inside the name budget.
+		{"rounds at the bound", func(s *patchyv1.IntentStatus) { s.Rounds = patchyv1.MaxIntentRound }, false},
+		{"rounds past the bound", func(s *patchyv1.IntentStatus) { s.Rounds = patchyv1.MaxIntentRound + 1 }, true},
+		{"an input revision past the bound", func(s *patchyv1.IntentStatus) {
+			s.Input.Revision = patchyv1.MaxIntentRound + 1
+		}, true},
+		{"a plan revision past the bound", func(s *patchyv1.IntentStatus) {
+			s.Plan.Revision = patchyv1.MaxIntentRound + 1
+		}, true},
+		{"an approved revision past the bound", func(s *patchyv1.IntentStatus) {
+			s.Approval.PlanRevision = patchyv1.MaxIntentRound + 1
+		}, true},
 	} {
 		t.Run("status with "+tt.name, func(t *testing.T) {
 			i := fresh(t)
@@ -447,9 +495,9 @@ func testIntentSchema(ctx context.Context, t *testing.T, c client.Client) {
 	}
 }
 
-// schemaIntentRun is a valid run of the given stage: a plan run at plan
-// revision 1, a build run pinning the approved plan, a revise run pinning it
-// and taking its image from the build round.
+// schemaIntentRun is a valid run of the given stage, each at round 1: a plan
+// run at input revision 1, a build run of approved plan revision 1, a revise
+// run pinning that plan and taking its image from the build round.
 func schemaIntentRun(name string, stage patchyv1.IntentStage) *patchyv1.IntentRun {
 	r := &patchyv1.IntentRun{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
@@ -468,13 +516,12 @@ func schemaIntentRun(name string, stage patchyv1.IntentStage) *patchyv1.IntentRu
 	}
 	switch stage {
 	case patchyv1.IntentStageBuild:
-		r.Spec.Round = 0
 		r.Spec.Inputs.PlanRevision, r.Spec.Inputs.PlanDigest = 1, schemaDigest
 	case patchyv1.IntentStageRevise:
 		r.Spec.Inputs.PlanRevision, r.Spec.Inputs.PlanDigest = 1, schemaDigest
 		r.Spec.Trigger = patchyv1.IntentRunTriggerReview
 		r.Spec.Inputs.ReviewIDs = []int64{5001}
-		r.Spec.ImageFrom = &patchyv1.ObjectReference{Name: "target-1-bld-shop-a1-src", UID: "u-r0"}
+		r.Spec.ImageFrom = &patchyv1.ObjectReference{Name: "target-1-bld-r1-shop-a1", UID: "u-r0"}
 	}
 	return r
 }
@@ -543,8 +590,26 @@ func testIntentRunSchema(ctx context.Context, t *testing.T, c client.Client) {
 			s.Trigger, s.Inputs.ReviewIDs, s.Inputs.CheckRunIDs = patchyv1.IntentRunTriggerChecks, nil, ids(32)
 		}, false},
 		{"a plan run at round 0", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) { s.Round = 0 }, true},
-		{"a build run at round 1", patchyv1.IntentStageBuild, func(s *patchyv1.IntentRunSpec) { s.Round = 1 }, true},
+		{"a build run at round 0", patchyv1.IntentStageBuild, func(s *patchyv1.IntentRunSpec) {
+			s.Round, s.Inputs.PlanRevision = 0, 0
+		}, true},
+		// A build's round is its plan revision, so a build after a revival
+		// and a new approval is a new round, never the first build's name.
+		{"a build run of a later plan revision", patchyv1.IntentStageBuild, func(s *patchyv1.IntentRunSpec) {
+			s.Round, s.Inputs.PlanRevision = 3, 3
+		}, false},
+		{"a build run at a round other than its plan revision", patchyv1.IntentStageBuild,
+			func(s *patchyv1.IntentRunSpec) { s.Round = 2 }, true},
 		{"a revise run at round 0", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) { s.Round = 0 }, true},
+		{"a round at the bound", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) {
+			s.Round = patchyv1.MaxIntentRound
+		}, false},
+		{"a round past the bound", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Round = patchyv1.MaxIntentRound + 1
+		}, true},
+		{"a plan revision past the bound", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.PlanRevision = patchyv1.MaxIntentRound + 1
+		}, true},
 		{"a build run without the plan digest", patchyv1.IntentStageBuild, func(s *patchyv1.IntentRunSpec) {
 			s.Inputs.PlanDigest = ""
 		}, true},
@@ -595,6 +660,19 @@ func testIntentRunSchema(ctx context.Context, t *testing.T, c client.Client) {
 			tt.mutate(&r.Spec)
 			if err := c.Create(ctx, r); (err != nil) != tt.wantErr {
 				t.Errorf("Create(intent run: %s) = %v, wantErr %v", tt.name, err, tt.wantErr)
+			}
+		})
+	}
+
+	// The backstop behind the name budget: a run name is a label value.
+	for _, tt := range []struct {
+		size    int
+		wantErr bool
+	}{{63, false}, {64, true}} {
+		t.Run(fmt.Sprintf("create with a %d-character name", tt.size), func(t *testing.T) {
+			name := "target-1-plan-r1-a1-" + strings.Repeat("n", tt.size-len("target-1-plan-r1-a1-"))
+			if err := c.Create(ctx, schemaIntentRun(name, patchyv1.IntentStagePlan)); (err != nil) != tt.wantErr {
+				t.Errorf("Create(intent run named %d characters) = %v, wantErr %v", tt.size, err, tt.wantErr)
 			}
 		})
 	}

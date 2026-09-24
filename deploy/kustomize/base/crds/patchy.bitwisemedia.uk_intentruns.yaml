@@ -60,7 +60,11 @@ spec:
           IntentRun is one immutable attempt of one agent stage (plan, build or
           revise) on one repository for an Intent, which owns it. It carries the
           jobs finalizer and owns its Repository, its input ConfigMap and its
-          transcript; the changeset itself never appears here.
+          transcript; the changeset itself never appears here. Its name is written
+          into label values (LabelIntentRun, and the jobs package's LabelOwner and
+          LabelFinding) and a Job is mapped back to its run by that exact value, so
+          the schema refuses a name over 63 characters — a backstop, since
+          IntentRunName inside the name budget never produces one.
         properties:
           apiVersion:
             description: |-
@@ -84,11 +88,11 @@ spec:
               IntentRunSpec identifies one attempt of one stage on one repository. It is
               immutable — a new attempt is a new IntentRun (CEL-enforced) — and
               intent-controller writes it once, at creation. Creating it under its
-              deterministic name is the run lease:
-
-                - plan:   <intent>-plan-r<round>-a<attempt>
-                - build:  <intent>-bld-<repository key>-a<attempt>
-                - revise: <intent>-rev<round>-<repository key>-a<attempt>
+              deterministic name (IntentRunName, from the stage, round, repository key
+              and attempt) is the run lease. Runs are kept until their Intent expires, so
+              every round's number comes from persisted state that never repeats (see
+              Round): a new round can never collide with, and adopt, an earlier round's
+              run.
 
               Beyond immutability the schema holds the stage invariants the design's
               security posture rests on, so a malformed run record is refused at
@@ -97,7 +101,12 @@ spec:
               image from the build round's Repository.
             properties:
               attempt:
-                description: Attempt ordinal within the round, 1-based.
+                description: |-
+                  Attempt ordinal within the round, 1-based and at most
+                  MaxIntentRunAttempt. A retry of a failed attempt, and a revise
+                  round's one head_moved re-run (re-pinned at the moved head), are each
+                  the next attempt of the same round; a resume from Blocked continues
+                  the round it was blocked in.
                 format: int32
                 maximum: 16
                 minimum: 1
@@ -184,8 +193,9 @@ spec:
                   planRevision:
                     description: |-
                       PlanRevision is the approved plan revision a build or revise run
-                      executes; zero for a plan run.
+                      executes (a build run's round); zero for a plan run.
                     format: int32
+                    maximum: 999
                     minimum: 0
                     type: integer
                   reviewIDs:
@@ -277,11 +287,23 @@ spec:
                 type: object
               round:
                 description: |-
-                  Round is the plan revision for a plan run, zero for a build run, and
-                  the revise round (1-based) for a revise run.
+                  Round is the round the run belongs to, 1-based and at most
+                  MaxIntentRound, taken from a counter that never repeats:
+
+                    - plan: the Intent's input revision it plans from
+                      (status.input.revision), which every entry to Planning except a
+                      resume from Blocked advances — so a plan after a replan, or after
+                      a revival whose earlier plan failed before any plan was posted, is
+                      a new round.
+                    - build: the approved plan revision (inputs.planRevision,
+                      CEL-enforced), so a build after a Failed→Planning revival and a
+                      new approval is a new round.
+                    - revise: the Intent's revise-round ordinal (status.rounds, once
+                      advanced for this round), one count over every revise-stage round
+                      whatever its trigger or outcome.
                 format: int32
-                maximum: 1000
-                minimum: 0
+                maximum: 999
+                minimum: 1
                 type: integer
               stage:
                 description: Stage the run executes.
@@ -310,9 +332,9 @@ spec:
             x-kubernetes-validations:
             - message: spec is immutable; create a new IntentRun for a new attempt
               rule: self == oldSelf
-            - message: spec.round is 0 for a build run and at least 1 for plan and
-                revise runs
-              rule: 'self.stage == ''build'' ? self.round == 0 : self.round >= 1'
+            - message: a build run's round is the approved plan revision it builds
+                (inputs.planRevision)
+              rule: self.stage != 'build' || self.round == self.inputs.planRevision
             - message: build and revise runs pin the approved plan (inputs.planRevision
                 and inputs.planDigest)
               rule: self.stage == 'plan' || (has(self.inputs.planRevision) && self.inputs.planRevision
@@ -541,6 +563,10 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: 'IntentRun names are at most 63 characters: they are written into
+            label values'
+          rule: size(self.metadata.name) <= 63
     served: true
     storage: true
     subresources:

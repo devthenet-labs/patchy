@@ -40,7 +40,7 @@
                 "name": {
                     "type": "string",
                     "minLength": 1,
-                    "maxLength": 63
+                    "maxLength": 25
                 },
                 "spec": {
                     "$ref": "#/definitions/projectSpec"
@@ -822,8 +822,8 @@
                         "description": "ProjectRepository is one application repository the Project's intents may\nbuild in.",
                         "properties": {
                             "name": {
-                                "description": "Name is the repository's short key within the Project, used in the\nnames of the IntentRuns and Repositories created for it\n(<intent>-bld-<name>-a<n>), hence a DNS label of at most 32\ncharacters.",
-                                "maxLength": 32,
+                                "description": "Name is the repository's short key within the Project, used in the\nnames of the IntentRuns and Repositories created for it\n(<intent>-bld-r<round>-<name>-a<n>), hence a DNS label of at most 16\ncharacters (MaxRepositoryKeyLength; see the name budget).",
+                                "maxLength": 16,
                                 "minLength": 1,
                                 "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
                                 "type": "string"

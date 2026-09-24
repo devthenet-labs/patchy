@@ -6,10 +6,18 @@ package v1alpha1
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// IntentName returns the name of the Intent for issue `issue` of the Project
+// named `project`: <project>-<issue>. The schema holds every Intent to it, and
+// inside the name budget it is at most 33 characters.
+func IntentName(project string, issue int64) string {
+	return project + "-" + strconv.FormatInt(issue, 10)
+}
 
 // IntentBranchPrefix prefixes every branch intent-controller creates in an
 // app repository (patchy-intent/<intent>). It deliberately never matches the
@@ -194,8 +202,10 @@ type IntentIssue struct {
 	// +kubebuilder:validation:MaxLength=256
 	// +kubebuilder:validation:Pattern=`^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$`
 	Repository string `json:"repository"`
-	// Number of the issue.
+	// Number of the issue, at most seven digits (MaxIntentIssueNumber): it
+	// is part of every Intent and IntentRun name (see the name budget).
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=9999999
 	Number int64 `json:"number"`
 	// URL is the issue's html URL, for display.
 	// +optional
@@ -228,9 +238,10 @@ type IntentRequest struct {
 // field is refused at admission).
 type IntentSpec struct {
 	// Project names the Project this intent belongs to (the Project whose
-	// trigger label the issue carries).
+	// trigger label the issue carries); at most MaxProjectNameLength, like
+	// the Project's own name.
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:MaxLength=25
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.project is immutable"
 	Project string `json:"project"`
 	// Issue is the intent issue.
@@ -256,8 +267,13 @@ type IntentPhaseTime struct {
 
 // IntentInput is the immutable snapshot of the issue a plan was made from.
 type IntentInput struct {
-	// Revision of the snapshot, 1-based; a replan takes a new one.
+	// Revision of the snapshot, 1-based. Every entry to Planning except a
+	// resume from Blocked — the first, a replan, a revival from Failed —
+	// takes a new snapshot at the next revision, so a revision is never
+	// reused; it is the round of that Planning's plan runs. At most
+	// MaxIntentRound.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=999
 	Revision int32 `json:"revision"`
 	// Digest is the sha256 of the snapshot bytes; an approval is bound to
 	// it, and a changed issue body refuses the approval.
@@ -273,8 +289,11 @@ type IntentInput struct {
 
 // IntentPlan is the plan posted for approval.
 type IntentPlan struct {
-	// Revision of the plan, 1-based.
+	// Revision of the plan: the input revision it was planned from, so it
+	// is never reused. Plan revisions can skip a number, when that
+	// Planning's plan runs failed before any plan was posted.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=999
 	Revision int32 `json:"revision"`
 	// Digest is the sha256 of the raw plan report bytes stored in
 	// ConfigMap; the build run re-hashes them at launch and refuses a
@@ -329,8 +348,10 @@ type IntentApproval struct {
 	EventID int64 `json:"eventID"`
 	// At is the approving action's created_at, as GitHub reports it.
 	At metav1.Time `json:"at"`
-	// PlanRevision is the plan revision approved.
+	// PlanRevision is the plan revision approved; the build runs it starts
+	// take it as their round.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=999
 	PlanRevision int32 `json:"planRevision"`
 	// PlanDigest is the digest of the plan approved.
 	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
@@ -465,15 +486,30 @@ type IntentStatus struct {
 	// +listMapKey=repository
 	// +kubebuilder:validation:MaxItems=8
 	PullRequests []IntentPullRequest `json:"pullRequests,omitempty"`
+	// Rounds is the revise-round ordinal: how many revise-stage rounds have
+	// started, whatever their trigger (review, command or checks) and
+	// whatever their outcome — a failed round counts. A new round's runs
+	// take spec.round = Rounds+1, and the status write that records the
+	// round's first run as ActiveRun advances Rounds to it, so a restart
+	// between that create and that write recomputes the same name and
+	// adopts the run rather than starting the round twice. Retries and the
+	// head_moved re-run are further attempts of the same round. Revisions
+	// and CheckFixes count subsets of these rounds (slice 1b).
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=999
+	Rounds int32 `json:"rounds,omitempty"`
 	// Revisions counts completed review-driven revise rounds, against the
 	// Project's maxRevisions.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=999
 	Revisions int32 `json:"revisions,omitempty"`
 	// CheckFixes counts check-fix rounds, against the Project's
 	// maxCheckFixes (slice 1b).
 	// +optional
 	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=999
 	CheckFixes int32 `json:"checkFixes,omitempty"`
 	// Usage totals the spend of every run.
 	// +optional
@@ -507,7 +543,13 @@ type IntentStatus struct {
 // to built pull requests and their merge. It is the state machine for that
 // work (a local phase enum, single writer intent-controller), owns one
 // immutable IntentRun per agent attempt, and expires on a TTL after
-// completion. The issue is the human-facing projection.
+// completion. The issue is the human-facing projection. Its name is always
+// IntentName(spec.project, spec.issue.number) — <project>-<issue>, at most 33
+// characters — so the project reconciler's create is idempotent per issue and
+// every name derived from it fits the name budget. (The rule compares the
+// issue number as an integer: concatenating string(int), whose size CEL
+// cannot bound, would exceed the rule cost budget.)
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.startsWith(self.spec.project + '-') && !self.metadata.name.substring(size(self.spec.project) + 1).startsWith('0') && int(self.metadata.name.substring(size(self.spec.project) + 1)) == self.spec.issue.number",message="an Intent is named <spec.project>-<spec.issue.number>"
 type Intent struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

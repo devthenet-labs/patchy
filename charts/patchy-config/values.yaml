@@ -233,7 +233,7 @@ forges: []
 # Ready=False. Writing projects is admin-only in RBAC: a Project is the power
 # to point agents at repositories. See docs/design/intent-driven-development.md.
 projects: []
-# - name: target                    # at most 63 characters; Intents are <name>-<issue>
+# - name: target                    # at most 25 characters; Intents are <name>-<issue>
 #   spec:
 #       intentRepository: https://github.com/acme/intents
 #       # labels:
@@ -243,7 +243,7 @@ projects: []
 #       approvers:
 #           logins: [octocat]       # the only logins whose actions count
 #       repositories:               # up to 8; slice 1 builds in exactly one
-#           - name: target          # short key used in run names (DNS label)
+#           - name: target          # key used in run names (DNS label, at most 16)
 #             url: https://github.com/acme/target
 #       # limits:                   # the schema defaults
 #       #     maxActiveIntents: 2

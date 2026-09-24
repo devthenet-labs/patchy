@@ -533,8 +533,12 @@ render_cfg cfg-guard-base --set-json "projects=[$base]"
 expect cfg-guard-base 'select(.kind == "Project") | .metadata.name' "t"
 expect_fail_cfg "project without a name" "projects/0" \
   --set-json "projects=[$(project 'del(.name)')]"
-expect_fail_cfg "project name over 63 characters" "projects/0/name" \
-  --set-json "projects=[$(project '.name = "pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"')]"
+render_cfg cfg-guard-name --set-json "projects=[$(project '.name = "ppppppppppppppppppppppppp"')]"
+expect cfg-guard-name 'select(.kind == "Project") | .metadata.name | length' "25"
+expect_fail_cfg "project name over 25 characters" "projects/0/name" \
+  --set-json "projects=[$(project '.name = "pppppppppppppppppppppppppp"')]"
+expect_fail_cfg "repository key over 16 characters" "projects/0/spec/repositories/0/name" \
+  --set-json "projects=[$(project '.spec.repositories[0].name = "kkkkkkkkkkkkkkkkk"')]"
 expect_fail_cfg "unknown spec field" "projects/0/spec" \
   --set-json "projects=[$(project '.spec.bogus = true')]"
 nine=$(for i in 0 1 2 3 4 5 6 7 8; do printf '{"name": "a%s", "url": "https://github.com/acme/a%s"},' "$i" "$i"; done)

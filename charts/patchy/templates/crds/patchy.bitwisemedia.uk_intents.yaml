@@ -55,7 +55,12 @@ spec:
           to built pull requests and their merge. It is the state machine for that
           work (a local phase enum, single writer intent-controller), owns one
           immutable IntentRun per agent attempt, and expires on a TTL after
-          completion. The issue is the human-facing projection.
+          completion. The issue is the human-facing projection. Its name is always
+          IntentName(spec.project, spec.issue.number) — <project>-<issue>, at most 33
+          characters — so the project reconciler's create is idempotent per issue and
+          every name derived from it fits the name budget. (The rule compares the
+          issue number as an integer: concatenating string(int), whose size CEL
+          cannot bound, would exceed the rule cost budget.)
         properties:
           apiVersion:
             description: |-
@@ -85,8 +90,11 @@ spec:
                 description: Issue is the intent issue.
                 properties:
                   number:
-                    description: Number of the issue.
+                    description: |-
+                      Number of the issue, at most seven digits (MaxIntentIssueNumber): it
+                      is part of every Intent and IntentRun name (see the name budget).
                     format: int64
+                    maximum: 9999999
                     minimum: 1
                     type: integer
                   repository:
@@ -112,8 +120,9 @@ spec:
               project:
                 description: |-
                   Project names the Project this intent belongs to (the Project whose
-                  trigger label the issue carries).
-                maxLength: 63
+                  trigger label the issue carries); at most MaxProjectNameLength, like
+                  the Project's own name.
+                maxLength: 25
                 minLength: 1
                 type: string
                 x-kubernetes-validations:
@@ -217,8 +226,11 @@ spec:
                     pattern: ^sha256:[0-9a-f]{64}$
                     type: string
                   planRevision:
-                    description: PlanRevision is the plan revision approved.
+                    description: |-
+                      PlanRevision is the plan revision approved; the build runs it starts
+                      take it as their round.
                     format: int32
+                    maximum: 999
                     minimum: 1
                     type: integer
                 required:
@@ -241,6 +253,7 @@ spec:
                   CheckFixes counts check-fix rounds, against the Project's
                   maxCheckFixes (slice 1b).
                 format: int32
+                maximum: 999
                 minimum: 0
                 type: integer
               completedAt:
@@ -330,9 +343,14 @@ spec:
                     pattern: ^sha256:[0-9a-f]{64}$
                     type: string
                   revision:
-                    description: Revision of the snapshot, 1-based; a replan takes
-                      a new one.
+                    description: |-
+                      Revision of the snapshot, 1-based. Every entry to Planning except a
+                      resume from Blocked — the first, a replan, a revival from Failed —
+                      takes a new snapshot at the next revision, so a revision is never
+                      reused; it is the round of that Planning's plan runs. At most
+                      MaxIntentRound.
                     format: int32
+                    maximum: 999
                     minimum: 1
                     type: integer
                 required:
@@ -440,8 +458,12 @@ spec:
                     type: array
                     x-kubernetes-list-type: set
                   revision:
-                    description: Revision of the plan, 1-based.
+                    description: |-
+                      Revision of the plan: the input revision it was planned from, so it
+                      is never reused. Plan revisions can skip a number, when that
+                      Planning's plan runs failed before any plan was posted.
                     format: int32
+                    maximum: 999
                     minimum: 1
                     type: integer
                   summary:
@@ -519,6 +541,22 @@ spec:
                   Revisions counts completed review-driven revise rounds, against the
                   Project's maxRevisions.
                 format: int32
+                maximum: 999
+                minimum: 0
+                type: integer
+              rounds:
+                description: |-
+                  Rounds is the revise-round ordinal: how many revise-stage rounds have
+                  started, whatever their trigger (review, command or checks) and
+                  whatever their outcome — a failed round counts. A new round's runs
+                  take spec.round = Rounds+1, and the status write that records the
+                  round's first run as ActiveRun advances Rounds to it, so a restart
+                  between that create and that write recomputes the same name and
+                  adopts the run rather than starting the round twice. Retries and the
+                  head_moved re-run are further attempts of the same round. Revisions
+                  and CheckFixes count subsets of these rounds (slice 1b).
+                format: int32
+                maximum: 999
                 minimum: 0
                 type: integer
               tracking:
@@ -574,6 +612,11 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: an Intent is named <spec.project>-<spec.issue.number>
+          rule: self.metadata.name.startsWith(self.spec.project + '-') && !self.metadata.name.substring(size(self.spec.project)
+            + 1).startsWith('0') && int(self.metadata.name.substring(size(self.spec.project)
+            + 1)) == self.spec.issue.number
     served: true
     storage: true
     subresources:

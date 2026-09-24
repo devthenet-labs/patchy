@@ -4,8 +4,38 @@
 package v1alpha1
 
 import (
+	"fmt"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// IntentRunName returns the deterministic name of one IntentRun of the Intent
+// named `intent` — creating the run under it is the run lease:
+//
+//   - plan:   <intent>-plan-r<round>-a<attempt>
+//   - build:  <intent>-bld-r<round>-<repoKey>-a<attempt>
+//   - revise: <intent>-rev<round>-<repoKey>-a<attempt>
+//
+// repoKey is the Project repository's key; a plan run plans from the first
+// repository and its name carries none. Within one Intent, distinct (stage,
+// round, attempt, and for build and revise runs repoKey) give distinct names,
+// and inside the name budget
+// every name is at most 63 characters, a valid label value. A name can still
+// equal a run name of a different Intent whose project name happens to embed
+// such a suffix, so a controller adopting an existing run on AlreadyExists
+// checks its spec.intentRef UID. An unknown stage returns "".
+func IntentRunName(intent string, stage IntentStage, round int32, repoKey string, attempt int32) string {
+	switch stage {
+	case IntentStagePlan:
+		return fmt.Sprintf("%s-plan-r%d-a%d", intent, round, attempt)
+	case IntentStageBuild:
+		return fmt.Sprintf("%s-bld-r%d-%s-a%d", intent, round, repoKey, attempt)
+	case IntentStageRevise:
+		return fmt.Sprintf("%s-rev%d-%s-a%d", intent, round, repoKey, attempt)
+	default:
+		return ""
+	}
+}
 
 // IntentStage is the agent stage one IntentRun executes.
 // +kubebuilder:validation:Enum=plan;build;revise
@@ -69,9 +99,10 @@ type IntentRunInputs struct {
 	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
 	InputDigest string `json:"inputDigest"`
 	// PlanRevision is the approved plan revision a build or revise run
-	// executes; zero for a plan run.
+	// executes (a build run's round); zero for a plan run.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=999
 	PlanRevision int32 `json:"planRevision,omitempty"`
 	// PlanDigest is the approved plan's digest (Intent
 	// status.approval.planDigest); the plan bytes are re-hashed at launch
@@ -119,11 +150,11 @@ type IntentRunGrant struct {
 // IntentRunSpec identifies one attempt of one stage on one repository. It is
 // immutable — a new attempt is a new IntentRun (CEL-enforced) — and
 // intent-controller writes it once, at creation. Creating it under its
-// deterministic name is the run lease:
-//
-//   - plan:   <intent>-plan-r<round>-a<attempt>
-//   - build:  <intent>-bld-<repository key>-a<attempt>
-//   - revise: <intent>-rev<round>-<repository key>-a<attempt>
+// deterministic name (IntentRunName, from the stage, round, repository key
+// and attempt) is the run lease. Runs are kept until their Intent expires, so
+// every round's number comes from persisted state that never repeats (see
+// Round): a new round can never collide with, and adopt, an earlier round's
+// run.
 //
 // Beyond immutability the schema holds the stage invariants the design's
 // security posture rests on, so a malformed run record is refused at
@@ -132,7 +163,7 @@ type IntentRunGrant struct {
 // image from the build round's Repository.
 //
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec is immutable; create a new IntentRun for a new attempt"
-// +kubebuilder:validation:XValidation:rule="self.stage == 'build' ? self.round == 0 : self.round >= 1",message="spec.round is 0 for a build run and at least 1 for plan and revise runs"
+// +kubebuilder:validation:XValidation:rule="self.stage != 'build' || self.round == self.inputs.planRevision",message="a build run's round is the approved plan revision it builds (inputs.planRevision)"
 // +kubebuilder:validation:XValidation:rule="self.stage == 'plan' || (has(self.inputs.planRevision) && self.inputs.planRevision >= 1 && has(self.inputs.planDigest))",message="build and revise runs pin the approved plan (inputs.planRevision and inputs.planDigest)"
 // +kubebuilder:validation:XValidation:rule="(self.stage == 'revise') == has(self.trigger)",message="spec.trigger is set on revise runs, and only on them"
 // +kubebuilder:validation:XValidation:rule="(self.stage == 'revise') == has(self.imageFrom)",message="spec.imageFrom is set on revise runs, and only on them"
@@ -147,12 +178,28 @@ type IntentRunSpec struct {
 	Trigger IntentRunTrigger `json:"trigger,omitempty"`
 	// Repository is the tree the run works on.
 	Repository IntentRunRepository `json:"repository"`
-	// Round is the plan revision for a plan run, zero for a build run, and
-	// the revise round (1-based) for a revise run.
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=1000
+	// Round is the round the run belongs to, 1-based and at most
+	// MaxIntentRound, taken from a counter that never repeats:
+	//
+	//   - plan: the Intent's input revision it plans from
+	//     (status.input.revision), which every entry to Planning except a
+	//     resume from Blocked advances — so a plan after a replan, or after
+	//     a revival whose earlier plan failed before any plan was posted, is
+	//     a new round.
+	//   - build: the approved plan revision (inputs.planRevision,
+	//     CEL-enforced), so a build after a Failed→Planning revival and a
+	//     new approval is a new round.
+	//   - revise: the Intent's revise-round ordinal (status.rounds, once
+	//     advanced for this round), one count over every revise-stage round
+	//     whatever its trigger or outcome.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=999
 	Round int32 `json:"round"`
-	// Attempt ordinal within the round, 1-based.
+	// Attempt ordinal within the round, 1-based and at most
+	// MaxIntentRunAttempt. A retry of a failed attempt, and a revise
+	// round's one head_moved re-run (re-pinned at the moved head), are each
+	// the next attempt of the same round; a resume from Blocked continues
+	// the round it was blocked in.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=16
 	Attempt int32 `json:"attempt"`
@@ -255,7 +302,12 @@ type IntentRunStatus struct {
 // IntentRun is one immutable attempt of one agent stage (plan, build or
 // revise) on one repository for an Intent, which owns it. It carries the
 // jobs finalizer and owns its Repository, its input ConfigMap and its
-// transcript; the changeset itself never appears here.
+// transcript; the changeset itself never appears here. Its name is written
+// into label values (LabelIntentRun, and the jobs package's LabelOwner and
+// LabelFinding) and a Job is mapped back to its run by that exact value, so
+// the schema refuses a name over 63 characters — a backstop, since
+// IntentRunName inside the name budget never produces one.
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 63",message="IntentRun names are at most 63 characters: they are written into label values"
 type IntentRun struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

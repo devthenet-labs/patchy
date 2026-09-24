@@ -322,6 +322,10 @@ already-pushed commits (or nothing) and can be removed once #51 is merged.
 
 ## Known follow-ups (not started)
 
+- In the next release, have intent-controller skip the advisory egress-broker startup probe or log its result at info:
+  its NetworkPolicy deliberately blocks controller-to-broker traffic, while intent agent pods have their own broker
+  allowance. The current `runnercfg.Resolve` probe times out and warns on every intent-controller start, although it
+  does not gate readiness or launches.
 - Extend slice 1b's bounded check-fix rounds to Finding PRs: during the 0.12.1 live gate, patchy's `go/request-forgery`
   remediation passed its Go tests but its PR still failed CodeQL with a new critical alert, so it needed a separate
   manual correction. This is the second such miss after the earlier path-traversal case. A failing CodeQL check on a

@@ -29,14 +29,16 @@ func TestHeadSHA(t *testing.T) {
 // pushRequest is a scripted PushBranch fixture: binary-ish content, an
 // executable, and a deletion, on top of base000.
 var pushRequest = BranchPush{
-	Branch:  "patchy/issue-9",
-	BaseSHA: "base000",
-	Message: "fix(security): escape sink",
-	Files: []CommitFile{
-		{Path: "app/handler.go", Mode: "100644", Content: []byte{0x00, 0xff, 0x0a}},
-		{Path: "tools/run.sh", Mode: "100755", Content: []byte("#!/bin/sh\n")},
+	Branch: "patchy/issue-9",
+	CommitRequest: CommitRequest{
+		BaseSHA: "base000",
+		Message: "fix(security): escape sink",
+		Files: []CommitFile{
+			{Path: "app/handler.go", Mode: "100644", Content: []byte{0x00, 0xff, 0x0a}},
+			{Path: "tools/run.sh", Mode: "100755", Content: []byte("#!/bin/sh\n")},
+		},
+		Deletes: []string{"app/legacy.go"},
 	},
-	Deletes: []string{"app/legacy.go"},
 }
 
 // pushFake wires the four Git Data endpoints, recording call order and
@@ -96,8 +98,12 @@ func TestPushBranch(t *testing.T) {
 	mux, c := newFakeClient(t)
 	order, trees, refs := pushFake(t, mux)
 
-	if err := c.PushBranch(context.Background(), testRepo, pushRequest); err != nil {
+	sha, err := c.PushBranch(context.Background(), testRepo, pushRequest)
+	if err != nil {
 		t.Fatalf("PushBranch() error = %v", err)
+	}
+	if sha != "newcommit" {
+		t.Errorf("PushBranch() = %q, want the created commit newcommit", sha)
 	}
 
 	wantOrder := []string{"blob", "blob", "tree", "commit", "create-ref"}
@@ -157,8 +163,12 @@ func TestPushBranchForceUpdatesExistingRef(t *testing.T) {
 		writeJSON(t, w, `{"ref":"refs/heads/patchy/issue-9","object":{"sha":"newcommit"}}`)
 	})
 
-	if err := c.PushBranch(context.Background(), testRepo, pushRequest); err != nil {
+	sha, err := c.PushBranch(context.Background(), testRepo, pushRequest)
+	if err != nil {
 		t.Fatalf("PushBranch() error = %v", err)
+	}
+	if sha != "newcommit" {
+		t.Errorf("PushBranch() = %q, want the created commit newcommit", sha)
 	}
 	if patched == nil {
 		t.Fatal("existing ref was never force-updated")
@@ -175,7 +185,37 @@ func TestPushBranchBlobErrorSurfaces(t *testing.T) {
 		writeJSON(t, w, `{"message":"nope"}`)
 	})
 
-	if err := c.PushBranch(context.Background(), testRepo, pushRequest); err == nil {
+	sha, err := c.PushBranch(context.Background(), testRepo, pushRequest)
+	if err == nil {
 		t.Fatal("PushBranch() error = nil, want the blob failure")
+	}
+	if sha != "" {
+		t.Errorf("PushBranch() = %q on failure, want no SHA", sha)
+	}
+}
+
+// TestCreateCommitMovesNoRef: the commit step alone runs blob → tree →
+// commit and returns the commit's SHA without touching any ref, so the
+// caller decides how a branch moves to it.
+func TestCreateCommitMovesNoRef(t *testing.T) {
+	mux, c := newFakeClient(t)
+	order, trees, refs := pushFake(t, mux)
+
+	sha, err := c.CreateCommit(context.Background(), testRepo, pushRequest.CommitRequest)
+	if err != nil {
+		t.Fatalf("CreateCommit() error = %v", err)
+	}
+	if sha != "newcommit" {
+		t.Errorf("CreateCommit() = %q, want newcommit", sha)
+	}
+	wantOrder := []string{"blob", "blob", "tree", "commit"}
+	if !reflect.DeepEqual(*order, wantOrder) {
+		t.Errorf("call order = %v, want %v", *order, wantOrder)
+	}
+	if len(*refs) != 0 {
+		t.Errorf("ref calls = %v, want none", *refs)
+	}
+	if got := (*trees)[0]["base_tree"]; got != "base000" {
+		t.Errorf("base_tree = %v, want base000", got)
 	}
 }

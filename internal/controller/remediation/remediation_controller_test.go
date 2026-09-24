@@ -419,6 +419,9 @@ func (f *fakeCRRunner) Delete(_ context.Context, name string) error {
 	return nil
 }
 
+// fakePushedCommit is the commit SHA every fakeForge push reports.
+const fakePushedCommit = "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00"
+
 // fakeForge records pushes and PRs.
 type fakeForge struct {
 	pushed  []string // branches
@@ -426,12 +429,12 @@ type fakeForge struct {
 	prCalls int
 }
 
-func (f *fakeForge) Push(_ context.Context, _, _, branch string, cs *envelope.Changeset) error {
+func (f *fakeForge) Push(_ context.Context, _, _, branch string, cs *envelope.Changeset) (string, error) {
 	if cs == nil {
 		panic("push without changeset")
 	}
 	f.pushed = append(f.pushed, branch)
-	return nil
+	return fakePushedCommit, nil
 }
 
 func (f *fakeForge) EnsurePR(_ context.Context, _, _, branch, _, _ string) (int64, string, error) {
@@ -551,6 +554,24 @@ func TestRemediationSuccessPushesAndOpensPR(t *testing.T) {
 	}
 	if rem.Status.Stage == nil || rem.Status.Stage.Usage.CostUSD != "3.500000" {
 		t.Errorf("stage = %+v, want cost 3.500000", rem.Status.Stage)
+	}
+}
+
+// TestRemediationSuccessRecordsPushedCommit: the commit the push created is
+// recorded on the Remediation, so the run's history names the exact commit
+// its pull request was opened from.
+func TestRemediationSuccessRecordsPushedCommit(t *testing.T) {
+	runner := &fakeCRRunner{done: true, events: crdRemediationEvent(true)}
+	r, c := newRemediation(t, runner, &fakeForge{}, runningRemediation()...)
+	remOnce(t, r, "finding-aa-1-rem-1")
+
+	var rem v1alpha1.Remediation
+	key := types.NamespacedName{Namespace: "patchy", Name: "finding-aa-1-rem-1"}
+	if err := c.Get(t.Context(), key, &rem); err != nil {
+		t.Fatalf("Get remediation: %v", err)
+	}
+	if rem.Status.PushedCommit != fakePushedCommit {
+		t.Errorf("pushedCommit = %q, want the pushed commit %q", rem.Status.PushedCommit, fakePushedCommit)
 	}
 }
 

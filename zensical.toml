@@ -82,6 +82,7 @@ nav = [
   { "Extending" = "extending.md" },
   { "Design" = [
     { "Repository runner images" = "design/repository-runner-images.md" },
+    { "Intent-driven development" = "design/intent-driven-development.md" },
   ] },
 ]
 

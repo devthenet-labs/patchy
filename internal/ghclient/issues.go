@@ -191,8 +191,8 @@ func issueFromGitHub(is *github.Issue) *Issue {
 
 // repoFromURL recovers owner/name from an API repository URL
 // (".../repos/{owner}/{name}"); a URL of any other shape yields a zero Repo.
-func repoFromURL(url string) Repo {
-	parts := strings.Split(url, "/")
+func repoFromURL(raw string) Repo {
+	parts := strings.Split(raw, "/")
 	for i, p := range parts {
 		if p == "repos" && i+2 < len(parts) {
 			return Repo{Owner: parts[i+1], Name: parts[i+2]}

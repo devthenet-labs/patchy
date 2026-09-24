@@ -540,9 +540,9 @@ there is one grammar, and everything else is an alias for it.
   still names its original author. So a comment whose `updated_at` is later than its `created_at` is never taken as a
   command: it gets one reply saying so, and its author can post the command again. An edited approver comment is also
   left out of a replan's snapshot. For the same reason a plan comment edited in place is refused for approval even when
-  its text was restored, since GitHub moves `updated_at` on every edit. Both timestamps are to the second, so an edit made
-  in the second a comment was posted leaves them equal: before an approver's `approve`, `replan` or `cancel` is acted on,
-  and when the plan comment is re-read at approval, patchy also asks GitHub's GraphQL API for the comment's
+  its text was restored, since GitHub moves `updated_at` on every edit. Both timestamps are to the second, so an edit
+  made in the second a comment was posted leaves them equal: before an approver's `approve`, `replan` or `cancel` is
+  acted on, and when the plan comment is re-read at approval, patchy also asks GitHub's GraphQL API for the comment's
   `lastEditedAt`, which is null only for a comment never edited (one query by the comment's `node_id`, with an
   `issues: read` token). A comment gone by then counts as edited.
 - **Refusals are bounded per account.** On an intent issue, a command from an account that is not an approver (or is a
@@ -1159,8 +1159,8 @@ devthenet-dev in a separate Helm upgrade from the release that ships them.
   - still unverified: whether the actor on a label applied by an issue form is the issue author (open question 1).
     Verify it before wave 3 goes live.
   - still unverified: that GraphQL answers an issue comment's `lastEditedAt` (and `includesCreatedEdit`) to an
-    `issues: read` installation token. The edit check before a command is acted on depends on it; a refusal there
-    leaves the command unanswered and retried, never accepted.
+    `issues: read` installation token. The edit check before a command is acted on depends on it; a refusal there leaves
+    the command unanswered and retried, never accepted.
 
 - **Shared code still ships in the same images as the Finding flow:** the split `ghclient` push, `stageEnvNames`,
   `NameFor`, the exported validator and runnerguard. Every change is additive and guarded by goldens and property tests,

@@ -187,48 +187,55 @@ func (p *pass) poll(ctx context.Context) (stop bool, err error) {
 	if err := p.listComments(ctx, p.listSince()); err != nil {
 		return false, err
 	}
-	for _, c := range p.comments {
-		if p.pollNewest == nil || c.ID > p.pollNewest.ID {
-			p.pollNewest = c
-		}
-	}
 	actions, err := p.gather(ctx, issue, events)
 	if err != nil {
 		return false, err
 	}
-	if p.deferred != 0 {
-		// A command waits for a later poll: the listing is settled only up
-		// to it, so the next poll reads it again.
-		p.pollNewest = nil
-		for _, c := range p.comments {
-			if c.ID < p.deferred && (p.pollNewest == nil || c.ID > p.pollNewest.ID) {
-				p.pollNewest = c
-			}
-		}
-	}
+	// Taken from the poll's own listing, before any answer: a later listing
+	// in the pass (a replan's feedback) can hold comments the poll never
+	// read.
+	p.pollNewest = p.newestSettled()
 	if stop, err := p.answer(ctx, actions, issue); stop || err != nil {
 		return stop, err
 	}
 	if issue.State == "closed" {
-		// The pull requests decide first: patchy closes the issue itself
-		// when every one merged, before it writes Merged, and a lost write
-		// must not turn that close into a human's.
-		if len(p.in.Status.PullRequests) > 0 {
-			// Under a pull request repository's floor nothing is decided:
-			// the close waits for the pull requests to be read.
-			if ok, err := p.rateOKForPullRequests(ctx); err != nil || !ok {
-				return true, err
-			}
-			if ended, err := p.reviewNow(ctx); ended || err != nil {
-				return true, err
-			}
-		}
-		// A human closed the issue: that needs nothing more from patchy.
-		return true, p.setPhase(ctx, v1alpha1.IntentClosed, func(cur *v1alpha1.Intent) {
-			cur.Status.ActiveRun = nil
-		})
+		return p.issueClosed(ctx)
 	}
 	return false, nil
+}
+
+// newestSettled is the newest comment the poll's listing held, or, when the
+// poll defers a command to a later one, the newest before it: the listing is
+// settled only up to there, so the next poll reads the deferred command
+// again.
+func (p *pass) newestSettled() *ghclient.Comment {
+	var newest *ghclient.Comment
+	for _, c := range p.comments {
+		if (p.deferred == 0 || c.ID < p.deferred) && (newest == nil || c.ID > newest.ID) {
+			newest = c
+		}
+	}
+	return newest
+}
+
+// issueClosed ends the Intent on an issue a human closed. The pull requests
+// decide first: patchy closes the issue itself when every one merged, before
+// it writes Merged, and a lost write must not turn that close into a human's.
+// Under a pull request repository's floor nothing is decided: the close waits
+// for the pull requests to be read.
+func (p *pass) issueClosed(ctx context.Context) (bool, error) {
+	if len(p.in.Status.PullRequests) > 0 {
+		if ok, err := p.rateOKForPullRequests(ctx); err != nil || !ok {
+			return true, err
+		}
+		if ended, err := p.reviewNow(ctx); ended || err != nil {
+			return true, err
+		}
+	}
+	// A human closed the issue: that needs nothing more from patchy.
+	return true, p.setPhase(ctx, v1alpha1.IntentClosed, func(cur *v1alpha1.Intent) {
+		cur.Status.ActiveRun = nil
+	})
 }
 
 // answer settles the actions gathered, oldest first, recording each command
@@ -319,33 +326,44 @@ func (p *pass) commands() []humanAction {
 			}
 			continue
 		}
-		switch a.verb {
-		case action.VerbApprove:
-			if ap := p.in.Status.Approval; ap != nil && ap.Source == a.source && ap.EventID == a.id {
-				a.recorded = true
-			} else if p.approvalPending() && !a.edited && !refusedLocally(p.proj, a.actor) {
-				// The plan may already be on the issue, its posting not yet
-				// recorded (a write being retried, a restart): the approver
-				// may have read it. The approval waits for the record, as the
-				// approve label does, rather than being told the plan is
-				// not there.
-				if p.deferred == 0 || a.id < p.deferred {
-					p.deferred = a.id
-				}
-				continue
-			}
-		case action.VerbReplan:
-			if lt := p.in.Status.LastTrigger; lt != nil && lt.Source == a.source && lt.EventID == a.id {
-				// Consumed, and a refusal is replied to before it is
-				// consumed: this replan was accepted.
-				a.recorded = true
-			} else if !after(a.at, a.source, a.id, p.lastTrigger()) {
-				continue // superseded by a newer trigger action
-			}
+		if p.stillToAnswer(&a) {
+			out = append(out, a)
 		}
-		out = append(out, a)
 	}
 	return out
+}
+
+// stillToAnswer marks a command the Intent already records as applied
+// (recorded: only its reply may be owed), and reports whether this poll
+// answers it: not a replan a newer trigger action superseded, nor an
+// approval that waits while the plan's posting is recorded.
+func (p *pass) stillToAnswer(a *humanAction) bool {
+	switch a.verb {
+	case action.VerbApprove:
+		if ap := p.in.Status.Approval; ap != nil && ap.Source == a.source && ap.EventID == a.id {
+			a.recorded = true
+			return true
+		}
+		if p.approvalPending() && !a.edited && !refusedLocally(p.proj, a.actor) {
+			// The plan may already be on the issue, its posting not yet
+			// recorded (a write being retried, a restart): the approver may
+			// have read it. The approval waits for the record, as the approve
+			// label does, rather than being told the plan is not there.
+			if p.deferred == 0 || a.id < p.deferred {
+				p.deferred = a.id
+			}
+			return false
+		}
+	case action.VerbReplan:
+		if lt := p.in.Status.LastTrigger; lt != nil && lt.Source == a.source && lt.EventID == a.id {
+			// Consumed, and a refusal is replied to before it is consumed:
+			// this replan was accepted.
+			a.recorded = true
+			return true
+		}
+		return after(a.at, a.source, a.id, p.lastTrigger()) // else superseded by a newer trigger action
+	}
+	return true
 }
 
 // approvalPending reports a plan recorded while planning whose posting for

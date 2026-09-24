@@ -31,9 +31,9 @@ Intent's `spec.suspend`; everything else happens on the issue.
 
 Suspending an intent launches nothing and writes nothing to GitHub until the suspension is cleared. A build Job already
 running finishes; its push (the commit and the branch) waits, marked `PushHeld` on its IntentRun, and gives its slot of
-the run pool to other intents meanwhile. The finished Job is kept only for `--job-ttl` (1h by default): a suspension that
-outlasts it loses the unpushed changeset, and the run ends `hold_expired`. That costs the agent's spend but not one of
-the build's attempts, and clearing the suspension starts the next one.
+the run pool to other intents meanwhile. The finished Job is kept only for `--job-ttl` (1h by default): a suspension
+that outlasts it loses the unpushed changeset, and the run ends `hold_expired`. That costs the agent's spend but not one
+of the build's attempts, and clearing the suspension starts the next one.
 
 ## Flags
 
@@ -207,8 +207,8 @@ Each active intent reads about three GitHub resources per interval (its issue, i
 newest one it has already read). An intent in review also reads its pull request. A conditional listing that has not
 changed returns 304, which costs nothing against the installation's rate limit. The rate-limit floor pauses all intent
 polling, pull requests included, while the installation's remaining core budget is below it, so intents can never starve
-the security flow of the requests it shares with them. Each poll checks the installation of the repository it reads:
-the intent repository and an app repository may be covered by two installations, and the app repository's is the one
-the Finding flow shares, so its pull request and a blocked build's default branch wait on its floor, the issue on the
-intent repository's. The headers GitHub reports are not consistent from one response to the next, so the floor is a
-coarse guard, not an exact budget.
+the security flow of the requests it shares with them. Each poll checks the installation of the repository it reads: the
+intent repository and an app repository may be covered by two installations, and the app repository's is the one the
+Finding flow shares, so its pull request and a blocked build's default branch wait on its floor, the issue on the intent
+repository's. The headers GitHub reports are not consistent from one response to the next, so the floor is a coarse
+guard, not an exact budget.

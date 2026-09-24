@@ -487,7 +487,8 @@ func TestBranchExists(t *testing.T) {
 	e.gh.label(1, "patchy:approved", approver)
 	in := e.drive(name, v1alpha1.IntentBlocked, repoImage)
 	c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionBranchConflict)
-	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != ReasonBranchExists || !strings.Contains(c.Message, stale) {
+	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != ReasonBranchExists ||
+		!strings.Contains(c.Message, stale) {
 		t.Fatalf("BranchConflict = %+v, want the stale branch named", c)
 	}
 	if n := len(e.runsOf(name, v1alpha1.IntentStageBuild)); n != 0 {
@@ -1332,7 +1333,8 @@ type activeIntent struct {
 	client.Client
 }
 
-func (s activeIntent) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+func (s activeIntent) Get(ctx context.Context, key client.ObjectKey, obj client.Object,
+	opts ...client.GetOption) error {
 	if err := s.Client.Get(ctx, key, obj, opts...); err != nil {
 		return err
 	}

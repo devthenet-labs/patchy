@@ -17,9 +17,9 @@ import (
 	"github.com/google/go-github/v90/github"
 )
 
-// ErrNodeNotFound: GitHub's GraphQL API resolved no node of the kind asked
-// for under the id: the object was deleted, the credential cannot see it, or
-// the id is another kind's.
+// ErrNodeNotFound reports that GitHub's GraphQL API resolved no node of the
+// kind asked for under the id: the object was deleted, the credential cannot
+// see it, or the id is another kind's.
 var ErrNodeNotFound = errors.New("no such node")
 
 // graphQL posts one GraphQL query with vars and decodes its data into out. A

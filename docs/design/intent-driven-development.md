@@ -1,13 +1,13 @@
 # Intent-driven development
 
-**Status:** Proposed, 2026-09-23. This design is synthesised from:
+**Status:** Accepted, 2026-09-23. Decisions D1-D6 are made (see "Decisions"). This design is synthesised from:
 
 - three candidate designs: reuse-first, separate subsystem, and GitHub-native;
 - two deep dives: previews and projects, and the agent side;
 - two judges: security, and delivery.
 
-Items marked **(user)** are open decisions, listed under "Decisions for the user". Everything else is the
-recommendation. Section-level claims were checked against the code; line references are to `main` at c6d6fc0.
+Section-level claims were checked against the code; line references are to `main` at c6d6fc0. Two sections were added
+after the decisions: "Human commands: one vocabulary" and "Failed checks: automatic fix rounds".
 
 ## Context
 
@@ -44,7 +44,8 @@ within:
 
 - **The Finding flow is untouched in the first slice.** No edit to integration-, investigation- or
   remediation-controller, the Finding types, `transitions.go`, either admission-policy copy, the envelope version or the
-  golden Job YAMLs. With intents off, the cluster is byte-for-byte what it is today.
+  golden Job YAMLs. With intents off, the cluster is byte-for-byte what it is today. The one deliberate exception is the
+  command-vocabulary change (see "Human commands"), which ships as its own PR behind its own regression gate.
 - **Authority comes from GitHub's API.** Every decision about human authority (trigger, approval, revision feedback) is
   taken from facts GitHub reports through its API and checked against an allowlist the operator owns. It is never taken
   from a handler-time stamp or from `author_association`.
@@ -59,7 +60,7 @@ within:
 
 - Previews (slice 2).
 - Multi-repo intents (slice 3). The types are per-repo lists from the start.
-- Slash commands.
+- `/patchy revise`, review-driven rounds and automatic check-fix rounds (slice 1b).
 - Status-page or CLI actions on intents.
 - Rollups.
 - Dependency egress for agent pods. Dependencies are baked into the image the app repo declares.
@@ -150,7 +151,8 @@ within:
 - _NetworkPolicy:_ egress to the API server and to GitHub on 443.
 - _Admission policy test:_ `internal/action/policy_test.go` skip-lists its ServiceAccount with the reason "writes no
   Finding spec".
-- _GitHub App:_ no new permission and no new event subscription in slice 1.
+- _GitHub App:_ no new permission and no new event subscription in slice 1a. Slice 1b adds three read-only permissions
+  for check-fix rounds: Checks, Commit statuses and Actions.
 
 **Jobs.** The intent flow reuses `jobs.Create` unchanged rather than adding a new Job flavour:
 
@@ -257,11 +259,13 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
 - `AwaitingApproval` → `Building` when an approval is accepted, or back to `Planning` when an approver re-applies the
   trigger label to request a replan.
 - `Building` → `InReview` once every PR is open.
-- `InReview` → `Revising` → `InReview`. A failed round returns to `InReview` with a condition set and a notice posted.
+- `InReview` → `Revising` → `InReview`, for a review round, a `/patchy revise`, or a check-fix round. A failed round
+  returns to `InReview` with a condition set and a notice posted.
 - Any non-terminal phase → `Blocked` on `maxRevisions`, the cost ceiling, a missing or rejected repository image, or a
   tripped breaker. `Blocked` is re-evaluated when the Project changes, so raising a limit resumes the intent.
 - `InReview` → `Merged` when every PR is merged.
-- Any non-terminal phase → `Closed` when a human closes the intent issue, or when every PR is closed unmerged.
+- Any non-terminal phase → `Closed` when a human closes the intent issue or runs `/patchy cancel`, or when every PR is
+  closed unmerged.
 - `Planning` or `Building` → `Failed` when attempts are exhausted or the plan is invalid twice. `Failed` stamps
   `completedAt`, but an approver re-applying the trigger label revives it to `Planning`.
 - `Merged` and `Closed` are terminal.
@@ -348,6 +352,46 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
 
 13. **TTL.** 14 days after `completedAt`, the Intent is deleted and everything it owns cascades.
 
+### Human commands: one vocabulary
+
+Every human action in patchy is one verb from one vocabulary, whatever surface it arrives on. `internal/action` already
+holds that vocabulary for the status page and the CLI (`approve`, `retry`, `expedite`, `suspend`, `resume`). GitHub,
+however, has only the ad-hoc `/approve` comment, and this design adds labels and reviews. Rather than three mechanisms,
+there is one grammar, and everything else is an alias for it.
+
+- **Grammar.** `/patchy <verb> [note]` as the first line of a comment. The note is at most 1 KiB, with control
+  characters stripped. Which verbs apply depends on where the comment is:
+
+  | Where                  | Verbs                                               |
+  | ---------------------- | --------------------------------------------------- |
+  | Finding tracking issue | `approve`, `retry`, `suspend`, `resume`, `expedite` |
+  | Intent issue           | `approve`, `replan`, `cancel`                       |
+  | Intent PR              | `revise`, `retry`                                   |
+
+  The Finding verbs mean exactly what they mean on the status page and in the CLI. The intent verbs join the same
+  registry, so when intents gain status-page or CLI actions (slice 5) they use the same names.
+
+- **Aliases, not second mechanisms.** Each shortcut maps to a verb and gets the same authorisation and acknowledgement:
+  - adding the approve label (`patchy:approved`) is `/patchy approve`;
+  - re-applying the trigger label is `/patchy replan`;
+  - a "Request changes" review is `/patchy revise`, with the review as the note;
+  - `/approve` on a Finding tracking issue stays as a deprecated alias for `/patchy approve`.
+- **One authorisation rule.** For every verb arriving from GitHub, the actor must have write access to the repository
+  (the collaborator-permission API: `admin`, `maintain` or `write`) and must not be a Bot. For intents the actor must
+  also be in the Project's `approvers.logins`. `author_association` is no longer used. This tightens today's `/approve`,
+  which accepts any org `MEMBER`, even one without write access.
+- **One acknowledgement.** A command that is seen gets a 👀 reaction, then exactly one reply with the outcome: done, not
+  available in this phase (listing what is), or not allowed. An unknown verb gets the list of verbs available there.
+  Commands and events from the App's own bot login are ignored.
+- **One parser.** A pure package, `internal/command`, parses the grammar. integration-controller uses it on the webhook
+  path for Findings, and intent-controller uses it on the poll path for intents. It has seeded property tests: parsing
+  never panics, text that does not start with the command prefix never parses as a command, and the note never contains
+  the command line.
+
+Sequencing: slice 1a ships the parser, the intent verbs `approve`, `replan` and `cancel` with their label aliases, and,
+as its own PR, the Finding migration (`/patchy <verb>`, the `/approve` alias, and the write-permission check). Slice 1b
+adds `revise` with its review alias, and `retry` on intent PRs.
+
 ### Why polling rather than webhooks
 
 - **It leaves the internet-facing binary alone.** integration-controller, which the security flow depends on, is
@@ -430,6 +474,42 @@ closes the intent issue itself.
   - `maxRevisions`;
   - the broker's per-pod `tokensPerPod`, which is off by default today and should be switched on together with intents.
 
+### Failed checks: automatic fix rounds
+
+A PR that patchy opened can fail CI even though the build agent ran the tests in the app's own image: CI covers what the
+sandbox cannot, such as other platforms, integration tests and lint configuration. In slice 1b, intent-controller
+iterates on those failures itself, using the revise machinery.
+
+- **Trigger.** After every patchy push (build or revise), the controller polls the PR head's check runs and commit
+  statuses until they settle, or until `checks.timeout` (default 30 m) passes. If any check the Project names concluded
+  `failure`, `timed_out` or `startup_failure`, a fix round starts without a human. The approved plan already covers the
+  work, and the round is bounded. Cancelled, skipped and neutral checks do not count.
+- **Which checks.** `Project.spec.checks.fix[]` is an explicit list of check names, such as `test` and `lint`. An empty
+  list means patchy never auto-fixes: a failing check is reported in the status comment, and an approver can run
+  `/patchy revise`. The list is explicit because a flaky or unrelated check would otherwise burn budget, as the CodeQL
+  zero-rule upload glitch would have.
+- **Only on patchy's own head.** A fix round starts only when the failing head is the commit patchy pushed. If a human
+  has pushed since, the failure is reported and a human decides.
+- **What the agent sees.** For each failed check:
+  - the name and conclusion;
+  - the check run's output title, summary and text;
+  - up to 50 annotations (path, line and message);
+  - for a GitHub Actions job, the last 32 KiB of the failed job's log.
+
+  All of it is bounded (48 KiB in total), stripped of control characters and fenced as data, exactly like review
+  feedback. The round is pinned at the PR head, uses the R0 image, and pushes fast-forward only.
+
+- **Bounds.** `limits.maxCheckFixes` (default 2) per intent, counted separately from `maxRevisions` but under the same
+  cost ceiling. If a check fails again after a fix round with the same failure signature (its annotations, or the tail
+  of its log), the controller stops and the Intent goes to `Blocked` with the condition `ChecksFailing` and a notice.
+  The agent cannot touch `.github/**`, so a failure in the CI configuration is reported, not fixed.
+- **Records.** IntentRun gains `spec.trigger` (`review`, `command` or `checks`) and `spec.inputs.checkRunIDs[]` (at most
+  32), so a check failure is consumed exactly once.
+- **GitHub App.** Checks: read, Commit statuses: read and Actions: read (for job logs). All three are read-only, and the
+  installation owner accepts them when they are added.
+- **Security Findings.** Remediation PRs do not get this in this design. The same mechanism could later drive a Finding
+  retry from `InReview`, but that needs a new Finding edge; it is on the roadmap.
+
 ### Build environment and changeset rules
 
 **Dependencies.**
@@ -474,7 +554,7 @@ whatever tree it pins (runner_image.go:162-170), and a revise round pins the PR 
 
 Slice 1 enforces one repository per Project.
 
-## Multi-project model **(user, D3)**
+## Multi-project model (D3)
 
 - **Intent repos.** One private intent repo for the org, `devthenet-labs/intents`, with one issue form per project that
   applies `patchy:<project>`. That label both triggers the work and names the project; the issue body is never parsed
@@ -491,7 +571,7 @@ Slice 1 enforces one repository per Project.
   3. give each app repo a `.patchy/agent.yaml` image;
   4. for previews, the slice 2 onboarding.
 
-## Previews (slice 2) **(user, D5)**
+## Previews (slice 2, D5)
 
 The recommendation is a **preview-controller**, off by default, working over a chart-provisioned pool of slot
 namespaces. patchy renders every manifest.
@@ -606,14 +686,16 @@ A deploy triggered by `pull_request` cannot be gated by an Environment branch ru
    the whole `patchy/app-envs/` prefix, with `allowUnsigned: true`. So the main branch of any org repo can publish an
    image the sandbox will admit. Narrow the role to registered app repos in terraform-devthenet.
 
-## Thin first slice **(user, D4)**
+## First slice, in two parts (D4)
 
-**Scope:**
+**Scope:** one Project and one app repo, patchy-target. Its Go image is already live, and using it exercises coexistence
+with Findings in the same repo. No previews.
 
-- plan, label approval (with replan by re-applying the trigger label), build, PR, changes-requested revise, merge;
-- one Project and one app repo, patchy-target. Its Go image is already live, and using it exercises coexistence with
-  Findings in the same repo;
-- no previews.
+- **Slice 1a (about 6-8 days):** plan, approval (the label or `/patchy approve`), replan (re-applying the trigger label
+  or `/patchy replan`), `/patchy cancel`, build, PR and merge. It also ships the shared command parser and, as its own
+  PR, the Finding command migration.
+- **Slice 1b (about 4-5 days):** revise rounds from a "Request changes" review or `/patchy revise`, automatic check-fix
+  rounds, and the fast-forward-only push path. The GitHub calls marked (1b) below land here.
 
 **Waves.** Each wave ends with the regression gate:
 
@@ -629,12 +711,13 @@ The waves:
   - Types, codegen, hand-added kustomization entries and schema envtests.
   - New ghclient calls:
     - `CreateCommit`, split out of `PushBranch`;
-    - `CreateBranchRef` (never forces) and `FastForwardRef` (returns `ErrNotFastForward`);
+    - `CreateBranchRef` (never forces), and `FastForwardRef` (returns `ErrNotFastForward`) (1b);
     - `ListIssueEvents`, and `ListIssues` with ETag;
     - comments since a time;
-    - `GetPR`, `ListReviews` and `ListReviewComments`;
-    - compare with patch;
-    - `RequestReviewers`, `App.Slug` and `CollaboratorPermission`.
+    - `GetPR`; `ListReviews` and `ListReviewComments` (1b);
+    - compare with patch (1b);
+    - check runs, commit statuses and Actions job logs (1b);
+    - reactions, `App.Slug` and `CollaboratorPermission`; `RequestReviewers` (1b).
   - Matching fakegithub routes, including a fast-forward-only `UpdateRef` that returns 422.
 - **Wave 2 (about 2-3 days): pod and shared seams.**
   - agentrun `plan` and `build`.
@@ -659,10 +742,10 @@ The waves:
   - e2e: drive fakegithub state from `Pending` to `Merged`, asserting Job shapes, pushes and PRs, and run one existing
     Finding e2e with intent-controller running.
 
-**Estimate.** 9-12 working days of patchy work, which is 2.5-3 calendar weeks including the gates. Intents are enabled
-on devthenet-dev in a separate Helm upgrade from the release that ships them.
+**Estimate.** 1a is about 6-8 working days and 1b about 4-5, each including its regression gates. Intents are enabled on
+devthenet-dev in a separate Helm upgrade from the release that ships them.
 
-**Demo script:**
+**Demo script.** Steps 0-5, 9 and 10 are the slice 1a demo; steps 6-8b are slice 1b.
 
 0. **Pre-flight.** Run the regression gate on main and record the Helm revisions for `patchy` and `patchy-config`.
 1. **Setup.**
@@ -694,6 +777,11 @@ on devthenet-dev in a separate Helm upgrade from the release that ships them.
    never a force-push.
 8. **Limit.** Set `maxRevisions: 1` and request changes again. The Intent goes to `Blocked` with a notice. Raise the
    limit and it proceeds.
+
+   8b. **Failed check.** With `checks.fix: [test]`, ask in review for a change whose first attempt breaks a test that
+   only CI runs. The `test` check fails on patchy's head, a check-fix round starts on its own, and the next push turns
+   the check green. A second failure with the same signature would block the Intent instead.
+
 9. **Merge.** The Intent moves to `Merged`, a summary comment is posted, and the intent issue is closed.
    `kubectl get findings -n patchy` shows every Finding's phase unchanged, and their tracking issues are untouched.
 10. **Post-flight.** A fresh Finding reaches its PR. To roll back, set `intentController.enabled=false`; the CRDs stay
@@ -709,7 +797,7 @@ on devthenet-dev in a separate Helm upgrade from the release that ships them.
 - **Slice 3: multi-repo and commands.** About 5-7 days.
   - Lift the one-repo guard: plan over several read-only trees, fan the build out to one Job per repo, cross-link
     sibling PRs, and add a partial-failure policy.
-  - `/patchy revise|replan|cancel` commands, from approvers only.
+  - One `/patchy revise` that revises every sibling PR of a multi-repo intent.
   - A webhook "nudge", if polling latency hurts: integration-controller annotates the Project that matches a delivery
     and carries no intent semantics.
 - **Slice 4: hardening.** About 3-5 days.
@@ -719,6 +807,7 @@ on devthenet-dev in a separate Helm upgrade from the release that ships them.
   - An Admin-tier ClusterNetworkPolicy for preview namespaces, after a live test.
   - cosign-signed app images, then `allowUnsigned: false`.
   - An allowlisted dependency proxy reachable only from `run-kind=intent` pods.
+  - Check-fix rounds for security Finding PRs, which need a Finding edge out of `InReview`.
 - **Slice 5: visibility, if GitHub plus kubectl prove insufficient.**
   - `patchy describe intent`.
   - A read-only Intents tab on the status page.
@@ -796,6 +885,9 @@ on devthenet-dev in a separate Helm upgrade from the release that ships them.
 
 ## Prerequisite fixes
 
+Items 1-3, 5 and 6 are wave 0. Item 4 moves into wave 1 with the other ghclient work. `/approve` accepting any org
+`MEMBER` is fixed by the command-vocabulary PR in slice 1a.
+
 1. **Finding PR-close handler.** Make it check the repository and PR number against `status.pullRequest`, not just the
    head ref (internal/controller/integration/webhooks.go:170-216).
 2. **`PushBranch` returns the commit SHA.** Remediation then records `Remediation.status.pushedCommit`, which is
@@ -821,16 +913,20 @@ on devthenet-dev in a separate Helm upgrade from the release that ships them.
    - the collaborator-permission endpoint works with the App's permissions;
    - the 304 rate-limit behaviour.
 
-## Decisions for the user
+## Decisions
 
-- **D1: Work item.** Intent plus IntentRun with local enums, reusing Repository. Recommended on engineering merit.
-- **D2: Engine placement.** A new default-off intent-controller that polls GitHub. Your call, because it changes the
-  documented "only remediation-controller writes to forges" invariant and adds a Deployment to run.
-- **D3: Multi-project.** One private org intent repo, a label per project, and one Project CR per project.
-- **D4: First slice.** Plan, approve, build, PR, revise, merge, with no previews.
-- **D5: Previews.** A slot-pool preview-controller, against a GitHub Actions deploy from main.
-- **D6: Revise trigger.** A "Request changes" review from an approver in slice 1, with `/patchy revise` added in
-  slice 3.
+Made on 2026-09-23.
+
+- **D1: Work item.** Intent plus IntentRun with local enums, reusing Repository.
+- **D2: Engine placement.** A separate, default-off intent-controller that polls GitHub. The documented "only
+  remediation-controller writes to forges" statement is updated to name it as the second forge-writing code path.
+- **D3: Multi-project.** One private org intent repo, a label per project, and one Project CR per project. A Project may
+  still name its own intent repo.
+- **D4: First slice.** Split: 1a is plan, approve, build, PR and merge; 1b is revise and check-fix rounds. No previews.
+- **D5: Previews.** A slot-pool preview-controller on a separate, IP-restricted ALB, in slice 2.
+- **D6: Revise trigger.** A "Request changes" review from an approver, with `/patchy revise` as the command form, both
+  in slice 1b. Commands are made consistent across Findings and intents (see "Human commands: one vocabulary"). Added
+  with this decision: automatic check-fix rounds on failed CI checks (see "Failed checks: automatic fix rounds").
 
 ## Open questions
 

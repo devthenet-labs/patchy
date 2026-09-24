@@ -9,8 +9,8 @@
 # all-time FindingRollup data). Living in templates/ rather than the chart's
 # crds/ dir is deliberate: helm upgrades templates, while crds/ is
 # install-only. The patchy-config values schema is generated here too, its
-# Integration/Forge spec schemas lifted from the CRDs. CI runs this and fails
-# on drift (git diff --exit-code).
+# Integration/Forge/Project spec schemas lifted from the CRDs. CI runs this
+# and fails on drift (git diff --exit-code).
 set -eu
 
 controller-gen object:headerFile=hack/boilerplate.go.txt paths=./api/...
@@ -54,8 +54,8 @@ for crd in deploy/kustomize/base/crds/*.yaml; do
     } >"$out"
 done
 
-# The patchy-config chart's values schema embeds the Integration/Forge spec
-# schemas lifted straight from the CRDs generated above, so a mistyped entry
+# The patchy-config chart's values schema embeds the Integration/Forge/Project
+# spec schemas lifted straight from the CRDs generated above, so a mistyped entry
 # fails `helm install` client-side instead of mid-apply at the API server.
 # The CEL x-kubernetes-* keywords are stripped (they are not JSON Schema),
 # and every object carrying properties is closed with
@@ -88,8 +88,18 @@ cat >"$schema" <<'EOF'
                 "spec": { "$ref": "#/definitions/forgeSpec" }
             }
         },
+        "project": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "spec"],
+            "properties": {
+                "name": { "type": "string", "minLength": 1, "maxLength": 63 },
+                "spec": { "$ref": "#/definitions/projectSpec" }
+            }
+        },
         "integrationSpec": {},
-        "forgeSpec": {}
+        "forgeSpec": {},
+        "projectSpec": {}
     },
     "properties": {
         "global": { "type": "object" },
@@ -106,6 +116,11 @@ cat >"$schema" <<'EOF'
             "type": "array",
             "description": "Forge custom resources rendered into the release namespace",
             "items": { "$ref": "#/definitions/forge" }
+        },
+        "projects": {
+            "type": "array",
+            "description": "Project custom resources (intent-driven development) rendered into the release namespace",
+            "items": { "$ref": "#/definitions/project" }
         }
     }
 }
@@ -116,11 +131,14 @@ EOF
 # untouched.
 INTEGRATION_CRD=deploy/kustomize/base/crds/patchy.bitwisemedia.uk_integrations.yaml \
 FORGE_CRD=deploy/kustomize/base/crds/patchy.bitwisemedia.uk_forges.yaml \
+PROJECT_CRD=deploy/kustomize/base/crds/patchy.bitwisemedia.uk_projects.yaml \
 yq -i -o=json '
     .definitions.integrationSpec = (load(strenv(INTEGRATION_CRD)) | .spec.versions[0].schema.openAPIV3Schema.properties.spec) |
     .definitions.forgeSpec = (load(strenv(FORGE_CRD)) | .spec.versions[0].schema.openAPIV3Schema.properties.spec) |
+    .definitions.projectSpec = (load(strenv(PROJECT_CRD)) | .spec.versions[0].schema.openAPIV3Schema.properties.spec) |
     del(.definitions[] | .. | .["x-kubernetes-validations"]?) |
     (.definitions.integrationSpec | .. | select(tag == "!!map" and has("properties"))."additionalProperties") = false |
-    (.definitions.forgeSpec | .. | select(tag == "!!map" and has("properties"))."additionalProperties") = false
+    (.definitions.forgeSpec | .. | select(tag == "!!map" and has("properties"))."additionalProperties") = false |
+    (.definitions.projectSpec | .. | select(tag == "!!map" and has("properties"))."additionalProperties") = false
 ' "$schema"
 prettier --log-level warn --write "$schema"

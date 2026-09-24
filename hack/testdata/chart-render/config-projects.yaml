@@ -1,0 +1,43 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# chart-render-test fixture for charts/patchy-config: two Projects, one
+# minimal (the schema defaults apply server-side) and one with every optional
+# block set, sharing an intent repository under different trigger labels.
+projects:
+    - name: target
+      spec:
+          intentRepository: https://github.com/acme/intents
+          approvers:
+              logins: [octocat]
+          repositories:
+              - name: target
+                url: https://github.com/acme/target
+    - name: docs
+      spec:
+          intentRepository: https://github.com/acme/intents
+          labels:
+              trigger: patchy:docs
+              approve: patchy:ship-it
+          approvers:
+              logins: [octocat, hubot]
+          repositories:
+              - name: site
+                url: https://github.com/acme/site
+          limits:
+              maxActiveIntents: 1
+              maxRevisions: 1
+              maxCheckFixes: 0
+              maxCostMicroUSD: 5000000
+              plan:
+                  maxTurns: 20
+                  tokenBudget: 100000
+              build:
+                  maxTurns: 100
+              revise:
+                  tokenBudget: 300000
+          checks:
+              fix: [test, lint]
+              timeout: 45m
+          requireRepositoryImage: false
+          suspend: true

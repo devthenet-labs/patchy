@@ -72,9 +72,10 @@ helm template patchy charts/patchy -f hack/testdata/chart-render/evaluation-cont
   --set agent.runners.claude.enabled=false --set agent.runners.codex.enabled=true \
   --set evaluationController.runners.codex.enabled=true >/dev/null
 
-# The CR chart: the empty default plus a populated render of both arrays.
+# The CR chart: the empty default plus a populated render of every array.
 helm lint charts/patchy-config
 helm template patchy-config charts/patchy-config >/dev/null
 helm template patchy-config charts/patchy-config \
   --set-json 'integrations=[{"name":"github","spec":{"provider":"github","secretRef":{"name":"patchy-github"},"interval":"10m"}}]' \
-  --set-json 'forges=[{"name":"github","spec":{"provider":"github","secretRef":{"name":"patchy-github"},"interval":"10m"}}]' >/dev/null
+  --set-json 'forges=[{"name":"github","spec":{"provider":"github","secretRef":{"name":"patchy-github"},"interval":"10m"}}]' \
+  -f hack/testdata/chart-render/config-projects.yaml >/dev/null

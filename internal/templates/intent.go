@@ -12,6 +12,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/action"
+	"github.com/bitwise-media-group/patchy/internal/command"
 	"github.com/bitwise-media-group/patchy/internal/report"
 )
 
@@ -21,7 +24,9 @@ import (
 // Sanitize, SanitizeInline or code here, before any template sees it.
 // Controller values that quote agent output (a refusal naming a changeset
 // path) are fenced. Logins are rendered as code, never as mentions: patchy
-// notifies nobody.
+// notifies nobody. Commands are named from internal/command and
+// internal/action, so a reply here and the parser that reads the command
+// cannot disagree on a verb.
 
 // MaxCommentBytes is the most a rendered comment may be. GitHub refuses a
 // body of more than 65,536 characters, and a character is at least a byte,
@@ -134,17 +139,17 @@ type IntentPullRequest struct {
 }
 
 // phaseSentences say what each phase means to someone reading the issue.
-var phaseSentences = map[string]string{
-	"Pending":          "patchy has seen this issue and is checking who asked for the work.",
-	"Planning":         "patchy is writing a plan, which it will post here for approval.",
-	"AwaitingApproval": "the plan is posted and waits for an approver.",
-	"Building":         "patchy is building the approved plan.",
-	"InReview":         "the pull requests are open for review.",
-	"Revising":         "patchy is revising the pull requests from review feedback.",
-	"Blocked":          "patchy has stopped until the reason below is dealt with.",
-	"Merged":           "every pull request was merged, and the work is complete.",
-	"Closed":           "work on this intent has stopped.",
-	"Failed":           "patchy could not complete the work.",
+var phaseSentences = map[v1alpha1.IntentPhase]string{
+	v1alpha1.IntentPending:          "patchy has seen this issue and is checking who asked for the work.",
+	v1alpha1.IntentPlanning:         "patchy is writing a plan, which it will post here for approval.",
+	v1alpha1.IntentAwaitingApproval: "the plan is posted and waits for an approver.",
+	v1alpha1.IntentBuilding:         "patchy is building the approved plan.",
+	v1alpha1.IntentInReview:         "the pull requests are open for review.",
+	v1alpha1.IntentRevising:         "patchy is revising the pull requests from review feedback.",
+	v1alpha1.IntentBlocked:          "patchy has stopped until the reason below is dealt with.",
+	v1alpha1.IntentMerged:           "every pull request was merged, and the work is complete.",
+	v1alpha1.IntentClosed:           "work on this intent has stopped.",
+	v1alpha1.IntentFailed:           "patchy could not complete the work.",
 }
 
 // RenderIntentStatusComment renders the sticky status comment, headed by
@@ -177,7 +182,7 @@ func RenderIntentStatusComment(c IntentStatusComment) (string, error) {
 	}{
 		Marker:           IntentStatusMarker(c.Namespace, c.Intent),
 		Phase:            oneLine(c.Phase),
-		Sentence:         phaseSentences[c.Phase],
+		Sentence:         phaseSentences[v1alpha1.IntentPhase(c.Phase)],
 		PlanRevision:     c.PlanRevision,
 		PlanURL:          oneLine(c.PlanURL),
 		Summary:          SanitizeInline(c.Summary),
@@ -189,7 +194,7 @@ func RenderIntentStatusComment(c IntentStatusComment) (string, error) {
 		Cost:             usd(c.CostMicroUSD),
 		MaxCost:          usd(c.MaxCostMicroUSD),
 		Reason:           strings.TrimRight(plainText(c.Reason), "\n"),
-		Commands:         commands(c.Commands),
+		Commands:         slashCommands(c.Commands),
 	})
 }
 
@@ -254,7 +259,13 @@ func RenderPlanComment(p PlanComment) (string, error) {
 		Questions       []string
 		ApproveLabel    string
 		TriggerLabel    string
+		Approve         string
+		Replan          string
+		Cancel          string
 	}{
+		Approve:         slashCommand(action.VerbApprove),
+		Replan:          slashCommand(action.VerbReplan),
+		Cancel:          slashCommand(action.VerbCancel),
 		Marker:          PlanMarker(p.Namespace, p.Intent, p.Revision, digest),
 		Revision:        p.Revision,
 		Digest:          shortDigest(digest),
@@ -312,7 +323,7 @@ func RenderNotAllowedNotice(n NotAllowedNotice) (string, error) {
 		Marker:       NoticeMarker(n.Namespace, n.Intent, n.Key),
 		Actor:        oneLine(n.Actor),
 		Bot:          n.Bot,
-		Command:      command(n.Verb),
+		Command:      slashCommand(n.Verb),
 		Label:        oneLine(n.Label),
 		LabelRemoved: n.LabelRemoved,
 		Closed:       n.Closed,
@@ -320,35 +331,51 @@ func RenderNotAllowedNotice(n NotAllowedNotice) (string, error) {
 }
 
 // NotAvailableNotice answers a command, or the label standing for one, that
-// means nothing in the intent's current phase.
+// means nothing in the intent's current phase — a trigger label re-applied
+// to an intent that has ended among them.
 type NotAvailableNotice struct {
 	// Namespace, Intent and Key make the notice's marker (NoticeMarker).
 	Namespace string
 	Intent    string
 	Key       string
+	// Surface is where the command was made; zero means the intent issue.
+	Surface command.Surface
 	// Verb is the command's verb, or Label the label it arrived as.
 	Verb  string
 	Label string
-	// Phase is the Intent's phase.
+	// LabelRemoved reports that patchy removed the label again.
+	LabelRemoved bool
+	// Phase is the Intent's phase. A Merged or Closed intent has ended, and
+	// the notice says to open a new issue.
 	Phase string
-	// Available are the verbs the phase does offer, if any.
+	// Available are the verbs the phase does admit, if any; the notice lists
+	// those the surface offers, with command.HelpFor's usage lines.
 	Available []string
 }
 
 // RenderNotAvailableNotice renders a NotAvailableNotice.
 func RenderNotAvailableNotice(n NotAvailableNotice) (string, error) {
+	surface := n.Surface
+	if surface == "" {
+		surface = command.IntentIssue
+	}
+	phase := v1alpha1.IntentPhase(n.Phase)
 	return render("intent_notice_not_available.md.tmpl", struct {
-		Marker    string
-		Command   string
-		Label     string
-		Phase     string
-		Available []string
+		Marker       string
+		Command      string
+		Label        string
+		LabelRemoved bool
+		Phase        string
+		Ended        bool
+		Help         string
 	}{
-		Marker:    NoticeMarker(n.Namespace, n.Intent, n.Key),
-		Command:   command(n.Verb),
-		Label:     oneLine(n.Label),
-		Phase:     oneLine(n.Phase),
-		Available: commands(n.Available),
+		Marker:       NoticeMarker(n.Namespace, n.Intent, n.Key),
+		Command:      slashCommand(n.Verb),
+		Label:        oneLine(n.Label),
+		LabelRemoved: n.LabelRemoved,
+		Phase:        oneLine(n.Phase),
+		Ended:        phase == v1alpha1.IntentMerged || phase == v1alpha1.IntentClosed,
+		Help:         command.HelpFor(surface, n.Available),
 	})
 }
 
@@ -397,7 +424,7 @@ func RenderApprovalRefusedNotice(n ApprovalRefusedNotice) (string, error) {
 		IssueChanged: n.IssueChanged,
 		LabelRemoved: n.LabelRemoved,
 		TriggerLabel: oneLine(n.TriggerLabel),
-		Replan:       command("replan"),
+		Replan:       slashCommand(action.VerbReplan),
 	})
 }
 
@@ -514,18 +541,18 @@ func oneLine(s string) string {
 	return strings.TrimSpace(strings.ReplaceAll(plainText(s), "\n", " "))
 }
 
-// command renders verb as its /patchy command, in code.
-func command(verb string) string {
+// slashCommand renders verb as its command ("/patchy <verb>"), in code.
+func slashCommand(verb string) string {
 	if verb = oneLine(verb); verb == "" {
 		return ""
 	}
-	return code("/patchy " + verb)
+	return code(command.Prefix + " " + verb)
 }
 
-func commands(verbs []string) []string {
+func slashCommands(verbs []string) []string {
 	out := make([]string, 0, len(verbs))
 	for _, v := range verbs {
-		if c := command(v); c != "" {
+		if c := slashCommand(v); c != "" {
 			out = append(out, c)
 		}
 	}

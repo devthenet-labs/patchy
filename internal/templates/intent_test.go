@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"testing/quick"
+
+	"github.com/bitwise-media-group/patchy/internal/command"
 )
 
 // testPlan is a plan report as the planner writes it.
@@ -143,10 +145,17 @@ func TestIntentGoldens(t *testing.T) {
 				Verb: "approve", Phase: "Building", Available: []string{"cancel"},
 			})
 		}},
-		{"intent_notice_not_available_label.md", func() (string, error) {
+		// The trigger re-applied to an intent that has ended.
+		{"intent_notice_not_available_ended.md", func() (string, error) {
 			return RenderNotAvailableNotice(NotAvailableNotice{
 				Namespace: "patchy", Intent: "target-1", Key: "event-813",
-				Label: "patchy:approved", Phase: "Merged",
+				Label: "patchy:target", LabelRemoved: true, Phase: "Merged",
+			})
+		}},
+		{"intent_notice_not_available_pr.md", func() (string, error) {
+			return RenderNotAvailableNotice(NotAvailableNotice{
+				Namespace: "patchy", Intent: "target-1", Key: "comment-4414", Surface: command.IntentPR,
+				Verb: "retry", Phase: "Revising", Available: []string{"cancel", "revise"},
 			})
 		}},
 		{"intent_notice_approval_refused.md", func() (string, error) {

@@ -46,6 +46,6 @@ The plan's frontmatter, exactly as the build agent reads it:
 
 ### To approve
 
-Add the {{ code .ApproveLabel }} label to this issue, or comment `/patchy approve`. patchy then builds exactly this plan: r{{ .Revision }}, `{{ .Digest }}`. If this comment or the issue description is edited after patchy posted the plan, the approval is refused and patchy asks for a new plan.
+Add the {{ code .ApproveLabel }} label to this issue, or comment {{ .Approve }}. patchy then builds exactly this plan: r{{ .Revision }}, `{{ .Digest }}`. If this comment or the issue description is edited after patchy posted the plan, the approval is refused and patchy asks for a new plan.
 
-For a different plan, say what should change in a comment, then re-apply the {{ code .TriggerLabel }} label or comment `/patchy replan`. `/patchy cancel` stops work on this intent.
+For a different plan, say what should change in a comment, then re-apply the {{ code .TriggerLabel }} label or comment {{ .Replan }}. {{ .Cancel }} stops work on this intent.

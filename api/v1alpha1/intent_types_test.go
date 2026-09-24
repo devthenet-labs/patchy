@@ -335,27 +335,59 @@ func TestIntentBlockedFrom(t *testing.T) {
 	}
 }
 
-// TestSetIntentPhaseProperty drives SetIntentPhase with random sequences of
-// attempted transitions (most of them illegal) from a new Intent and checks
-// the invariants the TTL and the controllers rely on after every step:
+// walkTarget picks the phase one step of a random walk attempts to move to.
+// One step in sixteen attempts an arbitrary phase: often illegal, which
+// exercises the error path, and occasionally absorbing. Every other step
+// takes a legal non-self edge that is not Merged or Closed, so walks rarely
+// absorb and run long enough to fill and trim the phase log.
+func walkTarget(from IntentPhase, s uint8) IntentPhase {
+	targets := append([]IntentPhase{""}, allIntentPhases...)
+	if s < 16 {
+		return targets[int(s)%len(targets)]
+	}
+	var moves []IntentPhase
+	for _, to := range intentTransitions[from] {
+		if to != IntentMerged && to != IntentClosed {
+			moves = append(moves, to)
+		}
+	}
+	if len(moves) == 0 {
+		return targets[int(s)%len(targets)]
+	}
+	return moves[int(s)%len(moves)]
+}
+
+// TestSetIntentPhaseProperty drives SetIntentPhase with random 256-step walks
+// of attempted transitions from a new Intent — long enough to fill the phase
+// log past MaxIntentPhaseTimes, so the trim is exercised — and checks the
+// invariants the TTL and the controllers rely on after every step:
 //
 //   - an illegal attempt returns an error and leaves the status untouched;
 //   - completedAt is set exactly when the phase is terminal, at the entry
 //     time of that phase;
 //   - the phase log is bounded, ends with the current phase, and is itself a
 //     legal path (consecutive entries are legal, non-self edges);
-//   - Merged and Closed are absorbing: nothing ever leaves them.
+//   - Merged and Closed are absorbing: nothing ever leaves them;
+//   - while Blocked, IntentBlockedFrom is the phase the block was entered
+//     from (tracked by the walk itself, not read from the log), and Blocked
+//     may legally resume to it — including after the log was trimmed; while
+//     not Blocked, it is "".
 //
-// Seeded, so the gate is deterministic.
+// Seeded, so the gate is deterministic. It also asserts the walks reached
+// the trim and a blocked resume check after one, so a generator change that
+// stops exercising them fails instead of passing vacuously.
 func TestSetIntentPhaseProperty(t *testing.T) {
-	targets := append([]IntentPhase{""}, allIntentPhases...)
 	base := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
-	prop := func(steps []uint8) bool {
+	var walks, trimmedWalks, blockedAfterTrim int
+	prop := func(steps [256]uint8) bool {
+		walks++
 		i := &Intent{}
+		var blockedFrom IntentPhase // the model: where the current block was entered from
+		trimmed := false
 		for n, s := range steps {
-			to := targets[int(s)%len(targets)]
-			now := base.Add(time.Duration(n) * time.Second)
 			before := i.DeepCopy()
+			to := walkTarget(before.Status.Phase, s)
+			now := base.Add(time.Duration(n) * time.Second)
 			err := SetIntentPhase(i, to, now)
 			legal := CanTransitionIntent(before.Status.Phase, to)
 			if (err == nil) != legal {
@@ -375,6 +407,30 @@ func TestSetIntentPhaseProperty(t *testing.T) {
 				t.Logf("step %d: after %q -> %q", n, before.Status.Phase, to)
 				return false
 			}
+			if err == nil && to != before.Status.Phase && len(before.Status.PhaseTimes) == MaxIntentPhaseTimes {
+				trimmed = true
+			}
+			if i.Status.Phase == IntentBlocked && before.Status.Phase != IntentBlocked {
+				blockedFrom = before.Status.Phase
+			}
+			got := IntentBlockedFrom(i)
+			if i.Status.Phase != IntentBlocked {
+				if got != "" {
+					t.Logf("step %d: IntentBlockedFrom = %q in phase %q, want \"\"", n, got, i.Status.Phase)
+					return false
+				}
+				continue
+			}
+			if got != blockedFrom || !CanTransitionIntent(IntentBlocked, got) {
+				t.Logf("step %d: IntentBlockedFrom = %q, want %q, a legal resume (trimmed log: %v)", n, got, blockedFrom, trimmed)
+				return false
+			}
+			if trimmed {
+				blockedAfterTrim++
+			}
+		}
+		if trimmed {
+			trimmedWalks++
 		}
 		return true
 	}
@@ -383,7 +439,14 @@ func TestSetIntentPhaseProperty(t *testing.T) {
 		Rand:     rand.New(rand.NewSource(20260923)),
 	}
 	if err := quick.Check(prop, cfg); err != nil {
-		t.Error(err)
+		t.Fatal(err)
+	}
+	if trimmedWalks < walks/10 {
+		t.Errorf("%d of %d walks trimmed the phase log, want at least a tenth: the property no longer exercises the bound",
+			trimmedWalks, walks)
+	}
+	if blockedAfterTrim == 0 {
+		t.Error("no walk checked IntentBlockedFrom after a trim: the property no longer exercises it")
 	}
 }
 

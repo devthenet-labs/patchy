@@ -78,18 +78,54 @@ var (
 const rateCacheTTL = time.Minute
 
 // forgeGitHub is the production GitHub: every call resolves the repository's
-// Forge through the shared forge store, mints a token scoped to that
-// repository and the call's one permission (forge.Store.TokenWith, which
-// caches it until shortly before it expires), and makes the call with a
-// client built on that token alone.
+// Forge through the shared forge store, takes a token scoped to that
+// repository and the call's one permission (forge.Store.TokenWith), and makes
+// the call with a client built on that token alone.
+//
+// The token and the Forge's proxy URL are kept per (Forge, repository,
+// permissions), because the store reads the Forge's Secret live, uncached,
+// before it looks at its own token cache: without this every GitHub call
+// would be a Secret read on the API server, several per intent per poll.
+// A kept credential is taken again once its token is near expiry, once it
+// has been kept credentialReread (so a rotated personal access token or
+// proxy password is picked up), or at once when the Forge changes.
 type forgeGitHub struct {
 	forges    *forge.Store
 	namespace string
 	now       func() time.Time
 
-	mu      sync.Mutex
-	clients map[clientKey]cachedClient
-	rates   map[string]rateReading
+	mu        sync.Mutex
+	clients   map[clientKey]cachedClient
+	rates     map[string]rateReading
+	creds     map[credKey]cachedCred
+	botLogins map[string]botReading
+}
+
+// credentialRefresh is how long before its expiry a kept token is taken
+// again: the forge store's own refresh margin, longer than any one call.
+const credentialRefresh = 5 * time.Minute
+
+// credentialReread is the longest a credential is kept without reading the
+// Forge's Secret again.
+const credentialReread = 10 * time.Minute
+
+// credKey identifies one kept credential: the Forge as it is now (its
+// resourceVersion moves with any change to it), the repository, and the
+// exact permission set.
+type credKey struct {
+	forge, version, repo string
+	perms                ghclient.TokenPerms
+}
+
+type cachedCred struct {
+	token, proxy string
+	expires      time.Time // zero for a personal access token
+	read         time.Time
+}
+
+type botReading struct {
+	login string
+	read  time.Time
 }
 
 type clientKey struct{ token, proxy, baseURL string }
@@ -113,7 +149,57 @@ func NewForgeGitHub(forges *forge.Store, namespace string) GitHub {
 		now:       time.Now,
 		clients:   map[clientKey]cachedClient{},
 		rates:     map[string]rateReading{},
+		creds:     map[credKey]cachedCred{},
+		botLogins: map[string]botReading{},
 	}
+}
+
+// forgeKey names a resolved Forge as it is now.
+func forgeKey(res *forge.Resolved) (name, version string) {
+	return res.Forge.Namespace + "/" + res.Forge.Name, res.Forge.ResourceVersion
+}
+
+// fresh reports a kept credential still to be served at now.
+func (c cachedCred) fresh(now time.Time) bool {
+	if now.Sub(c.read) >= credentialReread {
+		return false
+	}
+	return c.expires.IsZero() || now.Add(credentialRefresh).Before(c.expires)
+}
+
+// credential is the token for repoURL's resolved repository carrying perms
+// alone, and the Forge's proxy URL, kept as forgeGitHub says.
+func (g *forgeGitHub) credential(ctx context.Context, res *forge.Resolved, perms ghclient.TokenPerms) (
+	cachedCred, error) {
+	name, version := forgeKey(res)
+	key := credKey{forge: name, version: version, repo: strings.ToLower(res.Repo.String()), perms: perms}
+	now := g.now()
+	g.mu.Lock()
+	cred, ok := g.creds[key]
+	g.mu.Unlock()
+	if ok && cred.fresh(now) {
+		return cred, nil
+	}
+	token, expires, err := g.forges.TokenWith(ctx, res, perms)
+	if err != nil {
+		return cachedCred{}, err
+	}
+	proxy, err := g.forges.ProxyURL(ctx, res)
+	if err != nil {
+		return cachedCred{}, err
+	}
+	cred = cachedCred{token: token, proxy: proxy, expires: expires, read: now}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	// Evict what can no longer be served, so the map stays bounded by the
+	// (Forge, repository, permissions) combinations in use.
+	for k, v := range g.creds {
+		if !v.fresh(now) {
+			delete(g.creds, k)
+		}
+	}
+	g.creds[key] = cred
+	return cred, nil
 }
 
 // client returns a client authenticated with a token for repoURL carrying
@@ -124,21 +210,17 @@ func (g *forgeGitHub) client(ctx context.Context, repoURL string, perms ghclient
 	if err != nil {
 		return nil, ghclient.Repo{}, err
 	}
-	token, expires, err := g.forges.TokenWith(ctx, res, perms)
+	cred, err := g.credential(ctx, res, perms)
 	if err != nil {
 		return nil, ghclient.Repo{}, err
 	}
-	proxy, err := g.forges.ProxyURL(ctx, res)
-	if err != nil {
-		return nil, ghclient.Repo{}, err
-	}
-	key := clientKey{token: token, proxy: proxy, baseURL: res.Forge.Spec.BaseURL}
+	key := clientKey{token: cred.token, proxy: cred.proxy, baseURL: res.Forge.Spec.BaseURL}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if c, ok := g.clients[key]; ok {
 		return c.client, res.Repo, nil
 	}
-	c, err := ghclient.NewToken(token, res.Forge.Spec.BaseURL, ghclient.WithProxy(proxy))
+	c, err := ghclient.NewToken(cred.token, res.Forge.Spec.BaseURL, ghclient.WithProxy(cred.proxy))
 	if err != nil {
 		return nil, ghclient.Repo{}, err
 	}
@@ -150,7 +232,7 @@ func (g *forgeGitHub) client(ctx context.Context, repoURL string, perms ghclient
 			delete(g.clients, k)
 		}
 	}
-	g.clients[key] = cachedClient{client: c, expires: expires}
+	g.clients[key] = cachedClient{client: c, expires: cred.expires}
 	return c, res.Repo, nil
 }
 
@@ -168,16 +250,38 @@ func (g *forgeGitHub) Installed(ctx context.Context, repoURL string, perms ghcli
 	return err
 }
 
+// BotLogin is read once per Forge version and credentialReread: every intent
+// pass asks for it, and the store reads the Secret to answer.
 func (g *forgeGitHub) BotLogin(ctx context.Context, repoURL string) (string, error) {
 	res, err := g.forges.Resolve(ctx, g.namespace, repoURL)
 	if err != nil {
 		return "", err
 	}
-	login, err := g.forges.BotLogin(ctx, res)
-	if errors.Is(err, forge.ErrNoBotIdentity) {
-		return "", nil
+	name, version := forgeKey(res)
+	key := name + "@" + version
+	now := g.now()
+	g.mu.Lock()
+	b, ok := g.botLogins[key]
+	g.mu.Unlock()
+	if ok && now.Sub(b.read) < credentialReread {
+		return b.login, nil
 	}
-	return login, err
+	login, err := g.forges.BotLogin(ctx, res)
+	switch {
+	case errors.Is(err, forge.ErrNoBotIdentity):
+		login = ""
+	case err != nil:
+		return "", err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for k, v := range g.botLogins {
+		if now.Sub(v.read) >= credentialReread {
+			delete(g.botLogins, k)
+		}
+	}
+	g.botLogins[key] = botReading{login: login, read: now}
+	return login, nil
 }
 
 func (g *forgeGitHub) Permission(ctx context.Context, repoURL, login string) (string, error) {

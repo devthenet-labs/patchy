@@ -180,6 +180,30 @@ func TestSanitizeShowsInvisibleCharacters(t *testing.T) {
 	}
 }
 
+// TestSanitizeVisibleCounterexamples pins what extra seeds of
+// TestSanitizeProperties found while its visibility check still aligned the
+// input's words in order: text a reader sees in full, but out of order or
+// split, which the check must accept — goldmark moves a table formed from a
+// paragraph's last line ahead of the rest once a setext underline makes that
+// rest a heading, and an indented code block shows the backticks the
+// sanitiser puts around a token literally, inside a word of the input.
+func TestSanitizeVisibleCounterexamples(t *testing.T) {
+	for _, in := range []string{
+		"fixes a|b\n| --- | --- |\nc\n:-:\n- ",
+		"\tfix GH-7close",
+		"    @org/teamégithub.com/o/r/pull/5",
+	} {
+		out := Sanitize(in)
+		msg := checkSanitized(out)
+		if msg == "" {
+			msg = checkVisible(in, out)
+		}
+		if msg != "" {
+			t.Errorf("Sanitize(%q) = %q: %s", in, out, msg)
+		}
+	}
+}
+
 // tags encodes s in Unicode tag characters, which render as nothing and
 // which a model reads as the ASCII each one shadows.
 func tags(s string) string {
@@ -269,105 +293,58 @@ func checkSanitized(out string) string {
 }
 
 // checkVisible returns what of in a reader of out, all of it sanitiser
-// output, does not see, or "": out's visible letters and digits must be in's
-// visibleItems, in order, with nothing between them but digits and the
-// "text" info string the sanitiser gives a block whose own would hide (see
-// shows). A dropped word therefore fails even where the same word shows
-// elsewhere.
+// output, does not see, or "": see shows, with the "text" info string the
+// sanitiser gives a block whose own would hide as the one insertion.
 func checkVisible(in, out string) string {
-	return shows(visibleItems(in), lettersAndDigits(parse(out).visible), true)
+	return shows(in, parse(out).visible, "text")
 }
 
-// checkVisibleIn is checkVisible for sanitiser output set in a template:
-// in's visibleItems must show, in order and with nothing between them as
-// above, somewhere in out.
-func checkVisibleIn(in, out string) string {
-	return shows(visibleItems(in), lettersAndDigits(parse(out).visible), false)
-}
-
-// shows reports, as checkVisible does, whether visible (letters and digits
-// only) holds items in order with nothing between them but digits — an
-// ordered list renumbers its items, so a number may rightly not show as
-// written — and the sanitiser's "text" info strings. They are compared by
-// letters and digits alone because markup the sanitiser adds (a backslash, a
-// code span's backticks) shows literally where its output lands in an
-// indented code block, and there splits a word of the input without hiding
-// any of it. With whole, nothing else may stand before the first item or
-// after the last; otherwise the items may start and end anywhere.
-func shows(items []string, visible string, whole bool) string {
-	wants := make([]string, len(items))
-	for k, item := range items {
-		wants[k] = lettersAndDigits(item)
-	}
-	failed := map[[2]int]bool{} // (item, offset) pairs already known not to match
-	deepest := 0
-	var from func(k, at int) bool
-	from = func(k, at int) bool {
-		if failed[[2]int{k, at}] {
-			return false
+// shows returns what of in a reader shown visible does not see, or "".
+// Every letter of in's visibleItems — each word, and each invisible
+// character by its code point — must be in visible, and nothing else but
+// whole copies of insertion. Letters are counted rather than aligned:
+// goldmark, standing in for GitHub, may move a block past its neighbour (a
+// table formed from a paragraph's last line lands before the rest once a
+// setext underline turns that rest into a heading), and markup the
+// sanitiser adds — a backslash, a code span's backticks — shows literally
+// where its output lands in an indented code block, splitting a word
+// without hiding any of it. Counting catches a dropped word even where the
+// same word shows elsewhere. Digits are left out: an ordered list renumbers
+// its items, so a number may rightly not show as written.
+func shows(in, visible, insertion string) string {
+	want := letterCounts(strings.Join(visibleItems(in), " "))
+	got := letterCounts(visible)
+	for r, n := range want {
+		if got[r] < n {
+			return fmt.Sprintf("a reader sees %d %q of the %d written, in %q", got[r], r, n, visible)
 		}
-		deepest = max(deepest, k)
-		for _, p := range skippable(visible, at) {
-			if k == len(wants) {
-				if !whole || p == len(visible) {
-					return true
-				}
-				continue
-			}
-			if strings.HasPrefix(visible[p:], wants[k]) && from(k+1, p+len(wants[k])) {
-				return true
-			}
-		}
-		failed[[2]int{k, at}] = true
-		return false
 	}
-	starts := []int{0}
-	if !whole && len(wants) > 0 {
-		starts = nil
-		for i := 0; i < len(visible); i++ {
-			if strings.HasPrefix(visible[i:], wants[0]) {
-				starts = append(starts, i)
+	unit := letterCounts(insertion)
+	copies := 0
+	for r, n := range unit {
+		copies = (got[r] - want[r]) / n
+		break
+	}
+	for _, seen := range []map[rune]int{got, unit} {
+		for r := range seen {
+			if got[r]-want[r] != copies*unit[r] {
+				return fmt.Sprintf("a reader sees %d %q where %d were written (and %d of %q), in %q",
+					got[r], r, want[r], copies, insertion, visible)
 			}
 		}
 	}
-	for _, at := range starts {
-		if from(0, at) {
-			return ""
-		}
-	}
-	if deepest == len(items) {
-		return fmt.Sprintf("a reader sees more than was written: %q", visible)
-	}
-	return fmt.Sprintf("a reader does not see %q where it was written, in %q", items[deepest], visible)
+	return ""
 }
 
-// skippable lists the offsets reachable from at in visible over digits and
-// the word "text", at itself first.
-func skippable(visible string, at int) []int {
-	out := []int{at}
-	for p := at; p < len(visible); {
-		r, size := utf8.DecodeRuneInString(visible[p:])
-		switch {
-		case unicode.IsDigit(r):
-			p += size
-		case strings.HasPrefix(visible[p:], "text"):
-			p += len("text")
-		default:
-			return out
+// letterCounts counts each letter in s.
+func letterCounts(s string) map[rune]int {
+	counts := map[rune]int{}
+	for _, r := range s {
+		if unicode.IsLetter(r) && !unseen(r) {
+			counts[r]++
 		}
-		out = append(out, p)
 	}
-	return out
-}
-
-// lettersAndDigits is s less everything but its letters and digits.
-func lettersAndDigits(s string) string {
-	return strings.Map(func(r rune) rune {
-		if (unicode.IsLetter(r) || unicode.IsDigit(r)) && !unseen(r) {
-			return r
-		}
-		return -1
-	}, s)
+	return counts
 }
 
 // visibleItems lists, in order, what of s a reader must be shown: each

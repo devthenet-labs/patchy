@@ -275,9 +275,9 @@ func TestPlanCommentTooLarge(t *testing.T) {
 // marker as their only HTML, show nothing the reader cannot see, and — to
 // an independent markdown parser — hold no live mention and no issue
 // reference but the one patchy writes, so no closing keyword with one. What
-// the reader must see is checked where the agent's text appears once: every
-// word of a plan's body and of its frontmatter, and every character in them
-// that renders as nothing, by its code point, in order.
+// a reader must see (see shows) is checked where the agent's text stands
+// alone: every word of a plan's body and of its frontmatter, and every
+// character in them that renders as nothing, by its code point.
 func TestIntentCommentProperties(t *testing.T) {
 	cfg := markdownConfig(20260928)
 	cfg.MaxCount = 1500
@@ -320,24 +320,32 @@ func TestIntentCommentProperties(t *testing.T) {
 				return false
 			}
 		}
-		// The agent's text once, as a plan body, then as a frontmatter value
-		// (one line, so it stays one).
-		value := strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(agent)
-		for name, report := range map[string]string{
-			"plan body":        "---\nsummary: x\n---\n" + agent,
-			"plan frontmatter": "---\nsummary: " + value + "\n---\nbody\n",
+		// What a reader must see is checked where the agent's text stands
+		// alone: a plan's body, set between the summary and patchy's rule,
+		// and its frontmatter (a one-line value, so it stays one), in the
+		// code block under "Plan data".
+		frontmatter := "---\nsummary: " + strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(agent) + "\n---"
+		for _, tc := range []struct{ name, report, shown, after, before, insertion string }{
+			{"plan body", "---\nsummary: x\n---\n" + agent, agent, "as JSON\n", "\n---\n\n### ", "text"},
+			{"plan frontmatter", frontmatter + "\nbody\n", frontmatter,
+				"as the build agent reads it:\n", "\n### To approve", "yaml"},
 		} {
-			out, err := RenderPlanComment(testPlanComment(report))
+			out, err := RenderPlanComment(testPlanComment(tc.report))
 			if err != nil {
-				failure = fmt.Sprintf("%s: %v", name, err)
+				failure = fmt.Sprintf("%s: %v", tc.name, err)
 				return false
 			}
-			shown := agent
-			if name == "plan frontmatter" {
-				shown = value
+			msg := checkSanitized(cutMarker(out))
+			if msg == "" {
+				region, ok := between(out, tc.after, tc.before)
+				if !ok {
+					msg = fmt.Sprintf("no region between %q and %q", tc.after, tc.before)
+				} else {
+					msg = shows(tc.shown, parse(region).visible, tc.insertion)
+				}
 			}
-			if msg := checkVisibleIn(shown, cutMarker(out)); msg != "" {
-				failure = fmt.Sprintf("%s: %s\nagent text %q\n%s", name, msg, agent, out)
+			if msg != "" {
+				failure = fmt.Sprintf("%s: %s\nagent text %q\n%s", tc.name, msg, agent, out)
 				return false
 			}
 		}
@@ -346,6 +354,17 @@ func TestIntentCommentProperties(t *testing.T) {
 	if err := quick.Check(holds, cfg); err != nil {
 		t.Errorf("%v\n%s", err, failure)
 	}
+}
+
+// between is the part of s after the first after and before the last
+// before, blank lines included: the region a template sets agent text in.
+func between(s, after, before string) (string, bool) {
+	i := strings.Index(s, after)
+	j := strings.LastIndex(s, before)
+	if i < 0 || j < i+len(after) {
+		return "", false
+	}
+	return s[i+len(after) : j], true
 }
 
 // cutMarker drops a comment's marker line, the one HTML comment patchy

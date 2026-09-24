@@ -1,5 +1,8 @@
 # Agent orientation
 
+> **Work in progress:** intent-driven development is mid-flight. Before starting, read [HANDOFF.md](HANDOFF.md) for
+> the current state, the next steps, the gates and the security invariants.
+
 Fast map of this repository so a new session can act without re-exploring. For _what_ the system must do — the
 requirements, the state machine, and the end-to-end flow — read [DESIGN.md](DESIGN.md); for end-user usage read
 [README.md](README.md). This file is the "where things are"; DESIGN.md is the "what it must do".

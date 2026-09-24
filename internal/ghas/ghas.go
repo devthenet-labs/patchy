@@ -4,6 +4,7 @@
 package ghas
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -108,10 +109,15 @@ func (h *Handler) Resolve(ctx context.Context, alerts []source.AlertRef, v sourc
 // delivery is the slice of the code_scanning_alert payload we consume.
 type delivery struct {
 	Action string `json:"action"`
-	Alert  struct {
+	// CommitOID is the commit whose analysis produced this event, and Ref
+	// the ref it was analyzed on.
+	CommitOID string `json:"commit_oid"`
+	Ref       string `json:"ref"`
+	Alert     struct {
 		Number             int `json:"number"`
 		MostRecentInstance struct {
-			Ref string `json:"ref"`
+			Ref       string `json:"ref"`
+			CommitSHA string `json:"commit_sha"`
 		} `json:"most_recent_instance"`
 	} `json:"alert"`
 	Repository struct {
@@ -153,7 +159,17 @@ func (h *Handler) Findings(ctx context.Context, event string, payload []byte) ([
 		return nil, fmt.Errorf("ghas: fetch alert %s#%d: %w", repo, d.Alert.Number, err)
 	}
 
-	return []source.Finding{FindingFromAlert(repo, alert)}, nil
+	f := FindingFromAlert(repo, alert)
+	// The delivery names the analysis that raised this event; the alert
+	// fetched just now may already reflect a later one. Commit and ref are
+	// taken as a pair, from whichever part of the payload has the commit.
+	switch inst := d.Alert.MostRecentInstance; {
+	case d.CommitOID != "":
+		f.Commit, f.Ref = d.CommitOID, cmp.Or(d.Ref, inst.Ref)
+	case inst.CommitSHA != "":
+		f.Commit, f.Ref = inst.CommitSHA, inst.Ref
+	}
+	return []source.Finding{f}, nil
 }
 
 // offDefaultBranch reports whether an alert instance found on ref should be
@@ -203,6 +219,8 @@ func FindingFromAlert(repo ghclient.Repo, alert *ghclient.Alert) source.Finding 
 		Description: description(alert),
 		Severity:    normalizeSeverity(alert.Severity),
 		HTMLURL:     alert.HTMLURL,
+		Commit:      alert.MostRecentSHA,
+		Ref:         alert.MostRecentRef,
 	}
 	if alert.Path != "" {
 		f.Locations = []source.Location{{

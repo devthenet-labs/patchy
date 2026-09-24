@@ -49,6 +49,7 @@ type fakeTracker struct {
 	failAssign, failClose int
 	// onPost, when set, is called as each issue or comment is posted.
 	onPost func()
+	alerts map[int]*ghclient.Alert // GetAlert's answers
 }
 
 func newFakeTracker() *fakeTracker {
@@ -181,6 +182,15 @@ func (f *fakeTracker) Close(_ context.Context, _ ghclient.Repo, number int) erro
 func (f *fakeTracker) DismissAlert(_ context.Context, _ ghclient.Repo, number int, _, _ string) error {
 	f.dismissed = append(f.dismissed, number)
 	return nil
+}
+
+func (f *fakeTracker) GetAlert(_ context.Context, _ ghclient.Repo, number int) (*ghclient.Alert, error) {
+	a, ok := f.alerts[number]
+	if !ok {
+		return nil, fmt.Errorf("ghclient: get alert #%d: %w", number,
+			&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusNotFound}})
+	}
+	return a, nil
 }
 
 // projectable is a Finding ready for projection.

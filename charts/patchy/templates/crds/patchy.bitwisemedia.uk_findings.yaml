@@ -723,8 +723,16 @@ spec:
               pullRequest:
                 description: |-
                   PullRequest is the remediation PR (remediation opens; integration owns
-                  state/mergedAt).
+                  state/mergedAt/mergeCommitSHA).
                 properties:
+                  mergeCommitSHA:
+                    description: |-
+                      MergeCommitSHA is the commit the merge put on the base branch (the
+                      merge, squash, or last rebased commit): the first revision carrying
+                      the fix. Ingest compares scanner observations against it, so an
+                      analysis of older code cannot reopen the finding it fixed.
+                    maxLength: 64
+                    type: string
                   mergedAt:
                     description: MergedAt is when the pull request merged.
                     format: date-time
@@ -773,6 +781,49 @@ spec:
                 - attempt
                 - name
                 type: object
+              staleObservations:
+                description: |-
+                  StaleObservations are scanner reopens of this finding's alerts that
+                  ingest set aside because they observed code its merged fix replaced
+                  (integration). The alert stays open at the scanner, which notifies
+                  only on state changes, so each is re-read until the alert closes or is
+                  seen at a commit the fix does not supersede — then the successor
+                  generation opens.
+                items:
+                  description: |-
+                    StaleObservation is one alert reopen set aside as stale: observed at a
+                    commit that strictly precedes the finding's merged fix, on a branch the fix
+                    is still on.
+                  properties:
+                    alertID:
+                      description: AlertID is the alert that reopened (spec.alerts[].id).
+                      maxLength: 256
+                      minLength: 1
+                      type: string
+                    commit:
+                      description: Commit the stale observation was made at.
+                      maxLength: 64
+                      type: string
+                    observedAt:
+                      description: ObservedAt is when ingest set the observation at
+                        this commit aside.
+                      format: date-time
+                      type: string
+                    ref:
+                      description: Ref the observation was made on (refs/heads/<default
+                        branch>).
+                      maxLength: 256
+                      type: string
+                  required:
+                  - alertID
+                  - commit
+                  - observedAt
+                  type: object
+                maxItems: 64
+                type: array
+                x-kubernetes-list-map-keys:
+                - alertID
+                x-kubernetes-list-type: map
               tracking:
                 description: Tracking links the projected tracking item (integration).
                 properties:

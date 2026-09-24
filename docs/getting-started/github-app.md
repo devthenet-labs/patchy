@@ -2,7 +2,8 @@
 
 Patchy authenticates as a GitHub App: the controllers mint short-lived, single-repository installation tokens for every
 operation instead of holding a long-lived personal access token. One App serves the whole stack (though you may split
-read and write identities across two Apps — one per custom resource — later).
+read and write identities across two Apps — one per custom resource — later; the `Integration`'s App then still needs
+Contents read, see [its credentials](../integrations/sources/github.md#credentials)).
 
 ## Register the App
 
@@ -17,13 +18,13 @@ fill in:
 
 Grant exactly these — nothing more:
 
-| Permission               | Access       | Why                                                          |
-| ------------------------ | ------------ | ------------------------------------------------------------ |
-| **Code scanning alerts** | Read & write | Read alert detail; dismiss false positives                   |
-| **Issues**               | Read & write | The tracking projection — open, label, comment, close        |
-| **Contents**             | Read & write | Download the repository archive; push the remediation branch |
-| **Pull requests**        | Read & write | Open the pull request a human reviews                        |
-| **Metadata**             | Read         | Mandatory for every App                                      |
+| Permission               | Access       | Why                                                                                  |
+| ------------------------ | ------------ | ------------------------------------------------------------------------------------ |
+| **Code scanning alerts** | Read & write | Read alert detail; dismiss false positives                                           |
+| **Issues**               | Read & write | The tracking projection — open, label, comment, close                                |
+| **Contents**             | Read & write | Download the repository archive; push the remediation branch; compare commits (read) |
+| **Pull requests**        | Read & write | Open the pull request a human reviews                                                |
+| **Metadata**             | Read         | Mandatory for every App                                                              |
 
 ## Webhook events
 

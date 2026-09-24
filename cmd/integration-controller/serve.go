@@ -42,6 +42,10 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 		"OIDC issuer the Pub/Sub push route verifies tokens against "+
 			"(default: Google, the only correct value in production; overridable for e2e)")
 	_ = f.MarkHidden("google-oidc-issuer")
+	f.Duration("stale-recheck-interval", integration.DefaultStaleRecheck,
+		"how often an alert whose reopen was set aside as stale is re-read, to catch a regression "+
+			"GitHub will not announce (overridable for e2e)")
+	_ = f.MarkHidden("stale-recheck-interval")
 	return cmd
 }
 
@@ -84,6 +88,7 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		Namespace: namespace,
 		Window:    opts.Duration("accumulation-window"),
 		Log:       log,
+		Commits:   integration.NewCommitGraph(creds),
 	}
 	if err := ingestor.SetupWithManager(mgr); err != nil {
 		return err
@@ -118,6 +123,7 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Creds: creds, Namespace: namespace,
 		Concurrency: opts.Int("projection-concurrency"), Log: log,
 		RunnerImages: opts.Bool("repository-images"),
+		Ingest:       ingestor, StaleRecheck: opts.Duration("stale-recheck-interval"),
 	}
 	if err := fp.SetupWithManager(mgr); err != nil {
 		return err

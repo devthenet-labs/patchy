@@ -5,9 +5,12 @@ package ghclient
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"reflect"
 	"testing"
+
+	"github.com/google/go-github/v90/github"
 )
 
 func TestDefaultBranch(t *testing.T) {
@@ -23,6 +26,65 @@ func TestDefaultBranch(t *testing.T) {
 	}
 	if got != "trunk" {
 		t.Errorf("DefaultBranch() = %q, want %q", got, "trunk")
+	}
+}
+
+func TestCompareStatus(t *testing.T) {
+	mux, c := newFakeClient(t)
+	mux.HandleFunc("GET /repos/o/r/compare/{spec}", func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.PathValue("spec"), "fa82fcd...45b1bec"; got != want {
+			t.Errorf("compare spec = %q, want %q", got, want)
+		}
+		if got := r.URL.Query().Get("per_page"); got != "1" {
+			t.Errorf("per_page = %q, want 1", got)
+		}
+		writeJSON(t, w, `{"status":"behind","ahead_by":0,"behind_by":1}`)
+	})
+
+	got, err := c.CompareStatus(context.Background(), testRepo, "fa82fcd", "45b1bec")
+	if err != nil {
+		t.Fatalf("CompareStatus() error = %v", err)
+	}
+	if got != "behind" {
+		t.Errorf("CompareStatus() = %q, want behind", got)
+	}
+}
+
+func TestCompareStatusError(t *testing.T) {
+	mux, c := newFakeClient(t)
+	mux.HandleFunc("GET /repos/o/r/compare/{spec}", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+	})
+	if _, err := c.CompareStatus(context.Background(), testRepo, "a", "b"); err == nil {
+		t.Error("CompareStatus() error = nil, want the API error")
+	}
+}
+
+func TestIsForbidden(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		want   bool
+	}{
+		{name: "a credential missing the permission", status: http.StatusForbidden, want: true},
+		{name: "not found", status: http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mux, c := newFakeClient(t)
+			mux.HandleFunc("GET /repos/o/r/compare/{spec}", func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, `{"message":"Resource not accessible by integration"}`, tt.status)
+			})
+			_, err := c.CompareStatus(context.Background(), testRepo, "a", "b")
+			if got := IsForbidden(err); got != tt.want {
+				t.Errorf("IsForbidden(%v) = %v, want %v", err, got, tt.want)
+			}
+		})
+	}
+	// go-github reports throttling as its own types, never as a refusal.
+	throttled := &github.RateLimitError{Response: &http.Response{StatusCode: http.StatusForbidden}}
+	if IsForbidden(fmt.Errorf("compare: %w", throttled)) {
+		t.Error("IsForbidden(rate limit) = true, want false")
 	}
 }
 

@@ -54,6 +54,13 @@ never fatal: the reconcile loops are the retry mechanism, and the webhook path o
   them into findings. A first alert creates a Finding at `Opened`; alerts of the same advisory family against the same
   repository fold into the existing Finding until the accumulation window closes (the `AccumulationComplete` condition —
   accumulation runs concurrently with enhancement, so it is not a phase). Later alerts open a fresh Finding.
+- **Stale reopens** — a code-scanning reopen observed at a commit that strictly precedes the merged fix of the alert's
+  remediated Finding, with the fix still on that branch, is set aside on the Finding's `status.staleObservations`
+  instead of opening a successor. The Finding reconciler re-reads each set-aside alert every 15 minutes: a closed alert
+  settles it, and one seen at a commit the fix does not supersede — a regression GitHub will not announce, because the
+  alert was already open — opens the successor. The commit comparisons need **Contents: read** on the Integration's
+  credential; a refused one fails open (a successor is opened, as for any reopen) and sets the Integration's
+  `CommitAncestry` condition `False` (reason `ContentsReadDenied`) until a lookup succeeds again.
 - **Projection** — a Finding reconciler renders each Finding to its tracking issue: the templated body, the
   [projected labels](../labels.md#the-projected-labels), enrichments and investigation reports as comments, and
   open/closed state. One-way only. Each marker-headed comment's id is recorded on `status.tracking.comments` and the

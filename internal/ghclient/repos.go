@@ -28,6 +28,19 @@ func (c *Client) HeadSHA(ctx context.Context, repo Repo, branch string) (string,
 	return ref.GetObject().GetSHA(), nil
 }
 
+// CompareStatus reports how head relates to base in repo's history, in the
+// compare API's terms: "ahead" (head descends from base), "behind" (head is
+// an ancestor of base), "identical", or "diverged". One commit per page: the
+// status is all a caller gets, so the commit and file lists stay small.
+func (c *Client) CompareStatus(ctx context.Context, repo Repo, base, head string) (string, error) {
+	cmp, _, err := c.gh.Repositories.CompareCommits(ctx, repo.Owner, repo.Name, base, head,
+		&github.ListOptions{PerPage: 1})
+	if err != nil {
+		return "", fmt.Errorf("ghclient: compare %s...%s in %s: %w", base, head, repo, err)
+	}
+	return cmp.GetStatus(), nil
+}
+
 // CreatePR opens a pull request.
 func (c *Client) CreatePR(ctx context.Context, repo Repo, req PRRequest) (*PR, error) {
 	pr, _, err := c.gh.PullRequests.Create(ctx, repo.Owner, repo.Name, github.CreatePullRequest{

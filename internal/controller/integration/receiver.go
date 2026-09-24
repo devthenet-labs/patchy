@@ -5,6 +5,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -221,6 +222,7 @@ func (r *Receiver) handleWiz(ctx context.Context, e webhook.Event) error {
 func (r *Receiver) ingestAll(
 	ctx context.Context, integ *v1alpha1.Integration, h source.Handler, e webhook.Event,
 ) error {
+	ctx = withDelivery(ctx, e)
 	findings, err := h.Findings(ctx, e.Type, e.Payload)
 	if err != nil {
 		return fmt.Errorf("decode %s delivery: %w", h.ID(), err)
@@ -232,6 +234,41 @@ func (r *Receiver) ingestAll(
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// deliveryKey is the context key under which ingestAll records the delivery
+// an ingest serves, so the Ingestor's log lines can name what triggered them.
+type deliveryKey struct{}
+
+// deliveryInfo identifies a webhook delivery in logs.
+type deliveryInfo struct {
+	event, action, id string
+}
+
+// withDelivery records e on ctx for the ingest log lines. The action is
+// peeked from the payload's top-level "action" field, GitHub's per-event
+// discriminator; a payload without one logs none, and a malformed one is the
+// source handler's error to report, not this peek's.
+func withDelivery(ctx context.Context, e webhook.Event) context.Context {
+	var peek struct {
+		Action string `json:"action"`
+	}
+	_ = json.Unmarshal(e.Payload, &peek)
+	return context.WithValue(ctx, deliveryKey{}, deliveryInfo{event: e.Type, action: peek.Action, id: e.DeliveryID})
+}
+
+// deliveryAttrs are the log attributes naming ctx's delivery; none outside a
+// webhook delivery (a backfill, say).
+func deliveryAttrs(ctx context.Context) []slog.Attr {
+	d, ok := ctx.Value(deliveryKey{}).(deliveryInfo)
+	if !ok {
+		return nil
+	}
+	attrs := []slog.Attr{slog.String("event", d.event)}
+	if d.action != "" {
+		attrs = append(attrs, slog.String("action", d.action))
+	}
+	return append(attrs, slog.String("delivery", d.id))
 }
 
 // alertLabel names a finding for an error message, by whichever identifier
@@ -257,6 +294,51 @@ func (g *alertGetter) GetAlert(ctx context.Context, repo ghclient.Repo, number i
 		return nil, err
 	}
 	return c.GetAlert(ctx, repo, number)
+}
+
+// githubCommits adapts Integration credentials to the CommitGraph seam,
+// asking GitHub's compare API with the Integration's client for the
+// repository.
+type githubCommits struct {
+	creds *Creds
+}
+
+// NewCommitGraph answers commit ancestry through each Integration's own
+// GitHub credential.
+func NewCommitGraph(creds *Creds) CommitGraph { return githubCommits{creds: creds} }
+
+// Precedes implements CommitGraph: commit strictly precedes descendant when
+// comparing from descendant to commit reports commit "behind" — reachable,
+// and not the same commit.
+func (g githubCommits) Precedes(
+	ctx context.Context, integ *v1alpha1.Integration, repo source.Repo, commit, descendant string,
+) (bool, error) {
+	status, err := g.compare(ctx, integ, repo, descendant, commit)
+	return status == "behind", err
+}
+
+// Contains implements CommitGraph: branch contains commit when comparing
+// from commit to the branch reports the branch "ahead" of it or
+// "identical" — "behind" or "diverged" means the branch was moved off it.
+func (g githubCommits) Contains(
+	ctx context.Context, integ *v1alpha1.Integration, repo source.Repo, branch, commit string,
+) (bool, error) {
+	status, err := g.compare(ctx, integ, repo, commit, branch)
+	return status == "ahead" || status == "identical", err
+}
+
+// compare asks GitHub how head relates to base, with the Integration's
+// client for the repository. The compare API needs the credential to hold
+// the Contents (read) permission.
+func (g githubCommits) compare(
+	ctx context.Context, integ *v1alpha1.Integration, repo source.Repo, base, head string,
+) (string, error) {
+	r := ghclient.Repo{Owner: repo.Owner, Name: repo.Name}
+	c, err := g.creds.Client(ctx, integ, r)
+	if err != nil {
+		return "", err
+	}
+	return c.CompareStatus(ctx, r, base, head)
 }
 
 func (r *Receiver) log() *slog.Logger {

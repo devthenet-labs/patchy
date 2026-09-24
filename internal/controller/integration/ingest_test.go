@@ -4,6 +4,10 @@
 package integration
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +19,7 @@ import (
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/kube"
+	"github.com/bitwise-media-group/patchy/internal/webhook"
 	"github.com/bitwise-media-group/patchy/pkg/source"
 )
 
@@ -294,5 +299,49 @@ func TestIngestFoldsIntoPhaselessFinding(t *testing.T) {
 	}
 	if got := len(items[0].Spec.Alerts); got != 2 {
 		t.Errorf("alerts = %d, want 2", got)
+	}
+}
+
+// TestIngestLogsDelivery pins ingest's diagnosability: the create and fold
+// log lines name the webhook delivery that caused them — event, action and
+// delivery id — so a duplicate generation can be traced to its trigger. An
+// ingest outside a delivery (a backfill) names none.
+func TestIngestLogsDelivery(t *testing.T) {
+	var logs bytes.Buffer
+	in, c := newIngestor(t)
+	in.Log = slog.New(slog.NewTextHandler(&logs, nil))
+	ctx := withDelivery(t.Context(), webhook.Event{
+		Type:       "code_scanning_alert",
+		DeliveryID: "dcffb800-b7a1-11f1-8a23-2281daf6cda1",
+		Payload:    []byte(`{"action":"reopened","alert":{"number":42}}`),
+	})
+	for _, step := range []struct {
+		ctx   context.Context
+		alert int
+	}{{ctx, 42}, {ctx, 43}, {t.Context(), 44}} {
+		if err := in.Ingest(step.ctx, testIntegration(), testSourceFinding(step.alert)); err != nil {
+			t.Fatalf("Ingest alert %d: %v", step.alert, err)
+		}
+	}
+
+	items := listFindings(t, c)
+	if len(items) != 1 {
+		t.Fatalf("findings = %d, want 1", len(items))
+	}
+	name := items[0].Name
+	const delivery = ` event=code_scanning_alert action=reopened delivery=dcffb800-b7a1-11f1-8a23-2281daf6cda1`
+	want := []string{
+		`msg="finding created" finding=` + name + ` scope=https://github.com/acme/orders alert=42` + delivery,
+		`msg="alert folded into finding" finding=` + name + ` alert=43` + delivery,
+		`msg="alert folded into finding" finding=` + name + ` alert=44`,
+	}
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != len(want) {
+		t.Fatalf("log lines = %d, want %d:\n%s", len(lines), len(want), logs.String())
+	}
+	for i, w := range want {
+		if !strings.HasSuffix(lines[i], w) {
+			t.Errorf("log line %d = %q, want it to end %q", i, lines[i], w)
+		}
 	}
 }

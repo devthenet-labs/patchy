@@ -1,9 +1,10 @@
 # GitHub
 
 A `Forge` answers one question — _how do I clone and push this repository?_ It is the only resource whose credential
-ever touches repository contents: the source-controller uses it to download the archive investigations run against, and
-the remediation-controller uses it to push the agent's changeset and open the pull request. GitHub — github.com or
-GitHub Enterprise Server — is the supported forge today.
+ever downloads or writes repository contents: the source-controller uses it to download the archive investigations run
+against, and the remediation-controller uses it to push the agent's changeset and open the pull request. (The
+[Integration](../sources/github.md#credentials) compares commits, which GitHub also files under Contents: read.) GitHub
+— github.com or GitHub Enterprise Server — is the supported forge today.
 
 !!! info "One provider, two resources"
 

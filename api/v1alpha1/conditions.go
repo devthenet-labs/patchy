@@ -41,6 +41,13 @@ const (
 	// MaxAttempts. The collector sets it from the init's exit code alone,
 	// never from anything the pod printed, so a run cannot claim it.
 	ConditionSandboxRefused = "SandboxRefused"
+	// ConditionCommitAncestry reports, on a github Integration, whether its
+	// credential could read commit ancestry the last time ingest needed it:
+	// GitHub's compare API, which requires the Contents (read) permission.
+	// False (ReasonContentsReadDenied) means the stale-reopen check fails
+	// open — every reopen of a remediated alert opens a successor finding.
+	// Absent until the first lookup is denied.
+	ConditionCommitAncestry = "CommitAncestry"
 
 	// Per-scope rollup markers. A scope's finalizer is removed only when its
 	// condition is True and deletion is underway — remaining finalizers show
@@ -53,6 +60,12 @@ const (
 
 // Condition reasons.
 const (
+	// ReasonContentsReadDenied: GitHub refused the Integration's credential
+	// the compare API (403) — it lacks the Contents (read) permission.
+	ReasonContentsReadDenied = "ContentsReadDenied"
+	// ReasonAncestryReadable: the Integration's credential read commit
+	// ancestry after an earlier denial.
+	ReasonAncestryReadable = "AncestryReadable"
 	// ReasonNoRepository: the finding has no repository (e.g. a cloud
 	// finding) — nothing to resolve a Forge against.
 	ReasonNoRepository = "NoRepository"

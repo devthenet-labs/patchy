@@ -63,6 +63,9 @@ type Options struct {
 	// hold them all in memory. A ConfigMap outside it is invisible to the
 	// cached client: read one through the API reader.
 	ConfigMapSelector labels.Selector
+	// RepositorySelector confines the Repository informer to selected
+	// Repositories. Reads of other Repositories use the uncached API reader.
+	RepositorySelector labels.Selector
 }
 
 // Scheme returns a runtime scheme holding the client-go kinds, batch Jobs,
@@ -200,6 +203,9 @@ func managerOptions(opts Options) ctrl.Options {
 	}
 	if opts.ConfigMapSelector != nil {
 		byObject[&corev1.ConfigMap{}] = cache.ByObject{Label: opts.ConfigMapSelector}
+	}
+	if opts.RepositorySelector != nil {
+		byObject[&v1alpha1.Repository{}] = cache.ByObject{Label: opts.RepositorySelector}
 	}
 	if len(byObject) > 0 {
 		mgrOpts.Cache.ByObject = byObject

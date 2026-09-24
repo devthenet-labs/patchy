@@ -791,9 +791,69 @@ func TestCommentEdits(t *testing.T) {
 	if edited, err := c.CommentEdited(ctx, got.NodeID); err != nil || !edited {
 		t.Errorf("CommentEdited() after an edit = %v, %v; want true", edited, err)
 	}
+	tok, _, err := newApp(t, srv).ScopedToken(ctx, intents, ghclient.TokenPerms{Issues: ghclient.PermRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var editedBody struct {
+		Data struct {
+			Node struct {
+				IncludesCreatedEdit bool `json:"includesCreatedEdit"`
+			} `json:"node"`
+		} `json:"data"`
+	}
+	status := graphQLComment(t, srv.URL, tok, got.NodeID, &editedBody)
+	if status != http.StatusOK || !editedBody.Data.Node.IncludesCreatedEdit {
+		t.Errorf("edited GraphQL response = HTTP %d, includesCreatedEdit %v; want 200, true",
+			status, editedBody.Data.Node.IncludesCreatedEdit)
+	}
 	if _, err := c.CommentEdited(ctx, "IC_nothing"); !errors.Is(err, ghclient.ErrNodeNotFound) {
 		t.Errorf("CommentEdited(unknown) error = %v, want ErrNodeNotFound", err)
 	}
+}
+
+func TestCommentEditGraphQLPermissionError(t *testing.T) {
+	srv, _, _ := newFake(t)
+	tok, _, err := newApp(t, srv).ScopedToken(context.Background(), intents,
+		ghclient.TokenPerms{Contents: ghclient.PermRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Errors []struct {
+			Type string `json:"type"`
+		} `json:"errors"`
+	}
+	status := graphQLComment(t, srv.URL, tok, "IC_missing", &body)
+	if status != http.StatusOK || len(body.Errors) != 1 || body.Errors[0].Type != "FORBIDDEN" {
+		t.Errorf("GraphQL permission response = HTTP %d, errors %+v; want 200 and FORBIDDEN", status, body.Errors)
+	}
+}
+
+func graphQLComment(t *testing.T, base, token, id string, into any) int {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"query":     "query($id: ID!) { node(id: $id) { ... on IssueComment { lastEditedAt includesCreatedEdit } } }",
+		"variables": map[string]string{"id": id},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/api/graphql",
+		strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(into); err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode
 }
 
 // TestPullRequestIdentity: a pull request carries its own node id and the

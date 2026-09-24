@@ -17,8 +17,10 @@
 //     then polls the intent repository for open issues carrying the trigger
 //     label with a conditional (ETag) listing, and creates the Intent
 //     <project>-<issue> for each new one whose trigger was applied since the
-//     issue last closed. A name held by another repository's issue is
-//     reported as IntentNameConflict, never skipped silently. An issue whose
+//     issue last closed. An issue with more than one Project trigger waits;
+//     a second Project cannot claim an issue with an Intent already on it.
+//     A name held by another repository's issue is reported as
+//     IntentNameConflict, never skipped silently. An issue whose
 //     ended Intent still exists is handed to that Intent (Nudger).
 //   - IntentReconciler runs each Intent's phase machine: it decides human
 //     authority from GitHub API facts, snapshots the request, creates the

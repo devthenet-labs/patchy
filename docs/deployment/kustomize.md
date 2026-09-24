@@ -120,7 +120,9 @@ components:
 It adds the Deployment, its ServiceAccount, a Role in `patchy` and its own copy of the agent-jobs Role in
 `patchy-agents`, and a ConfigMap of `PATCHY_INTENT_*` settings. It reads that ConfigMap after the shared one. The base's
 controller NetworkPolicy already covers it. Its `secrets get` names the Forge Secret, `patchy-github`; patch the
-component's Role if your Forges reference other Secrets. Builds need an accepted repository-declared image, and the base
+component's Role if your Forges reference other Secrets. That restriction applies only in the release namespace: its
+agent-jobs Role can get, create, update and delete any Secret in the agents namespace, including model keys, image-pull
+credentials and other Jobs' handoffs. Builds need an accepted repository-declared image, and the base
 does not configure repository images, so either add those keys (the component's `configmap.yaml` lists the ones it
 reads) or set `requireRepositoryImage: false` on each Project. The base already carries the Project, Intent and
 IntentRun CRDs; apply your Projects like the other CRs.

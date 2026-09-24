@@ -107,6 +107,11 @@ func (p *pass) openPullRequest(ctx context.Context, run *v1alpha1.IntentRun) (bo
 	branch := branchName(p.in.Name)
 	pr, own, base, err := p.findPullRequest(ctx, repoURL)
 	if err != nil {
+		if ghclient.IsRefused(err) {
+			return true, p.block(ctx, v1alpha1.ConditionBranchConflict, ReasonPullRequestRefused,
+				fmt.Sprintf("GitHub refused to look for the pull request from %s: %v; fix the refusal and update "+
+					"the Project to retry", branch, err))
+		}
 		return false, err
 	}
 	if pr != nil && !own {
@@ -118,6 +123,26 @@ func (p *pass) openPullRequest(ctx context.Context, run *v1alpha1.IntentRun) (bo
 				pr.HTMLURL, pr.Author, pr.HeadRepo, pr.Base, branch))
 	}
 	if pr == nil {
+		// A completed run is not proof its branch still exists. A human may
+		// delete or move it between the push and this pass. Do not retry a
+		// doomed PR create, or open one from a different commit.
+		head, headErr := p.r.GitHub.HeadSHA(ctx, repoURL, branch)
+		switch {
+		case ghclient.IsNotFound(headErr):
+			return true, p.block(ctx, v1alpha1.ConditionBranchConflict, ReasonBranchMissing,
+				fmt.Sprintf("branch %s was deleted after the build pushed %s; restore it at that commit to resume",
+					branch, run.Status.PushedCommit))
+		case ghclient.IsRefused(headErr):
+			return true, p.block(ctx, v1alpha1.ConditionBranchConflict, ReasonPullRequestRefused,
+				fmt.Sprintf("GitHub refused to read branch %s: %v; fix access and update the Project to retry",
+					branch, headErr))
+		case headErr != nil:
+			return false, fmt.Errorf("read the intent branch before opening its pull request: %w", headErr)
+		case head != run.Status.PushedCommit:
+			return true, p.block(ctx, v1alpha1.ConditionBranchConflict, ReasonBranchChanged,
+				fmt.Sprintf("branch %s moved from the build's commit %s to %s before patchy opened its pull request; "+
+					"restore it to the build's commit to resume", branch, run.Status.PushedCommit, head))
+		}
 		ap, pl := p.in.Status.Approval, p.in.Status.Plan
 		body, err := templates.RenderIntentPRBody(templates.IntentPRBody{
 			IntentRepository: repoSlug(p.repo()), IssueNumber: p.number(), Summary: pl.Summary,
@@ -129,6 +154,11 @@ func (p *pass) openPullRequest(ctx context.Context, run *v1alpha1.IntentRun) (bo
 		if pr, err = p.r.GitHub.CreatePullRequest(ctx, repoURL, ghclient.PRRequest{
 			Title: templates.IntentPRTitle(p.proj.Name, pl.Summary), Head: branch, Base: base, Body: body,
 		}); err != nil {
+			if ghclient.IsRefused(err) {
+				return true, p.block(ctx, v1alpha1.ConditionBranchConflict, ReasonPullRequestRefused,
+					fmt.Sprintf("GitHub refused to open the pull request from %s: %v; fix the refusal and update the "+
+						"Project to retry", branch, err))
+			}
 			return false, fmt.Errorf("open the pull request: %w", err)
 		}
 	}

@@ -65,8 +65,10 @@ Eleven binaries, one module. "Not monolithic" means separate binaries/deployment
   facts its phase waits on. It plans in a read-only agent Job on the default image, posts the plan verbatim for an
   approver, builds only the approved plan in the repository's accepted image (`runnerguard.PinFor`), pushes it
   two-phase to `patchy-intent/<intent>` (create-only, never forced) and opens the PR. It closes the issue on merge.
-  The second forge-writing code path, with the tightest posture: `secrets get` restricted by `resourceNames` to the
-  Forge Secrets, a GitHub token per operation (`forge.Store.TokenWith`), no ClusterRole, no inbound surface. Only
+  The second forge-writing code path: in the release namespace, `secrets get` is restricted by `resourceNames` to the
+  Forge Secrets. Its agent-jobs Role can get, create, update and delete any Secret in the agents namespace, including
+  model keys, image-pull credentials and other Jobs' handoffs. It uses a GitHub token per operation
+  (`forge.Store.TokenWith`), has no ClusterRole and no inbound surface. Only
   writer of Project status, Intent and IntentRun. Its own flags carry an `intent-` prefix (`PATCHY_INTENT_*`); it runs
   on brokered claude only (or the fake harness in dev).
 - `cmd/status-server` — the human-facing status page (NOT a controller: no reconcilers, no leases): the embedded

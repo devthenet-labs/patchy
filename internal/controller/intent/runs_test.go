@@ -241,6 +241,20 @@ func TestPlanRunsBesideARejectedImage(t *testing.T) {
 			t.Error("a build Job was created on a rejected image")
 		}
 	}
+	proj := e.getProject()
+	proj.Spec.RequireRepositoryImage = new(false)
+	proj.Generation++
+	if err := e.c.Update(ctx, proj); err != nil {
+		t.Fatal(err)
+	}
+	drive(v1alpha1.IntentInReview)
+	if runs := e.runsOf(name, v1alpha1.IntentStageBuild); len(runs) != 2 ||
+		runs[1].Status.Phase != v1alpha1.RunComplete {
+		t.Fatalf("build attempts after opting out = %+v, want one new completed attempt", runs)
+	}
+	if s := e.onlyLaunch(t, "build"); s.RunnerImage != "" {
+		t.Errorf("opt-out build image = %q, want the default image", s.RunnerImage)
+	}
 }
 
 // TestBuildOutcomeIsUntrusted: a build's envelope comes from the repository's
@@ -430,6 +444,39 @@ func TestOptOutLiftsAnImageBlock(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A rejected declaration under onReject: handoff stalls the Repository even
+// though its pinned artifact is usable by a build that opted out of the image.
+func TestOptOutBuildsFromAStalledRepository(t *testing.T) {
+	proj := testProject()
+	proj.Spec.RequireRepositoryImage = new(false)
+	e := newEnv(t, proj)
+	name := e.newIntent(approver)
+	drive := func(want v1alpha1.IntentPhase) *v1alpha1.Intent {
+		t.Helper()
+		for range 40 {
+			if in := e.get(name); in.Status.Phase == want {
+				return in
+			}
+			e.mustIntent(name)
+			e.stallRepositories()
+			e.runRuns()
+			e.clock.Advance(time.Minute)
+		}
+		in := e.get(name)
+		t.Fatalf("intent did not reach %s: phase %s, conditions %+v", want, in.Status.Phase, in.Status.Conditions)
+		return nil
+	}
+	drive(v1alpha1.IntentAwaitingApproval)
+	e.gh.label(1, "patchy:approved", approver)
+	drive(v1alpha1.IntentInReview)
+	if runs := e.runsOf(name, v1alpha1.IntentStageBuild); len(runs) != 1 || runs[0].Status.Phase != v1alpha1.RunComplete {
+		t.Fatalf("build runs = %+v, want one completed attempt", runs)
+	}
+	if s := e.onlyLaunch(t, "build"); s.RunnerImage != "" {
+		t.Errorf("build image = %q, want the default image", s.RunnerImage)
 	}
 }
 
@@ -1487,6 +1534,114 @@ func TestPullRequestAdoption(t *testing.T) {
 	}
 }
 
+func TestDeletedBranchBlocksBeforePullRequest(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	branch := branchName(name)
+	e.gh.prs[1] = &fakePR{head: branch, url: appRepoURL + "/pull/1", author: "mallory",
+		base: "main", headRepo: "acme/app", pr: ghclient.PullRequest{Number: 1, State: "open", NodeID: "PR_1"}}
+	e.gh.label(1, "patchy:approved", approver)
+	e.drive(name, v1alpha1.IntentBlocked, repoImage)
+	e.gh.mu.Lock()
+	pushed := e.gh.branches[branch]
+	e.gh.prs[1].pr.State = "closed"
+	delete(e.gh.branches, branch)
+	e.gh.mu.Unlock()
+	if pushed == "" {
+		t.Fatal("build never pushed its branch")
+	}
+	for range 20 {
+		e.clock.Advance(time.Minute)
+		_ = e.reconcileIntent(name)
+		in := e.get(name)
+		if c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionBranchConflict); c != nil &&
+			c.Status == metav1.ConditionTrue && c.Reason == ReasonBranchMissing {
+			break
+		}
+	}
+	in := e.get(name)
+	c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionBranchConflict)
+	if in.Status.Phase != v1alpha1.IntentBlocked || c == nil || c.Reason != ReasonBranchMissing ||
+		e.gh.calls["CreatePullRequest"] != 0 {
+		t.Fatalf("phase %s, conflict %+v, PR creates %d; want a branch-missing block",
+			in.Status.Phase, c, e.gh.calls["CreatePullRequest"])
+	}
+	e.gh.mu.Lock()
+	e.gh.branches[branch] = pushed
+	e.gh.mu.Unlock()
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+}
+
+func TestMovedBranchBlocksBeforePullRequest(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	branch := branchName(name)
+	e.gh.prs[1] = &fakePR{head: branch, url: appRepoURL + "/pull/1", author: "mallory",
+		base: "main", headRepo: "acme/app", pr: ghclient.PullRequest{Number: 1, State: "open", NodeID: "PR_1"}}
+	e.gh.label(1, "patchy:approved", approver)
+	e.drive(name, v1alpha1.IntentBlocked, repoImage)
+	e.gh.mu.Lock()
+	pushed := e.gh.branches[branch]
+	e.gh.prs[1].pr.State = "closed"
+	e.gh.branches[branch] = strings.Repeat("2", 40)
+	e.gh.mu.Unlock()
+	for range 20 {
+		e.clock.Advance(time.Minute)
+		_ = e.reconcileIntent(name)
+		in := e.get(name)
+		if c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionBranchConflict); c != nil &&
+			c.Status == metav1.ConditionTrue && c.Reason == ReasonBranchChanged {
+			break
+		}
+	}
+	in := e.get(name)
+	c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionBranchConflict)
+	if in.Status.Phase != v1alpha1.IntentBlocked || c == nil || c.Reason != ReasonBranchChanged ||
+		e.gh.calls["CreatePullRequest"] != 0 {
+		t.Fatalf("phase %s, conflict %+v, PR creates %d; want a moved-branch block",
+			in.Status.Phase, c, e.gh.calls["CreatePullRequest"])
+	}
+	e.gh.mu.Lock()
+	e.gh.branches[branch] = pushed
+	e.gh.mu.Unlock()
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+}
+
+func TestPullRequestRefusalBlocksUntilProjectChanges(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	e.gh.failNext("CreatePullRequest", ghError(http.StatusForbidden, "Resource not accessible by integration"))
+	for range 30 {
+		_ = e.reconcileIntent(name)
+		e.readyRepositories(repoImage)
+		e.runRuns()
+		if e.get(name).Status.Phase == v1alpha1.IntentBlocked {
+			break
+		}
+		e.clock.Advance(time.Minute)
+	}
+	in := e.get(name)
+	c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionBranchConflict)
+	if in.Status.Phase != v1alpha1.IntentBlocked || c == nil || c.Reason != ReasonPullRequestRefused {
+		t.Fatalf("phase %s, conflict %+v; want pull request refusal block", in.Status.Phase, c)
+	}
+	creates := e.gh.calls["CreatePullRequest"]
+	for range 3 {
+		e.clock.Advance(time.Minute)
+		e.mustIntent(name)
+	}
+	if e.gh.calls["CreatePullRequest"] != creates {
+		t.Errorf("PR create retried without an operator change: %d -> %d", creates, e.gh.calls["CreatePullRequest"])
+	}
+	proj := e.getProject()
+	proj.Generation++
+	if err := e.c.Update(context.Background(), proj); err != nil {
+		t.Fatal(err)
+	}
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+}
+
 // TestEndedIntentKeepsWhatThePushRecorded: a run whose commit was made and
 // recorded, aborted because its intent ended, keeps the report, usage and
 // transcript the push recorded with the commit.
@@ -1674,6 +1829,21 @@ func TestEveryConfigMapIsSelected(t *testing.T) {
 	}
 	if ConfigMapSelector().Matches(labels.Set{"patchy.bitwisemedia.uk/finding": "f"}) {
 		t.Error("a Finding transcript's labels are selected")
+	}
+	var repos v1alpha1.RepositoryList
+	if err := e.c.List(context.Background(), &repos, client.InNamespace(testNS)); err != nil {
+		t.Fatal(err)
+	}
+	if len(repos.Items) == 0 {
+		t.Fatal("no intent Repositories were created")
+	}
+	for _, repo := range repos.Items {
+		if !ConfigMapSelector().Matches(labels.Set(repo.Labels)) {
+			t.Errorf("repository %s is outside the intent Repository cache", repo.Name)
+		}
+	}
+	if ConfigMapSelector().Matches(labels.Set{v1alpha1.LabelFinding: "finding-1"}) {
+		t.Error("a Finding Repository's labels are selected")
 	}
 }
 

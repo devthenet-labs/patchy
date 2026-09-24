@@ -55,7 +55,10 @@ func (s *Server) graphql(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.permits(read, permIssues) {
-		forbidden(w)
+		writeJSON(w, map[string]any{
+			"data":   map[string]any{"node": nil},
+			"errors": []map[string]any{{"type": "FORBIDDEN", "message": "Resource not accessible by integration"}},
+		})
 		return
 	}
 	for _, cs := range s.comments {
@@ -66,7 +69,7 @@ func (s *Server) graphql(w http.ResponseWriter, r *http.Request) {
 					last = c.UpdatedAt
 				}
 				writeJSON(w, map[string]any{"data": map[string]any{"node": map[string]any{
-					"__typename": "IssueComment", "lastEditedAt": last, "includesCreatedEdit": false,
+					"__typename": "IssueComment", "lastEditedAt": last, "includesCreatedEdit": c.edited,
 				}}})
 				return
 			}

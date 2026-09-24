@@ -56,7 +56,9 @@ The **intent controller** is optional too, and is not in the base: add `componen
 run intent-driven development (see `docs/configuration/intent-controller.md`). It polls each `Project`'s intent
 repository, plans each labelled issue in a read-only agent Job, and builds the approved plan into a pull request. It
 reads the shared ConfigMap plus its own (`PATCHY_INTENT_*`), runs on brokered claude only, and its `secrets get` is
-restricted by `resourceNames` to the Forge Secret (`patchy-github`; patch `rbac.yaml` in the component for others).
+restricted by `resourceNames` to the Forge Secret in the release namespace (`patchy-github`; patch `rbac.yaml` in the
+component for others). Its agent-jobs Role can get, create, update and delete any Secret in the agents namespace,
+including model keys, image-pull credentials and other Jobs' handoffs.
 Builds need an accepted repository-declared image, so set the repository-image keys the component's `configmap.yaml`
 lists, or give each Project `requireRepositoryImage: false`. In the Helm chart it sits behind
 `intentController.enabled: false`, and Projects come from the patchy-config chart's `projects` values.

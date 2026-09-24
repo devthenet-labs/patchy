@@ -21,8 +21,8 @@
 #   configmaps      create/get/list/watch/update: input snapshots, plans and
 #                   transcripts, all owner-referenced (no delete: the TTL
 #                   cascade removes them).
-#   secrets         get, by name only, on the Forge Secrets. Tighter than any
-#                   other controller: patch the names when your Forges
+#   secrets         get, by name only, on the Forge Secrets in this release
+#                   namespace: patch the names when your Forges
 #                   reference other Secrets. Never leave the list empty — an
 #                   empty resourceNames grants every Secret.
 #   leases, events  leader election (patchy-intent-controller-leader).
@@ -96,6 +96,8 @@ subjects:
 # patchy-agent-jobs binding, so removing the component removes the grant.
 # The patchy.bitwisemedia.uk/kind=intent Job label keeps its watches and
 # reapers off the finding and evaluation runs.
+# This Role can get, create, update and delete any Secret in the agents namespace,
+# including model keys, image-pull credentials and other Jobs' handoffs.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

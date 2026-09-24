@@ -11,6 +11,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 )
 
 // testKubeconfig is a two-context file: dev declares a namespace, prod does
@@ -181,5 +183,22 @@ func TestManagerOptionsConfigMapSelector(t *testing.T) {
 				t.Errorf("ConfigMap selector = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestManagerOptionsRepositorySelector(t *testing.T) {
+	sel := labels.SelectorFromSet(labels.Set{"patchy.bitwisemedia.uk/intent": "target-1"})
+	byObject := managerOptions(Options{Namespaces: []string{"patchy"}, RepositorySelector: sel}).Cache.ByObject
+	var got labels.Selector
+	for obj, by := range byObject {
+		if _, ok := obj.(*v1alpha1.Repository); ok {
+			got = by.Label
+			if len(by.Namespaces) != 0 {
+				t.Errorf("Repository namespaces = %v, want the defaults", by.Namespaces)
+			}
+		}
+	}
+	if got == nil || got.String() != sel.String() {
+		t.Errorf("Repository selector = %v, want %v", got, sel)
 	}
 }

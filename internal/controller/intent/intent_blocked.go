@@ -31,6 +31,12 @@ const (
 	// ReasonForeignPullRequest: an open pull request patchy did not open
 	// holds patchy-intent/<intent> against the default branch.
 	ReasonForeignPullRequest = "ForeignPullRequest"
+	// ReasonBranchMissing: the pushed branch vanished before patchy opened its PR.
+	ReasonBranchMissing = "BranchMissing"
+	// ReasonBranchChanged: the branch no longer points at the build's commit.
+	ReasonBranchChanged = "BranchChanged"
+	// ReasonPullRequestRefused: GitHub refused to create patchy's PR.
+	ReasonPullRequestRefused = "PullRequestRefused"
 )
 
 // block moves the Intent to Blocked with the condition saying why, in one
@@ -142,6 +148,12 @@ func (p *pass) branchBlockHolds(ctx context.Context) (bool, error) {
 	if c == nil || c.Status != metav1.ConditionTrue {
 		return false, nil
 	}
+	if c.Reason == ReasonPullRequestRefused {
+		var gen int64
+		var known bool
+		p.r.memo(func() { gen, known = p.r.blockedAt[p.in.Name] })
+		return known && gen == p.proj.Generation, nil
+	}
 	repo, ok := p.runRepository(v1alpha1.IntentStageBuild)
 	if !ok {
 		return false, nil // the resumed phase fails the intent
@@ -155,6 +167,24 @@ func (p *pass) branchBlockHolds(ctx context.Context) (bool, error) {
 	if c.Reason == ReasonForeignPullRequest {
 		pr, own, _, err := p.findPullRequest(ctx, repo.URL)
 		return pr != nil && !own, err
+	}
+	if c.Reason == ReasonBranchMissing || c.Reason == ReasonBranchChanged {
+		ap := p.in.Status.Approval
+		if ap == nil {
+			return true, nil
+		}
+		run := p.round(v1alpha1.IntentStageBuild, ap.PlanRevision).latest()
+		if run == nil || run.Status.PushedCommit == "" {
+			return true, nil
+		}
+		head, err := p.r.GitHub.HeadSHA(ctx, repo.URL, branchName(p.in.Name))
+		if ghclient.IsNotFound(err) {
+			return true, nil
+		}
+		if err != nil {
+			return true, err
+		}
+		return head != run.Status.PushedCommit, nil
 	}
 	sha, err := p.branchConflict(ctx, repo.URL)
 	return sha != "", err

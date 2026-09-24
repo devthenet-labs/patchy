@@ -137,6 +137,13 @@ The Project reports `Ready` once:
 It creates the trigger and approve labels when they are missing. An issue whose Intent name is held by another
 repository's issue is reported as `IntentNameConflict`, never skipped silently.
 
+Use exactly one Project trigger label per issue. If two are present before discovery, neither Project starts an Intent;
+each reports the issue in `IntentNameConflict` until one label is removed. If a second Project labels an issue that
+already has an Intent, patchy removes the second trigger and reports the conflict. A shared approval label or
+`/patchy approve` is accepted only when the issue has one Intent; an anomalous issue with two Intents refuses both
+approvals without removing the shared label. Resolve the conflict, then remove and reapply the label or post a new
+command.
+
 ## On the issue
 
 | Action                                            | Effect                                                  |
@@ -178,13 +185,13 @@ merge) to keep that from happening.
 
 ## Permissions
 
-intent-controller is the second code path that writes to a forge (remediation-controller is the first), and its posture
-is the tightest of any controller:
+intent-controller is the second code path that writes to a forge (remediation-controller is the first):
 
-- **Secrets:** `secrets get` is restricted by `resourceNames` to the Secrets your Forges reference
+- **Secrets:** in the release namespace, `secrets get` is restricted by `resourceNames` to the Secrets your Forges reference
   (`intentController.forgeSecrets` in the chart, `rbac.yaml` in the kustomize component). A Forge that references any
   other Secret, or a Secret that does not exist, leaves its Projects not Ready with the reason `ForgeSecretUnreadable`,
-  whose message names the Secret.
+  whose message names the Secret. Its agent-jobs Role can get, create, update and delete any Secret in the agents namespace,
+  including model keys, image-pull credentials and other Jobs' handoffs.
 - **GitHub tokens:** each GitHub operation mints its own token, scoped to one repository and one permission. The
   unscoped installation client is never used.
 - **Writes:** it writes only to the repositories a Project lists, plus issues on the intent repository. Branches are

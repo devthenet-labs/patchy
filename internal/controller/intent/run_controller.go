@@ -193,17 +193,17 @@ func (r *RunReconciler) launchable(ctx context.Context, run *v1alpha1.IntentRun)
 	if repo.Status.Artifact == nil {
 		return false
 	}
-	return meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionReady) || planIgnoresStall(run, &repo)
+	return meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionReady) ||
+		imageStallIgnored(run, &repo, requireRepositoryImage(&proj))
 }
 
-// planIgnoresStall reports a plan run whose Repository stalled only on its
-// declared runner image (source-controller under onReject: handoff), with
-// the tree pinned and stored all the same. A plan runs read-only on the
-// default image and never reads the declaration, so the stall is no reason
-// not to plan; the image is the build's to require, and a build meeting it
-// blocks on ImageRequired.
-func planIgnoresStall(run *v1alpha1.IntentRun, repo *v1alpha1.Repository) bool {
-	if run.Spec.Stage != v1alpha1.IntentStagePlan || repo.Status.Artifact == nil || repo.Status.ResolvedSHA == "" {
+// imageStallIgnored allows a pinned, stored tree through an image-declaration
+// stall when the run will use the default image: every plan, and a build whose
+// Project explicitly opts out of the repository image.
+func imageStallIgnored(run *v1alpha1.IntentRun, repo *v1alpha1.Repository, requireImage bool) bool {
+	if (run.Spec.Stage != v1alpha1.IntentStagePlan &&
+		(run.Spec.Stage != v1alpha1.IntentStageBuild || requireImage)) ||
+		repo.Status.Artifact == nil || repo.Status.ResolvedSHA == "" {
 		return false
 	}
 	c := meta.FindStatusCondition(repo.Status.Conditions, v1alpha1.ConditionStalled)
@@ -286,10 +286,22 @@ func (r *RunReconciler) pending(ctx context.Context, run *v1alpha1.IntentRun) er
 		return client.IgnoreNotFound(err)
 	}
 	stalled := meta.FindStatusCondition(repo.Status.Conditions, v1alpha1.ConditionStalled)
-	if stalled == nil || stalled.Status != metav1.ConditionTrue || planIgnoresStall(run, &repo) {
+	if stalled == nil || stalled.Status != metav1.ConditionTrue ||
+		imageStallIgnored(run, &repo, true) {
 		return nil
 	}
 	if stalled.Reason == v1alpha1.ReasonRunnerImageRejected && run.Spec.Stage == v1alpha1.IntentStageBuild {
+		var in v1alpha1.Intent
+		if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name}, &in); err != nil {
+			return err
+		}
+		var proj v1alpha1.Project
+		if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: in.Spec.Project}, &proj); err != nil {
+			return err
+		}
+		if imageStallIgnored(run, &repo, requireRepositoryImage(&proj)) {
+			return nil
+		}
 		return r.settle(ctx, run, result{outcome: OutcomeImageRequired,
 			detail: runnerguard.SkipRejected + ": " + stalled.Message})
 	}

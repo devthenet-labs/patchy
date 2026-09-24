@@ -12,9 +12,11 @@
 # on the same flag. Mirrors deploy/kustomize/components/intent-controller.
 #
 # It is the second code path that writes to a forge (remediation-controller is
-# the first), with the tightest posture of any controller: `secrets get` only
-# on the Secrets named in intentController.forgeSecrets, a GitHub token per
-# operation scoped to one repository and one permission, and no ClusterRole.
+# the first). In the release namespace `secrets get` is limited to names in
+# intentController.forgeSecrets; its agent-jobs Role can get, create, update
+# and delete any Secret in the agents namespace, including model keys,
+# image-pull credentials and other Jobs' handoffs. GitHub tokens are scoped
+# per operation to one repository and one permission. There is no ClusterRole.
 {{- if .Values.intentController.enabled }}
 {{- $vals := .Values.intentController }}
 {{- $name := "intent-controller" }}
@@ -26,7 +28,7 @@ the namespace, so an empty forgeSecrets fails the render rather than quietly
 granting the widest read in the chart.
 */}}
 {{- if not $vals.forgeSecrets }}
-{{- fail "intentController.enabled requires intentController.forgeSecrets: the names of the Secrets your Forges reference (spec.secretRef), e.g. [patchy-github]. It is the only Secret read intent-controller is granted, and an empty list would grant every Secret in the namespace" }}
+{{- fail "intentController.enabled requires intentController.forgeSecrets: the names of the Secrets your Forges reference (spec.secretRef), e.g. [patchy-github]. This restricts Secret reads in the release namespace; an empty list would grant every Secret there" }}
 {{- end }}
 {{- if $vals.serviceAccount.create }}
 ---
@@ -144,6 +146,8 @@ subjects:
 # evaluation precedent), for the same internal/jobs machinery. The
 # patchy.bitwisemedia.uk/kind=intent Job label keeps its watches and reapers
 # off the finding and evaluation runs — RBAC cannot express that split.
+# This Role can get, create, update and delete any Secret in the agents namespace,
+# including model keys, image-pull credentials and other Jobs' handoffs.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

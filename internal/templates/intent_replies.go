@@ -103,6 +103,19 @@ func RenderEditedCommandNotice(n EditedCommandNotice) (string, error) {
 	})
 }
 
+// RenderAmbiguousApprovalNotice explains why a shared issue cannot approve
+// either of its Intents. The approval label is left alone for the human to
+// remove and reapply after resolving the conflict.
+func RenderAmbiguousApprovalNotice(namespace, intent, key, other string) (string, error) {
+	return render("intent_notice_ambiguous_approval.md.tmpl", struct {
+		Marker string
+		Other  string
+	}{
+		Marker: NoticeMarker(namespace, intent, key),
+		Other:  oneLine(other),
+	})
+}
+
 // EstimateNotice tells the approver, before they approve, that a plan's own
 // estimate of its build is more than the build will be granted. The estimate
 // never binds the build and approving does not raise the grant: the remedy is

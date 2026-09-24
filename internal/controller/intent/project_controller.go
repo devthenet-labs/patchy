@@ -159,7 +159,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	cur.Status.ObservedGeneration = p.Generation
 
 	var intents v1alpha1.IntentList
-	if err := r.List(ctx, &intents, client.InNamespace(p.Namespace)); err != nil {
+	if err := r.APIReader.List(ctx, &intents, client.InNamespace(p.Namespace)); err != nil {
 		return ctrl.Result{}, err
 	}
 	cur.Status.ActiveIntents = activeIntents(&intents, p.Name)
@@ -333,6 +333,17 @@ func (r *ProjectReconciler) discover(ctx context.Context, p *v1alpha1.Project, p
 		}
 	}
 	trigger := v1alpha1.ProjectTriggerLabel(p)
+	var projects v1alpha1.ProjectList
+	if err := r.APIReader.List(ctx, &projects, client.InNamespace(p.Namespace)); err != nil {
+		return false, 0, err
+	}
+	var otherTriggers []string
+	for i := range projects.Items {
+		other := &projects.Items[i]
+		if other.Name != p.Name && sameRepo(other.Spec.IntentRepository, repo) {
+			otherTriggers = append(otherTriggers, v1alpha1.ProjectTriggerLabel(other))
+		}
+	}
 	list, err := r.GitHub.ListIssues(ctx, repo, []string{trigger}, poll.etag)
 	if err != nil {
 		return false, 0, err
@@ -354,8 +365,13 @@ func (r *ProjectReconciler) discover(ctx context.Context, p *v1alpha1.Project, p
 	}
 
 	byName := make(map[string]*v1alpha1.Intent, len(intents.Items))
+	byIssue := make(map[int64]*v1alpha1.Intent, len(intents.Items))
 	for i := range intents.Items {
-		byName[intents.Items[i].Name] = &intents.Items[i]
+		in := &intents.Items[i]
+		byName[in.Name] = in
+		if sameRepo(in.Spec.Issue.Repository, repo) {
+			byIssue[in.Spec.Issue.Number] = in
+		}
 	}
 	active := activeIntents(intents, p.Name)
 	for _, is := range issues {
@@ -369,6 +385,26 @@ func (r *ProjectReconciler) discover(ctx context.Context, p *v1alpha1.Project, p
 			delete(poll.waiting, is.Number)
 			r.existing(ctx, p, poll, existing, is, full)
 			continue
+		}
+		if owner := byIssue[int64(is.Number)]; owner != nil {
+			poll.conflicts[is.Number] = fmt.Sprintf("Intent %s already owns this issue", owner.Name)
+			// A second trigger must not start another Project after the
+			// first Intent expires, particularly if it fails with the issue
+			// still open. Remove only this Project's trigger.
+			if err := r.GitHub.RemoveLabel(ctx, repo, int64(is.Number), trigger); err != nil {
+				return false, created, fmt.Errorf("remove the competing trigger from issue #%d: %w", is.Number, err)
+			}
+			delete(poll.waiting, is.Number)
+			continue
+		}
+		for _, other := range otherTriggers {
+			if hasLabel(is, other) {
+				poll.conflicts[is.Number] = fmt.Sprintf("multiple Project trigger labels (%s and %s)", trigger, other)
+				break
+			}
+		}
+		if poll.conflicts[is.Number] != "" {
+			continue // wait for a human to leave just one trigger label
 		}
 		if active >= maxActiveIntents(p) {
 			continue // waits
@@ -394,7 +430,7 @@ func (r *ProjectReconciler) existing(ctx context.Context, p *v1alpha1.Project, p
 	switch {
 	case !sameRepo(in.Spec.Issue.Repository, p.Spec.IntentRepository):
 		poll.waiting[is.Number] = true
-		poll.conflicts[is.Number] = in.Name
+		poll.conflicts[is.Number] = "Intent " + in.Name
 		r.log().LogAttrs(ctx, slog.LevelWarn, "intent name held by another repository's issue",
 			slog.String("project", p.Name), slog.Int("issue", is.Number), slog.String("intent", in.Name),
 			slog.String("held_by", in.Spec.Issue.Repository))
@@ -515,10 +551,10 @@ func setConflict(p *v1alpha1.Project, poll *projectPoll) {
 	slices.Sort(issues)
 	var named []string
 	for _, n := range issues[:min(len(issues), maxConflictsNamed)] {
-		named = append(named, fmt.Sprintf("issue #%d (Intent %s)", n, poll.conflicts[n]))
+		named = append(named, fmt.Sprintf("issue #%d (%s)", n, poll.conflicts[n]))
 	}
-	msg := fmt.Sprintf("the intent names of %s are held by Intents for another repository's issues; "+
-		"each waits until that Intent is deleted or expires", strings.Join(named, ", "))
+	msg := fmt.Sprintf("the Project cannot discover %s; leave one Project trigger label per issue, or use a new "+
+		"issue when another Intent owns it", strings.Join(named, ", "))
 	if len(issues) > maxConflictsNamed {
 		msg += fmt.Sprintf(", and %d more", len(issues)-maxConflictsNamed)
 	}

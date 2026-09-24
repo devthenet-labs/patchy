@@ -46,6 +46,9 @@ func TestIntentReplyGoldens(t *testing.T) {
 				Namespace: "patchy", Intent: "target-1", Key: "comment-4420", Verb: "approve",
 			})
 		}},
+		{"intent_notice_ambiguous_approval.md", func() (string, error) {
+			return RenderAmbiguousApprovalNotice("patchy", "target-1", "event-4421", "other-1")
+		}},
 		{"intent_notice_estimate.md", func() (string, error) {
 			return RenderEstimateNotice(EstimateNotice{
 				Namespace: "patchy", Intent: "target-1", Key: "estimate-r2", PlanRevision: 2,

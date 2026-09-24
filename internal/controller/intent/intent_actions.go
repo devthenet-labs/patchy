@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/action"
@@ -398,6 +400,10 @@ func (p *pass) approveLabelAction(ctx context.Context, issue *ghclient.Issue, ev
 	case p.hasOwnNotice(a.key()):
 		// Refused, noticed first: the label's removal may not have
 		// followed. A label approval is never noticed as done.
+		if c := meta.FindStatusCondition(p.in.Status.Conditions, v1alpha1.ConditionApprovalRejected); c != nil &&
+			c.Status == metav1.ConditionTrue && c.Reason == "AmbiguousIntentIssue" {
+			return nil, nil // the label is shared; neither Intent may remove it
+		}
 		if hasLabel(issue, approve) {
 			if err := p.r.GitHub.RemoveLabel(ctx, p.repo(), p.number(), approve); err != nil {
 				return nil, fmt.Errorf("remove the refused approve label: %w", err)
@@ -708,6 +714,26 @@ func (p *pass) settleApprove(ctx context.Context, a humanAction, issue *ghclient
 			}
 		}
 		return nil
+	}
+	var siblings v1alpha1.IntentList
+	if err := p.r.APIReader.List(ctx, &siblings, client.InNamespace(p.in.Namespace)); err != nil {
+		return err
+	}
+	for i := range siblings.Items {
+		s := &siblings.Items[i]
+		if s.Name == p.in.Name || !sameRepo(s.Spec.Issue.Repository, p.repo()) ||
+			s.Spec.Issue.Number != p.number() {
+			continue
+		}
+		if err := p.update(ctx, func(cur *v1alpha1.Intent) error {
+			setCondition(cur, v1alpha1.ConditionApprovalRejected, metav1.ConditionTrue, "AmbiguousIntentIssue",
+				fmt.Sprintf("issue #%d also has Intent %s; no approval is scoped to this plan", p.number(), s.Name))
+			return nil
+		}); err != nil {
+			return err
+		}
+		body, err := templates.RenderAmbiguousApprovalNotice(p.in.Namespace, p.in.Name, a.key(), s.Name)
+		return p.notice(ctx, a.key(), a.at, body, err)
 	}
 	planChanged, issueChanged, err := p.approvalChanged(ctx, issue)
 	if err != nil {

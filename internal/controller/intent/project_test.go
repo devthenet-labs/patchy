@@ -135,6 +135,57 @@ func TestDiscovery(t *testing.T) {
 	}
 }
 
+func TestSharedIntentIssueHasOneProject(t *testing.T) {
+	other := testProject()
+	other.Name, other.UID = "other", "other-uid"
+	for _, tt := range []struct {
+		name       string
+		labelFirst bool
+		want       int
+	}{
+		{name: "both triggers before discovery", want: 0},
+		{name: "second trigger after discovery", labelFirst: true, want: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t, testProject(), other.DeepCopy())
+			e.gh.openIssue(1, "One", "body", approver)
+			if tt.labelFirst {
+				e.reconcileProject()
+			}
+			e.gh.label(1, "patchy:other", approver)
+			e.clock.Advance(time.Minute)
+			e.reconcileProject()
+			if _, err := e.project.Reconcile(context.Background(), req("other")); err != nil {
+				t.Fatal(err)
+			}
+			var intents v1alpha1.IntentList
+			if err := e.c.List(context.Background(), &intents, client.InNamespace(testNS)); err != nil {
+				t.Fatal(err)
+			}
+			if len(intents.Items) != tt.want {
+				t.Fatalf("discovered %d Intents, want %d", len(intents.Items), tt.want)
+			}
+			var project v1alpha1.Project
+			if err := e.c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: "other"},
+				&project); err != nil {
+				t.Fatal(err)
+			}
+			c := meta.FindStatusCondition(project.Status.Conditions, v1alpha1.ConditionIntentNameConflict)
+			if c == nil || c.Status != metav1.ConditionTrue || !strings.Contains(c.Message, "issue #1") {
+				t.Errorf("other Project's issue conflict = %+v", c)
+			}
+			if tt.labelFirst {
+				e.drive("target-1", v1alpha1.IntentAwaitingApproval, repoImage)
+				e.gh.label(1, "patchy:approved", approver)
+				e.drive("target-1", v1alpha1.IntentInReview, repoImage)
+				if len(e.gh.prs) != 1 {
+					t.Errorf("pull requests = %d, want only the first Project's", len(e.gh.prs))
+				}
+			}
+		})
+	}
+}
+
 // TestDiscoveryConditional: an unchanged listing (304) re-lists nothing and
 // creates nothing new, but retries the issues that were waiting.
 func TestDiscoveryConditional(t *testing.T) {

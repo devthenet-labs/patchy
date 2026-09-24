@@ -124,7 +124,23 @@ func (p *pass) feedbackSince(ctx context.Context, since time.Time) ([]*ghclient.
 		}
 		out = append(out, c)
 	}
-	return out, nil
+	// The renderer can include only the newest maxFeedbackItems. Ask GitHub
+	// about those comments' edit history too: REST timestamps cannot reveal
+	// an edit made in the second a comment was posted.
+	if len(out) > maxFeedbackItems {
+		out = out[len(out)-maxFeedbackItems:]
+	}
+	kept := out[:0]
+	for _, c := range out {
+		e, err := p.everEdited(ctx, c)
+		if err != nil {
+			return nil, err
+		}
+		if !e {
+			kept = append(kept, c)
+		}
+	}
+	return kept, nil
 }
 
 // ensureInputConfigMap creates the immutable snapshot ConfigMap of revision,

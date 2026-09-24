@@ -142,15 +142,15 @@ func (p *pass) openPullRequest(ctx context.Context, run *v1alpha1.IntentRun) (bo
 
 // review polls the recorded pull requests, by repository and number, and
 // ends the Intent when every one has merged (Merged) or closed unmerged
-// (Closed). Under the rate floor it polls nothing and waits a whole
-// interval.
+// (Closed). Under the rate floor of a pull request's repository it polls
+// nothing and waits a whole interval.
 func (p *pass) review(ctx context.Context) (bool, error) {
 	var last time.Time
 	p.r.memo(func() { last = p.r.prPolled[p.in.Name] })
 	if !last.IsZero() && p.now.Sub(last) < p.set.PRPollInterval {
 		return false, nil
 	}
-	if ok, err := p.rateOK(ctx); err != nil || !ok {
+	if ok, err := p.rateOKForPullRequests(ctx); err != nil || !ok {
 		p.r.memo(func() { p.r.prPolled[p.in.Name] = p.now })
 		return false, err
 	}

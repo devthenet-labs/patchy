@@ -92,31 +92,51 @@ func (p *pass) lastTrigger() v1alpha1.IntentAction {
 	return v1alpha1.IntentAction{Source: v1alpha1.IntentActionLabel, EventID: rb.EventID, Login: rb.Login, At: rb.At}
 }
 
-// rateOK reports whether the installation's rate budget is at or over the
-// floor, read once per pass: under it the pass polls nothing (its issue, its
-// pull requests, a blocked build's default branch), so intents never take
-// the security flow's share of the installation's requests. The floor is a
-// coarse guard: GitHub's headers are not consistent from one response to the
-// next.
-func (p *pass) rateOK(ctx context.Context) (bool, error) {
-	if p.rateRead {
-		return p.rateAbove, nil
+// rateOK reports whether the rate budget of the installation repoURL is read
+// with is at or over the floor, read once per repository per pass: under it
+// the pass polls nothing there (the intent repository's issue, an app
+// repository's pull requests or a blocked build's default branch), so
+// intents never take the security flow's share of that installation's
+// requests. The intent repository and an app repository may be two
+// installations, so each poll asks about the repository it reads. The floor
+// is a coarse guard: GitHub's headers are not consistent from one response to
+// the next.
+func (p *pass) rateOK(ctx context.Context, repoURL string) (bool, error) {
+	key := normalizeRepoURL(repoURL)
+	if above, ok := p.rates[key]; ok {
+		return above, nil
+	}
+	if p.rates == nil {
+		p.rates = map[string]bool{}
 	}
 	floor := p.set.RateLimitFloor
 	if floor <= 0 {
-		p.rateRead, p.rateAbove = true, true
+		p.rates[key] = true
 		return true, nil
 	}
-	remaining, err := p.r.GitHub.RateRemaining(ctx, p.repo())
+	remaining, err := p.r.GitHub.RateRemaining(ctx, repoURL)
 	if err != nil {
-		return false, fmt.Errorf("read the rate budget: %w", err)
+		return false, fmt.Errorf("read the rate budget of %s: %w", repoURL, err)
 	}
-	p.rateRead, p.rateAbove = true, remaining >= floor
-	if !p.rateAbove {
+	above := remaining >= floor
+	p.rates[key] = above
+	if !above {
 		p.r.log().LogAttrs(ctx, slog.LevelWarn, "installation rate budget under the floor; intent poll paused",
-			slog.String("intent", p.in.Name), slog.Int("remaining", remaining), slog.Int("floor", floor))
+			slog.String("intent", p.in.Name), slog.String("repository", repoURL),
+			slog.Int("remaining", remaining), slog.Int("floor", floor))
 	}
-	return p.rateAbove, nil
+	return above, nil
+}
+
+// rateOKForPullRequests is rateOK for every repository the Intent's pull
+// requests are in.
+func (p *pass) rateOKForPullRequests(ctx context.Context) (bool, error) {
+	for _, pr := range p.in.Status.PullRequests {
+		if ok, err := p.rateOK(ctx, pr.Repository); err != nil || !ok {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // seen is the newest comment the poll has settled, or nil.
@@ -150,7 +170,7 @@ func (p *pass) listSince() time.Time {
 // never answered twice, even after patchy's reply to it is deleted.
 func (p *pass) poll(ctx context.Context) (stop bool, err error) {
 	p.r.memo(func() { p.r.polled[p.in.Name] = p.now })
-	if ok, err := p.rateOK(ctx); err != nil || !ok {
+	if ok, err := p.rateOK(ctx, p.repo()); err != nil || !ok {
 		return false, err
 	}
 	p.polled = true
@@ -182,6 +202,11 @@ func (p *pass) poll(ctx context.Context) (stop bool, err error) {
 		// when every one merged, before it writes Merged, and a lost write
 		// must not turn that close into a human's.
 		if len(p.in.Status.PullRequests) > 0 {
+			// Under a pull request repository's floor nothing is decided:
+			// the close waits for the pull requests to be read.
+			if ok, err := p.rateOKForPullRequests(ctx); err != nil || !ok {
+				return true, err
+			}
 			if ended, err := p.reviewNow(ctx); ended || err != nil {
 				return true, err
 			}

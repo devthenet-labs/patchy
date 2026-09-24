@@ -195,5 +195,8 @@ Each active intent reads about three GitHub resources per interval (its issue, i
 newest one it has already read). An intent in review also reads its pull request. A conditional listing that has not
 changed returns 304, which costs nothing against the installation's rate limit. The rate-limit floor pauses all intent
 polling, pull requests included, while the installation's remaining core budget is below it, so intents can never starve
-the security flow of the requests it shares with them. The headers GitHub reports are not consistent from one response
-to the next, so the floor is a coarse guard, not an exact budget.
+the security flow of the requests it shares with them. Each poll checks the installation of the repository it reads:
+the intent repository and an app repository may be covered by two installations, and the app repository's is the one
+the Finding flow shares, so its pull request and a blocked build's default branch wait on its floor, the issue on the
+intent repository's. The headers GitHub reports are not consistent from one response to the next, so the floor is a
+coarse guard, not an exact budget.

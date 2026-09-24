@@ -144,6 +144,8 @@ func (p *pass) blockHolds(ctx context.Context) (bool, error) {
 
 // headUnmoved reports whether the default branch still points where the
 // blocked build pinned it: a new commit may declare an image the pin lacked.
+// Under the app repository's rate floor it reads nothing, and the block
+// holds.
 func (p *pass) headUnmoved(ctx context.Context) (bool, error) {
 	ap := p.in.Status.Approval
 	if ap == nil {
@@ -159,6 +161,9 @@ func (p *pass) headUnmoved(ctx context.Context) (bool, error) {
 		return true, client.IgnoreNotFound(err)
 	}
 	url := latest.Spec.Repository.URL
+	if ok, err := p.rateOK(ctx, url); err != nil || !ok {
+		return true, err
+	}
 	branch, err := p.r.GitHub.DefaultBranch(ctx, url)
 	if err != nil {
 		return true, fmt.Errorf("read the default branch: %w", err)

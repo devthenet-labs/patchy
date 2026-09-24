@@ -132,6 +132,9 @@ type fakeGitHub struct {
 	bot       string
 	perms     map[string]string // lower-cased login → permission; "404" answers ErrNoSuchUser
 	remaining int
+	// appRemaining, when set, is the rate budget of the app repository's
+	// installation, a different one from the intent repository's.
+	appRemaining *int
 
 	labels        map[string]bool
 	createdLabels []string
@@ -412,9 +415,12 @@ func (f *fakeGitHub) Permission(_ context.Context, _, login string) (string, err
 	return perm, nil
 }
 
-func (f *fakeGitHub) RateRemaining(context.Context, string) (int, error) {
+func (f *fakeGitHub) RateRemaining(_ context.Context, repoURL string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.appRemaining != nil && sameRepo(repoURL, appRepoURL) {
+		return *f.appRemaining, f.call("RateRemaining")
+	}
 	return f.remaining, f.call("RateRemaining")
 }
 

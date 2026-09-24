@@ -1001,6 +1001,70 @@ func TestPullRequestPollHonoursTheRateFloor(t *testing.T) {
 	e.drive(name, v1alpha1.IntentMerged, repoImage)
 }
 
+// TestAppRepositoryRateFloor: the intent repository and the app repository
+// can be two installations, and each poll honours the floor of the one it
+// reads. Under the app repository's floor the pull request is not polled
+// (and a closed issue decides nothing until it is), while the intent issue,
+// on its own installation, still is; once the budget recovers, the merge is
+// seen.
+func TestAppRepositoryRateFloor(t *testing.T) {
+	for _, closed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "issue open", true: "issue closed by a human"}[closed], func(t *testing.T) {
+			e := newEnv(t, testProject())
+			name := e.awaiting()
+			e.gh.label(1, "patchy:approved", approver)
+			e.drive(name, v1alpha1.IntentInReview, repoImage)
+			e.gh.closePR(true)
+			if closed {
+				e.gh.humanClose(1, approver)
+			}
+			low := 10
+			e.gh.appRemaining = &low
+			e.gh.calls = map[string]int{}
+			e.settleActions(name)
+			if in := e.get(name); in.Status.Phase != v1alpha1.IntentInReview {
+				t.Fatalf("phase = %s under the app repository's floor", in.Status.Phase)
+			}
+			if n := e.gh.calls["GetPullRequest"]; n != 0 {
+				t.Errorf("GetPullRequest called %d times under the app repository's floor", n)
+			}
+			if n := e.gh.calls["GetIssue"]; n == 0 {
+				t.Error("the intent issue, on an installation over its floor, was not polled")
+			}
+			e.gh.appRemaining = nil
+			e.drive(name, v1alpha1.IntentMerged, repoImage)
+		})
+	}
+}
+
+// TestBlockedBuildHonoursTheAppRepositoryFloor: a blocked build reads the
+// app repository's default branch only while that repository's installation
+// is over its floor.
+func TestBlockedBuildHonoursTheAppRepositoryFloor(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	e.drive(name, v1alpha1.IntentBlocked, "") // the build's repository declares nothing
+	e.settleActions(name)
+	low := 10
+	e.gh.appRemaining = &low
+	e.gh.mu.Lock()
+	e.gh.heads["main"] = "3333333333333333333333333333333333333333"
+	e.gh.mu.Unlock()
+	e.gh.calls = map[string]int{}
+	e.settleActions(name)
+	if in := e.get(name); in.Status.Phase != v1alpha1.IntentBlocked {
+		t.Fatalf("phase = %s under the app repository's floor", in.Status.Phase)
+	}
+	for _, m := range []string{"DefaultBranch", "HeadSHA"} {
+		if n := e.gh.calls[m]; n != 0 {
+			t.Errorf("%s called %d times under the app repository's floor", m, n)
+		}
+	}
+	e.gh.appRemaining = nil
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+}
+
 // TestEveryConfigMapIsSelected: every ConfigMap an intent's life creates (its
 // snapshot, its plan, its runs' inputs and transcripts) is one the manager's
 // label-scoped ConfigMap informer caches (ConfigMapSelector), so no cached

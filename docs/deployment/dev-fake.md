@@ -21,7 +21,8 @@ both external dependencies:
   `PATCHY-EVENT` result. The Jobs are real — init container, artifact fetch, digest check — only the verdict is scripted
   (remediate at 0.92 confidence, so findings flow straight through the queue). Because the turns are real turns, each
   run's conversation is captured into its transcript `ConfigMap` and streams live onto the status page while the Job is
-  still running, and both stages carry a full report.
+  still running, and both stages carry a full report. It answers intent Jobs too: a plan names exactly the repositories
+  the request lists, and a build, handed the approved plan alone as agent-runner requires, commits a `VERSION` file.
 
 The walkthrough below assumes the [Colima setup](colima.md); on kind, swap `dev-colima` for the equivalent build/load
 steps.

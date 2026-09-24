@@ -100,7 +100,7 @@ func TestParseLegacyApprove(t *testing.T) {
 	legacy := func(note string) command.Command {
 		return command.Command{Verb: action.VerbApprove, Note: note, Alias: command.LegacyApprove}
 	}
-	runParseCases(t, command.Parser{}, []parseCase{
+	runParseCases(t, command.Parser{Surface: command.FindingIssue}, []parseCase{
 		// From TestSignalsApprove.
 		{"collaborator approves", "/approve", legacy(""), true},
 		{"owner approves with note", "/approve ship it", legacy("ship it"), true},
@@ -127,7 +127,7 @@ func TestParseConfiguredAlias(t *testing.T) {
 	legacy := func(note string) command.Command {
 		return command.Command{Verb: action.VerbApprove, Note: note, Alias: alias}
 	}
-	runParseCases(t, command.Parser{ApproveAlias: alias}, []parseCase{
+	runParseCases(t, command.Parser{Surface: command.FindingIssue, ApproveAlias: alias}, []parseCase{
 		{"the configured alias approves", "@patchy approve", legacy(""), true},
 		{"with a note", "@patchy approve lgtm", legacy("lgtm"), true},
 		{"it replaces the default, as today", "/approve", command.Command{}, false},
@@ -137,7 +137,44 @@ func TestParseConfiguredAlias(t *testing.T) {
 	// A configured alias that starts with the /patchy prefix is shadowed by
 	// the grammar: its verb wins, rather than every /patchy command becoming
 	// an approval.
-	runParseCases(t, command.Parser{ApproveAlias: "/patchy"}, []parseCase{
+	runParseCases(t, command.Parser{Surface: command.FindingIssue, ApproveAlias: "/patchy"}, []parseCase{
 		{"shadowed alias", "/patchy retry", command.Command{Verb: action.VerbRetry}, true},
 	})
+}
+
+// TestParseAliasOnlyOnFindingIssue: the legacy approve comment is the
+// Finding tracking issue's alone. Anywhere else, including with an alias
+// configured, it is text: it neither approves an intent's plan nor draws a
+// help reply on an intent's pull request, where "/approve" is as likely to
+// be meant for another bot.
+func TestParseAliasOnlyOnFindingIssue(t *testing.T) {
+	bodies := []string{"/approve", "/approve ship it", "@patchy approve", "@patchy approve lgtm"}
+	for _, p := range []command.Parser{
+		{},
+		{ApproveAlias: "@patchy approve"},
+		{Surface: command.IntentIssue},
+		{Surface: command.IntentIssue, ApproveAlias: "@patchy approve"},
+		{Surface: command.IntentPR},
+		{Surface: command.IntentPR, ApproveAlias: "@patchy approve"},
+		{Surface: "pull-request"},
+	} {
+		for _, body := range bodies {
+			if c, ok := p.Parse(body); ok {
+				t.Errorf("%+v.Parse(%q) = %+v, true; want no command", p, body, c)
+			}
+		}
+		// The grammar is the same on every surface.
+		if c, ok := p.Parse("/patchy approve ship it"); !ok || c != approve("ship it") {
+			t.Errorf("%+v.Parse(/patchy approve ship it) = %+v, %v", p, c, ok)
+		}
+	}
+	for _, body := range bodies {
+		if c, ok := command.Parse(body); ok {
+			t.Errorf("Parse(%q) = %+v, true; want no command", body, c)
+		}
+	}
+	finding := command.Parser{Surface: command.FindingIssue}
+	if c, ok := finding.Parse("/approve"); !ok || c.Alias != command.LegacyApprove {
+		t.Errorf("FindingIssue Parse(/approve) = %+v, %v; want the legacy alias", c, ok)
+	}
 }

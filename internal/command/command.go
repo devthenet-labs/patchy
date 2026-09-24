@@ -37,24 +37,35 @@ type Command struct {
 	Alias string
 }
 
-// Parser parses comment bodies. The zero value accepts the /patchy grammar
-// and the default legacy approve comment.
+// Parser parses the comment bodies made on one surface. The zero value
+// parses the /patchy grammar alone.
 type Parser struct {
+	// Surface is where the comments were made. It decides only whether the
+	// legacy approve alias is honoured, which it is on FindingIssue and
+	// nowhere else: on an intent, "/approve" is text, as it is when another
+	// bot's users type it.
+	Surface Surface
 	// ApproveAlias is the legacy approve comment, the Integration's
-	// spec.github.issues.approveComment; empty means LegacyApprove.
+	// spec.github.issues.approveComment; empty means LegacyApprove. It is
+	// read only on FindingIssue.
 	ApproveAlias string
 }
 
-// Parse reads body with the zero Parser.
+// Parse reads body with the zero Parser: the /patchy grammar alone, never
+// an alias.
 func Parse(body string) (Command, bool) {
-	return Parser{}.Parse(body)
+	return parseGrammar(body)
 }
 
 // Parse reports the command body carries, and false when it carries none.
-// The /patchy grammar is tried first, then the legacy approve alias.
+// The /patchy grammar is tried first, then, on FindingIssue only, the
+// legacy approve alias.
 func (p Parser) Parse(body string) (Command, bool) {
 	if c, ok := parseGrammar(body); ok {
 		return c, true
+	}
+	if p.Surface != FindingIssue {
+		return Command{}, false
 	}
 	return p.parseAlias(body)
 }

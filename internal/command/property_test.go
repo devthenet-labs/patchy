@@ -71,6 +71,12 @@ func genWhitespace(r *rand.Rand) string {
 	return b.String()
 }
 
+// genSurface is a surface the parser knows, or one it does not.
+func genSurface(r *rand.Rand) string {
+	surfaces := []command.Surface{command.FindingIssue, command.IntentIssue, command.IntentPR, "", "pull-request"}
+	return string(surfaces[r.Intn(len(surfaces))])
+}
+
 // genAlias is a configured approve comment: empty (the default), the dev
 // overlay's, or hostile text.
 func genAlias(r *rand.Rand) string {
@@ -120,21 +126,22 @@ func wellFormedVerb(verb string) bool {
 	return true
 }
 
-// TestParseNeverPanicsProperty: whatever the body and the configured alias,
-// Parse returns, a miss is the zero Command, and a hit is well formed.
+// TestParseNeverPanicsProperty: whatever the surface, the body and the
+// configured alias, Parse returns, a miss is the zero Command, and a hit is
+// well formed.
 func TestParseNeverPanicsProperty(t *testing.T) {
-	total := func(alias, body string) bool {
-		c, ok := command.Parser{ApproveAlias: alias}.Parse(body)
+	total := func(surface, alias, body string) bool {
+		c, ok := command.Parser{Surface: command.Surface(surface), ApproveAlias: alias}.Parse(body)
 		if !ok {
 			return c == command.Command{}
 		}
 		return wellFormedVerb(c.Verb) && wellFormedNote(c.Note)
 	}
-	if err := quick.Check(total, quickConfig(20260923, genAlias, genHostile)); err != nil {
+	if err := quick.Check(total, quickConfig(20260923, genSurface, genAlias, genHostile)); err != nil {
 		t.Error(err)
 	}
 	// testing/quick's own arbitrary strings, too.
-	arbitrary := func(body string) bool { return total("", body) }
+	arbitrary := func(body string) bool { return total(string(command.FindingIssue), "", body) }
 	cfg := &quick.Config{MaxCount: 3000, Rand: rand.New(rand.NewSource(20260924))}
 	if err := quick.Check(arbitrary, cfg); err != nil {
 		t.Error(err)
@@ -142,23 +149,25 @@ func TestParseNeverPanicsProperty(t *testing.T) {
 }
 
 // TestParseRequiresPrefixProperty: a body parses only when its first
-// non-blank line starts with the prefix or the whole trimmed body is the
-// legacy alias form — and text whose first non-blank line starts with
-// anything else never parses, whatever follows it.
+// non-blank line starts with the prefix or, on a Finding issue and nowhere
+// else, the whole trimmed body is the legacy alias form — and text whose
+// first non-blank line starts with anything else never parses, whatever
+// follows it.
 func TestParseRequiresPrefixProperty(t *testing.T) {
-	onlyWithPrefix := func(body string) bool {
-		c, ok := command.Parse(body)
+	onlyWithPrefix := func(surface, body string) bool {
+		c, ok := command.Parser{Surface: command.Surface(surface)}.Parse(body)
 		if !ok {
 			return true
 		}
 		if c.Alias != "" {
 			trimmed := strings.TrimSpace(body)
-			return trimmed == command.LegacyApprove || strings.HasPrefix(trimmed, command.LegacyApprove+" ")
+			return command.Surface(surface) == command.FindingIssue &&
+				(trimmed == command.LegacyApprove || strings.HasPrefix(trimmed, command.LegacyApprove+" "))
 		}
 		line := firstNonBlank(body)
 		return len(line) >= len(command.Prefix) && strings.EqualFold(line[:len(command.Prefix)], command.Prefix)
 	}
-	if err := quick.Check(onlyWithPrefix, quickConfig(20260925, genHostile)); err != nil {
+	if err := quick.Check(onlyWithPrefix, quickConfig(20260925, genSurface, genHostile)); err != nil {
 		t.Error(err)
 	}
 
@@ -242,7 +251,7 @@ func TestParseNoteExcludesCommandLineProperty(t *testing.T) {
 	}
 
 	legacy := func(note string) bool {
-		c, ok := command.Parse(command.LegacyApprove + " " + note)
+		c, ok := command.Parser{Surface: command.FindingIssue}.Parse(command.LegacyApprove + " " + note)
 		return ok && c.Verb == action.VerbApprove && c.Alias == command.LegacyApprove &&
 			!strings.Contains(c.Note, command.LegacyApprove)
 	}
@@ -254,13 +263,13 @@ func TestParseNoteExcludesCommandLineProperty(t *testing.T) {
 // TestParseTrailingWhitespaceProperty: appending whitespace — spaces, tabs,
 // any line break, Unicode spaces — never changes the result.
 func TestParseTrailingWhitespaceProperty(t *testing.T) {
-	stable := func(alias, body, ws string) bool {
-		p := command.Parser{ApproveAlias: alias}
+	stable := func(surface, alias, body, ws string) bool {
+		p := command.Parser{Surface: command.Surface(surface), ApproveAlias: alias}
 		c, ok := p.Parse(body)
 		c2, ok2 := p.Parse(body + ws)
 		return c == c2 && ok == ok2
 	}
-	if err := quick.Check(stable, quickConfig(20260929, genAlias, genHostile, genWhitespace)); err != nil {
+	if err := quick.Check(stable, quickConfig(20260929, genSurface, genAlias, genHostile, genWhitespace)); err != nil {
 		t.Error(err)
 	}
 }
@@ -270,7 +279,7 @@ func TestParseTrailingWhitespaceProperty(t *testing.T) {
 func TestParseNoteBoundProperty(t *testing.T) {
 	long := []string{"é", "日本", "𝄞", "x", " ", "\n", "\x00", "\xff", "\u202e"}
 	bounded := func(head, fill string) bool {
-		c, ok := command.Parse(head + " approve " + fill)
+		c, ok := command.Parser{Surface: command.FindingIssue}.Parse(head + " approve " + fill)
 		return ok && len(c.Note) <= command.MaxNoteBytes && utf8.ValidString(c.Note)
 	}
 	fill := func(r *rand.Rand) string {
@@ -342,7 +351,7 @@ func TestParseLegacyMatchesTodayProperty(t *testing.T) {
 	noPrefix := withoutPrefix(hostile)
 	genBody := func(r *rand.Rand) string { return leadWith(r, "") + genFrom(r, noPrefix) }
 	sameDecision := func(alias, body string) bool {
-		c, ok := command.Parser{ApproveAlias: alias}.Parse(body)
+		c, ok := command.Parser{Surface: command.FindingIssue, ApproveAlias: alias}.Parse(body)
 		_, want := approveToday(body, alias)
 		if ok != want {
 			return false
@@ -359,7 +368,7 @@ func TestParseLegacyMatchesTodayProperty(t *testing.T) {
 	}
 	genClean := func(r *rand.Rand) string { return leadWith(r, " ") + genFrom(r, clean) }
 	sameNote := func(alias, body string) bool {
-		c, ok := command.Parser{ApproveAlias: alias}.Parse(body)
+		c, ok := command.Parser{Surface: command.FindingIssue, ApproveAlias: alias}.Parse(body)
 		note, want := approveToday(body, alias)
 		return ok == want && c.Note == strings.TrimRightFunc(note, unicode.IsSpace)
 	}

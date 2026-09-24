@@ -5,6 +5,7 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -221,6 +222,7 @@ func (r *Receiver) handleWiz(ctx context.Context, e webhook.Event) error {
 func (r *Receiver) ingestAll(
 	ctx context.Context, integ *v1alpha1.Integration, h source.Handler, e webhook.Event,
 ) error {
+	ctx = withDelivery(ctx, e)
 	findings, err := h.Findings(ctx, e.Type, e.Payload)
 	if err != nil {
 		return fmt.Errorf("decode %s delivery: %w", h.ID(), err)
@@ -232,6 +234,41 @@ func (r *Receiver) ingestAll(
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// deliveryKey is the context key under which ingestAll records the delivery
+// an ingest serves, so the Ingestor's log lines can name what triggered them.
+type deliveryKey struct{}
+
+// deliveryInfo identifies a webhook delivery in logs.
+type deliveryInfo struct {
+	event, action, id string
+}
+
+// withDelivery records e on ctx for the ingest log lines. The action is
+// peeked from the payload's top-level "action" field, GitHub's per-event
+// discriminator; a payload without one logs none, and a malformed one is the
+// source handler's error to report, not this peek's.
+func withDelivery(ctx context.Context, e webhook.Event) context.Context {
+	var peek struct {
+		Action string `json:"action"`
+	}
+	_ = json.Unmarshal(e.Payload, &peek)
+	return context.WithValue(ctx, deliveryKey{}, deliveryInfo{event: e.Type, action: peek.Action, id: e.DeliveryID})
+}
+
+// deliveryAttrs are the log attributes naming ctx's delivery; none outside a
+// webhook delivery (a backfill, say).
+func deliveryAttrs(ctx context.Context) []slog.Attr {
+	d, ok := ctx.Value(deliveryKey{}).(deliveryInfo)
+	if !ok {
+		return nil
+	}
+	attrs := []slog.Attr{slog.String("event", d.event)}
+	if d.action != "" {
+		attrs = append(attrs, slog.String("action", d.action))
+	}
+	return append(attrs, slog.String("delivery", d.id))
 }
 
 // alertLabel names a finding for an error message, by whichever identifier

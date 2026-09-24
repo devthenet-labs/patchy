@@ -247,8 +247,9 @@ func (in *Ingestor) fold(ctx context.Context, name string, f source.Finding) err
 		if err := in.Update(ctx, &cur); err != nil {
 			return err
 		}
-		in.log().LogAttrs(ctx, slog.LevelInfo, "alert folded into finding",
-			slog.String("finding", cur.Name), slog.String("alert", alert.ID))
+		in.log().LogAttrs(ctx, slog.LevelInfo, "alert folded into finding", append([]slog.Attr{
+			slog.String("finding", cur.Name), slog.String("alert", alert.ID),
+		}, deliveryAttrs(ctx)...)...)
 		return nil
 	})
 }
@@ -331,8 +332,10 @@ func (in *Ingestor) create(
 	if prev != "" {
 		in.mirrorEdge(ctx, prev, fnd.Spec.Related[0])
 	}
-	in.log().LogAttrs(ctx, slog.LevelInfo, "finding created",
-		slog.String("finding", name), slog.String("scope", accumulationScope(repoURL, f)))
+	in.log().LogAttrs(ctx, slog.LevelInfo, "finding created", append([]slog.Attr{
+		slog.String("finding", name), slog.String("scope", accumulationScope(repoURL, f)),
+		slog.String("alert", alertID(f)),
+	}, deliveryAttrs(ctx)...)...)
 	return nil
 }
 
@@ -363,11 +366,7 @@ func (in *Ingestor) mirrorEdge(ctx context.Context, elder string, edge v1alpha1.
 // string identifier where it has one; only sources that number their alerts
 // fall back to the decimal form.
 func toAlert(f source.Finding) v1alpha1.Alert {
-	id := f.AlertID
-	if id == "" {
-		id = strconv.Itoa(f.AlertNumber)
-	}
-	a := v1alpha1.Alert{ID: id, Source: f.Source, URL: f.HTMLURL}
+	a := v1alpha1.Alert{ID: alertID(f), Source: f.Source, URL: f.HTMLURL}
 	for i, loc := range f.Locations {
 		if i == 8 {
 			break
@@ -380,6 +379,16 @@ func toAlert(f source.Finding) v1alpha1.Alert {
 		})
 	}
 	return a
+}
+
+// alertID is the finding's alert identifier as recorded on the CR: the
+// source's own string identifier where it has one, else the decimal alert
+// number.
+func alertID(f source.Finding) string {
+	if f.AlertID != "" {
+		return f.AlertID
+	}
+	return strconv.Itoa(f.AlertNumber)
 }
 
 // trackingRef denormalizes the projecting integration at creation: the

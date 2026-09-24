@@ -147,6 +147,26 @@ func TestBuildNeedsAnAcceptedImage(t *testing.T) {
 	}
 }
 
+// TestBuildOnlyWhereThePlanSaid: a Project changed after the approval to
+// another repository builds nothing there; the intent fails instead.
+func TestBuildOnlyWhereThePlanSaid(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	var proj v1alpha1.Project
+	if err := e.c.Get(context.Background(), types.NamespacedName{Namespace: testNS, Name: "target"}, &proj); err != nil {
+		t.Fatal(err)
+	}
+	proj.Spec.Repositories[0].URL = "https://github.com/acme/elsewhere"
+	if err := e.c.Update(context.Background(), &proj); err != nil {
+		t.Fatal(err)
+	}
+	e.gh.label(1, "patchy:approved", approver)
+	e.drive(name, v1alpha1.IntentFailed, repoImage)
+	if n := len(e.runsOf(name, v1alpha1.IntentStageBuild)); n != 0 {
+		t.Errorf("build runs = %d in a repository the plan never named", n)
+	}
+}
+
 // TestBuildDefaultImageRan: a Job that reports the default image ran is
 // deleted and the intent blocked.
 func TestBuildDefaultImageRan(t *testing.T) {

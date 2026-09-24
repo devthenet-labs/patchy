@@ -5,6 +5,7 @@ package intent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -69,7 +70,11 @@ func (p *pass) blocked(ctx context.Context) (bool, error) {
 			refused = nil
 		}
 		if rs.counted(refused) < p.set.MaxAttempts && rs.next() <= v1alpha1.MaxIntentRunAttempt {
-			if run, err = p.createRun(ctx, stage, round, rs.next(), p.previousAttempt(rs.latest())); err != nil {
+			run, err = p.createRun(ctx, stage, round, rs.next(), p.previousAttempt(rs.latest()))
+			switch {
+			case errors.Is(err, errRepositoryGone):
+				run = nil // the resumed phase fails the intent
+			case err != nil:
 				return false, err
 			}
 		}

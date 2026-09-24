@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
@@ -140,6 +141,11 @@ func (p *pass) launch(ctx context.Context, stage v1alpha1.IntentStage, round, at
 		return true, p.fail(ctx)
 	}
 	run, err := p.createRun(ctx, stage, round, attempt, prev)
+	if errors.Is(err, errRepositoryGone) {
+		p.r.log().LogAttrs(ctx, slog.LevelWarn, "the approved plan's repository left the project; the intent fails",
+			slog.String("intent", p.in.Name))
+		return true, p.fail(ctx)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -151,7 +157,10 @@ func (p *pass) launch(ctx context.Context, stage v1alpha1.IntentStage, round, at
 // Intent's, since a same-named earlier Intent's may still be terminating.
 func (p *pass) createRun(ctx context.Context, stage v1alpha1.IntentStage, round, attempt int32,
 	prev *v1alpha1.PreviousAttempt) (*v1alpha1.IntentRun, error) {
-	repo := p.proj.Spec.Repositories[0]
+	repo, ok := p.runRepository(stage)
+	if !ok {
+		return nil, errRepositoryGone
+	}
 	name := v1alpha1.IntentRunName(p.in.Name, stage, round, repo.Name, attempt)
 	inputs := v1alpha1.IntentRunInputs{ConfigMap: runInputName(name), InputDigest: p.in.Status.Input.Digest}
 	if stage == v1alpha1.IntentStageBuild {
@@ -194,6 +203,30 @@ func (p *pass) createRun(ctx context.Context, stage v1alpha1.IntentStage, round,
 		return nil, fmt.Errorf("run %s: %w", name, errNotOwned)
 	}
 	return &existing, nil
+}
+
+// errRepositoryGone: the approved plan names a repository the Project no
+// longer holds. Nothing is built anywhere else than what was approved.
+var errRepositoryGone = errors.New("the approved plan's repository is no longer one of the project's")
+
+// runRepository is the repository a run of stage works on: a plan plans from
+// the Project's first repository; a build builds in the repository the
+// approved plan names, while the Project still holds it, never one the
+// Project has been changed to since the approval.
+func (p *pass) runRepository(stage v1alpha1.IntentStage) (v1alpha1.ProjectRepository, bool) {
+	if stage == v1alpha1.IntentStagePlan {
+		return p.proj.Spec.Repositories[0], true
+	}
+	if pl := p.in.Status.Plan; pl != nil {
+		for _, named := range pl.Repositories {
+			for _, r := range p.proj.Spec.Repositories {
+				if sameRepo(named, r.URL) {
+					return r, true
+				}
+			}
+		}
+	}
+	return v1alpha1.ProjectRepository{}, false
 }
 
 // ensureActive makes sure an unfinished run has its input ConfigMap and

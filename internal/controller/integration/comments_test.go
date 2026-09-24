@@ -156,6 +156,23 @@ func TestProjectLaggingCacheDoesNotRepost(t *testing.T) {
 			count: func(tr *fakeTracker) int { return countComments(tr, "patchy:enrichment static-context") },
 		},
 		{
+			// The recorded sticky was deleted on the tracker and the content
+			// moved: the first pass re-posts it and records the new id, but
+			// the cache still holds the old id, which answers 404 again.
+			name: "enrichment sticky deleted on the tracker",
+			objs: func() []client.Object {
+				fnd := linkedFinding(v1alpha1.PhaseEnhanced)
+				fnd.Status.Enrichments = []v1alpha1.Enrichment{{
+					Enhancer: "static-context", Markdown: "owned by team-checkout", AppliedAt: metav1.NewTime(testClock),
+				}}
+				fnd.Status.Tracking.Comments = []v1alpha1.TrackedComment{{
+					Marker: "<!-- patchy:enrichment static-context -->", ID: 40, Digest: "stale",
+				}}
+				return []client.Object{fnd}
+			},
+			count: func(tr *fakeTracker) int { return countComments(tr, "patchy:enrichment static-context") },
+		},
+		{
 			name:  "failed notice",
 			objs:  func() []client.Object { return []client.Object{linkedFinding(v1alpha1.PhaseFailed)} },
 			count: func(tr *fakeTracker) int { return countComments(tr, "could not remediate this finding") },

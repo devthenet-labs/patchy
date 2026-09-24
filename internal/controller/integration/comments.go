@@ -79,15 +79,20 @@ func (c *issueComments) upsert(ctx context.Context, body string) error {
 		return err
 	}
 	if rec != nil {
-		if rec.Digest == digest {
-			return nil
-		}
-		err := c.tracker.EditComment(ctx, c.repo, rec.ID, body)
-		if err == nil {
-			return c.record(ctx, v1alpha1.TrackedComment{Marker: marker, ID: rec.ID, Digest: digest})
-		}
-		if !ghclient.IsNotFound(err) {
+		if done, err := c.edit(ctx, rec, body, digest); done || err != nil {
 			return err
+		}
+		// Gone from the tracker. A cached record may be one a later pass has
+		// already replaced — it re-posted the comment and recorded the new
+		// id — so the API server's record decides before anything is posted.
+		cur, err := c.latest(ctx, marker)
+		if err != nil {
+			return err
+		}
+		if cur != nil && cur.ID != rec.ID {
+			if done, err := c.edit(ctx, cur, body, digest); done || err != nil {
+				return err
+			}
 		}
 		// Deleted on the tracker: find or post it afresh below. A 404 because
 		// the whole issue is gone resurfaces from the listing, where the
@@ -112,6 +117,25 @@ func (c *issueComments) upsert(ctx context.Context, body string) error {
 	return c.record(ctx, v1alpha1.TrackedComment{Marker: marker, ID: id, Digest: digest})
 }
 
+// edit brings the recorded comment to body. done is false, with no error,
+// when the tracker no longer has that comment.
+func (c *issueComments) edit(
+	ctx context.Context, rec *v1alpha1.TrackedComment, body, digest string,
+) (done bool, err error) {
+	if rec.Digest == digest {
+		return true, nil
+	}
+	err = c.tracker.EditComment(ctx, c.repo, rec.ID, body)
+	switch {
+	case err == nil:
+		return true, c.record(ctx, v1alpha1.TrackedComment{Marker: rec.Marker, ID: rec.ID, Digest: digest})
+	case ghclient.IsNotFound(err):
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
 // recorded returns the comment recorded for marker. The cached Finding's
 // "none" is confirmed against the API server before it is believed: it is
 // the answer that leads to a post.
@@ -119,6 +143,12 @@ func (c *issueComments) recorded(ctx context.Context, marker string) (*v1alpha1.
 	if rec := trackedComment(c.fnd.Status.Tracking, marker); rec != nil {
 		return rec, nil
 	}
+	return c.latest(ctx, marker)
+}
+
+// latest returns the API server's record for marker, re-reading the Finding
+// at most once per pass.
+func (c *issueComments) latest(ctx context.Context, marker string) (*v1alpha1.TrackedComment, error) {
 	if c.fresh == nil {
 		cur, err := c.r.latest(ctx, c.fnd)
 		if err != nil {

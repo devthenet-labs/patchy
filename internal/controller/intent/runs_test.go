@@ -821,6 +821,77 @@ func TestFinalizerDeletesTheJob(t *testing.T) {
 	}
 }
 
+// TestSuspendHoldsThePush: a build that finishes while its intent is
+// suspended writes nothing to GitHub, neither the commit nor the branch; its
+// push is made once the suspension is cleared.
+func TestSuspendHoldsThePush(t *testing.T) {
+	for _, afterCommit := range []bool{false, true} {
+		t.Run(map[bool]string{false: "before the commit", true: "before the branch"}[afterCommit], func(t *testing.T) {
+			e := newEnv(t, testProject())
+			ctx := context.Background()
+			name := e.awaiting()
+			e.gh.label(1, "patchy:approved", approver)
+			if afterCommit {
+				e.gh.failNext("CreateBranchRef", errTransient)
+			}
+			// Before the commit: the build launched, not yet collected.
+			// Before the branch: its commit recorded, the branch create
+			// failed.
+			reached := func() bool {
+				runs := e.runsOf(name, v1alpha1.IntentStageBuild)
+				if len(runs) == 0 {
+					return false
+				}
+				if afterCommit {
+					return runs[0].Status.PushedCommit != ""
+				}
+				return runs[0].Status.JobRef != nil
+			}
+			for range 30 {
+				if reached() {
+					break
+				}
+				_ = e.reconcileIntent(name)
+				e.readyRepositories(repoImage)
+				_, _ = e.runs.Reconcile(ctx, req(runSchedulerRequest))
+				for _, r := range e.intentRuns(name) {
+					_, _ = e.runs.Reconcile(ctx, req(r.Name))
+				}
+				e.clock.Advance(time.Minute)
+			}
+			if !reached() {
+				t.Fatal("the build never reached the point to suspend at")
+			}
+			in := e.get(name)
+			in.Spec.Suspend = true
+			if err := e.c.Update(ctx, in); err != nil {
+				t.Fatal(err)
+			}
+			commits, refs := len(e.gh.commits), e.gh.calls["CreateBranchRef"]
+			for range 3 {
+				_, _ = e.runs.Reconcile(ctx, req(e.runsOf(name, v1alpha1.IntentStageBuild)[0].Name))
+			}
+			run := e.runsOf(name, v1alpha1.IntentStageBuild)[0]
+			if len(e.gh.commits) != commits || e.gh.calls["CreateBranchRef"] != refs || len(e.gh.branches) != 0 {
+				t.Fatalf("a suspended intent's push reached GitHub: commits %d→%d, branch creates %d→%d",
+					commits, len(e.gh.commits), refs, e.gh.calls["CreateBranchRef"])
+			}
+			if run.Status.Phase != v1alpha1.RunRunning {
+				t.Fatalf("the held run is %s, want still Running", run.Status.Phase)
+			}
+			in = e.get(name)
+			in.Spec.Suspend = false
+			if err := e.c.Update(ctx, in); err != nil {
+				t.Fatal(err)
+			}
+			e.drive(name, v1alpha1.IntentInReview, repoImage)
+			if len(e.gh.commits) != 1 || len(e.gh.branches) != 1 {
+				t.Errorf("commits %d branches %d after the resume, want one each", len(e.gh.commits), len(e.gh.branches))
+			}
+		})
+	}
+}
+
 // TestTransientPRFailureRetries: a failed pull request create is retried and
 // opens exactly one.
 func TestTransientPRFailureRetries(t *testing.T) {

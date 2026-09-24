@@ -4,6 +4,7 @@
 package intent
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -411,7 +412,11 @@ func (r *RunReconciler) requeuePending(ctx context.Context, run *v1alpha1.Intent
 func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (ctrl.Result, error) {
 	if run.Status.PushedCommit != "" {
 		// The commit was created and recorded; only the branch may be owed.
-		return ctrl.Result{}, r.createBranch(ctx, run)
+		err := r.createBranch(ctx, run)
+		if errors.Is(err, errHeld) {
+			return r.hold(ctx, run)
+		}
+		return ctrl.Result{}, err
 	}
 	st, err := r.Jobs.Status(ctx, run.Status.JobRef.Name)
 	if kerrors.IsNotFound(err) {
@@ -456,7 +461,36 @@ func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (c
 	if run.Spec.Stage == v1alpha1.IntentStagePlan {
 		return ctrl.Result{}, r.collectPlan(ctx, run, out.Events, transcript)
 	}
-	return ctrl.Result{}, r.collectBuild(ctx, run, out.Events, transcript)
+	err = r.collectBuild(ctx, run, out.Events, transcript)
+	if errors.Is(err, errHeld) {
+		return r.hold(ctx, run)
+	}
+	return ctrl.Result{}, err
+}
+
+// errHeld: the run's Intent is suspended, and nothing is written to GitHub
+// for a suspended intent. The finished build waits, its push not made, and
+// is collected again when the suspension is cleared.
+var errHeld = errors.New("the intent is suspended; its push waits")
+
+// suspended reports that the run's Intent is suspended, read uncached: a
+// push is the one write to GitHub the run reconciler makes.
+func (r *RunReconciler) suspended(ctx context.Context, run *v1alpha1.IntentRun) (bool, error) {
+	var in v1alpha1.Intent
+	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name},
+		&in); err != nil {
+		return false, err
+	}
+	return in.Spec.Suspend, nil
+}
+
+// hold leaves a build whose push waits on a suspension Running. Clearing
+// the suspension re-queues it (the Intent watch); until then it is looked at
+// once per poll interval. A suspension that outlasts the Job's TTL loses the
+// Job, and with it the unpushed changeset: the run then aborts.
+func (r *RunReconciler) hold(ctx context.Context, run *v1alpha1.IntentRun) (ctrl.Result, error) {
+	r.log().LogAttrs(ctx, slog.LevelInfo, "intent suspended; the build's push waits", slog.String("run", run.Name))
+	return ctrl.Result{RequeueAfter: r.Settings.withDefaults().PollInterval}, nil
 }
 
 // podOutcomes are the outcomes an agent pod may report for a stage that did
@@ -608,6 +642,9 @@ func (r *RunReconciler) collectBuild(ctx context.Context, run *v1alpha1.IntentRu
 // agent's are dropped), records it on the run before any ref moves, then
 // creates the intent branch at it.
 func (r *RunReconciler) push(ctx context.Context, run *v1alpha1.IntentRun, ev *envelope.Remediation, res result) error {
+	if held, err := r.suspended(ctx, run); err != nil || held {
+		return cmp.Or(err, errHeld)
+	}
 	var in v1alpha1.Intent
 	if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name}, &in); err != nil {
 		return err
@@ -653,6 +690,9 @@ func (r *RunReconciler) push(ctx context.Context, run *v1alpha1.IntentRun, ev *e
 // create-only: an existing branch is adopted only when it already points at
 // that commit (a retry), and is otherwise branch_exists. Nothing is forced.
 func (r *RunReconciler) createBranch(ctx context.Context, run *v1alpha1.IntentRun) error {
+	if held, err := r.suspended(ctx, run); err != nil || held {
+		return cmp.Or(err, errHeld)
+	}
 	branch := branchName(run.Spec.IntentRef.Name)
 	err := r.GitHub.CreateBranchRef(ctx, run.Spec.Repository.URL, branch, run.Status.PushedCommit)
 	switch {

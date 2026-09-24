@@ -28,8 +28,21 @@
 //
 // Every note, however its command arrived, is made by one exported rule,
 // Note: invalid UTF-8 replaced, every line break normalised to "\n", control
-// and format characters other than "\n" and "\t" removed, surrounding
-// whitespace trimmed, and cut to at most MaxNoteBytes on a rune boundary.
+// characters other than "\n" and "\t" removed, surrounding whitespace
+// trimmed, and cut to at most MaxNoteBytes on a rune boundary.
+//
+// A note is a human's words that other humans read on GitHub and the status
+// page and that an agent may read in a prompt, so the rule also removes the
+// characters that make text read differently from what it holds: bidi
+// embeddings, overrides and isolates, which reorder it; tag characters,
+// which spell ASCII that renders as nothing but that a model reads; U+FEFF;
+// and every variation selector but one straight after a visible character,
+// so a run of them cannot carry hidden bytes. Everything else is kept,
+// format characters included, because ordinary text needs them: ZWJ builds
+// emoji sequences, ZWNJ spells Persian and Indic words, and soft hyphens,
+// bidi marks and zero-width spaces are written on purpose. The rule keeps a
+// note honest about its order and its letters; it does not promise that a
+// note holds nothing invisible.
 //
 // # Aliases
 //

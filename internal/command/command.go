@@ -176,21 +176,28 @@ func verb(word string) string {
 // the command arrived: the text after a comment's verb, after the legacy
 // approve alias, or the body of an event alias such as a "Request changes"
 // review. The result is valid UTF-8 with every line break normalised to
-// "\n", control and format characters other than "\n" and "\t" removed,
-// trimmed, and at most MaxNoteBytes, cut on a rune boundary. Note is
-// idempotent.
+// "\n"; control characters other than "\n" and "\t" removed, as are the
+// characters that make text read differently from what it holds (see
+// hides, and variation selectors beyond one per character); trimmed; and at
+// most MaxNoteBytes, cut on a rune boundary. Every other character, format
+// characters included, is kept. Note is idempotent.
 func Note(s string) string {
 	s = lineBreaks.Replace(strings.ToValidUTF8(s, string(utf8.RuneError)))
-	s = strings.Map(func(r rune) rune {
+	var b strings.Builder
+	b.Grow(len(s))
+	prev := '\n' // no character to select a variation of
+	for _, r := range s {
 		switch {
 		case r == '\n' || r == '\t':
-			return r
-		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r):
-			return -1
+		case unicode.IsControl(r) || hides(r):
+			continue
+		case unicode.Is(unicode.Variation_Selector, r) && !selectable(prev):
+			continue
 		}
-		return r
-	}, s)
-	s = strings.TrimSpace(s)
+		b.WriteRune(r)
+		prev = r
+	}
+	s = strings.TrimSpace(b.String())
 	if len(s) <= MaxNoteBytes {
 		return s
 	}
@@ -199,4 +206,32 @@ func Note(s string) string {
 		cut--
 	}
 	return strings.TrimRightFunc(s[:cut], unicode.IsSpace)
+}
+
+// hides reports whether r is a format character that makes text read
+// differently from what it holds: a bidi embedding, override or isolate,
+// which reorders the text around it (the Trojan Source characters); a tag
+// character, which spells ASCII that renders as nothing but that a model
+// reads; or U+FEFF, a byte-order mark with no business inside text. Other
+// format characters are ordinary text: ZWJ builds emoji sequences, ZWNJ
+// spells Persian and Indic words, and soft hyphens, bidi marks and
+// zero-width spaces are all written on purpose.
+func hides(r rune) bool {
+	switch {
+	case r >= '\u202a' && r <= '\u202e', r >= '\u2066' && r <= '\u2069':
+		return true
+	case r >= '\U000e0000' && r <= '\U000e007f':
+		return true
+	}
+	return r == '\ufeff'
+}
+
+// selectable reports whether a variation selector may follow r in a note:
+// only straight after a visible character that is not itself one. A
+// variation sequence is always one character and one selector, so this
+// keeps every real one (an emoji's presentation, an ideograph's variant)
+// while a run of selectors, which renders as nothing and can carry a byte
+// each, keeps only its first.
+func selectable(r rune) bool {
+	return unicode.IsGraphic(r) && !unicode.IsSpace(r) && !unicode.Is(unicode.Variation_Selector, r)
 }

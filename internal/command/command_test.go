@@ -69,8 +69,8 @@ func TestParseGrammar(t *testing.T) {
 			approve("see /patchy docs"), true},
 		{"only the first line is a command; a later one is note text", "/patchy approve\n/patchy cancel",
 			approve("/patchy cancel"), true},
-		{"control and format characters are dropped, tabs kept",
-			"/patchy revise fix\x00 the\x1b[31m bug\t\u202eplease\u200b\u007f",
+		{"control characters and bidi overrides are dropped, tabs kept",
+			"/patchy revise fix\x00 the\x1b[31m bug\t\u202eplease\u007f",
 			command.Command{Verb: action.VerbRevise, Note: "fix the[31m bug\tplease"}, true},
 		{"a lone CR is a line break", "/patchy approve one\rtwo", approve("one\ntwo"), true},
 		{"every Unicode line break becomes a newline in the note",
@@ -222,6 +222,28 @@ func TestNote(t *testing.T) {
 		{"line breaks normalised", "one\r\ntwo\rthree", "one\ntwo\nthree"},
 		{"control characters dropped", "fix\x00 the\x1b[31m bug", "fix the[31m bug"},
 		{"invalid UTF-8 replaced", "bad \xff byte", "bad � byte"},
+
+		// Characters that make text read differently from what it holds.
+		{"bidi embeddings, overrides and isolates dropped",
+			"a\u202ab\u202bc\u202cd\u202de\u202ef\u2066g\u2067h\u2068i\u2069j", "abcdefghij"},
+		{"tag characters dropped", "ship it\U000e0020\U000e0069\U000e0067\U000e006e\U000e007f", "ship it"},
+		{"a byte-order mark dropped", "\ufeffship\ufeff it", "ship it"},
+		{"a run of variation selectors keeps its first",
+			"❤\ufe0f\ufe0e\U000e0100\U000e01ef", "❤\ufe0f"},
+		{"a variation selector after a joiner dropped", "a\ufe0f\u200d\ufe0fb", "a\ufe0f\u200db"},
+		{"a variation selector after whitespace or at the start dropped", "\ufe0fa \ufe0fb\n\ufe0fc", "a b\nc"},
+
+		// Format characters ordinary text needs are kept.
+		{"an emoji ZWJ sequence", "\U0001f468\u200d\U0001f469\u200d\U0001f467", "\U0001f468\u200d\U0001f469\u200d\U0001f467"},
+		{"an emoji presentation and a ZWJ sequence",
+			"\U0001f3f3\ufe0f\u200d\U0001f308 \U0001f441\ufe0f\u200d\U0001f5e8\ufe0f",
+			"\U0001f3f3\ufe0f\u200d\U0001f308 \U0001f441\ufe0f\u200d\U0001f5e8\ufe0f"},
+		{"a keycap", "1\ufe0f⃣", "1\ufe0f⃣"},
+		{"a Persian ZWNJ", "می\u200cخواهم", "می\u200cخواهم"},
+		{"a soft hyphen", "co\u00adoperate", "co\u00adoperate"},
+		{"bidi marks", "a\u200eb\u200fc\u061cd", "a\u200eb\u200fc\u061cd"},
+		{"a zero-width space breaking a mention", "@\u200bsomeone", "@\u200bsomeone"},
+		{"an ideographic variation sequence", "葛\U000e0100", "葛\U000e0100"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

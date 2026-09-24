@@ -28,7 +28,8 @@ var hostile = []string{
 	"/patchy", "/PATCHY", "/Patchy", "/patchy ", "/approve", "/approve ", "/approved", "@patchy approve",
 	"approve", "retry", "revise", "cancel", "replan", "Approve",
 	" ", "  ", "\t", "\n", "\n\n", "\r\n", "\r", "\v", "\f", "\u0085", "\u00a0", "\u2028", "\u2029", "\u3000",
-	"\x00", "\x1b", "\x7f", "\u200b", "\u202e", "\ufeff",
+	"\x00", "\x1b", "\x7f", "\u200b", "\u200c", "\u200d", "\u00ad", "\u202e", "\u2066", "\ufeff",
+	"\ufe0f", "\ufe0e", "\U000e0041", "\U000e0100", "\u2764", "\U0001f468",
 	">", "`", "```", "#", "-", ",", "<b>", "x", "é", "日本", "\xff", "\xe2\x80", "ship it",
 }
 
@@ -125,14 +126,31 @@ func indentColumns(line string) int {
 }
 
 // wellFormedNote reports what every note must be: valid UTF-8, within the
-// bound, trimmed, with "\n" its only line break, and free of control and
-// format characters other than "\n" and "\t".
+// bound, trimmed, with "\n" its only line break and no other control
+// character but "\t", none of the characters that reorder or hide text
+// (bidi embeddings, overrides and isolates, tag characters, U+FEFF), and a
+// variation selector only straight after a visible character that is not
+// one.
 func wellFormedNote(note string) bool {
-	return utf8.ValidString(note) && len(note) <= command.MaxNoteBytes && note == strings.TrimSpace(note) &&
-		!strings.ContainsFunc(note, func(r rune) bool {
-			return r != '\n' && r != '\t' &&
-				(unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029')
-		})
+	if !utf8.ValidString(note) || len(note) > command.MaxNoteBytes || note != strings.TrimSpace(note) {
+		return false
+	}
+	prev := rune(-1)
+	for _, r := range note {
+		switch {
+		case r == '\n' || r == '\t':
+		case unicode.IsControl(r), r == '\u2028', r == '\u2029', r == '\ufeff',
+			'\u202a' <= r && r <= '\u202e', '\u2066' <= r && r <= '\u2069', '\U000e0000' <= r && r <= '\U000e007f':
+			return false
+		case unicode.Is(unicode.Variation_Selector, r):
+			if prev < 0 || !unicode.IsGraphic(prev) || unicode.IsSpace(prev) ||
+				unicode.Is(unicode.Variation_Selector, prev) {
+				return false
+			}
+		}
+		prev = r
+	}
+	return true
 }
 
 // wellFormedVerb reports what every verb must be: empty, or 1-32 lower-case
@@ -435,8 +453,9 @@ func withoutPrefix(fragments []string) []string {
 
 // TestParseLegacyMatchesTodayProperty: on the legacy alias, Parse approves
 // exactly the comments today's handler approves, whatever they hold; and on
-// text free of control characters it records the same note, except for
-// whitespace the 1 KiB cut leaves at the end, which the note rule trims.
+// ordinary text, format characters such as ZWJ and ZWNJ included, it records
+// the same note, except for whitespace the 1 KiB cut leaves at the end,
+// which the note rule trims.
 func TestParseLegacyMatchesTodayProperty(t *testing.T) {
 	aliases := []string{command.LegacyApprove, "@patchy approve"}
 	genConfigured := func(r *rand.Rand) string { return aliases[r.Intn(len(aliases))] }
@@ -462,10 +481,9 @@ func TestParseLegacyMatchesTodayProperty(t *testing.T) {
 		t.Error(err)
 	}
 
-	clean := []string{
+	clean := append([]string{
 		"/approve", "/approve ", "/approved", "@patchy approve", "@patchy approve ", "approve",
-		" ", "  ", "\t", "\n", "\n\n", "x", "é", "日本", "ship it", ">", "`", "#",
-	}
+	}, ordinaryText...)
 	genClean := func(r *rand.Rand) string { return leadWith(r, " ") + genFrom(r, clean) }
 	sameNote := func(alias, body string) bool {
 		c, ok := command.Parser{Surface: command.FindingIssue, ApproveAlias: alias}.Parse(body)
@@ -477,9 +495,22 @@ func TestParseLegacyMatchesTodayProperty(t *testing.T) {
 	}
 }
 
+// ordinaryText are fragments of text people write, format characters
+// included, with nothing the note rule removes: each keeps its variation
+// selectors straight after the character they select.
+var ordinaryText = []string{
+	" ", "  ", "\t", "\n", "\n\n", "x", "é", "日本", "ship it", ">", "`", "#",
+	"\U0001f468\u200d\U0001f469\u200d\U0001f467", // a family, joined by ZWJ
+	"\U0001f3f3\ufe0f\u200d\U0001f308",           // a rainbow flag: selector, then ZWJ
+	"❤\ufe0f", "1\ufe0f⃣", "葛\U000e0100",         // emoji and ideographic variants, a keycap
+	"می\u200cخواهم",                                       // Persian, with a ZWNJ
+	"co\u00adoperate", "a\u200eb\u200f", "@\u200bsomeone", // a soft hyphen, bidi marks, a broken mention
+}
+
 // TestNoteProperty: the note rule is idempotent — an event alias's caller or
 // a later reader can apply it again without changing a note — and whatever
-// it is given, it returns a well-formed note.
+// it is given, it returns a well-formed note. Ordinary text, format
+// characters and all, comes through untouched but for the trim.
 func TestNoteProperty(t *testing.T) {
 	idempotent := func(s string) bool {
 		n := command.Note(s)
@@ -490,6 +521,19 @@ func TestNoteProperty(t *testing.T) {
 	}
 	cfg := &quick.Config{MaxCount: 3000, Rand: rand.New(rand.NewSource(20261007))}
 	if err := quick.Check(idempotent, cfg); err != nil {
+		t.Error(err)
+	}
+
+	// Short enough that the bound never cuts it.
+	genOrdinary := func(r *rand.Rand) string {
+		var b strings.Builder
+		for range r.Intn(24) {
+			b.WriteString(ordinaryText[r.Intn(len(ordinaryText))])
+		}
+		return b.String()
+	}
+	untouched := func(s string) bool { return command.Note(s) == strings.TrimSpace(s) }
+	if err := quick.Check(untouched, quickConfig(20261008, genOrdinary)); err != nil {
 		t.Error(err)
 	}
 }

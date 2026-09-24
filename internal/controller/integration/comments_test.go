@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
@@ -383,6 +384,75 @@ func TestProjectIgnoresForeignMarkerComments(t *testing.T) {
 			rec := trackedComment(get(t, c, "finding-aa-1").Status.Tracking, tt.marker)
 			if rec == nil || rec.ID == foreign.ID {
 				t.Errorf("recorded %+v, want the projection's own comment, not the planted #%d", rec, foreign.ID)
+			}
+		})
+	}
+}
+
+// TestProjectNoticeSurvivesFailedFollowUp: a phase notice is posted before
+// the assignment or closure that completes its projection. When that
+// follow-up fails, the retry must redo the follow-up without posting the
+// notice a second time.
+func TestProjectNoticeSurvivesFailedFollowUp(t *testing.T) {
+	tests := []struct {
+		name   string
+		phase  v1alpha1.Phase
+		fail   func(*fakeTracker)
+		notice string
+		done   func(*fakeTracker) bool
+	}{
+		{
+			name:   "failed, assignment fails once",
+			phase:  v1alpha1.PhaseFailed,
+			fail:   func(tr *fakeTracker) { tr.failAssign = 1 },
+			notice: "could not remediate this finding",
+			done:   func(tr *fakeTracker) bool { return len(tr.assigned) == 2 },
+		},
+		{
+			name:   "awaiting approval, assignment fails once",
+			phase:  v1alpha1.PhaseAwaitingApproval,
+			fail:   func(tr *fakeTracker) { tr.failAssign = 1 },
+			notice: "holding this remediation",
+			done:   func(tr *fakeTracker) bool { return len(tr.assigned) == 2 },
+		},
+		{
+			name:   "handed off, assignment fails once",
+			phase:  v1alpha1.PhaseHandedOff,
+			fail:   func(tr *fakeTracker) { tr.failAssign = 1 },
+			notice: "handed this finding to its human owners",
+			done:   func(tr *fakeTracker) bool { return len(tr.assigned) == 2 },
+		},
+		{
+			name:   "dismissed, closure fails once",
+			phase:  v1alpha1.PhaseDismissed,
+			fail:   func(tr *fakeTracker) { tr.failClose = 1 },
+			notice: "dismissed the alert(s)",
+			done:   func(tr *fakeTracker) bool { return len(tr.closed) == 1 },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := newFakeTracker()
+			tracker.issues[7] = &ghclient.Issue{Number: 7, State: "open"}
+			tt.fail(tracker)
+			fnd := linkedFinding(tt.phase)
+			fnd.Status.Owners = []string{"alice", "bob"}
+			r, c := newProjector(t, tracker, testIntegration(), fnd)
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "patchy", Name: "finding-aa-1"}}
+
+			if _, err := r.Reconcile(t.Context(), req); err == nil {
+				t.Fatal("first Reconcile: nil error, want the follow-up's 502")
+			}
+			reconcileFinding(t, r)
+
+			if got := countComments(tracker, tt.notice); got != 1 {
+				t.Errorf("notices = %d, want 1; comments = %q", got, tracker.comments)
+			}
+			if !tt.done(tracker) {
+				t.Errorf("follow-up not redone: assigned %v, closed %v", tracker.assigned, tracker.closed)
+			}
+			if got := get(t, c, "finding-aa-1").GetAnnotations()[AnnotationProjectedNotice]; got != string(tt.phase) {
+				t.Errorf("%s = %q, want %s", AnnotationProjectedNotice, got, tt.phase)
 			}
 		})
 	}

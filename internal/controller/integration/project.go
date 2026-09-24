@@ -51,6 +51,12 @@ const (
 	// AnnotationProjectedNotice records the phase whose human notice
 	// (hold/hand-off/failure) was posted.
 	AnnotationProjectedNotice = "patchy.bitwisemedia.uk/projected-notice"
+	// AnnotationPostedNotice records the phase whose notice comment is on
+	// the tracking item. It is written the moment the notice is posted,
+	// ahead of the assignment or closure that completes the phase's
+	// projection, so a retry after either fails redoes it without posting
+	// the notice again.
+	AnnotationPostedNotice = "patchy.bitwisemedia.uk/posted-notice"
 	// AnnotationResolvedSource records the phase whose verdict was written
 	// back to the originating source. Separate from the notice annotation on
 	// purpose: telling the scanner and telling the humans are independent, so
@@ -477,7 +483,8 @@ func (r *FindingReconciler) projectPhase(
 	if ann[AnnotationProjectedNotice] == string(phase) {
 		return nil
 	}
-	if postsNotice(phase) {
+	posted := ann[AnnotationPostedNotice] == string(phase)
+	if postsNotice(phase) && !posted {
 		// A notice is a post: confirm the cache's "not yet" first.
 		cur, err := r.latest(ctx, fnd)
 		if err != nil {
@@ -486,29 +493,37 @@ func (r *FindingReconciler) projectPhase(
 		if cur.GetAnnotations()[AnnotationProjectedNotice] == string(phase) {
 			return nil
 		}
+		posted = cur.GetAnnotations()[AnnotationPostedNotice] == string(phase)
+	}
+	// post posts the phase's notice unless an earlier pass already did.
+	post := func(notice string) error {
+		if posted {
+			return nil
+		}
+		return r.postNotice(ctx, fnd, tracker, repo, number, notice)
 	}
 
 	switch phase {
 	case v1alpha1.PhaseAwaitingApproval:
 		notice := "patchy is holding this remediation for human approval. " +
 			"Comment `" + r.approveCommand(ctx, fnd) + "` to let it proceed."
-		if err := r.notify(ctx, tracker, repo, number, fnd.Status.Owners, notice); err != nil {
+		if err := notify(ctx, tracker, repo, number, fnd.Status.Owners, post, notice); err != nil {
 			return err
 		}
 	case v1alpha1.PhaseHandedOff:
 		notice := "patchy has handed this finding to its human owners" + noticeReason(fnd) + "."
-		if err := r.notify(ctx, tracker, repo, number, fnd.Status.Owners, notice); err != nil {
+		if err := notify(ctx, tracker, repo, number, fnd.Status.Owners, post, notice); err != nil {
 			return err
 		}
 	case v1alpha1.PhaseFailed:
 		notice := "patchy could not remediate this finding automatically; it needs human attention."
-		if err := r.notify(ctx, tracker, repo, number, fnd.Status.Owners, notice); err != nil {
+		if err := notify(ctx, tracker, repo, number, fnd.Status.Owners, post, notice); err != nil {
 			return err
 		}
 	case v1alpha1.PhaseDismissed:
 		// The alert write-back happens in resolveSource, before projection:
 		// it is owed whether or not this finding has a tracking issue.
-		if err := tracker.Comment(ctx, repo, number,
+		if err := post(
 			"patchy assessed this finding as a false positive / not exploitable and dismissed the alert(s)."); err != nil {
 			return err
 		}
@@ -524,7 +539,9 @@ func (r *FindingReconciler) projectPhase(
 	default:
 		return nil
 	}
-	return r.markProjected(ctx, fnd, map[string]string{AnnotationProjectedNotice: string(phase)})
+	return r.markProjected(ctx, fnd, map[string]string{
+		AnnotationProjectedNotice: string(phase), AnnotationPostedNotice: string(phase),
+	})
 }
 
 // postsNotice reports the phases whose projection posts a comment.
@@ -537,11 +554,12 @@ func postsNotice(phase v1alpha1.Phase) bool {
 	}
 }
 
-// notify posts a notice comment and assigns owners.
-func (r *FindingReconciler) notify(
-	ctx context.Context, tracker trackerClient, repo ghclient.Repo, number int, owners []string, notice string,
+// notify posts a notice comment through post and assigns owners.
+func notify(
+	ctx context.Context, tracker trackerClient, repo ghclient.Repo, number int, owners []string,
+	post func(notice string) error, notice string,
 ) error {
-	if err := tracker.Comment(ctx, repo, number, notice); err != nil {
+	if err := post(notice); err != nil {
 		return err
 	}
 	if len(owners) > 0 {
@@ -715,12 +733,37 @@ func (r *FindingReconciler) setTrackingState(ctx context.Context, fnd *v1alpha1.
 	})
 }
 
+// postNotice posts a phase notice and records it on AnnotationPostedNotice
+// straight away, reading past the cache: the notice exists now, and this
+// record is what keeps a retry of the phase's follow-up from posting it
+// again, so it must not be lost to a stale read's conflicts.
+func (r *FindingReconciler) postNotice(
+	ctx context.Context, fnd *v1alpha1.Finding, tracker trackerClient, repo ghclient.Repo, number int, notice string,
+) error {
+	if err := tracker.Comment(ctx, repo, number, notice); err != nil {
+		return err
+	}
+	if err := r.annotate(ctx, r.apiReader(), fnd,
+		map[string]string{AnnotationPostedNotice: string(fnd.Status.Phase)}); err != nil {
+		return fmt.Errorf("record posted notice: %w", err)
+	}
+	return nil
+}
+
 // markProjected merges projection-state annotations onto the Finding under
 // conflict retry.
 func (r *FindingReconciler) markProjected(ctx context.Context, fnd *v1alpha1.Finding, set map[string]string) error {
+	return r.annotate(ctx, r.Client, fnd, set)
+}
+
+// annotate merges annotations onto the Finding under conflict retry, reading
+// it through reader.
+func (r *FindingReconciler) annotate(
+	ctx context.Context, reader client.Reader, fnd *v1alpha1.Finding, set map[string]string,
+) error {
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var cur v1alpha1.Finding
-		if err := r.Get(ctx, client.ObjectKeyFromObject(fnd), &cur); err != nil {
+		if err := reader.Get(ctx, client.ObjectKeyFromObject(fnd), &cur); err != nil {
 			return client.IgnoreNotFound(err)
 		}
 		ann := cur.GetAnnotations()

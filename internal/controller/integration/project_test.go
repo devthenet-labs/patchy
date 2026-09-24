@@ -45,6 +45,8 @@ type fakeTracker struct {
 	dismissed []int
 	bodyEdits int
 
+	// failAssign and failClose fail that many calls with a transient 502.
+	failAssign, failClose int
 	// onPost, when set, is called as each issue or comment is posted.
 	onPost func()
 }
@@ -62,6 +64,12 @@ func newFakeTracker() *fakeTracker {
 func notFound(what string) error {
 	return fmt.Errorf("ghclient: %s: %w", what,
 		&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusNotFound}})
+}
+
+// badGateway is a transient GitHub failure.
+func badGateway(what string) error {
+	return fmt.Errorf("ghclient: %s: %w", what,
+		&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusBadGateway}})
 }
 
 func (f *fakeTracker) Create(
@@ -152,12 +160,20 @@ func (f *fakeTracker) EditComment(_ context.Context, _ ghclient.Repo, commentID 
 	return notFound(fmt.Sprintf("edit comment %d", commentID))
 }
 
-func (f *fakeTracker) Assign(_ context.Context, _ ghclient.Repo, _ int, logins []string) error {
+func (f *fakeTracker) Assign(_ context.Context, _ ghclient.Repo, number int, logins []string) error {
+	if f.failAssign > 0 {
+		f.failAssign--
+		return badGateway(fmt.Sprintf("assign #%d", number))
+	}
 	f.assigned = append(f.assigned, logins...)
 	return nil
 }
 
 func (f *fakeTracker) Close(_ context.Context, _ ghclient.Repo, number int) error {
+	if f.failClose > 0 {
+		f.failClose--
+		return badGateway(fmt.Sprintf("close #%d", number))
+	}
 	f.closed = append(f.closed, number)
 	return nil
 }

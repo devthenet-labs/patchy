@@ -14,7 +14,7 @@
 # The base, pinned to a patchy release (release-please stamps the version).
 # Pin its digest as well once you have built against it.
 # x-release-please-start-version
-ARG AGENT_BASE=ghcr.io/devthenet-labs/patchy/agent-base:v0.11.10
+ARG AGENT_BASE=ghcr.io/devthenet-labs/patchy/agent-base:v0.11.11
 # x-release-please-end
 FROM ${AGENT_BASE}
 

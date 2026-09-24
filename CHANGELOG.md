@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.11](https://github.com/devthenet-labs/patchy/compare/v0.11.10...v0.11.11) (2026-09-24)
+
+
+### Features
+
+* **api:** Project, Intent and IntentRun CRDs for intent-driven development ([#42](https://github.com/devthenet-labs/patchy/issues/42)) ([ff30e24](https://github.com/devthenet-labs/patchy/commit/ff30e24afc315cc924bf61f05403d28d9ae14994))
+* **command:** the shared, pure GitHub command parser ([#41](https://github.com/devthenet-labs/patchy/issues/41)) ([798a961](https://github.com/devthenet-labs/patchy/commit/798a9618369710e4131bfa830919ea1df7ad1b08))
+* **ghclient,forge:** GitHub seams for intent-controller slice 1a ([#43](https://github.com/devthenet-labs/patchy/issues/43)) ([99423dd](https://github.com/devthenet-labs/patchy/commit/99423dd92348fc8d69d4bc14fe52374e4dd5e27e))
+
 ## [0.11.10](https://github.com/devthenet-labs/patchy/compare/v0.11.9...v0.11.10) (2026-09-24)
 
 

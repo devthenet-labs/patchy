@@ -27,8 +27,8 @@ grammar:
 
 ## Flags
 
-The [shared flags](index.md#shared-flags-all-five-controllers) (`--listen-addr` is the page's own address here — there
-is no webhook), plus:
+The [shared flags](index.md#shared-flags-every-controller) (`--listen-addr` is the page's own address here — there is no
+webhook), plus:
 
 | Flag                | Env                      | Default         | Purpose                                                                              |
 | ------------------- | ------------------------ | --------------- | ------------------------------------------------------------------------------------ |

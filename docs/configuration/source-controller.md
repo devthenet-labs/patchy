@@ -11,7 +11,7 @@ source-controller serve --namespace patchy --artifact-addr :9790
 
 ## Flags
 
-The [shared flags](index.md#shared-flags-all-five-controllers), plus:
+The [shared flags](index.md#shared-flags-every-controller), plus:
 
 | Flag                                 | Env                                       | Default              | Purpose                                                                                                |
 | ------------------------------------ | ----------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------ |

@@ -17,7 +17,7 @@ events; the finished results entry is opaque payload stored in a per-unit Config
 
 ## Flags
 
-The [shared flags](index.md#shared-flags-all-five-controllers) (`--listen-addr` is the API's own address), plus:
+The [shared flags](index.md#shared-flags-every-controller) (`--listen-addr` is the API's own address), plus:
 
 | Flag                           | Env                                 | Default                       | Purpose                                                                                    |
 | ------------------------------ | ----------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------ |

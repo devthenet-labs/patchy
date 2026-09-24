@@ -4,14 +4,20 @@
 package integration
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/kube"
@@ -48,7 +54,16 @@ func trackedFinding(phase v1alpha1.Phase) *v1alpha1.Finding {
 
 func newSignals(t *testing.T, objs ...client.Object) (*Signals, client.Client) {
 	t.Helper()
-	c := fake.NewClientBuilder().
+	return newSignalsWith(t, nil, objs...)
+}
+
+// newSignalsWith is newSignals over a fake client configure adjusts; nil
+// adjusts nothing.
+func newSignalsWith(
+	t *testing.T, configure func(*fake.ClientBuilder), objs ...client.Object,
+) (*Signals, client.Client) {
+	t.Helper()
+	b := fake.NewClientBuilder().
 		WithScheme(kube.Scheme()).
 		WithObjects(objs...).
 		WithStatusSubresource(&v1alpha1.Finding{}).
@@ -58,8 +73,11 @@ func newSignals(t *testing.T, objs ...client.Object) (*Signals, client.Client) {
 				return nil
 			}
 			return []string{f.Status.Tracking.URL}
-		}).
-		Build()
+		})
+	if configure != nil {
+		configure(b)
+	}
+	c := b.Build()
 	return &Signals{
 		Client:    c,
 		Namespace: "patchy",
@@ -250,5 +268,73 @@ func TestSignalsForeignIssueIgnored(t *testing.T) {
 	payload := `{"action":"closed","issue":{"number":99,"html_url":"https://github.com/acme/other/issues/99"}}`
 	if err := s.Handle(t.Context(), testIntegration(), event("issues", payload)); err != nil {
 		t.Fatalf("Handle: %v", err)
+	}
+}
+
+// staleCache stands in for an informer cache that lags the Finding's latest
+// write for longer than a handler's retries last: every Get of the Finding
+// returns the version it held when the cache fell behind. Every other read
+// passes through.
+type staleCache struct {
+	client.Client
+	snapshot *v1alpha1.Finding
+}
+
+func (s *staleCache) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if f, ok := obj.(*v1alpha1.Finding); ok && key == client.ObjectKeyFromObject(s.snapshot) {
+		s.snapshot.DeepCopyInto(f)
+		return nil
+	}
+	return s.Client.Get(ctx, key, obj, opts...)
+}
+
+// TestSignalsWriteReadsPastTheCache: a delivery is answered before it is
+// handled, so the handler's write is the only record of what it carried. A
+// cache still showing the Finding as it was before the projection's last
+// write must not make every retry conflict and lose the command: each
+// attempt re-reads the Finding through the APIReader.
+func TestSignalsWriteReadsPastTheCache(t *testing.T) {
+	s, c := newSignals(t, trackedFinding(v1alpha1.PhaseQueued), testIntegration())
+	before := get(t, c, "finding-aa-1")
+	settled := before.DeepCopy()
+	settled.Status.Commands = &v1alpha1.FindingCommands{Consumed: []int64{40}} // the projection's last write
+	if err := c.Status().Update(t.Context(), settled); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+	s.Client, s.APIReader = &staleCache{Client: c, snapshot: before}, c
+
+	handle(t, s, "issue_comment", commentPayload(t, 41, "/patchy suspend"))
+	f := get(t, c, "finding-aa-1")
+	if pendingCommand(f, 41) == nil || !slices.Contains(f.Status.Commands.Consumed, 40) {
+		t.Errorf("commands = %+v, want 41 recorded beside the projection's write", f.Status.Commands)
+	}
+}
+
+// TestSignalsOutlastConflictBurst: while a finding's commands settle, the
+// projection writes its status several times per command and the webhook
+// workers write it for each delivery, so a handler's write can conflict
+// several times in a row; one that runs out of retries loses its command
+// for good. The handler outlasts more conflicts in a row than client-go's
+// DefaultRetry allows.
+func TestSignalsOutlastConflictBurst(t *testing.T) {
+	conflicts := retry.DefaultRetry.Steps
+	s, c := newSignalsWith(t, func(b *fake.ClientBuilder) {
+		b.WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object,
+				opts ...client.SubResourceUpdateOption) error {
+				if conflicts > 0 {
+					conflicts--
+					return kerrors.NewConflict(v1alpha1.GroupVersion.WithResource("findings").GroupResource(),
+						obj.GetName(), errors.New("the object has been modified"))
+				}
+				return cl.SubResource(sub).Update(ctx, obj, opts...)
+			},
+		})
+	}, trackedFinding(v1alpha1.PhaseQueued), testIntegration())
+
+	handle(t, s, "issue_comment", commentPayload(t, 41, "/patchy suspend"))
+	if pendingCommand(get(t, c, "finding-aa-1"), 41) == nil {
+		t.Errorf("commands = %+v, want 41 recorded after %d conflicts",
+			get(t, c, "finding-aa-1").Status.Commands, retry.DefaultRetry.Steps)
 	}
 }

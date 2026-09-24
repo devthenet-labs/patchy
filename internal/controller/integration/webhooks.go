@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -47,6 +48,11 @@ const BranchPrefix = "patchy/"
 // handler that fails.
 type Signals struct {
 	client.Client
+	// APIReader reads straight from the API server, past the cache: each
+	// write re-reads the Finding through it (updateFinding). The manager's
+	// API reader in production; nil falls back to the client itself, for a
+	// handler driven over an uncached client in tests.
+	APIReader client.Reader
 	// Namespace the Findings live in.
 	Namespace string
 	// Now is the clock seam; nil means time.Now.
@@ -493,13 +499,24 @@ func (s *Signals) findByIssueURL(ctx context.Context, url string) (string, error
 	return list.Items[0].Name, nil
 }
 
+// signalRetry paces updateFinding's conflict retries. A delivery is
+// answered before it is handled, so a write that runs out of retries loses
+// what the delivery carried for good (a command, a close); and a finding's
+// status is hot while its commands settle, the projection writing it
+// several times per command while the webhook workers write it for each
+// delivery. So the retries outlast a burst of such writes, about two
+// seconds, the jitter spreading apart the workers that collide.
+var signalRetry = wait.Backoff{Steps: 8, Duration: 10 * time.Millisecond, Factor: 2, Jitter: 0.5}
+
 // updateFinding applies mutate under conflict retry; a vanished Finding, or
 // a delivery that changes nothing (a duplicate, or the second of a merge's
-// two), is a no-op that writes nothing.
+// two), is a no-op that writes nothing. Each attempt re-reads the Finding
+// from the API server, past the cache: a cache lagging the last write would
+// show every attempt the same stale version, and each would conflict.
 func (s *Signals) updateFinding(ctx context.Context, name string, mutate func(*v1alpha1.Finding) error) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(signalRetry, func() error {
 		var cur v1alpha1.Finding
-		if err := s.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: name}, &cur); err != nil {
+		if err := s.reader().Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: name}, &cur); err != nil {
 			return client.IgnoreNotFound(err)
 		}
 		before := cur.Status.DeepCopy()
@@ -511,6 +528,14 @@ func (s *Signals) updateFinding(ctx context.Context, name string, mutate func(*v
 		}
 		return s.Status().Update(ctx, &cur)
 	})
+}
+
+// reader is the uncached reader: APIReader, else the client itself.
+func (s *Signals) reader() client.Reader {
+	if s.APIReader != nil {
+		return s.APIReader
+	}
+	return s.Client
 }
 
 func (s *Signals) now() time.Time {

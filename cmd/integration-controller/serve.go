@@ -93,7 +93,9 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	if err := ingestor.SetupWithManager(mgr); err != nil {
 		return err
 	}
-	signals := &integration.Signals{Client: mgr.GetClient(), Namespace: namespace, Log: log}
+	signals := &integration.Signals{
+		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Namespace: namespace, Log: log,
+	}
 	receiver := &integration.Receiver{
 		Reader:     mgr.GetClient(),
 		Creds:      creds,

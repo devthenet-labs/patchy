@@ -296,6 +296,10 @@ func TestSchemaValidation(t *testing.T) {
 		testRunStatusRunnerImageSchema(ctx, t, c)
 	})
 
+	t.Run("run spec previous attempt is bounded and round-trips on both kinds", func(t *testing.T) {
+		testPreviousAttemptSchema(ctx, t, c)
+	})
+
 	t.Run("evaluation spec is immutable and bounded", func(t *testing.T) {
 		testEvaluationSchema(ctx, t, c)
 	})
@@ -496,6 +500,67 @@ func evalUnitPlan() patchyv1.UnitPlan {
 
 // testEvaluationSchema exercises the Evaluation CEL rules: spec immutability,
 // the units bounds, the workspace digest pattern, and the tier range.
+// testPreviousAttemptSchema pins spec.previousAttempt on both run kinds: at
+// its bounds it is accepted and round-trips; one byte of outcome or detail
+// past them, or a zero attempt, is rejected.
+func testPreviousAttemptSchema(ctx context.Context, t *testing.T, c client.Client) {
+	t.Helper()
+	atBounds := func() *patchyv1.PreviousAttempt {
+		return &patchyv1.PreviousAttempt{
+			Name: "finding-prev-1-rem-1", Attempt: 1,
+			Outcome: strings.Repeat("o", 64), Detail: strings.Repeat("d", 4096),
+		}
+	}
+	objects := func(n int, prev *patchyv1.PreviousAttempt) []client.Object {
+		meta := func(kind string) metav1.ObjectMeta {
+			return metav1.ObjectMeta{Name: fmt.Sprintf("finding-prev-%d-%s-2", n, kind), Namespace: "default"}
+		}
+		return []client.Object{
+			&patchyv1.Investigation{ObjectMeta: meta("inv"), Spec: patchyv1.InvestigationSpec{
+				FindingRef: patchyv1.ObjectReference{Name: "finding-prev"}, Attempt: 2, PreviousAttempt: prev,
+			}},
+			&patchyv1.Remediation{ObjectMeta: meta("rem"), Spec: patchyv1.RemediationSpec{
+				FindingRef:       patchyv1.ObjectReference{Name: "finding-prev"},
+				InvestigationRef: patchyv1.ObjectReference{Name: "finding-prev-inv-1"},
+				RepositoryRef:    patchyv1.LocalObjectReference{Name: "finding-prev-src"},
+				Attempt:          2, PreviousAttempt: prev,
+			}},
+		}
+	}
+	for _, obj := range objects(0, atBounds()) {
+		if err := c.Create(ctx, obj); err != nil {
+			t.Fatalf("Create(%T with previousAttempt at its bounds) = %v, want nil", obj, err)
+		}
+	}
+	gotInv := &patchyv1.Investigation{}
+	if err := c.Get(ctx, client.ObjectKey{Name: "finding-prev-0-inv-2", Namespace: "default"}, gotInv); err != nil {
+		t.Fatalf("Get(investigation) = %v", err)
+	}
+	gotRem := &patchyv1.Remediation{}
+	if err := c.Get(ctx, client.ObjectKey{Name: "finding-prev-0-rem-2", Namespace: "default"}, gotRem); err != nil {
+		t.Fatalf("Get(remediation) = %v", err)
+	}
+	for _, got := range []*patchyv1.PreviousAttempt{gotInv.Spec.PreviousAttempt, gotRem.Spec.PreviousAttempt} {
+		if !reflect.DeepEqual(got, atBounds()) {
+			t.Errorf("spec.previousAttempt round-tripped as %.80v, want it verbatim", got)
+		}
+	}
+
+	for i, mutate := range []func(*patchyv1.PreviousAttempt){
+		func(p *patchyv1.PreviousAttempt) { p.Outcome += "o" },
+		func(p *patchyv1.PreviousAttempt) { p.Detail += "d" },
+		func(p *patchyv1.PreviousAttempt) { p.Attempt = 0 },
+	} {
+		prev := atBounds()
+		mutate(prev)
+		for _, obj := range objects(i+1, prev) {
+			if err := c.Create(ctx, obj); err == nil {
+				t.Errorf("Create(%T with out-of-bounds previousAttempt #%d) = nil, want rejection", obj, i+1)
+			}
+		}
+	}
+}
+
 func testEvaluationSchema(ctx context.Context, t *testing.T, c client.Client) {
 	t.Helper()
 	eval := func(name string, units []patchyv1.UnitPlan) *patchyv1.Evaluation {

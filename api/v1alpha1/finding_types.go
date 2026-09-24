@@ -271,6 +271,25 @@ type TrackingStatus struct {
 	// State of the tracking item (open/closed).
 	// +optional
 	State string `json:"state,omitempty"`
+	// Comments are the marker-headed comments the projection keeps on the
+	// tracking item — enrichment and runner-image stickies, stage reports —
+	// one per marker, so every later projection edits the comment it posted
+	// rather than posting another.
+	// +optional
+	// +listType=map
+	// +listMapKey=marker
+	Comments []TrackedComment `json:"comments,omitempty"`
+}
+
+// TrackedComment is one marker-headed comment on the tracking item.
+type TrackedComment struct {
+	// Marker is the comment's first line, the HTML comment that keys it.
+	Marker string `json:"marker"`
+	// ID is the tracking system's id of the comment.
+	ID int64 `json:"id"`
+	// Digest is the hash of the body the projection last wrote to it.
+	// +optional
+	Digest string `json:"digest,omitempty"`
 }
 
 // Enrichment is one enhancer's contribution, written by context-controller

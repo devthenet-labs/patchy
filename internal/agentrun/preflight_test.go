@@ -38,7 +38,7 @@ func TestConfigEnvKeys(t *testing.T) {
 		"PATCHY_INVESTIGATE_HARNESS", "PATCHY_REMEDIATE_MODEL", "PATCHY_MODEL_ALLOWLIST",
 		"PATCHY_BROKER_TOKEN_FILE", "PATCHY_MODEL_MAP", "PATCHY_BIN_DIR",
 		"PATCHY_GRANTED_TOKEN_BUDGET", "PATCHY_CHANGESET_MAX_BYTES", "PATCHY_CALIBRATION",
-		"PATCHY_TRANSCRIPT_MAX_TOTAL_BYTES", "PATCHY_REMEDIATE_TIMEOUT",
+		"PATCHY_PREVIOUS_ATTEMPT", "PATCHY_TRANSCRIPT_MAX_TOTAL_BYTES", "PATCHY_REMEDIATE_TIMEOUT",
 	} {
 		if !slices.Contains(keys, want) {
 			t.Errorf("ConfigEnvKeys() lacks %s", want)
@@ -49,7 +49,8 @@ func TestConfigEnvKeys(t *testing.T) {
 	// enumeration is the parser's real surface, not a subset the empty
 	// environment happens to reach.
 	full := map[string]string{"PATCHY_REPO": "acme/shop", "PATCHY_FINDING": "finding-abc123def0-1",
-		"PATCHY_MODEL_MAP": "anthropic/claude-sonnet-5=claude-sonnet-5", "PATCHY_CALIBRATION": `{}`}
+		"PATCHY_MODEL_MAP": "anthropic/claude-sonnet-5=claude-sonnet-5", "PATCHY_CALIBRATION": `{}`,
+		"PATCHY_PREVIOUS_ATTEMPT": `{}`}
 	seen := map[string]bool{}
 	if _, err := FromEnv(func(k string) string { seen[k] = true; return full[k] }); err != nil {
 		t.Fatalf("FromEnv: %v", err)

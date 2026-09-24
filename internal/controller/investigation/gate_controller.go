@@ -25,6 +25,7 @@ import (
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/agentresult"
 	"github.com/bitwise-media-group/patchy/internal/forge"
+	"github.com/bitwise-media-group/patchy/internal/runnerguard"
 )
 
 // FindingPhaseIndex is the field index over status.phase, registered by the
@@ -126,7 +127,51 @@ func (r *GateReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{}, r.openInvestigation(ctx, &fnd, res)
+	prev, settled, err := r.previousAttempt(ctx, &fnd)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !settled {
+		// A finding returns to Enhanced only after its latest run was
+		// stamped Failed; the cache has yet to show that write, and the
+		// retry must not open without knowing what that run failed with.
+		return ctrl.Result{RequeueAfter: settleRequeue}, nil
+	}
+	return ctrl.Result{}, r.openInvestigation(ctx, &fnd, res, prev)
+}
+
+// settleRequeue is how soon the gate looks again at a finding whose latest
+// Investigation the cache still shows in flight.
+const settleRequeue = 2 * time.Second
+
+// previousAttempt is what the next investigation is told about the one
+// before it: the latest earlier Investigation whose agent actually ran — one
+// the sandbox probe refused never reached its agent, so it is passed over —
+// when that run failed (an automatic retry, or a human retry after
+// exhaustion). Nil for a first attempt or a run that no longer exists.
+// settled is false while the cache still shows that run in flight.
+func (r *GateReconciler) previousAttempt(
+	ctx context.Context, fnd *v1alpha1.Finding,
+) (prev *v1alpha1.PreviousAttempt, settled bool, err error) {
+	for n := fnd.Status.Attempts.Investigation; n > 0; n-- {
+		var inv v1alpha1.Investigation
+		key := types.NamespacedName{Namespace: fnd.Namespace, Name: fmt.Sprintf("%s-inv-%d", fnd.Name, n)}
+		if err := r.Get(ctx, key, &inv); err != nil {
+			return nil, true, client.IgnoreNotFound(err)
+		}
+		switch {
+		case inv.Spec.FindingRef.UID != fnd.UID:
+			return nil, true, nil // an earlier Finding's run under the same name
+		case inv.Status.Phase != v1alpha1.RunFailed && inv.Status.Phase != v1alpha1.RunComplete:
+			return nil, false, nil
+		case runnerguard.Refused(inv.Status.Conditions):
+			continue
+		case inv.Status.Phase == v1alpha1.RunFailed:
+			return agentresult.PreviousAttempt(inv.Name, inv.Spec.Attempt, inv.Status.Stage), true, nil
+		}
+		return nil, true, nil
+	}
+	return nil, true, nil
 }
 
 // ensureRepository creates the Finding's Repository artifact request and
@@ -177,10 +222,12 @@ func (r *GateReconciler) ensureRepository(ctx context.Context, fnd *v1alpha1.Fin
 	return ready, nil
 }
 
-// openInvestigation creates the next Investigation attempt and moves the
-// finding to Investigating; the deterministic child name makes the create
-// the lease.
-func (r *GateReconciler) openInvestigation(ctx context.Context, fnd *v1alpha1.Finding, res *forge.Resolved) error {
+// openInvestigation creates the next Investigation attempt, carrying prev —
+// the failed run it retries — and moves the finding to Investigating; the
+// deterministic child name makes the create the lease.
+func (r *GateReconciler) openInvestigation(
+	ctx context.Context, fnd *v1alpha1.Finding, res *forge.Resolved, prev *v1alpha1.PreviousAttempt,
+) error {
 	attempt := fnd.Status.Attempts.Investigation + 1
 	name := fmt.Sprintf("%s-inv-%d", fnd.Name, attempt)
 	inv := &v1alpha1.Investigation{
@@ -211,6 +258,8 @@ func (r *GateReconciler) openInvestigation(ctx context.Context, fnd *v1alpha1.Fi
 			Attempt:       attempt,
 			RepositoryRef: &v1alpha1.LocalObjectReference{Name: fnd.Name + "-src"},
 			Parameters:    r.Parameters,
+			// What the attempt this one retries failed with.
+			PreviousAttempt: prev,
 		},
 	}
 	if err := r.Create(ctx, inv); err != nil && !kerrors.IsAlreadyExists(err) {

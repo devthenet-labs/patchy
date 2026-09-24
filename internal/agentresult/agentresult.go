@@ -3,17 +3,20 @@
 
 // Package agentresult converts agent envelope payloads into the CRD status
 // shapes — the one place the float-bearing wire format meets the no-float
-// structural schemas. Both job controllers (investigation, remediation) use
-// it so cost/confidence formatting and size caps never drift apart.
+// structural schemas — and a failed run's result into what its retry is told
+// about it. Both job controllers (investigation, remediation) use it so
+// cost/confidence formatting and size caps never drift apart.
 package agentresult
 
 import (
+	"encoding/json"
 	"strconv"
 	"unicode/utf8"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/envelope"
 	"github.com/bitwise-media-group/patchy/internal/model"
+	"github.com/bitwise-media-group/patchy/internal/templates"
 )
 
 // Size caps (bytes) for CRD string fields.
@@ -21,6 +24,60 @@ const (
 	maxReport = 65536
 	maxDetail = 4096
 )
+
+// failureOutcomes is every outcome a failed run's stage can record: the
+// envelope's, less ok, plus "aborted", the controllers' own verdict on a run
+// that ended without one. A retry is told its predecessor's outcome only
+// from this list, because the outcome is the pod's to report — on a
+// repository-declared image the pod's process is the image's — and the
+// prompt states it as fact, outside the fenced detail.
+var failureOutcomes = map[envelope.Outcome]bool{
+	envelope.OutcomeRuntimeError:      true,
+	envelope.OutcomeTimeout:           true,
+	envelope.OutcomeBudgetExceeded:    true,
+	envelope.OutcomeReportMissing:     true,
+	envelope.OutcomeReportInvalid:     true,
+	envelope.OutcomeCommitFailed:      true,
+	envelope.OutcomeChangesetTooLarge: true,
+	envelope.OutcomeImageIncompatible: true,
+	envelope.OutcomeChangesetRejected: true,
+	"aborted":                         true,
+}
+
+// PreviousAttempt is what the retry of a failed run is told about it: the
+// run's name and ordinal, its stage outcome — "unknown" unless it is one a
+// failed run can record — and its detail capped to the API bound. Nil when
+// the run recorded no stage. The detail is untrusted text; the prompt, not
+// this, is where it is fenced.
+func PreviousAttempt(name string, attempt int32, st *v1alpha1.StageResult) *v1alpha1.PreviousAttempt {
+	if st == nil {
+		return nil
+	}
+	outcome := st.Outcome
+	if !failureOutcomes[envelope.Outcome(outcome)] {
+		outcome = "unknown"
+	}
+	return &v1alpha1.PreviousAttempt{
+		Name:    name,
+		Attempt: attempt,
+		Outcome: outcome,
+		Detail:  TruncateDetail(st.Detail),
+	}
+}
+
+// EncodePreviousAttempt renders p as the JSON a Job hands the agent-runner
+// (PATCHY_PREVIOUS_ATTEMPT, decoded into templates.PreviousAttempt); "" for
+// nil, which omits the variable and with it the prompt section.
+func EncodePreviousAttempt(p *v1alpha1.PreviousAttempt) string {
+	if p == nil {
+		return ""
+	}
+	blob, err := json.Marshal(templates.PreviousAttempt{Attempt: p.Attempt, Outcome: p.Outcome, Detail: p.Detail})
+	if err != nil {
+		return "" // three plain fields cannot fail to marshal
+	}
+	return string(blob)
+}
 
 // FailedStage builds the stage to record for a run the controller is failing.
 //

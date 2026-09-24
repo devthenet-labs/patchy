@@ -104,6 +104,12 @@ type Config struct {
 	// start, and the prompt then omits the section entirely.
 	Calibration *templates.Calibration
 
+	// PreviousAttempt is the failed run of this stage that this Job retries,
+	// rendered into the stage prompt so the agent does not repeat the
+	// failure. Nil on a first attempt, and the prompt then omits the section.
+	// Its text is untrusted; the prompt bounds and fences it.
+	PreviousAttempt *templates.PreviousAttempt
+
 	InvestigateTimeout time.Duration
 	RemediateTimeout   time.Duration
 
@@ -254,6 +260,14 @@ func FromEnv(getenv func(string) string) (Config, error) {
 			errs = append(errs, fmt.Sprintf("PATCHY_CALIBRATION is not valid JSON: %v", err))
 		} else {
 			cfg.Calibration = &c
+		}
+	}
+	if raw := get("PREVIOUS_ATTEMPT", ""); raw != "" {
+		var p templates.PreviousAttempt
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			errs = append(errs, fmt.Sprintf("PATCHY_PREVIOUS_ATTEMPT is not valid JSON: %v", err))
+		} else {
+			cfg.PreviousAttempt = &p
 		}
 	}
 	// Approving a fix must never buy less than leaving it alone would: a

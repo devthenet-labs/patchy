@@ -827,6 +827,36 @@ spec:
               tracking:
                 description: Tracking links the projected tracking item (integration).
                 properties:
+                  comments:
+                    description: |-
+                      Comments are the marker-headed comments the projection keeps on the
+                      tracking item — enrichment and runner-image stickies, stage reports —
+                      one per marker, so every later projection edits the comment it posted
+                      rather than posting another.
+                    items:
+                      description: TrackedComment is one marker-headed comment on
+                        the tracking item.
+                      properties:
+                        digest:
+                          description: Digest is the hash of the body the projection
+                            last wrote to it.
+                          type: string
+                        id:
+                          description: ID is the tracking system's id of the comment.
+                          format: int64
+                          type: integer
+                        marker:
+                          description: Marker is the comment's first line, the HTML
+                            comment that keys it.
+                          type: string
+                      required:
+                      - id
+                      - marker
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - marker
+                    x-kubernetes-list-type: map
                   integration:
                     description: Integration that owns the projection.
                     type: string

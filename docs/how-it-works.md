@@ -105,6 +105,11 @@ the ratings feed a 0–100 scheduling priority) and routes:
 | `remediate`, confidence ≥ threshold (0.75)              | `Queued` for remediation                                                         |
 | Stage failed (timeout, budget, invalid report, …)       | Retry within `--max-attempts`, then `Failed` — a partial report is never trusted |
 
+A retry is not a blind re-run. The controller that creates it — the investigation gate or the remediation spawner —
+copies the failed attempt's outcome and detail onto the new Investigation or Remediation as `spec.previousAttempt`, and
+the prompt quotes it (for `commit_failed`, the `git status` the runner found after `commit.sh`) as bounded, fenced,
+untrusted data, so the agent is told what went wrong instead of being handed the inputs that already failed.
+
 ## 7. Remediation in priority order
 
 The **remediation-controller** admits queued findings (including approvals and revivals), schedules them in priority

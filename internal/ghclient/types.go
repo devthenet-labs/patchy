@@ -17,6 +17,8 @@ type Issue struct {
 	Labels    []string
 	Assignees []string
 	CreatedAt time.Time
+	// Author is the login that opened the issue.
+	Author string
 }
 
 // Comment is one issue comment.

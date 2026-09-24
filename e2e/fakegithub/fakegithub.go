@@ -33,6 +33,8 @@ type Issue struct {
 	CreatedAt time.Time `json:"created_at"`
 	// RepositoryURL lets the client recover owner/name from search results.
 	RepositoryURL string `json:"repository_url"`
+	// User opened the issue: patchy[bot], the login its comments carry too.
+	User user `json:"user"`
 }
 
 type label struct {
@@ -382,6 +384,7 @@ func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {
 		Number: s.next, Title: body.Title, Body: body.Body, State: "open",
 		CreatedAt:     s.Now(),
 		RepositoryURL: fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo),
+		User:          user{Login: "patchy[bot]"},
 	}
 	for _, l := range body.Labels {
 		is.Labels = append(is.Labels, label{Name: l})

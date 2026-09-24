@@ -155,6 +155,7 @@ func (a *Agent) remediate(ctx context.Context, params remediationParams) *envelo
 		InvestigationPath: a.cfg.inputInvestigation(),
 		ReportPath:        a.cfg.remediationPath(),
 		CommitScriptPath:  a.cfg.commitScript(),
+		PreviousAttempt:   a.cfg.PreviousAttempt,
 	})
 	if err != nil {
 		ev.Outcome = envelope.OutcomeRuntimeError
@@ -386,6 +387,7 @@ func (a *Agent) investigate(ctx context.Context) *envelope.Investigation {
 		ManualMaxTurns:    a.cfg.RemediateManualMaxTurns,
 		ManualTokenBudget: a.cfg.RemediateManualTokenBudget,
 		Calibration:       a.cfg.Calibration,
+		PreviousAttempt:   a.cfg.PreviousAttempt,
 	})
 	if err != nil {
 		ev.Outcome = envelope.OutcomeRuntimeError

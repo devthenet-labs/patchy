@@ -37,9 +37,17 @@ runs on at least the ceiling whatever the investigation estimated, the per-Job `
 `PATCHY_GRANTED_TOKEN_BUDGET` raise that when a human approved a larger estimate, and the `_HARD` values bound the
 result. A hard cap below its ceiling is a configuration error and the runner refuses to start.
 
-`PATCHY_CALIBRATION` is the last per-Job variable: a JSON summary of how earlier estimates in this repository compared
-to reality, rendered into the analysis prompt so the next estimate can correct for the observed skew. It is advisory —
-absent on a cold start, and the prompt then omits the section entirely.
+`PATCHY_CALIBRATION` is a JSON summary of how earlier estimates in this repository compared to reality, rendered into
+the analysis prompt so the next estimate can correct for the observed skew. It is advisory — absent on a cold start, and
+the prompt then omits the section entirely.
+
+`PATCHY_PREVIOUS_ATTEMPT` is the last per-Job variable: on a retry, a JSON copy of the failed attempt's
+`spec.previousAttempt` (`attempt`, `outcome`, `detail`), rendered into that stage's prompt as a "previous attempt"
+section so the agent does not repeat the failure. The outcome is one the controller recognizes as a stage failure, or
+`unknown` — the pod reports its own outcome, and the prompt states it as fact. The detail is untrusted — it can quote
+the repository or its image, such as the `git status` behind a `commit_failed` — so the prompt caps it (4 KiB), drops
+control characters, and quotes it in a fence no line of it can close, stated to be data, not instructions. Absent on a
+first attempt, and the prompt then omits the section.
 
 Brokered (claude) Jobs add two more:
 

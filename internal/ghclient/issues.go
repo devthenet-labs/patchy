@@ -65,11 +65,19 @@ func (c *Client) Create(ctx context.Context, repo Repo, req IssueRequest) (*Issu
 
 // Comment adds a comment to the issue.
 func (c *Client) Comment(ctx context.Context, repo Repo, number int, body string) error {
+	_, err := c.CreateComment(ctx, repo, number, body)
+	return err
+}
+
+// CreateComment adds a comment to the issue and returns its id, the handle a
+// later EditComment addresses it by.
+func (c *Client) CreateComment(ctx context.Context, repo Repo, number int, body string) (int64, error) {
 	comment := &github.IssueComment{Body: new(body)}
-	if _, _, err := c.gh.Issues.CreateComment(ctx, repo.Owner, repo.Name, number, comment); err != nil {
-		return fmt.Errorf("ghclient: comment on %s#%d: %w", repo, number, err)
+	created, _, err := c.gh.Issues.CreateComment(ctx, repo.Owner, repo.Name, number, comment)
+	if err != nil {
+		return 0, fmt.Errorf("ghclient: comment on %s#%d: %w", repo, number, err)
 	}
-	return nil
+	return created.GetID(), nil
 }
 
 // EditComment replaces the body of an existing issue comment.
@@ -167,6 +175,7 @@ func issueFromGitHub(is *github.Issue) *Issue {
 		Body:      is.GetBody(),
 		State:     is.GetState(),
 		CreatedAt: is.GetCreatedAt().Time,
+		Author:    is.GetUser().GetLogin(),
 	}
 	for _, l := range is.Labels {
 		out.Labels = append(out.Labels, l.GetName())

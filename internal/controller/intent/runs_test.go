@@ -149,6 +149,95 @@ func TestBuildNeedsAnAcceptedImage(t *testing.T) {
 	}
 }
 
+// stallRepositories marks every Repository not yet pinned as source-controller
+// does under onReject: handoff when the tree declares an image the policy
+// refuses: pinned at baseSHA with its artifact stored, Stalled on
+// RunnerImageRejected, never Ready.
+func (e *env) stallRepositories() {
+	e.t.Helper()
+	ctx := context.Background()
+	var list v1alpha1.RepositoryList
+	if err := e.c.List(ctx, &list, client.InNamespace(testNS)); err != nil {
+		e.t.Fatal(err)
+	}
+	for i := range list.Items {
+		repo := &list.Items[i]
+		if repo.Status.ResolvedSHA != "" {
+			continue
+		}
+		msg := "registry.example/app:latest is not on the allowlist"
+		repo.Status.ResolvedSHA = baseSHA
+		repo.Status.Artifact = &v1alpha1.Artifact{URL: "http://artifacts/x.tar.gz", Digest: "sha256:aa"}
+		repo.Status.RunnerImage = &v1alpha1.RunnerImage{Declared: "registry.example/app:latest",
+			Manifest: ".patchy/agent.yaml", Rejected: "NotAllowlisted", Message: msg}
+		now := metav1.NewTime(e.clock.Now())
+		repo.Status.Conditions = []metav1.Condition{
+			{Type: v1alpha1.ConditionStalled, Status: metav1.ConditionTrue,
+				Reason: v1alpha1.ReasonRunnerImageRejected, Message: msg, LastTransitionTime: now},
+			{Type: v1alpha1.ConditionReady, Status: metav1.ConditionFalse,
+				Reason: v1alpha1.ReasonRunnerImageRejected, LastTransitionTime: now},
+		}
+		if err := e.c.Status().Update(ctx, repo); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+}
+
+// TestPlanRunsBesideARejectedImage: under onReject: handoff a declared image
+// the policy refuses stalls the Repository, but a plan runs read-only on the
+// default image and never reads the declaration: it plans all the same, and
+// only the build, which requires the image, blocks on ImageRequired.
+func TestPlanRunsBesideARejectedImage(t *testing.T) {
+	e := newEnv(t, testProject())
+	ctx := context.Background()
+	name := e.newIntent(approver)
+	drive := func(want v1alpha1.IntentPhase) *v1alpha1.Intent {
+		t.Helper()
+		for range 30 {
+			if in := e.get(name); in.Status.Phase == want {
+				return in
+			}
+			e.mustIntent(name)
+			e.stallRepositories()
+			if _, err := e.runs.Reconcile(ctx, req(runSchedulerRequest)); err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range e.intentRuns(name) {
+				if _, err := e.runs.Reconcile(ctx, req(r.Name)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e.clock.Advance(time.Minute)
+		}
+		in := e.get(name)
+		t.Fatalf("intent did not reach %s: phase %s, conditions %+v", want, in.Status.Phase, in.Status.Conditions)
+		return nil
+	}
+	drive(v1alpha1.IntentAwaitingApproval)
+	plans := e.runsOf(name, v1alpha1.IntentStagePlan)
+	if len(plans) != 1 || plans[0].Status.Phase != v1alpha1.RunComplete {
+		t.Fatalf("plan runs = %+v, want one, complete", plans)
+	}
+	plan := e.onlyLaunch(t, "plan")
+	if plan.RunnerImage != "" || plan.BaseSHA != baseSHA {
+		t.Errorf("plan job = image %q on %s, want the default image on the pinned %s", plan.RunnerImage, plan.BaseSHA,
+			baseSHA)
+	}
+
+	e.clock.Advance(time.Minute)
+	e.gh.label(1, "patchy:approved", approver)
+	in := drive(v1alpha1.IntentBlocked)
+	c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionImageRequired)
+	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != ReasonRepositoryImageRejected {
+		t.Fatalf("ImageRequired = %+v, want the rejected image", c)
+	}
+	for _, s := range e.jobs.launched() {
+		if s.Phase == "build" {
+			t.Error("a build Job was created on a rejected image")
+		}
+	}
+}
+
 // TestBuildOutcomeIsUntrusted: a build's envelope comes from the repository's
 // own image, so an outcome the controller decides by (image_required, which
 // would make the attempt uncounted and block the intent), or one the run's

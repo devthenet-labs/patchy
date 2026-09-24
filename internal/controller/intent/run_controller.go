@@ -174,7 +174,24 @@ func (r *RunReconciler) launchable(ctx context.Context, run *v1alpha1.IntentRun)
 	}, &repo); err != nil {
 		return false
 	}
-	return meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionReady) && repo.Status.Artifact != nil
+	if repo.Status.Artifact == nil {
+		return false
+	}
+	return meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionReady) || planIgnoresStall(run, &repo)
+}
+
+// planIgnoresStall reports a plan run whose Repository stalled only on its
+// declared runner image (source-controller under onReject: handoff), with
+// the tree pinned and stored all the same. A plan runs read-only on the
+// default image and never reads the declaration, so the stall is no reason
+// not to plan; the image is the build's to require, and a build meeting it
+// blocks on ImageRequired.
+func planIgnoresStall(run *v1alpha1.IntentRun, repo *v1alpha1.Repository) bool {
+	if run.Spec.Stage != v1alpha1.IntentStagePlan || repo.Status.Artifact == nil || repo.Status.ResolvedSHA == "" {
+		return false
+	}
+	c := meta.FindStatusCondition(repo.Status.Conditions, v1alpha1.ConditionStalled)
+	return c != nil && c.Status == metav1.ConditionTrue && c.Reason == v1alpha1.ReasonRunnerImageRejected
 }
 
 // grant moves one run to Running, while a slot is still free as the API
@@ -241,7 +258,8 @@ func (r *RunReconciler) run(ctx context.Context, req ctrl.Request) (ctrl.Result,
 
 // pending fails a pending run that can never launch: its Intent gone or
 // ended, or its Repository stalled (a rejected runner image under onReject
-// handoff blocks a build on its image; any other stall aborts the run).
+// handoff blocks a build on its image and does not stop a plan, which never
+// runs it; any other stall aborts the run).
 func (r *RunReconciler) pending(ctx context.Context, run *v1alpha1.IntentRun) error {
 	if ended, err := r.intentEnded(ctx, run); ended || err != nil {
 		return err
@@ -252,7 +270,7 @@ func (r *RunReconciler) pending(ctx context.Context, run *v1alpha1.IntentRun) er
 		return client.IgnoreNotFound(err)
 	}
 	stalled := meta.FindStatusCondition(repo.Status.Conditions, v1alpha1.ConditionStalled)
-	if stalled == nil || stalled.Status != metav1.ConditionTrue {
+	if stalled == nil || stalled.Status != metav1.ConditionTrue || planIgnoresStall(run, &repo) {
 		return nil
 	}
 	if stalled.Reason == v1alpha1.ReasonRunnerImageRejected && run.Spec.Stage == v1alpha1.IntentStageBuild {

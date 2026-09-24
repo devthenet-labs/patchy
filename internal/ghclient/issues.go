@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/go-github/v90/github"
 )
@@ -91,26 +92,7 @@ func (c *Client) EditComment(ctx context.Context, repo Repo, commentID int64, bo
 
 // ListComments returns every comment on the issue, following pagination.
 func (c *Client) ListComments(ctx context.Context, repo Repo, number int) ([]*Comment, error) {
-	opts := &github.IssueListCommentsOptions{ListOptions: github.ListOptions{PerPage: listPageSize}}
-	var out []*Comment
-	for {
-		page, resp, err := c.gh.Issues.ListComments(ctx, repo.Owner, repo.Name, number, opts)
-		if err != nil {
-			return nil, fmt.Errorf("ghclient: list comments on %s#%d: %w", repo, number, err)
-		}
-		for _, gc := range page {
-			out = append(out, &Comment{
-				ID:                gc.GetID(),
-				Body:              gc.GetBody(),
-				UserLogin:         gc.GetUser().GetLogin(),
-				AuthorAssociation: gc.GetAuthorAssociation(),
-			})
-		}
-		if resp.NextPage == 0 {
-			return out, nil
-		}
-		opts.Page = resp.NextPage
-	}
+	return c.ListIssueComments(ctx, repo, number, time.Time{})
 }
 
 // EditBody replaces the issue body.
@@ -159,7 +141,23 @@ func (c *Client) Assign(ctx context.Context, repo Repo, number int, logins []str
 
 // Close closes the issue.
 func (c *Client) Close(ctx context.Context, repo Repo, number int) error {
+	return c.CloseIssue(ctx, repo, number, "")
+}
+
+// Issue close reasons GitHub records (state_reason).
+const (
+	CloseCompleted  = "completed"
+	CloseNotPlanned = "not_planned"
+)
+
+// CloseIssue closes the issue with a state_reason — CloseCompleted,
+// CloseNotPlanned, or "" to leave the reason to GitHub (as Close does).
+// Closing a closed issue is a no-op success.
+func (c *Client) CloseIssue(ctx context.Context, repo Repo, number int, reason string) error {
 	req := github.UpdateIssueRequest{State: new("closed")}
+	if reason != "" {
+		req.StateReason = new(reason)
+	}
 	if _, _, err := c.gh.Issues.Update(ctx, repo.Owner, repo.Name, number, req); err != nil {
 		return fmt.Errorf("ghclient: close %s#%d: %w", repo, number, err)
 	}
@@ -176,6 +174,7 @@ func issueFromGitHub(is *github.Issue) *Issue {
 		State:     is.GetState(),
 		CreatedAt: is.GetCreatedAt().Time,
 		Author:    is.GetUser().GetLogin(),
+		HTMLURL:   is.GetHTMLURL(),
 	}
 	for _, l := range is.Labels {
 		out.Labels = append(out.Labels, l.GetName())

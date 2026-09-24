@@ -72,8 +72,14 @@ type fakeTracker struct {
 	// CreateIssueCommentReaction's first calls, in order.
 	reactions map[int64][]string
 	reactErrs []error
-	// commentErrs fail CreateComment's first calls, in order.
-	commentErrs []error
+	// commentErrs fail CreateComment's first calls, in order. postedErrs
+	// fail the calls after those the way a timeout does: the comment is
+	// posted, and the call still fails.
+	commentErrs, postedErrs []error
+	// recentLists records the since of each ListIssueComments call; clock
+	// stamps each posted comment (testClock when nil).
+	recentLists []time.Time
+	clock       func() time.Time
 }
 
 func newFakeTracker() *fakeTracker {
@@ -162,15 +168,27 @@ func (f *fakeTracker) CreateComment(_ context.Context, _ ghclient.Repo, number i
 		f.commentErrs = f.commentErrs[1:]
 		return 0, err
 	}
+	if _, ok := f.issues[number]; !ok {
+		return 0, notFound(fmt.Sprintf("comment on issue #%d", number))
+	}
 	if f.onPost != nil {
 		f.onPost()
 	}
 	f.comments = append(f.comments, body)
 	f.nextCommentID++
+	at := testClock
+	if f.clock != nil {
+		at = f.clock()
+	}
 	f.issueComments[number] = append(f.issueComments[number],
-		&ghclient.Comment{ID: f.nextCommentID, Body: body, UserLogin: botLogin})
+		&ghclient.Comment{ID: f.nextCommentID, Body: body, UserLogin: botLogin, CreatedAt: at, UpdatedAt: at})
 	if f.listLag {
 		f.unlisted[f.nextCommentID] = true
+	}
+	if len(f.postedErrs) > 0 {
+		err := f.postedErrs[0]
+		f.postedErrs = f.postedErrs[1:]
+		return 0, err
 	}
 	return f.nextCommentID, nil
 }
@@ -180,6 +198,21 @@ func (f *fakeTracker) ListComments(_ context.Context, _ ghclient.Repo, number in
 	var out []*ghclient.Comment
 	for _, c := range f.issueComments[number] {
 		if !f.unlisted[c.ID] {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// ListIssueComments is ListComments with GitHub's since filter: only the
+// comments updated at or after it.
+func (f *fakeTracker) ListIssueComments(
+	_ context.Context, _ ghclient.Repo, number int, since time.Time,
+) ([]*ghclient.Comment, error) {
+	f.recentLists = append(f.recentLists, since)
+	var out []*ghclient.Comment
+	for _, c := range f.issueComments[number] {
+		if !f.unlisted[c.ID] && !c.UpdatedAt.Before(since) {
 			out = append(out, c)
 		}
 	}

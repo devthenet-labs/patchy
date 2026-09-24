@@ -77,6 +77,7 @@ type trackerClient interface {
 	Comment(ctx context.Context, repo ghclient.Repo, number int, body string) error
 	CreateComment(ctx context.Context, repo ghclient.Repo, number int, body string) (int64, error)
 	ListComments(ctx context.Context, repo ghclient.Repo, number int) ([]*ghclient.Comment, error)
+	ListIssueComments(ctx context.Context, repo ghclient.Repo, number int, since time.Time) ([]*ghclient.Comment, error)
 	EditComment(ctx context.Context, repo ghclient.Repo, commentID int64, body string) error
 	Assign(ctx context.Context, repo ghclient.Repo, number int, logins []string) error
 	Close(ctx context.Context, repo ghclient.Repo, number int) error
@@ -162,13 +163,16 @@ func (r *FindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		requeue = wait
 	}
 
-	// Ahead of the projection too, and for the same reasons: a command
-	// answered is re-queued by its own writes, one GitHub cannot yet
-	// authorise or answer retries on the backoff, and one with no
-	// Integration to read GitHub through waits.
-	settled, wait, err = r.settleCommands(ctx, &fnd)
-	if err != nil || settled {
-		return ctrl.Result{RequeueAfter: wait}, err
+	// Ahead of the projection too: a pass that answers a command is
+	// re-queued by its own writes, and one with no Integration to read
+	// GitHub through waits. A GitHub failure that wrote nothing is held back
+	// instead, and returned for the backoff only once the stale re-check and
+	// the projection have run: a command whose tracking issue keeps failing
+	// must not stop the finding's own projection (its notices, its close on
+	// Remediated or Dismissed) with it.
+	settled, wait, cmdErr := r.settleCommands(ctx, &fnd)
+	if settled {
+		return ctrl.Result{}, cmdErr
 	}
 	if wait > 0 && (requeue == 0 || wait < requeue) {
 		requeue = wait
@@ -181,9 +185,9 @@ func (r *FindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if err := r.project(ctx, &fnd); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, errors.Join(cmdErr, err)
 	}
-	return ctrl.Result{RequeueAfter: requeue}, nil
+	return ctrl.Result{RequeueAfter: requeue}, cmdErr
 }
 
 // resolveSource writes the pipeline's verdict back to the originating

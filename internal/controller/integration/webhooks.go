@@ -125,11 +125,16 @@ func (s *Signals) issues(ctx context.Context, payload []byte) error {
 // commenter may issue it is for GitHub to say, and a delivery is answered
 // before it is handled, so a GitHub call that failed here would lose the
 // command for good. The projection settles it instead
-// (FindingReconciler.settleCommands), retrying until GitHub answers.
+// (FindingReconciler.settleCommands), retrying while GitHub fails.
 //
 // A command from a bot is ignored, the App's own "<slug>[bot]" among them,
 // and so is one already recorded or answered: a duplicate or redelivered
 // delivery, or a demo replay.
+//
+// Anyone who can comment on the issue reaches this point, and whether they
+// may command the finding is not known until GitHub is asked, so the
+// pending slots are shared out by account (recordCommand) rather than first
+// come, first served: no one account can take them all.
 func (s *Signals) comment(ctx context.Context, integ *v1alpha1.Integration, payload []byte) error {
 	var ev struct {
 		Action  string   `json:"action"`
@@ -181,21 +186,78 @@ func (s *Signals) comment(ctx context.Context, integ *v1alpha1.Integration, payl
 		ReceivedAt: metav1.NewTime(s.now()),
 	}
 	return s.updateFinding(ctx, fnd, func(cur *v1alpha1.Finding) error {
-		cmds := cur.Status.Commands
-		switch {
-		case commandSeen(cmds, pending.CommentID):
+		if commandSeen(cur.Status.Commands, pending.CommentID) {
 			return nil // a duplicate or redelivered delivery, or a replay
-		case cmds != nil && len(cmds.Pending) >= v1alpha1.MaxPendingCommands:
-			s.log().LogAttrs(ctx, slog.LevelWarn, "too many commands pending on the finding; not recorded", attrs...)
-			return nil
-		case cmds == nil:
-			cmds = &v1alpha1.FindingCommands{}
-			cur.Status.Commands = cmds
 		}
-		cmds.Pending = append(cmds.Pending, pending)
-		s.log().LogAttrs(ctx, slog.LevelInfo, "command recorded", attrs...)
+		if cur.Status.Commands == nil {
+			cur.Status.Commands = &v1alpha1.FindingCommands{}
+		}
+		recorded, evicted := recordCommand(cur.Status.Commands, pending)
+		switch {
+		case !recorded:
+			s.log().LogAttrs(ctx, slog.LevelWarn,
+				"command not recorded: the account already has its share pending, or every slot is held", attrs...)
+		case evicted != nil:
+			s.log().LogAttrs(ctx, slog.LevelWarn, "command recorded in the slot of another account's newer command",
+				append(attrs, slog.Int64("dropped_comment", evicted.CommentID),
+					slog.String("dropped_login", evicted.Actor.Login))...)
+		default:
+			s.log().LogAttrs(ctx, slog.LevelInfo, "command recorded", attrs...)
+		}
 		return nil
 	})
+}
+
+// recordCommand adds c to cmds.Pending, sharing the slots out by account,
+// and reports whether it did. An account already holding
+// MaxPendingCommandsPerActor gets no more. When every slot is held, c takes
+// the slot of the newest undecided command of an account holding more than
+// one, which is returned; with no such command, c is not recorded. A
+// decided command is never dropped: it may already have taken effect.
+func recordCommand(
+	cmds *v1alpha1.FindingCommands, c v1alpha1.FindingCommand,
+) (recorded bool, evicted *v1alpha1.FindingCommand) {
+	if pendingBy(cmds.Pending, c.Actor) >= v1alpha1.MaxPendingCommandsPerActor {
+		return false, nil
+	}
+	if len(cmds.Pending) >= v1alpha1.MaxPendingCommands {
+		victim := -1
+		for i, p := range cmds.Pending {
+			if p.Outcome == "" && pendingBy(cmds.Pending, p.Actor) > 1 &&
+				(victim < 0 || p.CommentID > cmds.Pending[victim].CommentID) {
+				victim = i
+			}
+		}
+		if victim < 0 {
+			return false, nil
+		}
+		dropped := cmds.Pending[victim]
+		evicted = &dropped
+		cmds.Pending = slices.Delete(cmds.Pending, victim, victim+1)
+	}
+	cmds.Pending = append(cmds.Pending, c)
+	return true, evicted
+}
+
+// pendingBy counts the commands in pending that actor wrote.
+func pendingBy(pending []v1alpha1.FindingCommand, actor v1alpha1.CommandActor) int {
+	n := 0
+	for _, p := range pending {
+		if sameActor(p.Actor, actor) {
+			n++
+		}
+	}
+	return n
+}
+
+// sameActor reports whether a and b are one GitHub account: by its numeric
+// id when both carry one (a login can be renamed), else by login, which
+// GitHub compares without case.
+func sameActor(a, b v1alpha1.CommandActor) bool {
+	if a.ID > 0 && b.ID > 0 {
+		return a.ID == b.ID
+	}
+	return strings.EqualFold(a.Login, b.Login)
 }
 
 // approveAlias is the Integration's configured approve comment; empty means
@@ -213,20 +275,18 @@ func isBot(a v1alpha1.CommandActor) bool {
 	return a.Type == "Bot" || strings.HasSuffix(a.Login, "[bot]")
 }
 
-// commandSeen reports whether the command in comment id is already recorded
-// or answered on the finding. The consumed list keeps the largest ids
-// answered, so once it is full an id below all of them is older than every
-// command it remembers: GitHub's ids grow with creation, and that comment
-// was answered long ago.
+// commandSeen reports whether the command in comment id is recorded on the
+// finding, or remembered as answered: in consumed, or the last suspend or
+// resume applied. The check is exact. Nothing is inferred from an id's
+// place among those remembered: a delivery can arrive long after later
+// commands are answered (the redelivery sweep resends one the webhook
+// queue turned away), and it must still be answered.
 func commandSeen(cmds *v1alpha1.FindingCommands, id int64) bool {
 	if cmds == nil {
 		return false
 	}
-	if slices.ContainsFunc(cmds.Pending, func(c v1alpha1.FindingCommand) bool { return c.CommentID == id }) ||
-		slices.Contains(cmds.Consumed, id) {
-		return true
-	}
-	return len(cmds.Consumed) >= v1alpha1.MaxConsumedCommands && id < slices.Min(cmds.Consumed)
+	return slices.ContainsFunc(cmds.Pending, func(c v1alpha1.FindingCommand) bool { return c.CommentID == id }) ||
+		slices.Contains(cmds.Consumed, id) || (cmds.LastToggle > 0 && id == cmds.LastToggle)
 }
 
 // repoRef is a delivery's reference to a repository.

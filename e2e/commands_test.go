@@ -59,8 +59,9 @@ func commandReplies(gh *fakegithub.Server, number int, id int64) []string {
 // projection asks GitHub for the commenter's permission on the repository,
 // applies the approval, and answers with an eyes reaction and exactly one
 // reply. A drive-by commenter (read, as every account is on a public
-// repository) is refused; a maintainer with write access releases the hold
-// — even with the delivery arriving twice.
+// repository) is refused, and refused again with the reaction alone; a
+// maintainer with write access releases the hold — even with the delivery
+// arriving twice.
 func TestFindingCommands(t *testing.T) {
 	cl := startCluster(t)
 	gh := fakegithub.New()
@@ -113,6 +114,15 @@ func TestFindingCommands(t *testing.T) {
 		cmds := get().Status.Commands
 		return cmds != nil && slices.Contains(cmds.Consumed, id)
 	}
+	// A refusal leaves pending without joining consumed (commenting must
+	// not push a maintainer's command out of it); its author is remembered
+	// instead, so a later refusal gets the reaction alone.
+	refusedFor := func(id int64, author fakegithub.Actor) bool {
+		cmds := get().Status.Commands
+		return cmds != nil && !slices.Contains(cmds.Consumed, id) &&
+			!slices.ContainsFunc(cmds.Pending, func(c v1alpha1.FindingCommand) bool { return c.CommentID == id }) &&
+			slices.Contains(cmds.RefusedActors, author.ID)
+	}
 
 	var tracking v1alpha1.TrackingStatus
 	eventually(t, "the held finding's tracking issue and its approval notice", func() bool {
@@ -136,7 +146,7 @@ func TestFindingCommands(t *testing.T) {
 		commentDelivery(t, tracking.URL, number, refused, "/patchy approve", driveBy))
 	eventually(t, "the drive-by's command to be refused and answered", func() bool {
 		return slices.Equal(gh.Reactions(refused), []string{"eyes"}) &&
-			len(commandReplies(gh, number, refused)) == 1 && consumed(refused)
+			len(commandReplies(gh, number, refused)) == 1 && refusedFor(refused, driveBy)
 	})
 	if reply := commandReplies(gh, number, refused)[0]; !strings.Contains(reply,
 		"@drive-by you may not use `/patchy approve` here") {
@@ -145,6 +155,20 @@ func TestFindingCommands(t *testing.T) {
 	if cur := get(); cur.Spec.Approval != nil || cur.Status.Phase != v1alpha1.PhaseAwaitingApproval {
 		t.Fatalf("approval %+v, phase %s: a read-only commenter released the hold",
 			cur.Spec.Approval, cur.Status.Phase)
+	}
+
+	// The same account refused again gets the reaction alone: commenting
+	// cannot make patchy post a reply per comment.
+	again := gh.CommentAs(number, "/patchy approve", driveBy)
+	deliver(t, webhookURL, "issue_comment",
+		commentDelivery(t, tracking.URL, number, again, "/patchy approve", driveBy))
+	eventually(t, "the drive-by's second command to be refused with the reaction alone", func() bool {
+		cmds := get().Status.Commands
+		return slices.Equal(gh.Reactions(again), []string{"eyes"}) && cmds != nil &&
+			!slices.ContainsFunc(cmds.Pending, func(c v1alpha1.FindingCommand) bool { return c.CommentID == again })
+	})
+	if n := len(commandReplies(gh, number, again)); n != 0 {
+		t.Errorf("replies to the repeated refusal = %d, want the reaction alone", n)
 	}
 
 	// A maintainer with write access approves; GitHub delivers it twice.
@@ -168,7 +192,8 @@ func TestFindingCommands(t *testing.T) {
 		"@maintainer `/patchy approve` is done") {
 		t.Errorf("approval reply:\n%s", reply)
 	}
-	consistently(t, "exactly one reply to each command", func() bool {
-		return len(commandReplies(gh, number, refused)) == 1 && len(commandReplies(gh, number, approved)) == 1
+	consistently(t, "exactly one reply to each command, and none to the repeated refusal", func() bool {
+		return len(commandReplies(gh, number, refused)) == 1 && len(commandReplies(gh, number, approved)) == 1 &&
+			len(commandReplies(gh, number, again)) == 0
 	})
 }

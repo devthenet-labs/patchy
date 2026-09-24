@@ -221,15 +221,18 @@ func TestParsePlanErrors(t *testing.T) {
 		{"blank summary", planWith(summary, `summary: "   "`), "summary is required"},
 		{"summary over 200 characters", planWith(summary, `summary: "`+strings.Repeat("é", SummaryMaxChars+1)+`"`),
 			"over 200"},
-		{"multi-line summary", planWith(summary, "summary: |\n  one\n  two"), "line break"},
-		{"summary with a bidi override", planWith(summary, `summary: "safe \u202e evil"`), "format character"},
+		{"multi-line summary", planWith(summary, "summary: |\n  one\n  two"),
+			"summary holds U+000A, a control character"},
+		{"summary with a bidi override", planWith(summary, `summary: "safe \u202e evil"`),
+			"summary holds U+202E, a format character"},
 		// U+2028 and U+2029 are neither control nor format characters, yet
 		// renderers and tokenizers break a line on them; NEL is a control.
-		{"summary with a line separator", planWith(summary, `summary: "line one\u2028line two"`), "line break"},
+		{"summary with a line separator", planWith(summary, `summary: "line one\u2028line two"`),
+			"summary holds U+2028, a line or paragraph separator"},
 		{"question with a paragraph separator", planWith(questions, `questions:
-  - "one\u2029two"`), "line break"},
+  - "one\u2029two"`), "questions[0] holds U+2029, a line or paragraph separator"},
 		{"dependency with a next line", planWith(deps, `new_dependencies:
-  - "example.com/dep\u0085v1"`), "line break"},
+  - "example.com/dep\u0085v1"`), "new_dependencies[0] holds U+0085, a control character"},
 		{"repository with a line separator", repo(`https://github.com/devthenet-labs/patchy\u2028target`),
 			"not an https"},
 		{"missing repositories", planWith(repos+"\n", ""), "repositories is required"},
@@ -288,6 +291,206 @@ func TestParsePlanErrors(t *testing.T) {
 	}
 }
 
+// hiddenRunes are characters no intent report may hold, one or more per
+// class checkVisible refuses, each with the class its refusal names. They
+// are built from their code points, never typed, so that no editor can
+// render one away.
+var hiddenRunes = []struct {
+	r     rune
+	class string
+}{
+	{0x00, "a control character"}, // NUL
+	{0x07, "a control character"}, // BEL
+	{0x0b, "a control character"}, // vertical tab
+	{0x0c, "a control character"}, // form feed
+	{0x1b, "a control character"}, // ESC, which starts a terminal escape
+	{0x7f, "a control character"}, // DEL
+	{0x85, "a control character"}, // NEL, a C1 line break
+	{0x9b, "a control character"}, // CSI, the C1 terminal escape
+	{0x2028, "a line or paragraph separator"},
+	{0x2029, "a line or paragraph separator"},
+	{0xe0000, "a tag character"},               // unassigned, in the tag block
+	{0xe0001, "a tag character"},               // LANGUAGE TAG
+	{0xe0041, "a tag character"},               // TAG LATIN CAPITAL LETTER A
+	{0xe007f, "a tag character"},               // CANCEL TAG
+	{0xfe00, "a variation selector"},           // VS1
+	{0xfe0f, "a variation selector"},           // VS16, the emoji presentation selector
+	{0xe0100, "a variation selector"},          // VS17
+	{0xe01ef, "a variation selector"},          // VS256
+	{0x180b, "a variation selector"},           // MONGOLIAN FREE VARIATION SELECTOR ONE
+	{0x00ad, "a format character"},             // SOFT HYPHEN
+	{0x061c, "a format character"},             // ARABIC LETTER MARK
+	{0x180e, "a format character"},             // MONGOLIAN VOWEL SEPARATOR
+	{0x200b, "a format character"},             // ZERO WIDTH SPACE
+	{0x200c, "a format character"},             // ZERO WIDTH NON-JOINER
+	{0x200d, "a format character"},             // ZERO WIDTH JOINER
+	{0x200e, "a format character"},             // LEFT-TO-RIGHT MARK
+	{0x200f, "a format character"},             // RIGHT-TO-LEFT MARK
+	{0x202a, "a format character"},             // LEFT-TO-RIGHT EMBEDDING
+	{0x202e, "a format character"},             // RIGHT-TO-LEFT OVERRIDE
+	{0x2060, "a format character"},             // WORD JOINER
+	{0x2064, "a format character"},             // INVISIBLE PLUS
+	{0x2066, "a format character"},             // LEFT-TO-RIGHT ISOLATE
+	{0x2069, "a format character"},             // POP DIRECTIONAL ISOLATE
+	{0xfeff, "a format character"},             // ZERO WIDTH NO-BREAK SPACE, the BOM
+	{0xfff9, "a format character"},             // INTERLINEAR ANNOTATION ANCHOR
+	{0x1d173, "a format character"},            // MUSICAL SYMBOL BEGIN BEAM
+	{0x034f, "a default-ignorable character"},  // COMBINING GRAPHEME JOINER
+	{0x115f, "a default-ignorable character"},  // HANGUL CHOSEONG FILLER
+	{0x17b4, "a default-ignorable character"},  // KHMER VOWEL INHERENT AQ
+	{0x2065, "a default-ignorable character"},  // reserved for an invisible character
+	{0x3164, "a default-ignorable character"},  // HANGUL FILLER
+	{0xffa0, "a default-ignorable character"},  // HALFWIDTH HANGUL FILLER
+	{0xfff0, "a default-ignorable character"},  // reserved for an invisible character
+	{0xe0080, "a default-ignorable character"}, // reserved, past the tag block
+	{0xe0fff, "a default-ignorable character"}, // reserved, the last default-ignorable
+}
+
+// invalidUTF8 are byte sequences that begin no UTF-8 encoding, each with
+// the first byte a refusal names.
+var invalidUTF8 = []struct {
+	seq   string
+	first byte
+}{
+	{"\xff", 0xff},
+	{"\x80", 0x80},             // a continuation byte alone
+	{"\xe2\x80", 0xe2},         // a truncated sequence
+	{"\xc0\xaf", 0xc0},         // an overlong encoding of '/'
+	{"\xed\xa0\x80", 0xed},     // a UTF-16 surrogate
+	{"\xf4\x90\x80\x80", 0xf4}, // past U+10FFFF
+}
+
+// TestParsePlanRefusesHiddenCharacters: the approver reads a plan verbatim
+// and the approval's digest covers every byte of it, so a character that
+// renders invisibly or reorders text is refused wherever it is — in the
+// frontmatter, where it would first be caught by nothing but YAML, and in
+// the body, which no field check reads — naming its code point, line and
+// column.
+func TestParsePlanRefusesHiddenCharacters(t *testing.T) {
+	// The summary's value starts at column 11; the body's "Add a" ends at
+	// column 5 of line 15.
+	sites := []struct {
+		name         string
+		insert       func(string) string
+		line, column int
+	}{
+		{"in the summary", func(s string) string {
+			return planWith(`summary: "Add GET`, `summary: "Add`+s+` GET`)
+		}, 2, 14},
+		{"in a list item", func(s string) string {
+			return planWith(`  - "Should the build`, `  - "Should`+s+` the build`)
+		}, 7, 12},
+		{"in a YAML comment", func(s string) string {
+			return planWith("confidence: 0.8", "confidence: 0.8 # sure"+s)
+		}, 8, 23},
+		{"in the body", func(s string) string {
+			return strings.Replace(validPlan, "Add a handler.", "Add a"+s+" handler.", 1)
+		}, 15, 6},
+		{"leading the document", func(s string) string { return s + validPlan }, 1, 1},
+		{"ending the document", func(s string) string { return validPlan + s }, 16, 1},
+	}
+	for _, site := range sites {
+		for _, h := range hiddenRunes {
+			t.Run(fmt.Sprintf("%s U+%04X", site.name, h.r), func(t *testing.T) {
+				_, err := ParsePlan([]byte(site.insert(string(h.r))))
+				want := fmt.Sprintf("line %d, column %d: U+%04X is %s", site.line, site.column, h.r, h.class)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("ParsePlan() error = %v, want it to name %q", err, want)
+				}
+			})
+		}
+		for _, bad := range invalidUTF8 {
+			t.Run(fmt.Sprintf("%s %q", site.name, bad.seq), func(t *testing.T) {
+				_, err := ParsePlan([]byte(site.insert(bad.seq)))
+				want := fmt.Sprintf("line %d, column %d: byte 0x%02X is not valid UTF-8", site.line, site.column,
+					bad.first)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("ParsePlan() error = %v, want it to name %q", err, want)
+				}
+			})
+		}
+	}
+}
+
+// TestParsePlanCarriageReturns: a carriage return is admitted only as half
+// of a CRLF line ending, which reads as the line break it is; alone, a
+// terminal prints what follows it over the line before.
+func TestParsePlanCarriageReturns(t *testing.T) {
+	crlf := strings.ReplaceAll(validPlan, "\n", "\r\n")
+	p, err := ParsePlan([]byte(crlf))
+	if err != nil {
+		t.Fatalf("ParsePlan(CRLF) error = %v, want a CRLF plan accepted", err)
+	}
+	if p.Summary != "Add GET /version returning {sha, built} as JSON" ||
+		p.Body != "## Approach\r\n\r\nAdd a handler.\r\n" {
+		t.Errorf("ParsePlan(CRLF) = summary %q, body %q; want the plan, its body byte-exact", p.Summary, p.Body)
+	}
+	for _, tt := range []struct {
+		name, src    string
+		line, column int
+	}{
+		{"a lone CR in the body", strings.Replace(validPlan, "Add a handler.", "Add a\r handler.", 1), 15, 6},
+		{"a CR ending the document", validPlan + "\r", 16, 1},
+		{"a CR before a CR", strings.Replace(crlf, "## Approach\r\n", "## Approach\r\r\n", 1), 13, 12},
+		{"a lone CR in the summary", planWith(`summary: "Add GET`, "summary: \"Add\r GET"), 2, 14},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParsePlan([]byte(tt.src))
+			want := fmt.Sprintf("line %d, column %d: U+000D is a carriage return outside a CRLF line ending",
+				tt.line, tt.column)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("ParsePlan() error = %v, want it to name %q", err, want)
+			}
+		})
+	}
+}
+
+// TestParsePlanAcceptsVisibleText: the rule refuses what cannot be seen,
+// not what is not ASCII — accents, other scripts (right-to-left ones among
+// them: their letters are the text, not a control reordering it), emoji
+// that need no selector, the space separators, tabs, a combining mark on a
+// letter, and a YAML escape written out in the body, where it is six
+// visible characters.
+func TestParsePlanAcceptsVisibleText(t *testing.T) {
+	text := "caf" + string(rune(0x00e9)) + " " + string([]rune{0x6f22, 0x5b57}) + " " +
+		string([]rune{0x05e9, 0x05dc, 0x05d5, 0x05dd}) + " " + string(rune(0x1f642)) + string(rune(0x2705)) +
+		" a" + string(rune(0x00a0)) + "b" + string(rune(0x3000)) + "c e" + string(rune(0x0301)) +
+		string(rune(0xfffd))
+	// In the body, where nothing decodes it, an escape is what it shows.
+	body := text + "\t" + `\u200b`
+	src := planWith(`summary: "Add GET`, `summary: "`+text+` GET`)
+	src = strings.Replace(src, "Add a handler.", "Add a handler: "+body, 1)
+	p, err := ParsePlan([]byte(src))
+	if err != nil {
+		t.Fatalf("ParsePlan() error = %v, want visible text accepted", err)
+	}
+	if !strings.HasPrefix(p.Summary, text) || !strings.Contains(p.Body, body) {
+		t.Errorf("ParsePlan() = summary %q, body %q; want both to keep %q", p.Summary, p.Body, text)
+	}
+}
+
+// TestParsePlanRefusesEscapedHiddenCharacters: a YAML escape is visible in
+// the document, but the value it decodes to is not — and a summary becomes
+// a commit subject and a status field. The field checks refuse every class
+// the document check does, spelled as an escape.
+func TestParsePlanRefusesEscapedHiddenCharacters(t *testing.T) {
+	for _, h := range hiddenRunes {
+		escape := fmt.Sprintf(`\U%08X`, h.r)
+		for field, src := range map[string]string{
+			"summary":      planWith(`summary: "Add GET`, `summary: "Add`+escape+` GET`),
+			"questions[0]": planWith(`  - "Should the build`, `  - "Should`+escape+` the build`),
+		} {
+			t.Run(fmt.Sprintf("%s U+%04X", field, h.r), func(t *testing.T) {
+				_, err := ParsePlan([]byte(src))
+				want := fmt.Sprintf("%s holds U+%04X, %s", field, h.r, h.class)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("ParsePlan() error = %v, want it to name %q", err, want)
+				}
+			})
+		}
+	}
+}
+
 // TestParsePlanInput: the build stage's input is the approved plan, followed
 // on a revise round by that round's feedback and compare patch, which can
 // take it past the plan's own body and document bounds. The frontmatter is
@@ -313,5 +516,51 @@ func TestParsePlanInput(t *testing.T) {
 		if _, err := ParsePlanInput([]byte(bad)); err == nil {
 			t.Errorf("ParsePlanInput(%.40q...) error = nil, want the frontmatter refused", bad)
 		}
+	}
+}
+
+// TestParsePlanInputRefusesHiddenCharacters: the build agent reads the
+// whole input — the approved plan and whatever a revise round appends — so
+// every byte of it is held to the plan's rule, past the plan's own bounds:
+// a hidden character in the plan or in the round's feedback is refused,
+// with where it sits in the input. GitHub's CRLF comment bodies pass as
+// they are.
+func TestParsePlanInputRefusesHiddenCharacters(t *testing.T) {
+	// validPlan is 15 lines and a final line feed; the round's heading is on
+	// line 18 and its first feedback line on line 20.
+	round := "\n\n## Review feedback (round 1)\n\nRename the handler.\n" + strings.Repeat("feedback\n", ReportMaxBytes/9+1)
+	for _, h := range hiddenRunes {
+		for _, tt := range []struct {
+			name         string
+			src          string
+			line, column int
+		}{
+			{"in the plan's frontmatter", planWith(`summary: "Add GET`, `summary: "Add`+string(h.r)+` GET`) + round,
+				2, 14},
+			{"in the plan's body", strings.Replace(validPlan, "Add a handler.", "Add a"+string(h.r)+" handler.", 1) +
+				round, 15, 6},
+			{"in the round's feedback", validPlan + strings.Replace(round, "Rename the", "Rename"+string(h.r)+" the", 1),
+				20, 7},
+			{"past the plan's document bound", validPlan + round + string(h.r), 20 + ReportMaxBytes/9 + 2, 1},
+		} {
+			t.Run(fmt.Sprintf("%s U+%04X", tt.name, h.r), func(t *testing.T) {
+				_, err := ParsePlanInput([]byte(tt.src))
+				want := fmt.Sprintf("line %d, column %d: U+%04X is %s", tt.line, tt.column, h.r, h.class)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("ParsePlanInput() error = %v, want it to name %q", err, want)
+				}
+			})
+		}
+	}
+	for _, bad := range invalidUTF8 {
+		_, err := ParsePlanInput([]byte(validPlan + round + bad.seq))
+		want := fmt.Sprintf("byte 0x%02X is not valid UTF-8", bad.first)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("ParsePlanInput(round + %q) error = %v, want it to name %q", bad.seq, err, want)
+		}
+	}
+	crlf := validPlan + strings.ReplaceAll(round, "\n", "\r\n")
+	if p, err := ParsePlanInput([]byte(crlf)); err != nil || !strings.HasSuffix(p.Body, "feedback\r\n") {
+		t.Errorf("ParsePlanInput(CRLF round) error = %v, want the round accepted as written", err)
 	}
 }

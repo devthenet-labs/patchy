@@ -138,7 +138,9 @@ func render(t *testing.T, frontmatter any, body string) []byte {
 }
 
 // fitBody cuts a body so the document stays within ReportMaxBytes, on a rune
-// boundary.
+// boundary and never between a CRLF's two bytes, which would leave a lone
+// carriage return no report may hold. The document it fits keeps 8 bytes to
+// spare, room for any one character a property inserts.
 func fitBody(frontmatterBytes int, body string) string {
 	room := ReportMaxBytes - frontmatterBytes - len("---\n---\n")
 	if len(body) <= room {
@@ -148,7 +150,7 @@ func fitBody(frontmatterBytes int, body string) string {
 	for cut > 0 && !utf8.RuneStart(body[cut]) {
 		cut--
 	}
-	return body[:cut]
+	return strings.TrimSuffix(body[:cut], "\r")
 }
 
 func quickConfig(seed int64, values func([]reflect.Value, *rand.Rand)) *quick.Config {
@@ -229,6 +231,16 @@ func TestBuildRoundTripProperty(t *testing.T) {
 	}
 }
 
+// hiddenJunk widens mutate's alphabet with a character of every class the
+// parsers refuse, and with the CR and tab they admit only in places: a lone
+// CR, a CRLF, a tab. Built from code points so that no editor renders one
+// away.
+var hiddenJunk = []string{
+	"\r", "\r\n", "\t", string(rune(0x1b)) + "[2J", string(rune(0x9b)), string(rune(0xfe0f)), string(rune(0xe0100)),
+	string([]rune{0xe0001, 0xe0041}), string(rune(0x00ad)), string(rune(0x2066)), string(rune(0xfeff)),
+	string(rune(0x3164)), string(rune(0x034f)), string(rune(0x2065)),
+}
+
 // mutate damages a valid document the way a model or a truncated write
 // might: bytes replaced, dropped or inserted from a YAML-significant
 // alphabet, the document cut short, or padded past every bound.
@@ -236,6 +248,11 @@ func mutate(r *rand.Rand, doc []byte) []byte {
 	out := slices.Clone(doc)
 	junk := []string{":", "\n", "- ", "\"", "'", "{", "[", "---", "\xff", "\x00", "\u202e", " ", "#", "&a", "*a", "|",
 		"\u2028", "\u2029", "\u0085", "\u200b", "\u00a0"}
+	if r.Intn(2) == 0 {
+		// Half the time only, so that as many damaged documents as before
+		// stay free of hidden characters and test the other bounds.
+		junk = append(junk, hiddenJunk...)
+	}
 	for range 1 + r.Intn(6) {
 		switch op := r.Intn(8); {
 		case op < 3 && len(out) > 0:
@@ -262,8 +279,12 @@ func mutate(r *rand.Rand, doc []byte) []byte {
 // may never carry, written apart from the parser's predicate so that a gap in
 // that predicate fails a property instead of being shared by its oracle: the
 // C0 and C1 controls and DEL (NEL, U+0085, among them), U+2028 LINE
-// SEPARATOR and U+2029 PARAGRAPH SEPARATOR, and the format characters (bidi
-// controls, zero-width characters, the BOM, tag characters).
+// SEPARATOR and U+2029 PARAGRAPH SEPARATOR, the format characters (bidi
+// controls, zero-width characters, the BOM, the assigned tag characters),
+// and every default-ignorable code point Unicode lists (the variation
+// selectors, the whole tag block, the Hangul fillers and the reserved
+// ranges among them) — spelled out as ranges here, where the parser reads
+// the standard library's tables.
 func forbiddenInLine(r rune) bool {
 	switch {
 	case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
@@ -271,7 +292,45 @@ func forbiddenInLine(r rune) bool {
 	case r == 0x2028, r == 0x2029:
 		return true
 	}
-	return unicode.Is(unicode.Cf, r)
+	return unicode.Is(unicode.Cf, r) || slices.ContainsFunc(defaultIgnorable, func(rg [2]rune) bool {
+		return r >= rg[0] && r <= rg[1]
+	})
+}
+
+// defaultIgnorable are Unicode 15's Default_Ignorable_Code_Point ranges
+// (DerivedCoreProperties.txt), format characters included: the code points
+// a renderer draws as nothing.
+var defaultIgnorable = [][2]rune{
+	{0x00ad, 0x00ad}, {0x034f, 0x034f}, {0x061c, 0x061c}, {0x115f, 0x1160}, {0x17b4, 0x17b5},
+	{0x180b, 0x180f}, {0x200b, 0x200f}, {0x202a, 0x202e}, {0x2060, 0x206f}, {0x3164, 0x3164},
+	{0xfe00, 0xfe0f}, {0xfeff, 0xfeff}, {0xffa0, 0xffa0}, {0xfff0, 0xfff8}, {0x1bca0, 0x1bca3},
+	{0x1d173, 0x1d17a}, {0xe0000, 0xe0fff},
+}
+
+// firstHidden is the properties' own scan of a whole document for the
+// first byte a reader cannot see: a byte that begins no UTF-8 encoding, a
+// carriage return not followed by a line feed, or any other rune
+// forbiddenInLine names but tab and line feed. It returns that byte's line
+// and column (1-based; lines counted in line feeds, columns in characters),
+// the rune or, for invalid UTF-8, the byte; found is false for a document
+// that is visible throughout.
+func firstHidden(doc []byte) (line, column int, r rune, b byte, invalid, found bool) {
+	s := string(doc)
+	line, column = 1, 1
+	for i, r := range s {
+		switch _, size := utf8.DecodeRuneInString(s[i:]); {
+		case r == utf8.RuneError && size == 1:
+			return line, column, r, s[i], true, true
+		case r == '\n':
+			line, column = line+1, 1
+			continue
+		case r == '\t', r == '\r' && strings.HasPrefix(s[i+1:], "\n"):
+		case forbiddenInLine(r):
+			return line, column, r, 0, false, true
+		}
+		column++
+	}
+	return 0, 0, 0, 0, false, false
 }
 
 // sameRepository is the properties' own statement of when two repository
@@ -304,6 +363,13 @@ func repositoryAlias(r *rand.Rand, u string) string {
 // planWithinBounds reports whether an accepted plan honours every bound the
 // contract promises.
 func planWithinBounds(p *Plan) bool {
+	return planFrontmatterWithinBounds(p) && len(p.Body) <= BodyMaxBytes
+}
+
+// planFrontmatterWithinBounds reports whether an accepted plan's
+// frontmatter honours every bound the contract promises: the bounds a build
+// input is held to, besides being visible throughout.
+func planFrontmatterWithinBounds(p *Plan) bool {
 	for i, u := range p.Repositories {
 		if slices.ContainsFunc(p.Repositories[:i], func(v string) bool { return sameRepository(u, v) }) {
 			return false
@@ -324,7 +390,13 @@ func planWithinBounds(p *Plan) bool {
 		}) &&
 		all(p.NewDependencies, PlanMaxNewDependencies, ItemMaxChars) && all(p.Questions, PlanMaxQuestions, ItemMaxChars) &&
 		p.Confidence != nil && *p.Confidence >= 0 && *p.Confidence <= 1 &&
-		p.EstimatedMaxTurns >= 1 && p.EstimatedTokenBudget >= 1 && len(p.Body) <= BodyMaxBytes
+		p.EstimatedMaxTurns >= 1 && p.EstimatedTokenBudget >= 1
+}
+
+// visibleDocument reports whether firstHidden finds nothing in doc.
+func visibleDocument(doc []byte) bool {
+	_, _, _, _, _, found := firstHidden(doc)
+	return !found
 }
 
 // badConfidences are the confidences no plan may carry: outside [0, 1], and
@@ -332,31 +404,58 @@ func planWithinBounds(p *Plan) bool {
 // bound. yaml.Marshal writes them as YAML's own .nan, .inf and -.inf.
 var badConfidences = []float64{math.NaN(), math.Inf(1), math.Inf(-1), -0.25, -math.SmallestNonzeroFloat64, 1.5}
 
+// damagedPlan builds a random valid plan, sometimes given a confidence or a
+// repository it may not have, and renders it as a document.
+func damagedPlan(r *rand.Rand) []byte {
+	p := genPlan(r)
+	if r.Intn(4) == 0 {
+		bad := badConfidences[r.Intn(len(badConfidences))]
+		p.Confidence = &bad
+	}
+	if r.Intn(4) == 0 {
+		p.Repositories = append(p.Repositories, repositoryAlias(r, p.Repositories[r.Intn(len(p.Repositories))]))
+	}
+	raw, err := yaml.Marshal(p)
+	if err != nil {
+		panic(err)
+	}
+	return []byte("---\n" + string(raw) + "---\n" + p.Body)
+}
+
 // TestPlanParseBoundedProperty: however a plan is damaged, parsing it never
-// panics, never accepts a document past the size bound, and whatever it
-// does accept honours every bound of the contract.
+// panics, never accepts a document past the size bound or holding a byte a
+// reader cannot see, and whatever it does accept honours every bound of the
+// contract.
 func TestPlanParseBoundedProperty(t *testing.T) {
 	cfg := quickConfig(propertySeed+3, func(args []reflect.Value, r *rand.Rand) {
-		p := genPlan(r)
-		if r.Intn(4) == 0 {
-			bad := badConfidences[r.Intn(len(badConfidences))]
-			p.Confidence = &bad
-		}
-		if r.Intn(4) == 0 {
-			p.Repositories = append(p.Repositories, repositoryAlias(r, p.Repositories[r.Intn(len(p.Repositories))]))
-		}
-		raw, err := yaml.Marshal(p)
-		if err != nil {
-			panic(err)
-		}
-		args[0] = reflect.ValueOf(mutate(r, []byte("---\n"+string(raw)+"---\n"+p.Body)))
+		args[0] = reflect.ValueOf(mutate(r, damagedPlan(r)))
 	})
 	bounded := func(doc []byte) bool {
 		p, err := ParsePlan(doc)
 		if err != nil {
 			return true
 		}
-		return len(doc) <= ReportMaxBytes && utf8.Valid(doc) && planWithinBounds(p)
+		return len(doc) <= ReportMaxBytes && utf8.Valid(doc) && visibleDocument(doc) && planWithinBounds(p)
+	}
+	if err := quick.Check(bounded, cfg); err != nil {
+		t.Error(err)
+	}
+}
+
+// TestPlanInputParseBoundedProperty: however a build input — a plan and a
+// revise round after it — is damaged, parsing it never panics, never
+// accepts an input holding a byte a reader cannot see, and whatever it
+// accepts has a frontmatter within every bound of the plan's contract.
+func TestPlanInputParseBoundedProperty(t *testing.T) {
+	cfg := quickConfig(propertySeed+5, func(args []reflect.Value, r *rand.Rand) {
+		args[0] = reflect.ValueOf(mutate(r, append(damagedPlan(r), genBody(r)...)))
+	})
+	bounded := func(doc []byte) bool {
+		p, err := ParsePlanInput(doc)
+		if err != nil {
+			return true
+		}
+		return utf8.Valid(doc) && visibleDocument(doc) && planFrontmatterWithinBounds(p)
 	}
 	if err := quick.Check(bounded, cfg); err != nil {
 		t.Error(err)
@@ -379,7 +478,7 @@ func TestBuildParseBoundedProperty(t *testing.T) {
 		if err != nil {
 			return true
 		}
-		return len(doc) <= ReportMaxBytes && utf8.Valid(doc) && buildWithinBounds(b)
+		return len(doc) <= ReportMaxBytes && utf8.Valid(doc) && visibleDocument(doc) && buildWithinBounds(b)
 	}
 	if err := quick.Check(bounded, cfg); err != nil {
 		t.Error(err)
@@ -404,4 +503,165 @@ func buildWithinBounds(b *Build) bool {
 	return consistent && notes && len(b.Body) <= BodyMaxBytes && b.Summary != "" &&
 		boundedLine(b.Summary, SummaryMaxChars) && boundedLine(b.Tests.Command, ItemMaxChars) &&
 		boundedLine(b.Reason, ReasonMaxChars)
+}
+
+// formatRunes are every format character (Cf) there is, for genHidden to
+// draw from.
+var formatRunes = func() []rune {
+	var out []rune
+	for _, rg := range unicode.Cf.R16 {
+		for c := rune(rg.Lo); c <= rune(rg.Hi); c += rune(rg.Stride) {
+			out = append(out, c)
+		}
+	}
+	for _, rg := range unicode.Cf.R32 {
+		for c := rune(rg.Lo); c <= rune(rg.Hi); c += rune(rg.Stride) {
+			out = append(out, c)
+		}
+	}
+	return out
+}()
+
+// genHidden draws what no report may hold, from every class and across each
+// class's whole range: a C0 or C1 control or DEL, a lone carriage return
+// (lone reports it: it must not be inserted before a line feed, where it
+// would be half a CRLF), a line or paragraph separator, a tag character, a
+// variation selector, a format character, a default-ignorable code point,
+// or a byte sequence that is not UTF-8.
+func genHidden(r *rand.Rand) (s string, lone bool) {
+	in := func(lo, hi rune) string { return string(lo + rune(r.Intn(int(hi-lo+1)))) }
+	switch r.Intn(10) {
+	case 0:
+		c := rune(r.Intn(0x20 - 3))
+		// Past tab, line feed and carriage return, which a document may hold.
+		for _, allowed := range []rune{'\t', '\n', '\r'} {
+			if c >= allowed {
+				c++
+			}
+		}
+		return string(c), false
+	case 1:
+		if r.Intn(8) == 0 {
+			return string(rune(0x7f)), false
+		}
+		return in(0x80, 0x9f), false
+	case 2:
+		return "\r", true
+	case 3:
+		return in(0x2028, 0x2029), false
+	case 4:
+		return in(0xe0000, 0xe007f), false
+	case 5:
+		switch r.Intn(3) {
+		case 0:
+			return in(0xfe00, 0xfe0f), false
+		case 1:
+			return in(0xe0100, 0xe01ef), false
+		}
+		return string([]rune{0x180b, 0x180c, 0x180d, 0x180f}[r.Intn(4)]), false
+	case 6:
+		return string(formatRunes[r.Intn(len(formatRunes))]), false
+	case 7:
+		rg := defaultIgnorable[r.Intn(len(defaultIgnorable))]
+		return in(rg[0], rg[1]), false
+	case 8:
+		// Any byte past ASCII alone begins no encoding where it is put: at
+		// a rune boundary, before ASCII or another rune's first byte.
+		return string([]byte{byte(0x80 + r.Intn(0x80))}), false
+	}
+	return invalidUTF8[r.Intn(len(invalidUTF8))].seq, false
+}
+
+// insertHidden puts s into doc at a random rune boundary — for a lone
+// carriage return, one not followed by a line feed.
+func insertHidden(r *rand.Rand, doc []byte, s string, lone bool) []byte {
+	var at []int
+	for i := 0; i <= len(doc); i++ {
+		if i < len(doc) && (!utf8.RuneStart(doc[i]) || lone && doc[i] == '\n') {
+			continue
+		}
+		at = append(at, i)
+	}
+	i := at[r.Intn(len(at))]
+	return slices.Concat(doc[:i], []byte(s), doc[i:])
+}
+
+// planDocument renders a random valid plan as the plan stage writes one,
+// within the document bound with room to spare.
+func planDocument(r *rand.Rand) []byte {
+	p := genPlan(r)
+	raw, err := yaml.Marshal(p)
+	if err != nil {
+		panic(err)
+	}
+	head := "---\n" + string(raw) + "---\n"
+	return []byte(head + fitBody(len(head), p.Body))
+}
+
+// buildDocument is planDocument for a build report.
+func buildDocument(r *rand.Rand) []byte {
+	b := genBuild(r)
+	raw, err := yaml.Marshal(b)
+	if err != nil {
+		panic(err)
+	}
+	head := "---\n" + string(raw) + "---\n"
+	return []byte(head + fitBody(len(head), b.Body))
+}
+
+// TestHiddenCharacterRefusedProperty: whatever a document every parser
+// accepts holds, inserting one character that renders invisibly or
+// reorders text — of any class, anywhere — or one byte that is not UTF-8
+// makes it refused, and the refusal names what the properties' own scan
+// (firstHidden) finds first: its line, its column and its code point or
+// byte. The build input is held to it past the plan's bounds, across a
+// revise round appended to the plan.
+func TestHiddenCharacterRefusedProperty(t *testing.T) {
+	parsers := []struct {
+		name  string
+		seed  int64
+		gen   func(*rand.Rand) []byte
+		parse func([]byte) error
+	}{
+		{"ParsePlan", propertySeed + 6, planDocument,
+			func(doc []byte) error { _, err := ParsePlan(doc); return err }},
+		{"ParsePlanInput", propertySeed + 7,
+			func(r *rand.Rand) []byte { return append(planDocument(r), genBody(r)...) },
+			func(doc []byte) error { _, err := ParsePlanInput(doc); return err }},
+		{"ParseBuild", propertySeed + 8, buildDocument,
+			func(doc []byte) error { _, err := ParseBuild(doc); return err }},
+	}
+	for _, p := range parsers {
+		t.Run(p.name, func(t *testing.T) {
+			cfg := quickConfig(p.seed, func(args []reflect.Value, r *rand.Rand) {
+				doc := p.gen(r)
+				s, lone := genHidden(r)
+				args[0] = reflect.ValueOf(doc)
+				args[1] = reflect.ValueOf(insertHidden(r, doc, s, lone))
+			})
+			refused := func(doc, damaged []byte) bool {
+				if err := p.parse(doc); err != nil {
+					t.Logf("%s(valid) error = %v", p.name, err)
+					return false
+				}
+				line, column, r, b, invalid, found := firstHidden(damaged)
+				if !found {
+					t.Logf("firstHidden found nothing in the damaged document")
+					return false
+				}
+				want := fmt.Sprintf("line %d, column %d: U+%04X is ", line, column, r)
+				if invalid {
+					want = fmt.Sprintf("line %d, column %d: byte 0x%02X is not valid UTF-8", line, column, b)
+				}
+				if err := p.parse(damaged); err == nil || !strings.Contains(err.Error(), want) {
+					t.Logf("%s(damaged) error = %v, want it to name %q", p.name, err, want)
+					return false
+				}
+				return true
+			}
+			if err := quick.Check(refused, cfg); err != nil {
+				t.Error(err)
+			}
+		})
+	}
 }

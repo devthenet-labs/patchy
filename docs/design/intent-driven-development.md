@@ -363,6 +363,12 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
    - When a slot frees, launch the plan Job: default runner image, read-only, brokered.
 4. **Collect.**
    - Persist the transcript and parse the plan frontmatter.
+   - The plan must be visible text throughout, frontmatter and body. agent-runner refuses a report that holds invalid
+     UTF-8, a control character other than tab, line feed and a CRLF's carriage return, U+2028/U+2029, a format
+     character (zero-width characters, bidi controls, the soft hyphen, U+FEFF), a tag character, a variation selector,
+     or any other default-ignorable code point. The outcome is `report_invalid`, with the character's code point, line
+     and column. The approver reads the plan verbatim and its digest covers every byte, so no byte may be one the
+     approver cannot see. The build report follows the same rule.
    - Reject a plan that names repositories outside the Project.
    - Store the raw report in the immutable ConfigMap `<intent>-plan-r1`. Its digest is the sha256 of those bytes.
    - Delete the plan Repository.
@@ -639,6 +645,10 @@ closes the intent issue itself.
   - Comments from non-approvers are counted but never included. App repos are public, so anyone can comment.
 - **Diff.** The compare patch for `base...head`, at most 48 KiB, with any truncation stated. There is no second tree in
   the pod.
+- **Visible text only.** agent-runner holds the whole of `investigation.md` to the plan's rule, the round after the plan
+  included, and refuses the build otherwise. So the controller renders every character of the round that the rule
+  refuses as a visible `<U+XXXX>` escape, whether it comes from feedback, the compare patch (source may hold a BOM or a
+  ZWJ) or check output. CRLF passes as it is: GitHub returns comment bodies CRLF-terminated.
 - **Idempotency.** Consumed review IDs, and the command comment ID of a `/patchy revise`, are recorded on the IntentRun
   spec, so a restart or a repeated poll never runs a round twice. The round's number comes from the Intent's `rounds`
   ordinal, which a failed round advances too, so a later round never reuses a failed round's run name.

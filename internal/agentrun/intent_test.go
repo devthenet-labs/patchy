@@ -316,6 +316,12 @@ func TestPlanFailures(t *testing.T) {
 		{"report oversized", step{stdout: streamSuccess, writes: map[string]string{
 			"reports/plan.md": goodPlan + strings.Repeat("x", 4*report.ReportMaxBytes),
 		}}, envelope.OutcomeReportInvalid, "over the 65536-byte bound"},
+		// The approver reads the plan verbatim, so a character that renders
+		// invisibly is refused, and the detail — which a retry's prompt
+		// quotes — says which and where.
+		{"report with a variation selector", step{stdout: streamSuccess, writes: map[string]string{
+			"reports/plan.md": goodPlan + "Warning" + string(rune(0x26a0)) + string(rune(0xfe0f)) + "\n",
+		}}, envelope.OutcomeReportInvalid, "report: plan: line 16, column 9: U+FE0F is a variation selector"},
 		{"budget exceeded", step{stdout: streamSuccess, budgetLines: budgetLines, writes: map[string]string{
 			"reports/plan.md": goodPlan,
 		}}, envelope.OutcomeBudgetExceeded, "budget exceeded"},
@@ -536,6 +542,15 @@ func TestBuildOutcomes(t *testing.T) {
 				"commit.sh":        buildCommitScript,
 			}, repoWrite: map[string]string{"app.js": "version();\n"}},
 			envelope.OutcomeReportInvalid, false, "did not pass"},
+		// The report becomes the pull request's description: a bidi override
+		// in it is refused, and no changeset is packaged for the claim.
+		{"a report with a bidi override is an invalid report", step{stdout: streamSuccess,
+			writes: map[string]string{
+				"reports/build.md": strings.Replace(goodBuild, "Added the handler",
+					"Added the "+string(rune(0x202e))+"reldnah", 1),
+				"commit.sh": buildCommitScript,
+			}, repoWrite: map[string]string{"app.js": "version();\n"}},
+			envelope.OutcomeReportInvalid, false, "report: build: line 10, column 11: U+202E is a format character"},
 		{"report missing", step{stdout: streamSuccess}, envelope.OutcomeReportMissing, false, ""},
 		{"runtime error", step{stdout: streamExecError}, envelope.OutcomeRuntimeError, false, ""},
 	}
@@ -573,6 +588,12 @@ func TestBuildInput(t *testing.T) {
 		{"a plan with a bad frontmatter", new(strings.Replace(goodPlan, "confidence: 0.8", "confidence: 7", 1)),
 			"input plan"},
 		{"a revise round past the plan's bounds", new(round), ""},
+		// The build agent reads the whole input, so the round appended to the
+		// plan is held to the plan's rule: nothing in it may render
+		// invisibly. GitHub's CRLF comment bodies are not refused for it.
+		{"a revise round with a zero-width space", new(round + "Keep" + string(rune(0x200b)) + " it.\n"),
+			"U+200B is a format character"},
+		{"a revise round quoted with CRLF line endings", new(strings.ReplaceAll(round, "\n", "\r\n")), ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

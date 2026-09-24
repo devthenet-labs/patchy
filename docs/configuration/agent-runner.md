@@ -47,6 +47,13 @@ Both run on **brokered claude only**: any other harness, or claude without `PATC
 fatal event before a model is called, because codex and copilot do not honour the sandbox postures. No configuration key
 exists for the intent phases alone.
 
+The plan and build reports, and the build's `input/investigation.md` with any revise round after the plan, must be
+visible text throughout: a report is `report_invalid`, and a build input a fatal event, if it holds invalid UTF-8, a
+control character other than tab, line feed or a CRLF's carriage return, U+2028/U+2029, or a character that renders
+invisibly or reorders text (a format character such as a zero-width space or a bidi control, a tag character, a
+variation selector, or another default-ignorable code point). The detail names the first one's code point, line and
+column. A human approves the plan by reading every byte of it, so nothing in it may be hidden.
+
 ## Stage configuration
 
 Mirrors of the controllers' stage flags: `PATCHY_INVESTIGATE_TIMEOUT` (`15m`), `PATCHY_INVESTIGATE_MAX_TURNS` (`25`),

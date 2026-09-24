@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -30,18 +29,16 @@ const (
 )
 
 // checkDocument applies the bounds every intent report shares before any of
-// it is parsed: the whole document's size and its encoding. Invalid UTF-8
-// is refused rather than repaired, because the report's exact bytes are
-// what the plan's approval digest is taken over, and JSON would silently
-// rewrite them on the way out of the pod.
+// it is parsed: the whole document's size, then what it may hold
+// (checkVisible). Invalid UTF-8 and invisible characters are refused rather
+// than repaired, because the report's exact bytes are what the plan's
+// approval digest is taken over — a repair would change what was approved,
+// and JSON would silently rewrite invalid UTF-8 on the way out of the pod.
 func checkDocument(kind string, data []byte) error {
 	if len(data) > ReportMaxBytes {
 		return fmt.Errorf("report: %s: %d bytes, over the %d-byte bound", kind, len(data), ReportMaxBytes)
 	}
-	if !utf8.Valid(data) {
-		return fmt.Errorf("report: %s: not valid UTF-8", kind)
-	}
-	return nil
+	return checkVisible(kind, data)
 }
 
 // checkBody applies the body bound.
@@ -53,10 +50,15 @@ func checkBody(kind, body string) error {
 }
 
 // oneLine trims s and checks it is a non-empty single line of at most
-// maxChars characters, free of control and format characters (a line break,
-// a terminal escape, a bidi override, a zero-width space) and of the Unicode
-// line and paragraph separators. These values reach GitHub and later
-// prompts, so they carry nothing a reader cannot see and break nowhere.
+// maxChars characters holding no rune that hidden names: no line break,
+// tab or other control character (a terminal escape, NEL), no Unicode line
+// or paragraph separator, and nothing that renders invisibly or reorders
+// text (a bidi override, a zero-width space, a variation selector, a tag
+// character). checkVisible has already refused such a rune written into
+// the document; this catches one a YAML escape spells ("\u200b"), which
+// the document shows as visible text but the decoded value holds. These
+// values reach GitHub and later prompts, and a summary becomes a commit
+// subject, so they carry nothing a reader cannot see and break nowhere.
 func oneLine(field, s string, maxChars int) (string, error) {
 	s = strings.TrimSpace(s)
 	switch {
@@ -64,19 +66,12 @@ func oneLine(field, s string, maxChars int) (string, error) {
 		return s, fmt.Errorf("%s is required", field)
 	case utf8.RuneCountInString(s) > maxChars:
 		return s, fmt.Errorf("%s is %d characters, over %d", field, utf8.RuneCountInString(s), maxChars)
-	case strings.ContainsFunc(s, invisible):
-		return s, fmt.Errorf("%s carries a line break or a control or format character", field)
+	}
+	if i := strings.IndexFunc(s, invisible); i >= 0 {
+		r, _ := utf8.DecodeRuneInString(s[i:])
+		return s, fmt.Errorf("%s holds U+%04X, %s, where one line of visible text is required", field, r, hidden(r))
 	}
 	return s, nil
-}
-
-// invisible reports a rune no one-line value may carry: a control character
-// (Cc, which holds NEL, U+0085), a format character (Cf), or U+2028 LINE
-// SEPARATOR or U+2029 PARAGRAPH SEPARATOR (Zl and Zp). The separators are
-// neither, yet YAML, JavaScript and many renderers and tokenizers break a
-// line on them, so a "single line" holding one would read as two.
-func invisible(r rune) bool {
-	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
 }
 
 // lines applies oneLine to every item of a list of at most maxItems,

@@ -58,8 +58,11 @@ var repositoryURL = regexp.MustCompile(`^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$
 // followed by the plan itself in markdown — approach, per-repository steps,
 // test plan and risks — of at most BodyMaxBytes, in a document of at most
 // ReportMaxBytes. Every list item is one line of at most ItemMaxChars
-// characters; free-text values are trimmed, and none may carry a control or
-// format character.
+// characters; free-text values are trimmed, and none may carry a line
+// break or a character that renders invisibly. The document as a whole,
+// frontmatter and body, holds only visible characters, tabs and line breaks
+// (checkVisible): the approver reads it verbatim, and the digest the
+// approval binds the build to covers every byte of it.
 type Plan struct {
 	// Summary is the change in one line.
 	Summary string `yaml:"summary"`
@@ -89,7 +92,10 @@ type Plan struct {
 var planFreeText = map[string]bool{"summary": true}
 
 // ParsePlan parses and validates a plan report as the plan stage wrote it:
-// the frontmatter, the body bound and the document bound.
+// the document bound, that every byte of it is visible, the frontmatter,
+// and the body bound. A document holding a character that renders
+// invisibly or reorders text is refused with the first one's code point,
+// line and column.
 func ParsePlan(data []byte) (*Plan, error) {
 	if err := checkDocument("plan", data); err != nil {
 		return nil, err
@@ -109,7 +115,17 @@ func ParsePlan(data []byte) (*Plan, error) {
 // and compare patch. It validates the plan's frontmatter exactly as
 // ParsePlan does, but not the body and document bounds, which the appended
 // round was never meant to fit; only the frontmatter block is bounded.
+//
+// Every byte of the input must be visible all the same, the appended round
+// included (checkVisible): the build agent reads all of it, and nothing it
+// acts on may be hidden from the humans who approved the plan and wrote the
+// feedback. The controller therefore renders a round with no character
+// checkVisible refuses — a compare patch of source that holds one shows it
+// as a visible escape.
 func ParsePlanInput(data []byte) (*Plan, error) {
+	if err := checkVisible("plan", data); err != nil {
+		return nil, err
+	}
 	return parsePlanFrontmatter(data)
 }
 

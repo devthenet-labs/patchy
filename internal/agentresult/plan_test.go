@@ -71,6 +71,9 @@ func TestFromPlanFailures(t *testing.T) {
 		"invalid frontmatter": strings.Replace(planReport, "https://", "http://", 1),
 		"oversized report":    planReport + strings.Repeat("x", report.ReportMaxBytes),
 		"no report":           "",
+		// A pod that reports ok cannot slip past the approver what the
+		// approver would not see.
+		"hidden character": planReport + "Then push" + string(rune(0x200b)) + "\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := FromPlan(&envelope.Plan{Stage: envelope.Stage{Outcome: envelope.OutcomeOK},

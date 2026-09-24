@@ -154,12 +154,14 @@ func TestParseBuildErrors(t *testing.T) {
 		{"success with failing tests", buildWith("  passed: true", "  passed: false"),
 			"success is true but the tests that ran did not pass"},
 		{"a multi-line command", buildWith(`command: "go test ./..."`, `command: "go vet ./...\ngo test ./..."`),
-			"line break"},
+			"tests.command holds U+000A, a control character"},
 		{"a command with a line separator", buildWith(`command: "go test ./..."`,
-			`command: "go vet ./...\u2028go test ./..."`), "line break"},
+			`command: "go vet ./...\u2028go test ./..."`),
+			"tests.command holds U+2028, a line or paragraph separator"},
 		{"a note with a paragraph separator", buildWith(
 			`  - "The build time comes from a linker flag; check the Dockerfile sets it."`,
-			`  - "Check the flag.\u2029Then the Dockerfile."`), "line break"},
+			`  - "Check the flag.\u2029Then the Dockerfile."`),
+			"notes[0] holds U+2029, a line or paragraph separator"},
 		{"eleven notes", buildWith(`notes:
   - "The build time comes from a linker flag; check the Dockerfile sets it."`, items("notes", BuildMaxNotes+1,
 			func(i int) string { return fmt.Sprintf("note %d", i) })), "over 10"},
@@ -186,5 +188,87 @@ func TestParseBuildErrors(t *testing.T) {
 				t.Errorf("ParseBuild() error = %v, want it to mention %q", err, tt.want)
 			}
 		})
+	}
+}
+
+// TestParseBuildRefusesHiddenCharacters: a build report becomes the pull
+// request's description, and its free text the commit and the notes a
+// reviewer reads, so it holds a plan's rule — nothing that renders
+// invisibly or reorders text, anywhere — refused with the code point, line
+// and column.
+func TestParseBuildRefusesHiddenCharacters(t *testing.T) {
+	sites := []struct {
+		name         string
+		insert       func(string) string
+		line, column int
+	}{
+		{"in the summary", func(s string) string {
+			return buildWith(`summary: "Add GET`, `summary: "Add`+s+` GET`)
+		}, 3, 14},
+		{"in the test command", func(s string) string {
+			return buildWith(`command: "go test`, `command: "go`+s+` test`)
+		}, 7, 15},
+		{"in a note", func(s string) string {
+			return buildWith(`  - "The build time`, `  - "The`+s+` build time`)
+		}, 9, 9},
+		{"in the body", func(s string) string {
+			return strings.Replace(validBuild, "A handler", "A"+s+" handler", 1)
+		}, 14, 2},
+	}
+	for _, site := range sites {
+		for _, h := range hiddenRunes {
+			t.Run(fmt.Sprintf("%s U+%04X", site.name, h.r), func(t *testing.T) {
+				_, err := ParseBuild([]byte(site.insert(string(h.r))))
+				want := fmt.Sprintf("report: build: line %d, column %d: U+%04X is %s", site.line, site.column, h.r,
+					h.class)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("ParseBuild() error = %v, want it to name %q", err, want)
+				}
+			})
+		}
+		for _, bad := range invalidUTF8 {
+			t.Run(fmt.Sprintf("%s %q", site.name, bad.seq), func(t *testing.T) {
+				_, err := ParseBuild([]byte(site.insert(bad.seq)))
+				want := fmt.Sprintf("line %d, column %d: byte 0x%02X is not valid UTF-8", site.line, site.column,
+					bad.first)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("ParseBuild() error = %v, want it to name %q", err, want)
+				}
+			})
+		}
+	}
+	lone := strings.Replace(validBuild, "A handler", "A\r handler", 1)
+	if _, err := ParseBuild([]byte(lone)); err == nil || !strings.Contains(err.Error(),
+		"line 14, column 2: U+000D is a carriage return outside a CRLF line ending") {
+		t.Errorf("ParseBuild(lone CR) error = %v, want the carriage return named", err)
+	}
+	b, err := ParseBuild([]byte(strings.ReplaceAll(validBuild, "\n", "\r\n")))
+	if err != nil || b.Body != "## What changed\r\n\r\nA handler and its test.\r\n" {
+		t.Errorf("ParseBuild(CRLF) = %+v, %v; want a CRLF report accepted byte-exact", b, err)
+	}
+}
+
+// TestParseBuildRefusesEscapedHiddenCharacters: an escape the frontmatter
+// shows as visible text still decodes to a hidden character, which the
+// field checks refuse in every free-text value.
+func TestParseBuildRefusesEscapedHiddenCharacters(t *testing.T) {
+	failed := strings.Replace(buildWith("success: true", "success: false"), "notes:",
+		`reason: "The image lacks a dependency"`+"\nnotes:", 1)
+	for _, h := range hiddenRunes {
+		escape := fmt.Sprintf(`\U%08X`, h.r)
+		for field, src := range map[string]string{
+			"summary":       buildWith(`summary: "Add GET`, `summary: "Add`+escape+` GET`),
+			"tests.command": buildWith(`command: "go test`, `command: "go`+escape+` test`),
+			"notes[0]":      buildWith(`  - "The build time`, `  - "The`+escape+` build time`),
+			"reason":        strings.Replace(failed, `"The image`, `"The`+escape+` image`, 1),
+		} {
+			t.Run(fmt.Sprintf("%s U+%04X", field, h.r), func(t *testing.T) {
+				_, err := ParseBuild([]byte(src))
+				want := fmt.Sprintf("%s holds U+%04X, %s", field, h.r, h.class)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("ParseBuild() error = %v, want it to name %q", err, want)
+				}
+			})
+		}
 	}
 }

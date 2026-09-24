@@ -9,5 +9,8 @@
 // errors, because everything downstream (routing, priority, budgets, what a
 // human approves) is derived from these files. The intent reports are also
 // bounded end to end — every field, the body and the whole document —
-// because their text is posted to GitHub and recorded on status.
+// because their text is posted to GitHub and recorded on status, and they
+// hold only visible text: a document with a character that renders
+// invisibly or reorders text, anywhere, is refused, because a human
+// approves a plan by reading every byte of it.
 package report

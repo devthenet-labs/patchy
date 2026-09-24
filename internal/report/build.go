@@ -35,7 +35,11 @@ const (
 //
 // followed by the change's description in markdown — what changed and why,
 // how it was verified — of at most BodyMaxBytes, in a document of at most
-// ReportMaxBytes. It becomes the pull request's description.
+// ReportMaxBytes. It becomes the pull request's description, so it holds
+// the plan's rule: only visible characters, tabs and line breaks, in the
+// free text and everywhere else (checkVisible) — a reviewer reads what the
+// agent wrote, and nothing in it may render invisibly or reorder the text
+// around it.
 //
 // A report claiming success while its own tests failed contradicts itself
 // and is refused. Success is still only the agent's claim: the runner
@@ -72,7 +76,10 @@ type BuildTests struct {
 // buildFreeText are the build keys whose values are prose.
 var buildFreeText = map[string]bool{"summary": true, "command": true, "reason": true}
 
-// ParseBuild parses and validates a build report.
+// ParseBuild parses and validates a build report: the document bound, that
+// every byte of it is visible — refused, as a plan is, with the first
+// offending character's code point, line and column — the body bound, and
+// the frontmatter.
 func ParseBuild(data []byte) (*Build, error) {
 	if err := checkDocument("build", data); err != nil {
 		return nil, err

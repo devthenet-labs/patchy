@@ -30,7 +30,8 @@ func TestAgentSecretGrantIsDocumented(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(data), "any Secret in the agents namespace") {
+			prose := strings.Join(strings.Fields(string(data)), " ")
+			if !strings.Contains(prose, "any Secret in the agents namespace") {
 				t.Error("the agents-namespace unrestricted Secret grant is not stated")
 			}
 		})

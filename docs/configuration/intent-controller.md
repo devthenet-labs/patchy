@@ -187,11 +187,11 @@ merge) to keep that from happening.
 
 intent-controller is the second code path that writes to a forge (remediation-controller is the first):
 
-- **Secrets:** in the release namespace, `secrets get` is restricted by `resourceNames` to the Secrets your Forges reference
-  (`intentController.forgeSecrets` in the chart, `rbac.yaml` in the kustomize component). A Forge that references any
-  other Secret, or a Secret that does not exist, leaves its Projects not Ready with the reason `ForgeSecretUnreadable`,
-  whose message names the Secret. Its agent-jobs Role can get, create, update and delete any Secret in the agents namespace,
-  including model keys, image-pull credentials and other Jobs' handoffs.
+- **Secrets:** in the release namespace, `secrets get` is restricted by `resourceNames` to the Secrets your Forges
+  reference (`intentController.forgeSecrets` in the chart, `rbac.yaml` in the kustomize component). A Forge that
+  references any other Secret, or a Secret that does not exist, leaves its Projects not Ready with the reason
+  `ForgeSecretUnreadable`, whose message names the Secret. Its agent-jobs Role can get, create, update and delete any
+  Secret in the agents namespace, including model keys, image-pull credentials and other Jobs' handoffs.
 - **GitHub tokens:** each GitHub operation mints its own token, scoped to one repository and one permission. The
   unscoped installation client is never used.
 - **Writes:** it writes only to the repositories a Project lists, plus issues on the intent repository. Branches are

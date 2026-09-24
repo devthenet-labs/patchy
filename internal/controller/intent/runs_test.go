@@ -454,11 +454,11 @@ func TestOptOutBuildsFromAStalledRepository(t *testing.T) {
 	proj.Spec.RequireRepositoryImage = new(false)
 	e := newEnv(t, proj)
 	name := e.newIntent(approver)
-	drive := func(want v1alpha1.IntentPhase) *v1alpha1.Intent {
+	drive := func(want v1alpha1.IntentPhase) {
 		t.Helper()
 		for range 40 {
 			if in := e.get(name); in.Status.Phase == want {
-				return in
+				return
 			}
 			e.mustIntent(name)
 			e.stallRepositories()
@@ -467,7 +467,6 @@ func TestOptOutBuildsFromAStalledRepository(t *testing.T) {
 		}
 		in := e.get(name)
 		t.Fatalf("intent did not reach %s: phase %s, conditions %+v", want, in.Status.Phase, in.Status.Conditions)
-		return nil
 	}
 	drive(v1alpha1.IntentAwaitingApproval)
 	e.gh.label(1, "patchy:approved", approver)

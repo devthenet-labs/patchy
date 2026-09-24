@@ -852,9 +852,9 @@ Slice 1 enforces one repository per Project.
   for routing. A project may instead name its own intent repo. When two Projects share a repo, their labels must differ;
   otherwise the Project reports `AmbiguousIntentRepository`.
 - **One Project per issue.** An issue with two Project trigger labels waits for one to be removed; neither Project
-  creates an Intent from it. If an issue already has an Intent, a later Project's trigger is removed and the conflict
-  is reported. An approval label or `/patchy approve` is refused if two Intents somehow exist for the issue. This
-  makes the approval refer to one posted plan even though Projects share an intent repository.
+  creates an Intent from it. If an issue already has an Intent, a later Project's trigger is removed and the conflict is
+  reported. An approval label or `/patchy approve` is refused if two Intents somehow exist for the issue. This makes the
+  approval refer to one posted plan even though Projects share an intent repository.
 - **Registration.** One Project CR per project, delivered through patchy-config values. `hack/codegen.sh` is extended to
   emit the Project schema; today it covers only Integration and Forge.
 - **Namespace.** Everything runs in namespace `patchy`, because the controllers are single-namespace.
@@ -938,7 +938,8 @@ A deploy triggered by `pull_request` cannot be gated by an Environment branch ru
 
    intent-controller becomes a second code path that writes to forges:
    - `secrets get` restricted by `resourceNames` in the release namespace; its agent-jobs Role can get, create, update
-     and delete any Secret in the agents namespace, including model keys, image-pull credentials and other Jobs' handoffs;
+     and delete any Secret in the agents namespace, including model keys, image-pull credentials and other Jobs'
+     handoffs;
    - a token per operation, scoped to one repository and one permission;
    - writes only to repos listed in a Project, plus issue operations on the intent repo;
    - branches only under `patchy-intent/`, created once and then only fast-forwarded;

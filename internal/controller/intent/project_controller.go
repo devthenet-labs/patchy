@@ -333,16 +333,9 @@ func (r *ProjectReconciler) discover(ctx context.Context, p *v1alpha1.Project, p
 		}
 	}
 	trigger := v1alpha1.ProjectTriggerLabel(p)
-	var projects v1alpha1.ProjectList
-	if err := r.APIReader.List(ctx, &projects, client.InNamespace(p.Namespace)); err != nil {
+	otherTriggers, err := r.otherTriggers(ctx, p)
+	if err != nil {
 		return false, 0, err
-	}
-	var otherTriggers []string
-	for i := range projects.Items {
-		other := &projects.Items[i]
-		if other.Name != p.Name && sameRepo(other.Spec.IntentRepository, repo) {
-			otherTriggers = append(otherTriggers, v1alpha1.ProjectTriggerLabel(other))
-		}
 	}
 	list, err := r.GitHub.ListIssues(ctx, repo, []string{trigger}, poll.etag)
 	if err != nil {
@@ -386,25 +379,10 @@ func (r *ProjectReconciler) discover(ctx context.Context, p *v1alpha1.Project, p
 			r.existing(ctx, p, poll, existing, is, full)
 			continue
 		}
-		if owner := byIssue[int64(is.Number)]; owner != nil {
-			poll.conflicts[is.Number] = fmt.Sprintf("Intent %s already owns this issue", owner.Name)
-			// A second trigger must not start another Project after the
-			// first Intent expires, particularly if it fails with the issue
-			// still open. Remove only this Project's trigger.
-			if err := r.GitHub.RemoveLabel(ctx, repo, int64(is.Number), trigger); err != nil {
-				return false, created, fmt.Errorf("remove the competing trigger from issue #%d: %w", is.Number, err)
-			}
-			delete(poll.waiting, is.Number)
+		if conflict, err := r.sharedIssue(ctx, p, poll, is, byIssue[int64(is.Number)], otherTriggers); err != nil {
+			return false, created, err
+		} else if conflict {
 			continue
-		}
-		for _, other := range otherTriggers {
-			if hasLabel(is, other) {
-				poll.conflicts[is.Number] = fmt.Sprintf("multiple Project trigger labels (%s and %s)", trigger, other)
-				break
-			}
-		}
-		if poll.conflicts[is.Number] != "" {
-			continue // wait for a human to leave just one trigger label
 		}
 		if active >= maxActiveIntents(p) {
 			continue // waits
@@ -419,6 +397,48 @@ func (r *ProjectReconciler) discover(ctx context.Context, p *v1alpha1.Project, p
 		}
 	}
 	return true, created, nil
+}
+
+// otherTriggers are the labels of Projects sharing this Project's intent
+// repository. A single issue may carry only one of them.
+func (r *ProjectReconciler) otherTriggers(ctx context.Context, p *v1alpha1.Project) ([]string, error) {
+	var projects v1alpha1.ProjectList
+	if err := r.APIReader.List(ctx, &projects, client.InNamespace(p.Namespace)); err != nil {
+		return nil, err
+	}
+	var out []string
+	for i := range projects.Items {
+		other := &projects.Items[i]
+		if other.Name != p.Name && sameRepo(other.Spec.IntentRepository, p.Spec.IntentRepository) {
+			out = append(out, v1alpha1.ProjectTriggerLabel(other))
+		}
+	}
+	return out, nil
+}
+
+// sharedIssue prevents two Projects from creating Intents for one issue.
+// A second trigger on an already claimed issue is removed so it cannot
+// start unexpectedly after the first Intent's TTL; two triggers seen before
+// either claim wait for a human to choose one.
+func (r *ProjectReconciler) sharedIssue(ctx context.Context, p *v1alpha1.Project, poll *projectPoll,
+	is *ghclient.Issue, owner *v1alpha1.Intent, otherTriggers []string) (bool, error) {
+	if owner != nil {
+		poll.conflicts[is.Number] = fmt.Sprintf("Intent %s already owns this issue", owner.Name)
+		if err := r.GitHub.RemoveLabel(ctx, p.Spec.IntentRepository, int64(is.Number),
+			v1alpha1.ProjectTriggerLabel(p)); err != nil {
+			return true, fmt.Errorf("remove the competing trigger from issue #%d: %w", is.Number, err)
+		}
+		delete(poll.waiting, is.Number)
+		return true, nil
+	}
+	for _, other := range otherTriggers {
+		if hasLabel(is, other) {
+			poll.conflicts[is.Number] = fmt.Sprintf("multiple Project trigger labels (%s and %s)",
+				v1alpha1.ProjectTriggerLabel(p), other)
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // existing handles a trigger-labelled issue whose Intent name is taken: by

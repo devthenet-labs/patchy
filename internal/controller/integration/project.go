@@ -67,6 +67,7 @@ type trackerClient interface {
 	AddLabels(ctx context.Context, repo ghclient.Repo, number int, add []string) error
 	RemoveLabel(ctx context.Context, repo ghclient.Repo, number int, name string) error
 	Comment(ctx context.Context, repo ghclient.Repo, number int, body string) error
+	CreateComment(ctx context.Context, repo ghclient.Repo, number int, body string) (int64, error)
 	ListComments(ctx context.Context, repo ghclient.Repo, number int) ([]*ghclient.Comment, error)
 	EditComment(ctx context.Context, repo ghclient.Repo, commentID int64, body string) error
 	Assign(ctx context.Context, repo ghclient.Repo, number int, logins []string) error
@@ -78,6 +79,10 @@ type trackerClient interface {
 // its tracking issue, and owns the accumulation-window condition.
 type FindingReconciler struct {
 	client.Client
+	// APIReader reads straight from the API server, past the cache: every
+	// post to the tracker is confirmed against it first (see comments.go).
+	// nil falls back to the client.
+	APIReader client.Reader
 	// Creds builds Integration API clients.
 	Creds *Creds
 	// Namespace the Findings live in.
@@ -212,6 +217,13 @@ func (r *FindingReconciler) project(ctx context.Context, fnd *v1alpha1.Finding) 
 		return fmt.Errorf("tracker client: %w", err)
 	}
 	if fnd.Status.Tracking == nil {
+		cur, err := r.latest(ctx, fnd)
+		if err != nil {
+			return err
+		}
+		if cur.Status.Tracking != nil {
+			return nil // the cache lags the link; its watch event re-queues us
+		}
 		return r.createIssue(ctx, fnd, &integ, tracker, repo)
 	}
 	if err := r.rerender(ctx, fnd, tracker, repo); err != nil {
@@ -372,11 +384,12 @@ func (r *FindingReconciler) projectComments(
 	ctx context.Context, fnd *v1alpha1.Finding, tracker trackerClient, repo ghclient.Repo, number int,
 ) error {
 	ann := fnd.GetAnnotations()
+	comments := r.issueComments(fnd, tracker, repo, number)
 
-	if err := r.projectEnrichments(ctx, fnd, tracker, repo, number); err != nil {
+	if err := r.projectEnrichments(ctx, fnd, comments); err != nil {
 		return err
 	}
-	if err := r.projectRunnerImage(ctx, fnd, tracker, repo, number); err != nil {
+	if err := r.projectRunnerImage(ctx, fnd, comments); err != nil {
 		return err
 	}
 
@@ -388,7 +401,7 @@ func (r *FindingReconciler) projectComments(
 			// presentation, so render the markdown body only.
 			comment := templates.RenderStageReportComment("Investigation", inv.Attempt,
 				report.StripFrontmatter(child.Status.Report))
-			if err := tracker.Comment(ctx, repo, number, comment); err != nil {
+			if err := comments.upsert(ctx, comment); err != nil {
 				return err
 			}
 		}
@@ -403,7 +416,7 @@ func (r *FindingReconciler) projectComments(
 		if err := r.Get(ctx, key, &child); err == nil && child.Status.Report != "" {
 			comment := templates.RenderStageReportComment("Remediation", rem.Attempt,
 				report.StripFrontmatter(child.Status.Report))
-			if err := tracker.Comment(ctx, repo, number, comment); err != nil {
+			if err := comments.upsert(ctx, comment); err != nil {
 				return err
 			}
 		}
@@ -419,7 +432,7 @@ func (r *FindingReconciler) projectComments(
 // place when the content moves, never re-posted. Attributes carry no comment
 // — they project as labels via projectedLabels.
 func (r *FindingReconciler) projectEnrichments(
-	ctx context.Context, fnd *v1alpha1.Finding, tracker trackerClient, repo ghclient.Repo, number int,
+	ctx context.Context, fnd *v1alpha1.Finding, comments *issueComments,
 ) error {
 	var desired []string
 	for _, e := range fnd.Status.Enrichments {
@@ -434,25 +447,9 @@ func (r *FindingReconciler) projectEnrichments(
 	if fnd.GetAnnotations()[AnnotationProjectedEnrichments] == state {
 		return nil
 	}
-	var existing []*ghclient.Comment
-	if len(desired) > 0 {
-		var err error
-		if existing, err = tracker.ListComments(ctx, repo, number); err != nil {
-			return err
-		}
-	}
 	for _, body := range desired {
-		marker, _, _ := strings.Cut(body, "\n")
-		sticky := findSticky(existing, marker)
-		switch {
-		case sticky == nil:
-			if err := tracker.Comment(ctx, repo, number, body); err != nil {
-				return err
-			}
-		case sticky.Body != body:
-			if err := tracker.EditComment(ctx, repo, sticky.ID, body); err != nil {
-				return err
-			}
+		if err := comments.upsert(ctx, body); err != nil {
+			return err
 		}
 	}
 	return r.markProjected(ctx, fnd, map[string]string{AnnotationProjectedEnrichments: state})
@@ -478,6 +475,16 @@ func (r *FindingReconciler) projectPhase(
 	phase := fnd.Status.Phase
 	if ann[AnnotationProjectedNotice] == string(phase) {
 		return nil
+	}
+	if postsNotice(phase) {
+		// A notice is a post: confirm the cache's "not yet" first.
+		cur, err := r.latest(ctx, fnd)
+		if err != nil {
+			return err
+		}
+		if cur.GetAnnotations()[AnnotationProjectedNotice] == string(phase) {
+			return nil
+		}
 	}
 
 	switch phase {
@@ -517,6 +524,16 @@ func (r *FindingReconciler) projectPhase(
 		return nil
 	}
 	return r.markProjected(ctx, fnd, map[string]string{AnnotationProjectedNotice: string(phase)})
+}
+
+// postsNotice reports the phases whose projection posts a comment.
+func postsNotice(phase v1alpha1.Phase) bool {
+	switch phase {
+	case v1alpha1.PhaseAwaitingApproval, v1alpha1.PhaseHandedOff, v1alpha1.PhaseFailed, v1alpha1.PhaseDismissed:
+		return true
+	default:
+		return false
+	}
 }
 
 // notify posts a notice comment and assigns owners.

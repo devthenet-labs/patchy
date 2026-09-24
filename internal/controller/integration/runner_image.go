@@ -14,7 +14,6 @@ import (
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/envelope"
-	"github.com/bitwise-media-group/patchy/internal/ghclient"
 	"github.com/bitwise-media-group/patchy/internal/templates"
 )
 
@@ -27,7 +26,7 @@ const AnnotationProjectedRunnerImage = "patchy.bitwisemedia.uk/projected-runner-
 // Repository records a declaration and edited in place as runs add to it.
 // A repository that declares nothing gets no comment at all.
 func (r *FindingReconciler) projectRunnerImage(
-	ctx context.Context, fnd *v1alpha1.Finding, tracker trackerClient, repo ghclient.Repo, number int,
+	ctx context.Context, fnd *v1alpha1.Finding, comments *issueComments,
 ) error {
 	if !r.RunnerImages || fnd.Spec.Repository == nil {
 		return nil
@@ -44,19 +43,8 @@ func (r *FindingReconciler) projectRunnerImage(
 		return nil
 	}
 	if body != "" {
-		existing, err := tracker.ListComments(ctx, repo, number)
-		if err != nil {
+		if err := comments.upsert(ctx, body); err != nil {
 			return err
-		}
-		switch sticky := findSticky(existing, templates.RunnerImageMarker); {
-		case sticky == nil:
-			if err := tracker.Comment(ctx, repo, number, body); err != nil {
-				return err
-			}
-		case sticky.Body != body:
-			if err := tracker.EditComment(ctx, repo, sticky.ID, body); err != nil {
-				return err
-			}
 		}
 	}
 	return r.markProjected(ctx, fnd, map[string]string{AnnotationProjectedRunnerImage: state})

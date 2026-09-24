@@ -267,7 +267,7 @@ func TestPreviousAttemptHints(t *testing.T) {
 		outcome string
 		want    string
 	}{
-		{remediate, "commit_failed", "`git status --porcelain` must print nothing"},
+		{remediate, "commit_failed", "add it to `commit.sh` with\n`git add <path>`"},
 		{remediate, "pull_request_closed", "closed without being merged"},
 		{remediate, "report_missing", "Write the report to `/workspace/reports/remediation.md`"},
 		{remediate, "report_invalid", "Write the report to `/workspace/reports/remediation.md`"},
@@ -304,5 +304,37 @@ func TestPreviousAttemptHints(t *testing.T) {
 				t.Errorf("section for an outcome without advice carries extra text:\n%s", section)
 			}
 		})
+	}
+}
+
+// TestCommitFailedAdviceIsTwoWay: a commit_failed retry is told what to do
+// with each path the quoted status lists, either way — add it to commit.sh
+// when it is part of the fix (the lockfile a dependency bump changed, code
+// the fix regenerated), restore or delete it otherwise. Advice that only
+// says to revert, and names generated files among what is never committed,
+// pushes the agent to drop the lockfile its package.json change needs.
+func TestCommitFailedAdviceIsTwoWay(t *testing.T) {
+	remediate := retryPrompts()[0]
+	base, err := remediate.render(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := remediate.render(&PreviousAttempt{
+		Attempt: 1, Outcome: "commit_failed", Detail: "working tree not clean after commit.sh:\nM package-lock.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	advice, _, ok := strings.Cut(retrySection(t, base, got, remediate.anchor), "What the runner recorded")
+	if !ok {
+		t.Fatalf("no quoted detail after the advice:\n%s", got)
+	}
+	for _, want := range []string{"part of the fix", "`git add <path>`", "`git checkout -- <path>`"} {
+		if !strings.Contains(advice, want) {
+			t.Errorf("commit_failed advice lacks %q:\n%s", want, advice)
+		}
+	}
+	if strings.Contains(advice, "generated files") {
+		t.Errorf("commit_failed advice classes generated files as never committed:\n%s", advice)
 	}
 }

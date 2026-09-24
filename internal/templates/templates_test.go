@@ -313,7 +313,11 @@ func TestEnrichmentProjection(t *testing.T) {
 // overwrite a binary the repository tracks, and failed commit_failed; only
 // its retry learned why.
 func TestRemediatePromptStatesCleanTree(t *testing.T) {
-	for _, prev := range []*PreviousAttempt{nil, {Attempt: 1, Outcome: "timeout", Detail: "stage timed out"}} {
+	for _, prev := range []*PreviousAttempt{
+		nil,
+		{Attempt: 1, Outcome: "timeout", Detail: "stage timed out"},
+		{Attempt: 1, Outcome: "commit_failed", Detail: "working tree not clean after commit.sh:\nM patchy-target"},
+	} {
 		got, err := RenderRemediatePrompt(RemediatePrompt{
 			IssuePath:         "/workspace/input/issue.md",
 			InvestigationPath: "/workspace/input/investigation.md",

@@ -4,6 +4,7 @@
 package agentresult
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"reflect"
@@ -64,7 +65,8 @@ func TestFormatConfidence(t *testing.T) {
 		{"interior", 0.85, "0.8500"},
 		{"rounds up to one", 0.99996, "1.0000"},
 		// A negative zero passes the range check; rendered as-is it would be
-		// "-0.0000", which the CRD pattern rejects.
+		// "-0.0000", which the CRD pattern rejects. A decoded envelope can
+		// carry one: see TestFormatConfidenceOfDecodedNegativeZero.
 		{"negative zero", math.Copysign(0, -1), "0.0000"},
 		{"below range", -0.1, ""},
 		{"above range", 1.5, ""},
@@ -114,6 +116,49 @@ func TestFormatConfidenceProperty(t *testing.T) {
 	}
 	if err := quick.Check(rendersValidDecimals, cfg); err != nil {
 		t.Error(err)
+	}
+}
+
+// TestFormatConfidenceOfDecodedNegativeZero pins the path a negative zero
+// takes to FormatConfidence. patchy's own agent-runner never writes one
+// (omitempty drops a zero), but envelope.Decode is a plain json.Unmarshal,
+// which reads the literal -0, or a negative literal that underflows, as a
+// float64 with its sign bit set. On a repository-declared image the pod's
+// stdout is untrusted, so such an event line reaches both job controllers,
+// where "-0.0000" failed ConfidencePattern and with it every status write.
+func TestFormatConfidenceOfDecodedNegativeZero(t *testing.T) {
+	pattern := regexp.MustCompile(v1alpha1.ConfidencePattern)
+	for _, kind := range []envelope.Type{envelope.TypeInvestigation, envelope.TypeRemediation} {
+		for _, literal := range []string{"-0", "-0.0", "-0e7", "-1e-400"} {
+			t.Run(string(kind)+" "+literal, func(t *testing.T) {
+				line := fmt.Sprintf(`%s{"v":%d,"type":%q,"repo":"o/r",%q:{"outcome":"ok","confidence":%s}}`,
+					envelope.Prefix, envelope.Version, kind, kind, literal)
+				ev, ok := envelope.Decode([]byte(line))
+				if !ok {
+					t.Fatalf("Decode(%q) rejected the line", line)
+				}
+				var c float64
+				switch {
+				case ev.Investigation != nil:
+					c = ev.Investigation.Confidence
+				case ev.Remediation != nil:
+					c = ev.Remediation.Confidence
+				default:
+					t.Fatalf("Decode(%q) carried no %s payload", line, kind)
+				}
+				// The precondition: the wire really delivers a negative zero.
+				if c != 0 || !math.Signbit(c) {
+					t.Fatalf("decoded confidence = %v (sign bit %t), want a negative zero", c, math.Signbit(c))
+				}
+				got := FormatConfidence(c)
+				if got != "0.0000" {
+					t.Errorf("FormatConfidence(decoded %s) = %q, want %q", literal, got, "0.0000")
+				}
+				if !pattern.MatchString(got) {
+					t.Errorf("FormatConfidence(decoded %s) = %q, which ConfidencePattern rejects", literal, got)
+				}
+			})
+		}
 	}
 }
 

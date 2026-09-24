@@ -163,7 +163,11 @@ func FormatConfidence(f float64) string {
 		return ""
 	}
 	// Adding zero turns a negative zero, which is in range, into a positive
-	// one: rendered as-is it is "-0.0000", which the CRD pattern rejects.
+	// one: rendered as-is it is "-0.0000", which the CRD pattern rejects,
+	// failing the whole status write. It is reachable: envelope.Decode is a
+	// plain json.Unmarshal, which reads the literal -0 (or a negative literal
+	// that underflows) as a negative zero, and on a repository-declared image
+	// the pod writing the envelope is untrusted.
 	return strconv.FormatFloat(f+0, 'f', 4, 64)
 }
 

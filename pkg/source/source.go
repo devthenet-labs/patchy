@@ -103,6 +103,11 @@ type Finding struct {
 	HTMLURL string
 	// Locations are the places the finding was raised, when available.
 	Locations []Location
+	// Commit is the repository revision the tool analyzed when it raised
+	// the finding — a code-scanning analysis's commit — when it reports one.
+	// Ingest uses it to recognize an observation of code older than an
+	// already-merged fix; empty means unknown, and never suppresses.
+	Commit string
 }
 
 // Handler is the interface a finding source implements.

@@ -1,0 +1,35 @@
+{
+    "action": "reopened",
+    "alert": {
+        "number": 7,
+        "state": "open",
+        "fixed_at": null,
+        "html_url": "https://github.com/acme/shop/security/code-scanning/7",
+        "rule": {
+            "id": "js/reflected-xss",
+            "name": "js/reflected-xss",
+            "description": "Reflected cross-site scripting",
+            "severity": "error",
+            "security_severity_level": "high",
+            "tags": ["security", "external/cwe/cwe-079"]
+        },
+        "tool": { "name": "CodeQL", "guid": null, "version": "2.27.0" },
+        "most_recent_instance": {
+            "ref": "refs/heads/main",
+            "analysis_key": "dynamic/github-code-scanning/codeql:analyze",
+            "category": "/language:javascript",
+            "state": "open",
+            "commit_sha": "45b1bec980a1aba44367aa7bf871e8b658776d40",
+            "location": { "path": "src/render.js", "start_line": 42, "end_line": 44 }
+        }
+    },
+    "ref": "refs/heads/main",
+    "commit_oid": "45b1bec980a1aba44367aa7bf871e8b658776d40",
+    "repository": {
+        "name": "shop",
+        "full_name": "acme/shop",
+        "default_branch": "main",
+        "owner": { "login": "acme" }
+    },
+    "sender": { "login": "github", "type": "Organization" }
+}

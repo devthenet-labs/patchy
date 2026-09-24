@@ -85,6 +85,10 @@ func TestFindingsSkips(t *testing.T) {
 			"repository":{"name":"shop","owner":{"login":"acme"}}}`},
 		{"closed action", "code_scanning_alert", `{"action":"closed_by_user","alert":{"number":7},
 			"repository":{"name":"shop","owner":{"login":"acme"}}}`},
+		// A merge carries an already-known alert onto the default branch;
+		// it is the same alert, not a new sighting.
+		{"appeared in branch", "code_scanning_alert", `{"action":"appeared_in_branch","alert":{"number":7},
+			"repository":{"name":"shop","owner":{"login":"acme"}}}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -149,6 +153,46 @@ func TestFindingsRefFilter(t *testing.T) {
 			}
 			if alerts.calls != 0 {
 				t.Errorf("GetAlert called %d times for a skipped delivery", alerts.calls)
+			}
+		})
+	}
+}
+
+// TestFindingsCommit pins which revision a finding is recorded as observed
+// at: the analysis the delivery reports (commit_oid, else the payload's most
+// recent instance), and only when the delivery names none, the alert fetched
+// afterwards — which may already reflect a later analysis.
+func TestFindingsCommit(t *testing.T) {
+	const (
+		delivered = "45b1bec980a1aba44367aa7bf871e8b658776d40"
+		instance  = "1111111111111111111111111111111111111111"
+		fetched   = "f4ce2c98005506f003d9d9ff981dea0db4a4b513"
+	)
+	payload := func(commitOID, instanceSHA string) string {
+		return `{"action":"reopened","commit_oid":"` + commitOID + `",
+			"alert":{"number":7,"most_recent_instance":{"ref":"refs/heads/main","commit_sha":"` + instanceSHA + `"}},
+			"repository":{"name":"shop","owner":{"login":"acme"},"default_branch":"main"}}`
+	}
+	tests := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{"delivery commit wins", payload(delivered, instance), delivered},
+		{"payload instance when no commit_oid", payload("", instance), instance},
+		{"fetched alert when the payload names none", payload("", ""), fetched},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			alert := testAlert()
+			alert.MostRecentSHA = fetched
+			got, err := New(&fakeAlerts{alert: alert}).Findings(context.Background(),
+				"code_scanning_alert", []byte(tt.payload))
+			if err != nil {
+				t.Fatalf("Findings() error = %v", err)
+			}
+			if len(got) != 1 || got[0].Commit != tt.want {
+				t.Errorf("Findings() = %+v, want one finding at commit %s", got, tt.want)
 			}
 		})
 	}

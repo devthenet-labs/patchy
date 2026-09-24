@@ -61,6 +61,18 @@ type Ingestor struct {
 	Now func() time.Time
 	// Log receives ingest diagnostics; nil discards.
 	Log *slog.Logger
+	// Commits answers commit ancestry for the stale-observation check
+	// (supersedingFix); nil disables the check, so every observation
+	// ingests.
+	Commits CommitGraph
+}
+
+// CommitGraph answers the one question about repository history ingest
+// asks: does one commit strictly precede another.
+type CommitGraph interface {
+	// Precedes reports whether commit is a strict ancestor of descendant
+	// in repo — reachable from it, and not the same commit.
+	Precedes(ctx context.Context, integ *v1alpha1.Integration, repo source.Repo, commit, descendant string) (bool, error)
 }
 
 // keyHash is the hex form of the accumulation key's hash — the label value
@@ -112,6 +124,15 @@ func (in *Ingestor) Ingest(ctx context.Context, integ *v1alpha1.Integration, f s
 		return fmt.Errorf("list finding family %s: %w", hash, err)
 	}
 
+	if fix := in.supersedingFix(ctx, integ, f, family.Items); fix != nil {
+		in.log().LogAttrs(ctx, slog.LevelInfo, "stale alert observation skipped", append([]slog.Attr{
+			slog.String("finding", fix.Name), slog.String("alert", alertID(f)),
+			slog.String("commit", f.Commit),
+			slog.String("merge_commit", fix.Status.PullRequest.MergeCommitSHA),
+		}, deliveryAttrs(ctx)...)...)
+		return nil
+	}
+
 	// Fold into a live pre-investigation generation when one exists.
 	maxGen := 0
 	for i := range family.Items {
@@ -131,6 +152,65 @@ func (in *Ingestor) Ingest(ctx context.Context, integ *v1alpha1.Integration, f s
 	}
 
 	return in.create(ctx, integ, f, repoURL, hash, maxGen+1, prevName(family.Items, maxGen))
+}
+
+// supersedingFix returns the generation whose merged pull request already
+// fixed f's alert in code newer than the code f was observed in — f is then
+// stale and must not open a successor — or nil when f ingests.
+//
+// Code scanning moves an alert's state with whichever analysis uploads last,
+// not with the newest commit. When pushes land seconds apart and an older
+// commit's analysis finishes after a newer one's, GitHub reopens every alert
+// the newer commit fixed, observed at the older commit (patchy-target alerts
+// 7 and 9: fixed by the squash merges of their remediation PRs, then reopened
+// at 45b1bec, the commit both merges descend from, when its analysis landed
+// last). That observation describes code the merged fix has already
+// replaced; a successor generation for it would investigate and remediate a
+// vulnerability no longer on the branch.
+//
+// The rule is deliberately narrow. The alert's latest generation must be
+// Remediated through a merged pull request with a recorded merge commit, and
+// f's commit must strictly precede that merge commit. An observation at or
+// after the merge — a regression or revert that brings the code back, a fix
+// the scanner still flags — ingests, as does anything unproven (no commit on
+// f, a PR merged before merge commits were recorded, a failed lookup): a
+// duplicate finding is noise, a dropped regression is a missed vulnerability.
+func (in *Ingestor) supersedingFix(
+	ctx context.Context, integ *v1alpha1.Integration, f source.Finding, family []v1alpha1.Finding,
+) *v1alpha1.Finding {
+	if in.Commits == nil || f.Commit == "" {
+		return nil
+	}
+	id := alertID(f)
+	var latest *v1alpha1.Finding
+	for i := range family {
+		cur := &family[i]
+		if !slices.ContainsFunc(cur.Spec.Alerts, func(a v1alpha1.Alert) bool { return a.ID == id }) {
+			continue
+		}
+		if latest == nil || generationOf(cur.Name) > generationOf(latest.Name) {
+			latest = cur
+		}
+	}
+	if latest == nil || latest.Status.Phase != v1alpha1.PhaseRemediated {
+		return nil
+	}
+	pr := latest.Status.PullRequest
+	if pr == nil || pr.State != "merged" || pr.MergeCommitSHA == "" || pr.MergeCommitSHA == f.Commit {
+		return nil
+	}
+	older, err := in.Commits.Precedes(ctx, integ, f.Repo, f.Commit, pr.MergeCommitSHA)
+	if err != nil {
+		in.log().LogAttrs(ctx, slog.LevelWarn, "commit ancestry lookup failed; ingesting",
+			slog.String("finding", latest.Name), slog.String("alert", id),
+			slog.String("commit", f.Commit), slog.String("merge_commit", pr.MergeCommitSHA),
+			slog.Any("error", err))
+		return nil
+	}
+	if !older {
+		return nil
+	}
+	return latest
 }
 
 // repositoryURL is the finding's repository, or empty when it names none. A

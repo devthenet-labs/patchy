@@ -296,6 +296,35 @@ func (g *alertGetter) GetAlert(ctx context.Context, repo ghclient.Repo, number i
 	return c.GetAlert(ctx, repo, number)
 }
 
+// githubCommits adapts Integration credentials to the CommitGraph seam,
+// asking GitHub's compare API with the Integration's client for the
+// repository.
+type githubCommits struct {
+	creds *Creds
+}
+
+// NewCommitGraph answers commit ancestry through each Integration's own
+// GitHub credential.
+func NewCommitGraph(creds *Creds) CommitGraph { return githubCommits{creds: creds} }
+
+// Precedes implements CommitGraph: commit strictly precedes descendant when
+// comparing from descendant to commit reports commit "behind" — reachable,
+// and not the same commit.
+func (g githubCommits) Precedes(
+	ctx context.Context, integ *v1alpha1.Integration, repo source.Repo, commit, descendant string,
+) (bool, error) {
+	r := ghclient.Repo{Owner: repo.Owner, Name: repo.Name}
+	c, err := g.creds.Client(ctx, integ, r)
+	if err != nil {
+		return false, err
+	}
+	status, err := c.CompareStatus(ctx, r, descendant, commit)
+	if err != nil {
+		return false, err
+	}
+	return status == "behind", nil
+}
+
 func (r *Receiver) log() *slog.Logger {
 	if r.Log == nil {
 		return slog.New(slog.DiscardHandler)

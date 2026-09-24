@@ -84,6 +84,7 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		Namespace: namespace,
 		Window:    opts.Duration("accumulation-window"),
 		Log:       log,
+		Commits:   integration.NewCommitGraph(creds),
 	}
 	if err := ingestor.SetupWithManager(mgr); err != nil {
 		return err

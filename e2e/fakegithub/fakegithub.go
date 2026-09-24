@@ -66,9 +66,13 @@ type Server struct {
 	// the pre-existing estate a backfill walks. The get/update endpoints
 	// keep fabricating alerts on the fly for webhook-driven flows.
 	alerts []seededAlert
-	pulls         map[int]*pull
-	git           gitData
-	next          int
+	// parents is the commit ancestry the compare endpoint answers from
+	// (each commit mapped to its parent); compares counts its calls.
+	parents  map[string]string
+	compares int
+	pulls    map[int]*pull
+	git      gitData
+	next     int
 	// Now stamps created_at; tests override it to age issues instantly.
 	Now func() time.Time
 }
@@ -78,6 +82,7 @@ func newState() (*Server, *http.ServeMux) {
 		issues:    make(map[int]*Issue),
 		comments:  make(map[int][]comment),
 		dismissed: make(map[int]string),
+		parents:   make(map[string]string),
 		pulls:     make(map[int]*pull),
 		git:       newGitData(),
 		next:      100,
@@ -184,6 +189,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /repos/{owner}/{repo}/issues/{number}/labels/{name}", s.removeLabel)
 	mux.HandleFunc("POST /repos/{owner}/{repo}/issues/{number}/assignees", s.addAssignees)
 	mux.HandleFunc("GET /repos/{owner}/{repo}", s.getRepo)
+	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{spec}", s.compare)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls", s.listPulls)
 	mux.HandleFunc("POST /repos/{owner}/{repo}/pulls", s.createPull)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/tarball/{ref...}", s.tarballRedirect)

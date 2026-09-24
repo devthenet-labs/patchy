@@ -26,6 +26,37 @@ func TestDefaultBranch(t *testing.T) {
 	}
 }
 
+func TestCompareStatus(t *testing.T) {
+	mux, c := newFakeClient(t)
+	mux.HandleFunc("GET /repos/o/r/compare/{spec}", func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.PathValue("spec"), "fa82fcd...45b1bec"; got != want {
+			t.Errorf("compare spec = %q, want %q", got, want)
+		}
+		if got := r.URL.Query().Get("per_page"); got != "1" {
+			t.Errorf("per_page = %q, want 1", got)
+		}
+		writeJSON(t, w, `{"status":"behind","ahead_by":0,"behind_by":1}`)
+	})
+
+	got, err := c.CompareStatus(context.Background(), testRepo, "fa82fcd", "45b1bec")
+	if err != nil {
+		t.Fatalf("CompareStatus() error = %v", err)
+	}
+	if got != "behind" {
+		t.Errorf("CompareStatus() = %q, want behind", got)
+	}
+}
+
+func TestCompareStatusError(t *testing.T) {
+	mux, c := newFakeClient(t)
+	mux.HandleFunc("GET /repos/o/r/compare/{spec}", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+	})
+	if _, err := c.CompareStatus(context.Background(), testRepo, "a", "b"); err == nil {
+		t.Error("CompareStatus() error = nil, want the API error")
+	}
+}
+
 func TestCreatePR(t *testing.T) {
 	mux, c := newFakeClient(t)
 	mux.HandleFunc("POST /repos/o/r/pulls", func(w http.ResponseWriter, r *http.Request) {

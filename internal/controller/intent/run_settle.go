@@ -80,13 +80,29 @@ func (r *RunReconciler) settle(ctx context.Context, run *v1alpha1.IntentRun, res
 	r.log().LogAttrs(ctx, slog.LevelInfo, "intent run finished",
 		slog.String("run", run.Name), slog.String("phase", string(run.Status.Phase)),
 		slog.String("outcome", run.Status.Outcome))
+	return r.deletePlanRepository(ctx, run)
+}
+
+// deletePlanRepository deletes a finished plan run's Repository, which
+// nothing needs once the run is collected; only a build's is kept, as the
+// intent's runner-image anchor. Only the Repository the run owns is deleted,
+// never another object under its name.
+func (r *RunReconciler) deletePlanRepository(ctx context.Context, run *v1alpha1.IntentRun) error {
 	if run.Spec.Stage != v1alpha1.IntentStagePlan {
 		return nil
 	}
-	repo := &v1alpha1.Repository{ObjectMeta: metav1.ObjectMeta{
-		Namespace: run.Namespace, Name: run.Spec.Repository.RepositoryRef.Name,
-	}}
-	if err := r.Delete(ctx, repo); err != nil && !kerrors.IsNotFound(err) {
+	var repo v1alpha1.Repository
+	key := types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.Repository.RepositoryRef.Name}
+	if err := r.Get(ctx, key, &repo); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !repo.DeletionTimestamp.IsZero() || !controlledBy(repo.OwnerReferences, run.UID) {
+		return nil
+	}
+	uid := repo.UID
+	if err := r.Delete(ctx, &repo, &client.DeleteOptions{
+		Preconditions: &metav1.Preconditions{UID: &uid},
+	}); err != nil && !kerrors.IsNotFound(err) {
 		return fmt.Errorf("delete the plan repository %s: %w", repo.Name, err)
 	}
 	return nil

@@ -254,11 +254,19 @@ func (p *pass) ensureActive(ctx context.Context, run *v1alpha1.IntentRun) (bool,
 // ensureRunChildren creates the run's input ConfigMap and Repository, both
 // owned by the run, when missing. The input is re-hashed as it is written:
 // a plan run's is the input snapshot, a build run's the approved plan alone,
-// with an empty request.
+// with an empty request. An existing object under either name is used only
+// when the run is its controller owner, however it was found: anything else
+// (a same-named earlier Intent's remains, or someone else's object) is left
+// alone and the pass retried after a backoff.
 func (p *pass) ensureRunChildren(ctx context.Context, run *v1alpha1.IntentRun) error {
 	var cm corev1.ConfigMap
 	err := p.r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.Inputs.ConfigMap}, &cm)
-	if kerrors.IsNotFound(err) {
+	switch {
+	case err == nil:
+		if !controlledBy(cm.OwnerReferences, run.UID) {
+			return fmt.Errorf("configmap %s: %w", cm.Name, errNotOwned)
+		}
+	case kerrors.IsNotFound(err):
 		data, err := p.runInput(ctx, run)
 		if err != nil {
 			return err
@@ -276,14 +284,20 @@ func (p *pass) ensureRunChildren(ctx context.Context, run *v1alpha1.IntentRun) e
 		}, run.UID); err != nil {
 			return err
 		}
-	} else if err != nil {
+	default:
 		return err
 	}
 
 	var repo v1alpha1.Repository
 	key := types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.Repository.RepositoryRef.Name}
 	err = p.r.Get(ctx, key, &repo)
-	if !kerrors.IsNotFound(err) {
+	switch {
+	case err == nil:
+		if !controlledBy(repo.OwnerReferences, run.UID) {
+			return fmt.Errorf("repository %s: %w", key.Name, errNotOwned)
+		}
+		return nil
+	case !kerrors.IsNotFound(err):
 		return err
 	}
 	repo = v1alpha1.Repository{

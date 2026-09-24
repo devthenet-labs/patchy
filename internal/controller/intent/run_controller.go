@@ -288,12 +288,23 @@ func (r *RunReconciler) launch(ctx context.Context, run *v1alpha1.IntentRun) err
 	}, &repo); err != nil {
 		return err
 	}
+	if !controlledBy(repo.OwnerReferences, run.UID) || !sameRepo(repo.Spec.URL, run.Spec.Repository.URL) {
+		// Someone else's object under the run's derived name: its SHA,
+		// tarball and image are not this run's to use.
+		return r.settle(ctx, run, result{outcome: OutcomeAborted,
+			detail: fmt.Sprintf("Repository %s is not this run's own (for %s); nothing was launched", repo.Name,
+				run.Spec.Repository.URL)})
+	}
 	if repo.Status.Artifact == nil || repo.Status.ResolvedSHA == "" {
 		return r.requeuePending(ctx, run)
 	}
 	var cm corev1.ConfigMap
 	if err := r.Get(ctx, runInputKey(run), &cm); err != nil {
 		return err
+	}
+	if !controlledBy(cm.OwnerReferences, run.UID) {
+		return r.settle(ctx, run, result{outcome: OutcomeAborted,
+			detail: fmt.Sprintf("input ConfigMap %s is not this run's own; nothing was launched", cm.Name)})
 	}
 
 	stage := run.Spec.Stage
@@ -316,6 +327,13 @@ func (r *RunReconciler) launch(ctx context.Context, run *v1alpha1.IntentRun) err
 	requireImage := false
 	switch stage {
 	case v1alpha1.IntentStagePlan:
+		// The request is re-hashed against the snapshot the run was
+		// created for, as a build's plan is against its approval.
+		if got := digest([]byte(spec.IssueMarkdown)); got != run.Spec.Inputs.InputDigest {
+			return r.settle(ctx, run, result{outcome: OutcomeAborted,
+				detail: fmt.Sprintf("the request's bytes hash to %s, not the snapshot's %s; nothing was launched",
+					got, run.Spec.Inputs.InputDigest)})
+		}
 		spec.Model = r.PlanModel
 	case v1alpha1.IntentStageBuild:
 		spec.Model = r.BuildModel

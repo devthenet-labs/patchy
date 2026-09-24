@@ -97,7 +97,7 @@ func TestRunReset(t *testing.T) {
 		testIntegration(), tracked, untracked,
 		&v1alpha1.Investigation{ObjectMeta: metav1.ObjectMeta{Name: "inv-1", Namespace: "patchy"}},
 		&v1alpha1.Remediation{ObjectMeta: metav1.ObjectMeta{Name: "rem-1", Namespace: "patchy"}},
-		&v1alpha1.Repository{ObjectMeta: metav1.ObjectMeta{Name: "repo-1", Namespace: "patchy"}},
+		findingRepository("repo-1", "finding-aa-1"),
 		&v1alpha1.FindingRollup{ObjectMeta: metav1.ObjectMeta{Name: "total", Namespace: "patchy"}},
 	)
 
@@ -131,6 +131,67 @@ func TestRunReset(t *testing.T) {
 	}
 	if len(integs.Items) != 1 {
 		t.Errorf("integrations = %d, want the configuration untouched", len(integs.Items))
+	}
+}
+
+// findingRepository is a Repository the investigation gate created for
+// finding: it carries the Finding label.
+func findingRepository(name, finding string) *v1alpha1.Repository {
+	return &v1alpha1.Repository{ObjectMeta: metav1.ObjectMeta{
+		Name: name, Namespace: "patchy", Labels: map[string]string{v1alpha1.LabelFinding: finding},
+	}}
+}
+
+// TestRunResetLeavesIntentFlow: the intent flow shares the namespace, and a
+// demo reset is the Finding flow's. Its Projects, Intents, IntentRuns and
+// Repositories survive (intent Repositories never carry the Finding label,
+// and a later round pins its image to the intent's first Repository by
+// UID), and the only issue it touches is the finding's own tracking issue:
+// never an intent's, which a human wrote.
+func TestRunResetLeavesIntentFlow(t *testing.T) {
+	tracked := projectable(v1alpha1.PhaseOpened)
+	tracked.Status.Tracking = &v1alpha1.TrackingStatus{Integration: "gh", IssueNumber: 7}
+	intentRepo := &v1alpha1.Repository{ObjectMeta: metav1.ObjectMeta{
+		Name: "web-12-r0", Namespace: "patchy",
+		Labels: map[string]string{v1alpha1.LabelIntent: "web-12", v1alpha1.LabelIntentRun: "web-12-plan-1"},
+	}}
+	intent := &v1alpha1.Intent{
+		ObjectMeta: metav1.ObjectMeta{Name: "web-12", Namespace: "patchy"},
+		Spec: v1alpha1.IntentSpec{
+			Project: "web",
+			Issue:   v1alpha1.IntentIssue{Repository: "https://github.com/acme/intents", Number: 12},
+		},
+	}
+	fc := &fakeResetClient{}
+	r, c := newResetReconciler(t, fc, testIntegration(), tracked,
+		findingRepository("finding-aa-1", "finding-aa-1"), intentRepo, intent,
+		&v1alpha1.IntentRun{ObjectMeta: metav1.ObjectMeta{Name: "web-12-plan-1", Namespace: "patchy"}},
+		&v1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "patchy"}},
+	)
+
+	if err := r.runReset(t.Context(), "patchy"); err != nil {
+		t.Fatalf("runReset() error = %v", err)
+	}
+
+	if touched := append(slices.Clone(fc.deleted), fc.closed...); !slices.Equal(touched, []string{"acme/orders#7"}) {
+		t.Errorf("issues deleted or closed = %v, want only the finding's tracking issue", touched)
+	}
+	var repos v1alpha1.RepositoryList
+	if err := c.List(t.Context(), &repos, client.InNamespace("patchy")); err != nil {
+		t.Fatalf("list repositories: %v", err)
+	}
+	if len(repos.Items) != 1 || repos.Items[0].Name != intentRepo.Name {
+		t.Errorf("repositories after reset = %v, want only the intent's", repos.Items)
+	}
+	for _, list := range []client.ObjectList{
+		&v1alpha1.IntentList{}, &v1alpha1.IntentRunList{}, &v1alpha1.ProjectList{},
+	} {
+		if err := c.List(t.Context(), list, client.InNamespace("patchy")); err != nil {
+			t.Fatalf("list %T: %v", list, err)
+		}
+		if n := len(listItems(t, list)); n != 1 {
+			t.Errorf("%T holds %d items after reset, want 1 (untouched)", list, n)
+		}
 	}
 }
 

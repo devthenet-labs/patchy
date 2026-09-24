@@ -227,7 +227,7 @@ type Config struct {
 type Spec struct {
 	Repo    string // "owner/name"
 	Attempt int
-	Phase   string // agentrun phase: "investigate" | "remediate"
+	Phase   string // agentrun phase: "investigate" | "remediate" | "plan" | "build"
 	// Harness runs this Job ("claude"/"codex"/"copilot"/"fake"); selects the runner
 	// image, credential, and egress network policy. Model is the canonical
 	// provider-qualified model id the harness runs. Both are resolved
@@ -238,20 +238,24 @@ type Spec struct {
 	// agent's changeset parents it.
 	BaseSHA       string
 	IssueMarkdown string // the issue handoff file content
-	// Kind discriminates the two job controllers sharing one namespace:
-	// "investigation" | "remediation".
+	// Kind discriminates the job controllers sharing one namespace:
+	// "investigation" | "remediation" | "intent".
 	Kind    string
-	Owner   string // owning Investigation/Remediation name
-	Finding string // owning Finding name
+	Owner   string // owning Investigation/Remediation name; an intent run's IntentRun
+	Finding string // owning Finding name; an intent run's IntentRun (see NameFor)
 	// ArtifactURL/ArtifactDigest locate and pin the repo tarball.
 	ArtifactURL    string
 	ArtifactDigest string
-	// InvestigationMarkdown is the analysis handed to a remediation run.
+	// InvestigationMarkdown is the analysis handed to a remediation run, or
+	// the approved plan (and, on a revise round, that round's feedback)
+	// handed to an intent build.
 	InvestigationMarkdown string
 	// MaxTurns/TokenBudget are the budget granted to a remediation run,
 	// already resolved controller-side against the automated budget, the
 	// estimate and the manual budget. Zero leaves the pod on its own
-	// configured automated budget.
+	// configured automated budget. An intent run's grant rides the same
+	// channel: a build's is clamped as a remediation's, and a plan's may
+	// only lower the stage's configured limits.
 	MaxTurns    int32
 	TokenBudget int64
 	// Calibration is pre-serialized JSON describing how earlier estimates
@@ -326,12 +330,15 @@ func (c *Client) runnerFor(harnessID string) (Runner, error) {
 }
 
 // NameFor is the deterministic Job (and per-Job Secret) name for one
-// attempt: patchy-<findinghash>-{inv|rem}-a<attempt>. Always DNS-1123 safe
-// and <=63 chars; the kind discriminator keeps the two job controllers
-// sharing one namespace out of each other's way.
+// attempt: patchy-<findinghash>-{inv|rem|int}-a<attempt>. Always DNS-1123
+// safe and <=63 chars; the kind discriminator keeps the job controllers
+// sharing one namespace out of each other's way. An intent run passes its
+// IntentRun name as finding and "intent" as kind; the run name already
+// carries its stage, round and attempt ordinal, so the hash alone keeps its
+// Jobs apart.
 func NameFor(finding, kind string, attempt int32) string {
 	sum := sha256.Sum256([]byte(finding))
-	short := map[string]string{"investigation": "inv", "remediation": "rem"}[kind]
+	short := map[string]string{"investigation": "inv", "remediation": "rem", "intent": "int"}[kind]
 	return fmt.Sprintf("patchy-%x-%s-a%d", sum[:5], short, attempt)
 }
 
@@ -916,8 +923,16 @@ var credentialChannelEnv = func() map[string]bool {
 // stageEnvNames returns the harness and model env var names agent-runner reads
 // for a given phase; the controller resolves both per Job, so they are carried
 // on the Spec and injected here rather than in the controller-global Env.
+//
+// An intent phase reads its Finding counterpart's names, and with them that
+// stage's whole configuration: build is the writing stage, on the remediate
+// harness, model, timeout and grant clamp (PATCHY_REMEDIATE_*), and plan the
+// read-only one, on the investigate stage's (PATCHY_INVESTIGATE_*). No new
+// configuration key exists for them, so neither the per-Job names nor the
+// blanks a repository-image Job carries change.
 func stageEnvNames(phase string) (harnessEnv, modelEnv string) {
-	if phase == "remediate" {
+	switch phase {
+	case string(agentrun.PhaseRemediate), string(agentrun.PhaseBuild):
 		return "PATCHY_REMEDIATE_HARNESS", "PATCHY_REMEDIATE_MODEL"
 	}
 	return "PATCHY_INVESTIGATE_HARNESS", "PATCHY_INVESTIGATE_MODEL"

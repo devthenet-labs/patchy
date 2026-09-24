@@ -1,8 +1,10 @@
 {{- /* A plan posted for approval. Everything the build agent will read is
-shown: the summary and body sanitised, the frontmatter verbatim in a code
-block, with nothing collapsed or hidden. The rule after the body separates
-the planner's words from patchy's. One line per paragraph: GitHub renders a
-line break inside an issue comment as a hard break. */ -}}
+shown: the summary and body sanitised, the frontmatter as written in a code
+block, with nothing collapsed or hidden, and a character that renders as
+nothing shown by its code point and counted before approval. The rule after
+the body separates the planner's words from patchy's. One line per
+paragraph: GitHub renders a line break inside an issue comment as a hard
+break. */ -}}
 {{ .Marker }}
 ## Plan r{{ .Revision }}
 {{- with .Summary }}
@@ -15,9 +17,13 @@ line break inside an issue comment as a hard break. */ -}}
 {{- end }}
 
 ---
-{{- if or .NewDependencies .Questions }}
+{{- if or .Invisible .NewDependencies .Questions }}
 
 ### Before you approve
+{{- with .Invisible }}
+
+This plan holds {{ . }} that render as nothing, each shown here by its code point, such as `[U+200B]`. The build agent reads them as written, and a model reads some as text: a plan written for a person has no need of them.
+{{- end }}
 {{- with .NewDependencies }}
 
 The build runs offline, in the image this repository declares, so it cannot fetch anything new. This plan adds dependencies: add them to that image on the default branch before you approve, or the build will fail.
@@ -39,7 +45,7 @@ Answer in a comment, then ask for a new plan.
 
 ### Plan data
 
-The plan's frontmatter, exactly as the build agent reads it:
+The plan's frontmatter, as the build agent reads it:
 
 {{ . }}
 {{- end }}

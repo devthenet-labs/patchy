@@ -4,9 +4,11 @@
 package templates
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -19,19 +21,24 @@ import (
 // Two things are at stake. What the approving human reads must be what the
 // agent reads next: an HTML comment, a <details> block, a link reference
 // definition ("[//]: # (...)"), a link title or image alt text, a code
-// fence's info string and a math expression can all carry text a reader
-// never sees, so each is shown literally instead. And agent text must not
-// act on GitHub: an issue reference or a closing keyword ("fixes #3",
-// "closes owner/repo#3", a full issue URL) links, and in a pull request
-// merged to the default branch closes, an issue — possibly a Finding's
-// tracking issue in the same repository, which would silently take the
-// finding out of automated remediation — and an @mention notifies whoever
-// it names. Each is rendered as inline code, where GitHub neither links nor
-// notifies, so no closing keyword is ever followed by a live reference.
+// fence's info string, a math expression and a table cell past its header's
+// count (GitHub drops it) can all carry text a reader never sees, so each is
+// shown literally instead; and a character that renders as nothing — a
+// Unicode tag character, which a model reads as the ASCII it shadows, a run
+// of variation selectors, a zero-width or bidi control — is shown by its
+// code point. And agent text must not act on GitHub: an issue reference or
+// a closing keyword ("fixes #3", "closes owner/repo#3", a full issue URL on
+// any host, since a Forge may be GitHub Enterprise) links, and in a pull
+// request merged to the default branch closes, an issue — possibly a
+// Finding's tracking issue in the same repository, which would silently
+// take the finding out of automated remediation — and an @mention notifies
+// whoever it names. Each is rendered as inline code, where GitHub neither
+// links nor notifies, so no closing keyword is ever followed by a live
+// reference.
 //
-// Concretely, the text is first made plain (invalid UTF-8 replaced, line
-// breaks normalised, control and format characters such as bidi overrides
-// and zero-width characters dropped, tab and newline kept). Then:
+// Concretely, the text is first made visible (visibleText: invalid UTF-8
+// replaced, line breaks normalised, every other character that renders as
+// nothing written as its code point, "[U+200B]"). Then:
 //
 //   - a fenced code block at the top level keeps its content but gets a
 //     fence patchy chose, which nothing in the block can close; its info
@@ -39,23 +46,25 @@ import (
 //     otherwise the whole block, fence lines included, is shown inside a
 //     plain text block;
 //   - an inline code span is kept when it lies on one line and holds no
-//     "|" (which would split it inside a table row), re-delimited so nothing
-//     in it can close it early;
-//   - in everything else, every "<", "[", "$" and lone backslash is
+//     "|" (a one-column table forms without one, and would split the span
+//     there, dropping the rest), re-delimited so nothing in it can close it
+//     early;
+//   - in everything else, every "<", "[", "$", "|" and lone backslash is
 //     backslash-escaped, as is every backtick that does not delimit a kept
 //     code span and every run of three or more tildes (a fence nobody
-//     chose), so no raw HTML, link, image, math or unexpected code block can
-//     form; and mentions, issue references (#N, GH-N, owner/repo#N, issue
-//     and pull request URLs) and character references (&#64;) become inline
-//     code.
+//     chose), so no raw HTML, link, image, math, table row of more than one
+//     cell or unexpected code block can form; and mentions, issue references
+//     (#N, GH-N, owner/repo#N, issue, pull request and discussion URLs on
+//     any host) and character references (&#64;) become inline code.
 //
-// Everything else (headings, lists, emphasis, tables, block quotes) renders
-// as written. The recognition of code is deliberately conservative: code
-// patchy does not recognise is treated as prose and neutralised, which can
-// only make a block look busier, never let text through. Sanitize is
-// idempotent, and never fails.
+// Everything else (headings, lists, emphasis, block quotes) renders as
+// written; a table shows as the text it was written as, every cell visible.
+// The recognition of code is deliberately conservative: code patchy does not
+// recognise is treated as prose and neutralised, which can only make a block
+// look busier, never let text through. Sanitize is idempotent, and never
+// fails.
 func Sanitize(s string) string {
-	lines := strings.Split(plainText(s), "\n")
+	lines := strings.Split(visibleText(s), "\n")
 	out := make([]string, 0, len(lines))
 	for i := 0; i < len(lines); {
 		f, ok := openingFence(lines[i])
@@ -76,7 +85,56 @@ func Sanitize(s string) string {
 // is trimmed, and no code block is recognised, so the result is always a
 // single line. It is idempotent.
 func SanitizeInline(s string) string {
-	return sanitizeLine(strings.TrimSpace(strings.ReplaceAll(plainText(s), "\n", " ")))
+	return sanitizeLine(strings.TrimSpace(strings.ReplaceAll(visibleText(s), "\n", " ")))
+}
+
+// visibleText is plainText for agent text an approver is shown: invalid
+// UTF-8 replaced and line breaks normalised, but a character that renders
+// as nothing is written as its code point ("[U+E0041]") rather than dropped.
+// Dropping it would hide it from the reader alone — the build agent reads
+// the report's own bytes — and a model reads some of them as text: a tag
+// character as the ASCII it shadows, a run of variation selectors as bytes.
+// The notation is plain ASCII, so it renders, and survives Sanitize, as
+// written wherever it lands: prose, a code span, a code block.
+func visibleText(s string) string {
+	s = strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(strings.ToValidUTF8(s, string(utf8.RuneError)))
+	if !strings.ContainsFunc(s, invisible) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if invisible(r) {
+			fmt.Fprintf(&b, "[U+%04X]", r)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// countInvisible counts the characters in s that visibleText shows by their
+// code point (a carriage return is a line break, never one of them).
+func countInvisible(s string) int {
+	n := 0
+	for _, r := range s {
+		if r != '\r' && invisible(r) {
+			n++
+		}
+	}
+	return n
+}
+
+// invisible reports a character that renders as nothing: a control
+// character other than newline and tab, a format character (bidi controls,
+// zero-width characters, tag characters, the byte order mark), a variation
+// selector, or another default-ignorable code point (a Hangul filler, the
+// combining grapheme joiner). Some are harmless where they stand — the ZWJ
+// inside an emoji, the one variation selector after it — but shown, they
+// cost a plan only looks, where hidden they could cost the approver the
+// text the build agent acts on.
+func invisible(r rune) bool {
+	return r != '\n' && r != '\t' && (unicode.IsControl(r) ||
+		unicode.In(r, unicode.Cf, unicode.Variation_Selector, unicode.Other_Default_Ignorable_Code_Point))
 }
 
 // fenceOpen is a fenced code block's opening line.
@@ -267,10 +325,11 @@ func decodeCodeSpan(s string) string {
 // from them. Each extends at least as far as GitHub's own reading: whatever
 // it takes in lands inside the code span, where nothing is live.
 var (
-	// issueURLPattern is a GitHub issue, pull request or discussion URL,
-	// which GitHub renders as a reference, and which a closing keyword may
-	// name.
-	issueURLPattern = regexp.MustCompile(`^(?i:(?:https?://)?(?:www\.)?github\.com/` +
+	// issueURLPattern is an issue, pull request or discussion URL, which
+	// GitHub renders as a reference, and which a closing keyword may name.
+	// Its host is any host: a Forge may be GitHub Enterprise, whose own
+	// URLs are the live ones there, and quoting another host's costs little.
+	issueURLPattern = regexp.MustCompile(`^(?i:(?:https?://)?[A-Za-z0-9.-]+(?::[0-9]+)?/` +
 		`[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?:issues|pulls?|discussions)/[0-9]+)[A-Za-z0-9/?#=&%._~+:-]*`)
 	// entityPattern is a character reference, which renders as the
 	// character it names — "&#64;" as "@".
@@ -339,11 +398,12 @@ func newTokenizer(atoms []atom) tokenizer {
 // reference begin there.
 func (t tokenizer) token(k int, afterToken bool) int {
 	a := t.atoms[k]
-	boundary, wordStart := afterToken, afterToken
+	boundary, wordStart, hostStart := afterToken, afterToken, afterToken
 	if !afterToken {
 		prev := t.atoms[k-1].ch
 		boundary = !isASCIIAlnum(prev)
 		wordStart = !isRefChar(prev)
+		hostStart = !isHostChar(prev)
 	}
 	rest := t.view[t.offsets[k]:]
 	match := func(re *regexp.Regexp) int {
@@ -358,8 +418,10 @@ func (t tokenizer) token(k int, afterToken bool) int {
 		when bool
 		re   *regexp.Regexp
 	}{
-		// Wherever it starts: a URL glued to a word is cheap to over-quote.
-		{true, issueURLPattern},
+		// Where a host can start, which keeps the scan linear: a URL glued
+		// to a word ("xhttps://host/o/r/issues/1") is taken from its host,
+		// and GitHub reads nothing live in the scheme left before it.
+		{hostStart && isHostChar(a.ch), issueURLPattern},
 		{a.ch == '&', entityPattern},
 		// An escaped "@" renders as "@" whatever precedes it.
 		{a.ch == '@' && (boundary || a.escaped), mentionPattern},
@@ -380,7 +442,7 @@ func (t tokenizer) token(k int, afterToken bool) int {
 
 // escapeProse renders prose atoms as markdown that shows each character
 // literally where it could otherwise start raw HTML, a link or image, math,
-// a code span or a code fence.
+// a code span or a code fence, or split a table cell.
 func escapeProse(atoms []atom) string {
 	var b strings.Builder
 	for k := 0; k < len(atoms); k++ {
@@ -390,7 +452,7 @@ func escapeProse(atoms []atom) string {
 			continue
 		}
 		switch a.ch {
-		case '\\', '<', '[', '$', '`':
+		case '\\', '<', '[', '$', '`', '|':
 			b.WriteByte('\\')
 			b.WriteRune(a.ch)
 		case '~':
@@ -452,4 +514,9 @@ func isASCIIAlnum(r rune) bool {
 // isRefChar reports a character an owner/repo reference's names may hold.
 func isRefChar(r rune) bool {
 	return isASCIIAlnum(r) || r == '_' || r == '.' || r == '-'
+}
+
+// isHostChar reports a character issueURLPattern's host may hold.
+func isHostChar(r rune) bool {
+	return isASCIIAlnum(r) || r == '.' || r == '-'
 }

@@ -145,10 +145,11 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   into state).
 - `templates` — the finding handoff/issue body, both stage prompts, and the PR body, rendered from embedded
   templates with golden tests. Also the intent side (not wired in yet): `Sanitize`/`SanitizeInline`, the one
-  pass all agent text bound for GitHub takes (hidden markup shown literally; mentions, issue references and
-  so closing keywords made inline code; seeded properties checked against goldmark as a stand-in for
-  GitHub), and the intent status/plan comments, notices, PR body ("Part of", never a closing keyword) and
-  plain-text commit message, over plain values.
+  pass all agent text bound for GitHub takes (hidden markup shown literally, tables as text, characters that
+  render as nothing as their code point; mentions, issue references on any host and so closing keywords made
+  inline code; seeded properties checked against goldmark as a stand-in for GitHub, including that a reader
+  sees every word), and the intent status/plan comments, notices, PR body ("Part of", never a closing
+  keyword) and plain-text commit message, over plain values.
 - `webhook`, `telemetry`, `cli`, `version` — service plumbing (the webhook server is used by
   integration-controller only).
 - `action` — the human-action vocabulary (the custom verbs) and the state-machine gating behind each one:

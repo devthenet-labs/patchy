@@ -25,7 +25,7 @@ A new public endpoint; it reveals the deployed commit, which is public anyway.
 
 ### Plan data
 
-The plan's frontmatter, exactly as the build agent reads it:
+The plan's frontmatter, as the build agent reads it:
 
 ```yaml
 ---

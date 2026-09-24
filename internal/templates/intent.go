@@ -121,7 +121,8 @@ type IntentStatusComment struct {
 	MaxCostMicroUSD int64
 	// Reason explains a Blocked or Failed phase in the controller's words.
 	// It may quote what an agent produced (a refused changeset path), so it
-	// is shown fenced.
+	// is shown fenced, any character in it that renders as nothing shown by
+	// its code point.
 	Reason string
 	// Commands are the verbs an approver can use in this phase, such as
 	// "approve"; each is shown as its /patchy command.
@@ -193,7 +194,7 @@ func RenderIntentStatusComment(c IntentStatusComment) (string, error) {
 		MaxRevisions:     c.MaxRevisions,
 		Cost:             usd(c.CostMicroUSD),
 		MaxCost:          usd(c.MaxCostMicroUSD),
-		Reason:           strings.TrimRight(plainText(c.Reason), "\n"),
+		Reason:           strings.TrimRight(visibleText(c.Reason), "\n"),
 		Commands:         slashCommands(c.Commands),
 	})
 }
@@ -211,8 +212,9 @@ type PlanComment struct {
 	Revision int32
 	// Report is the plan report exactly as stored: the bytes the approval's
 	// digest binds and the build agent reads. The comment shows all of it —
-	// the frontmatter verbatim, the body sanitised — and nothing else of the
-	// agent's.
+	// the frontmatter as written, the body sanitised, and in both every
+	// character that renders as nothing by its code point, with a count of
+	// them for the approver — and nothing else of the agent's.
 	Report []byte
 	// Summary, NewDependencies and Questions are the report's parsed
 	// frontmatter fields, called out for the approver.
@@ -231,14 +233,14 @@ func RenderPlanComment(p PlanComment) (string, error) {
 	digest := PlanDigest(p.Report)
 	body := report.StripFrontmatter(string(p.Report))
 	// StripFrontmatter only slices, so the frontmatter is what precedes it.
-	frontmatter := strings.TrimRight(plainText(string(p.Report)[:len(p.Report)-len(body)]), "\n")
+	frontmatter := strings.TrimRight(visibleText(string(p.Report)[:len(p.Report)-len(body)]), "\n")
 	var data []string
 	if frontmatter != "" {
 		data = codeBlock("yaml", strings.Split(frontmatter, "\n"))
 	}
 	deps := make([]string, 0, len(p.NewDependencies))
 	for _, d := range p.NewDependencies {
-		if d = code(strings.TrimSpace(plainText(d))); d != "" {
+		if d = code(strings.TrimSpace(visibleText(d))); d != "" {
 			deps = append(deps, d)
 		}
 	}
@@ -248,6 +250,14 @@ func RenderPlanComment(p PlanComment) (string, error) {
 			questions = append(questions, q)
 		}
 	}
+	// The parsed fields are the report's own, so counting the report counts
+	// every hidden character the comment shows.
+	invisibles := ""
+	if n := countInvisible(string(p.Report)); n == 1 {
+		invisibles = "1 character"
+	} else if n > 1 {
+		invisibles = fmt.Sprintf("%d characters", n)
+	}
 	out, err := render("intent_plan.md.tmpl", struct {
 		Marker          string
 		Revision        int32
@@ -255,6 +265,7 @@ func RenderPlanComment(p PlanComment) (string, error) {
 		Summary         string
 		Body            string
 		Data            string
+		Invisible       string
 		NewDependencies []string
 		Questions       []string
 		ApproveLabel    string
@@ -263,6 +274,7 @@ func RenderPlanComment(p PlanComment) (string, error) {
 		Replan          string
 		Cancel          string
 	}{
+		Invisible:       invisibles,
 		Approve:         slashCommand(action.VerbApprove),
 		Replan:          slashCommand(action.VerbReplan),
 		Cancel:          slashCommand(action.VerbCancel),
@@ -531,7 +543,9 @@ var defangs = []struct {
 	repl string
 }{
 	{regexp.MustCompile(`#([0-9])`), "# $1"},
-	{regexp.MustCompile(`(?i)(github\.com/[^\s/]+/[^\s/]+/(?:issues|pulls?|discussions)/)([0-9])`), "$1 $2"},
+	// An issue URL's number, on any host (a Forge may be GitHub Enterprise):
+	// broken after the path segment alone, which any URL of the shape holds.
+	{regexp.MustCompile(`(?i)(/(?:issues|pulls?|discussions)/)([0-9])`), "$1 $2"},
 	{regexp.MustCompile(`(^|[^A-Za-z0-9])((?i:gh)-)([0-9])`), "$1$2 $3"},
 	{regexp.MustCompile(`(^|[^A-Za-z0-9])@([A-Za-z0-9])`), "$1@ $2"},
 }

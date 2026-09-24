@@ -76,7 +76,8 @@
 //
 // Parse only says what a comment asks for. Whether the verb is offered on the
 // surface the comment was made on (Available, with Help for the reply to an
-// unknown one), whether it means anything in the object's current phase, and
+// unknown one), whether it means anything in the object's current phase
+// (with HelpFor for the reply listing the verbs that phase admits), and
 // whether the commenter may issue it are all the caller's decisions. The
 // package makes no GitHub or Kubernetes call and imports neither; the verb
 // names come from internal/action, the vocabulary the status page and the

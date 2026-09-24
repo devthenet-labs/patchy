@@ -154,9 +154,10 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
 - `command` — the one GitHub command grammar: `/patchy <verb> [note]` on a comment's first non-blank line,
   plus the legacy `/approve` (or configured approveComment) alias, honoured only by a `Parser` whose Surface is
   the Finding issue and matched exactly as the Finding webhook handler matches it today; and which verbs each
-  surface (Finding issue, intent issue, intent PR) offers, with the help reply for an unknown one. Pure: it
-  imports only the standard library and `action` (a test pins that); availability and authorisation are the
-  caller's. Not wired in yet (the Finding migration and intent-controller consume it).
+  surface (Finding issue, intent issue, intent PR) offers, with the help replies for an unknown verb (`Help`)
+  and one the current phase does not admit (`HelpFor`); `Note` is the one note rule, event aliases included.
+  Pure: it imports only the standard library and `action` (a test pins that); availability and authorisation
+  are the caller's. Not wired in yet (the Finding migration and intent-controller consume it).
 - `web` (+ `web/auth`, `web/authz`) — the status-server backend: wire types mirroring the SPA's
   `ui/src/types.ts` (keep the two in lockstep), the action handlers, SSE broker + cache-informer watcher, and
   the embedded UI (`internal/web/ui`, Vite/Preact, single-file build embedded behind the `withui` tag; `mise run

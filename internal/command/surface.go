@@ -4,6 +4,7 @@
 package command
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/bitwise-media-group/patchy/internal/action"
@@ -73,13 +74,25 @@ func Available(surface Surface) []string {
 // Help is the Markdown reply to a command whose verb surface does not offer:
 // every verb it does offer, one per line, or "" for an unknown surface.
 func Help(surface Surface) string {
-	usages := surfaces[surface]
-	if usages == nil {
-		return ""
-	}
+	return HelpFor(surface, Available(surface))
+}
+
+// HelpFor is Help limited to verbs, for the reply to a command whose verb the
+// surface offers but the object's current phase does not: the caller passes
+// the verbs the phase admits (for a Finding, action.Available). It lists
+// each of verbs that surface offers, in the surface's order and with the
+// same usage line Help gives it, and ignores the rest. It is "" when surface
+// offers none of verbs, so the caller can say that nothing is available now
+// instead of sending an empty list.
+func HelpFor(surface Surface, verbs []string) string {
 	var b strings.Builder
-	b.WriteString("Commands go on the first line of a comment. Here you can use:\n")
-	for _, u := range usages {
+	for _, u := range surfaces[surface] {
+		if !slices.Contains(verbs, u.verb) {
+			continue
+		}
+		if b.Len() == 0 {
+			b.WriteString("Commands go on the first line of a comment. Here you can use:\n")
+		}
 		b.WriteString("\n- `" + Prefix + " " + u.verb)
 		if u.note {
 			b.WriteString(" [note]")

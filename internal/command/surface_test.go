@@ -103,20 +103,96 @@ func TestHelp(t *testing.T) {
 	}
 }
 
-// TestHelpListsExactlyAvailable: the help and Available cannot disagree — the
-// help names every offered verb once, in order, and no other.
-func TestHelpListsExactlyAvailable(t *testing.T) {
-	for _, s := range []command.Surface{command.FindingIssue, command.IntentIssue, command.IntentPR} {
-		var listed []string
-		for _, line := range strings.Split(command.Help(s), "\n") {
-			if rest, ok := strings.CutPrefix(line, "- `"+command.Prefix+" "); ok {
-				verb, _, _ := strings.Cut(rest, "`")
-				verb, _, _ = strings.Cut(verb, " ")
-				listed = append(listed, verb)
+// TestHelpFor: the reply to a verb the phase does not admit lists only what
+// it does, with the same usage lines as the full help.
+func TestHelpFor(t *testing.T) {
+	const intro = "Commands go on the first line of a comment. Here you can use:\n\n"
+	cases := []struct {
+		name    string
+		surface command.Surface
+		verbs   []string
+		want    string
+	}{
+		{"a held finding", command.FindingIssue, []string{action.VerbApprove, action.VerbSuspend}, intro +
+			"- `/patchy approve [note]`: release the hold on this finding, or revive it after it was handed off\n" +
+			"- `/patchy suspend`: pause this finding's progress through the pipeline"},
+		{"the surface's order, not the caller's", command.IntentIssue,
+			[]string{action.VerbCancel, action.VerbReplan}, intro +
+				"- `/patchy replan [note]`: plan again, taking the note and approvers' comments since the last plan " +
+				"into account\n" +
+				"- `/patchy cancel`: stop work on this intent and close it; open pull requests are left to you"},
+		{"verbs the surface does not offer are ignored", command.IntentPR,
+			[]string{action.VerbExpedite, action.VerbRetry, "bogus"}, intro +
+				"- `/patchy retry`: retry the round that failed"},
+		{"nothing admitted", command.FindingIssue, nil, ""},
+		{"nothing the surface offers", command.IntentPR, []string{action.VerbApprove}, ""},
+		{"an unknown surface", "pull-request", []string{action.VerbApprove}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := command.HelpFor(tc.surface, tc.verbs); got != tc.want {
+				t.Errorf("HelpFor(%q, %v) =\n%s\nwant\n%s", tc.surface, tc.verbs, got, tc.want)
 			}
+		})
+	}
+}
+
+// helpLines are the usage lines of a help reply, keyed by verb, in order.
+func helpLines(help string) (verbs, lines []string) {
+	for _, line := range strings.Split(help, "\n") {
+		if rest, ok := strings.CutPrefix(line, "- `"+command.Prefix+" "); ok {
+			verb, _, _ := strings.Cut(rest, "`")
+			verb, _, _ = strings.Cut(verb, " ")
+			verbs = append(verbs, verb)
+			lines = append(lines, line)
 		}
-		if want := command.Available(s); !slices.Equal(listed, want) {
-			t.Errorf("Help(%q) lists %v, Available offers %v", s, listed, want)
+	}
+	return verbs, lines
+}
+
+// TestHelpListsExactlyAvailable: the help and Available cannot disagree — the
+// help names every offered verb once, in order, and no other — and for any
+// set of verbs, HelpFor lists exactly those the surface offers, in the
+// surface's order, each with the line the full help gives it.
+func TestHelpListsExactlyAvailable(t *testing.T) {
+	candidates := []string{
+		action.VerbApprove, action.VerbRetry, action.VerbExpedite, action.VerbSuspend, action.VerbResume,
+		action.VerbReplan, action.VerbCancel, action.VerbRevise, "bogus",
+	}
+	for _, s := range []command.Surface{command.FindingIssue, command.IntentIssue, command.IntentPR} {
+		offered := command.Available(s)
+		listed, full := helpLines(command.Help(s))
+		if !slices.Equal(listed, offered) {
+			t.Errorf("Help(%q) lists %v, Available offers %v", s, listed, offered)
+		}
+		lineOf := map[string]string{}
+		for i, verb := range listed {
+			lineOf[verb] = full[i]
+		}
+		// Every subset of the candidates, passed in reverse so the order must
+		// come from the surface.
+		for mask := range 1 << len(candidates) {
+			var verbs, want []string
+			for i := len(candidates) - 1; i >= 0; i-- {
+				if mask&(1<<i) != 0 {
+					verbs = append(verbs, candidates[i])
+				}
+			}
+			for _, verb := range offered {
+				if slices.Contains(verbs, verb) {
+					want = append(want, verb)
+				}
+			}
+			help := command.HelpFor(s, verbs)
+			got, lines := helpLines(help)
+			if !slices.Equal(got, want) || (len(want) == 0) != (help == "") {
+				t.Fatalf("HelpFor(%q, %v) lists %v (%q), want %v", s, verbs, got, help, want)
+			}
+			for i, verb := range got {
+				if lines[i] != lineOf[verb] {
+					t.Fatalf("HelpFor(%q, %v) gives %s the line %q, Help gives %q", s, verbs, verb, lines[i], lineOf[verb])
+				}
+			}
 		}
 	}
 }

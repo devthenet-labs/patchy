@@ -129,11 +129,10 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
 - `controller/` — one engine per controller binary; the binaries are thin wiring over these:
   `controller/integration` (receiver, ingest, projection, human signals), `controller/source` (Forge +
   Repository reconcilers), `controller/context` (the enhancer chain), `controller/investigation` (gate +
-  analysis scheduler), `controller/remediation` (spawner + priority scheduler + push/PR; its changeset
-  validator is exported, `ValidateChangeset`, with `IntentChangesetRules` adding the intent deny list),
-  `controller/rollup` (all-time stats + finding TTL; hosted by the remediation binary), `controller/evaluation`
-  (Evaluation gate + unit scheduler + evaluation TTL; single writer for both evaluation kinds — their phases are
-  local enums, never part of the Finding transition table).
+  analysis scheduler), `controller/remediation` (spawner + priority scheduler + push/PR), `controller/rollup`
+  (all-time stats + finding TTL; hosted by the remediation binary), `controller/evaluation` (Evaluation gate +
+  unit scheduler + evaluation TTL; single writer for both evaluation kinds — their phases are local enums,
+  never part of the Finding transition table).
 - `kube` — the controller-runtime manager wrapper: scheme, kubeconfig/in-cluster config, leader election,
   multi-namespace cache, health probes, logr↔slog bridge. Secrets are never cached.
 - `forge` — the shared forge seam: resolve a repository URL to its covering `Forge` CR (host → orgs → repo
@@ -205,6 +204,11 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   `end`). `evalresults` is the per-unit results ConfigMap store (transcriptstore's sibling).
 - `ghpush` — replays the agent's changeset through the GitHub Git Data API (blob → tree → commit → ref); the
   only place a write credential is exercised. No git binary anywhere controller-side.
+- `changeset` — the pure changeset validator run before any forge call (`Validate`: pinned base, path shape,
+  upsert modes/content; on a repository-declared image also the entry cap, control characters, CI
+  definitions), shared so the controllers that push never import each other: remediation holds a Finding's
+  changesets to `Rules` without a deny list, intent-controller an intent's to `IntentRules` (plus `.github`,
+  `.patchy`, `.devcontainer` refused). Imports only the stdlib and `envelope` (a test pins that).
 - `runnerimage` (+ `runnerimage/resolve`) — repository-declared agent runner images. The parent is the pure
   core (declaration files out of a tar.gz stream, `.patchy/agent.yaml` and the devcontainer.json fallback with
   precedence, reference grammar and strict digests, the allowlist `Policy`, PATH/ENV/VOLUME checks, the

@@ -24,6 +24,7 @@ import (
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/agentresult"
+	"github.com/bitwise-media-group/patchy/internal/changeset"
 	"github.com/bitwise-media-group/patchy/internal/envelope"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/report"
@@ -86,7 +87,7 @@ type RemediationReconciler struct {
 	Images runnerguard.Guard
 	// MaxChangesetEntries caps upserts plus deletes in a changeset held to
 	// the repository-image rules, before any forge call is made; <= 0 means
-	// DefaultChangesetMaxEntries.
+	// changeset.DefaultMaxEntries.
 	MaxChangesetEntries int
 	// Now is the clock seam; nil means time.Now.
 	Now func() time.Time
@@ -420,7 +421,7 @@ func (r *RemediationReconciler) succeed(
 	if err != nil {
 		return err
 	}
-	if err := ValidateChangeset(result.Changeset, rules); err != nil {
+	if err := changeset.Validate(result.Changeset, rules); err != nil {
 		return r.fail(ctx, rem, string(envelope.OutcomeChangesetRejected), err.Error(), &result.Stage, transcript)
 	}
 	branch := "patchy/" + fnd.Name
@@ -695,7 +696,7 @@ func (r *RemediationReconciler) log() *slog.Logger {
 // maxChangesetEntries is MaxChangesetEntries with its default applied.
 func (r *RemediationReconciler) maxChangesetEntries() int {
 	if r.MaxChangesetEntries <= 0 {
-		return DefaultChangesetMaxEntries
+		return changeset.DefaultMaxEntries
 	}
 	return r.MaxChangesetEntries
 }
@@ -714,8 +715,10 @@ func (r *RemediationReconciler) maxChangesetEntries() int {
 // between the two, or the controllers' flags differ) would otherwise follow
 // that image's instructions exempt from the CI deny. An Investigation that
 // cannot be found cannot vouch for itself, so the stricter rules apply.
-func (r *RemediationReconciler) changesetRules(ctx context.Context, rem *v1alpha1.Remediation) (ChangesetRules, error) {
-	rules := ChangesetRules{
+func (r *RemediationReconciler) changesetRules(
+	ctx context.Context, rem *v1alpha1.Remediation,
+) (changeset.Rules, error) {
+	rules := changeset.Rules{
 		MaxEntries:      r.maxChangesetEntries(),
 		RepositoryImage: ranRepositoryImage(rem.Status.RunnerImage),
 	}

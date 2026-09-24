@@ -1,7 +1,7 @@
 // Copyright 2026 Bitwise Media Group Ltd.
 // SPDX-License-Identifier: MIT
 
-package remediation
+package changeset
 
 import (
 	"fmt"
@@ -16,10 +16,11 @@ import (
 )
 
 // validateChangesetAtMain is the Finding path's validator exactly as main
-// had it before ValidateChangeset was exported with its Deny option
-// (2784e50, changeset.go's validateChangeset), kept as the oracle the
-// exported entry point is compared against. The leaf checks it calls are
-// unchanged and shared.
+// had it before it moved here from internal/controller/remediation and
+// gained its Deny option (67ba5cf, remediation's changeset.go,
+// validateChangeset), kept as the oracle Validate is compared against. The
+// leaf checks it calls moved with it unchanged but for their names
+// (checkChangesetPath and checkChangesetUpsert there), and are shared.
 func validateChangesetAtMain(cs *envelope.Changeset, base string, maxEntries int, repositoryImage bool) error {
 	switch {
 	case base == "":
@@ -31,7 +32,7 @@ func validateChangesetAtMain(cs *envelope.Changeset, base string, maxEntries int
 		return fmt.Errorf("changeset has %d entries (upserts plus deletes), over the %d-entry limit", n, maxEntries)
 	}
 	check := func(p string) error {
-		if err := checkChangesetPath(p); err != nil {
+		if err := checkPath(p); err != nil {
 			return err
 		}
 		if !repositoryImage {
@@ -51,7 +52,7 @@ func validateChangesetAtMain(cs *envelope.Changeset, base string, maxEntries int
 		if err := check(up.Path); err != nil {
 			return err
 		}
-		if err := checkChangesetUpsert(up); err != nil {
+		if err := checkUpsert(up); err != nil {
 			return err
 		}
 	}
@@ -112,12 +113,13 @@ func genFindingCase(r *rand.Rand) findingCase {
 	return c
 }
 
-// TestValidateChangesetFindingVerdictsUnchanged: for every changeset and
-// every rule set a Finding remediation can have, the exported entry point
-// returns exactly what main's validator returned — the same refusal, word
-// for word, or none. The Deny option exists for intents; a Finding's rules
-// never carry one, so the Finding flow's verdicts cannot move.
-func TestValidateChangesetFindingVerdictsUnchanged(t *testing.T) {
+// TestValidateFindingVerdictsUnchanged: for every changeset and every rule
+// set a Finding remediation can have, Validate returns exactly what main's
+// validator in remediation returned — the same refusal, word for word, or
+// none. The Deny option exists for intents; a Finding's rules never carry
+// one, so neither the move nor the option moves the Finding flow's
+// verdicts.
+func TestValidateFindingVerdictsUnchanged(t *testing.T) {
 	cfg := &quick.Config{
 		MaxCount: 5000,
 		Rand:     rand.New(rand.NewSource(20260926)),
@@ -127,7 +129,7 @@ func TestValidateChangesetFindingVerdictsUnchanged(t *testing.T) {
 	}
 	var failure string
 	same := func(c findingCase) bool {
-		got := ValidateChangeset(c.cs, ChangesetRules{
+		got := Validate(c.cs, Rules{
 			Base: c.base, MaxEntries: c.maxEntries, RepositoryImage: c.repositoryImage,
 		})
 		want := validateChangesetAtMain(c.cs, c.base, c.maxEntries, c.repositoryImage)
@@ -142,9 +144,9 @@ func TestValidateChangesetFindingVerdictsUnchanged(t *testing.T) {
 	}
 }
 
-// TestIntentChangesetRules names what an intent run may never change, and
+// TestIntentRules names what an intent run may never change, and
 // shows everything else held to the repository-image rules.
-func TestIntentChangesetRules(t *testing.T) {
+func TestIntentRules(t *testing.T) {
 	tests := []struct {
 		name    string
 		cs      *envelope.Changeset
@@ -169,41 +171,41 @@ func TestIntentChangesetRules(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateChangeset(tt.cs, IntentChangesetRules("abc123", 0))
+			err := Validate(tt.cs, IntentRules("abc123", 0))
 			if tt.wantErr == "" {
 				if err != nil {
-					t.Errorf("ValidateChangeset = %v, want nil", err)
+					t.Errorf("Validate = %v, want nil", err)
 				}
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("ValidateChangeset = %v, want an error containing %q", err, tt.wantErr)
+				t.Errorf("Validate = %v, want an error containing %q", err, tt.wantErr)
 			}
 		})
 	}
 
-	rules := IntentChangesetRules("abc123", 0)
-	if rules.MaxEntries != DefaultChangesetMaxEntries || !rules.RepositoryImage || rules.Base != "abc123" {
-		t.Errorf("IntentChangesetRules = %+v, want the default cap and the repository-image rules", rules)
+	rules := IntentRules("abc123", 0)
+	if rules.MaxEntries != DefaultMaxEntries || !rules.RepositoryImage || rules.Base != "abc123" {
+		t.Errorf("IntentRules = %+v, want the default cap and the repository-image rules", rules)
 	}
-	if got := IntentChangesetRules("abc123", 7).MaxEntries; got != 7 {
-		t.Errorf("IntentChangesetRules cap = %d, want 7", got)
+	if got := IntentRules("abc123", 7).MaxEntries; got != 7 {
+		t.Errorf("IntentRules cap = %d, want 7", got)
 	}
 	// The rules own their deny list: a caller's edit reaches no other.
 	rules.Deny[0] = "x"
-	if IntentChangesetRules("abc123", 0).Deny[0] != ".github" {
-		t.Error("IntentChangesetRules shares its deny list")
+	if IntentRules("abc123", 0).Deny[0] != ".github" {
+		t.Error("IntentRules shares its deny list")
 	}
 }
 
 // TestDenyAppliesWhicheverImage: the deny list refuses on a default-image
 // run too.
 func TestDenyAppliesWhicheverImage(t *testing.T) {
-	rules := IntentChangesetRules("abc123", 0)
+	rules := IntentRules("abc123", 0)
 	rules.RepositoryImage = false
-	if err := ValidateChangeset(changesetOf(".patchy/agent.yaml"), rules); err == nil ||
+	if err := Validate(changesetOf(".patchy/agent.yaml"), rules); err == nil ||
 		!strings.Contains(err.Error(), "is under .patchy") {
-		t.Errorf("ValidateChangeset = %v, want the deny list applied without the repository-image rules", err)
+		t.Errorf("Validate = %v, want the deny list applied without the repository-image rules", err)
 	}
 }
 
@@ -223,9 +225,9 @@ func TestIntentDenyProperty(t *testing.T) {
 		return first == ".github" || first == ".patchy" || first == ".devcontainer"
 	}
 	exact := func(p string) bool {
-		intent := ValidateChangeset(changesetOf(p), IntentChangesetRules("abc123", 0)) == nil
-		finding := ValidateChangeset(changesetOf(p), ChangesetRules{
-			Base: "abc123", MaxEntries: DefaultChangesetMaxEntries, RepositoryImage: true,
+		intent := Validate(changesetOf(p), IntentRules("abc123", 0)) == nil
+		finding := Validate(changesetOf(p), Rules{
+			Base: "abc123", MaxEntries: DefaultMaxEntries, RepositoryImage: true,
 		}) == nil
 		return intent == (finding && !denied(p))
 	}

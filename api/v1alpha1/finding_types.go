@@ -506,47 +506,82 @@ type FindingStatus struct {
 	// (integration). A webhook delivery is answered before it is handled
 	// and never redelivered after that, so the delivery only records a
 	// command here; the projection then authorises it against GitHub,
-	// applies it and replies, retrying until GitHub answers.
+	// applies it and replies, retrying while GitHub fails.
 	// +optional
 	Commands *FindingCommands `json:"commands,omitempty"`
 }
 
-// Bounds on status.commands. The schema markers repeat them as literals;
-// keep the two in lockstep.
+// Bounds on status.commands. The schema markers repeat the first three as
+// literals; keep the two in lockstep.
 const (
-	// MaxPendingCommands bounds status.commands.pending: a command that
-	// arrives while it is full is not recorded, and so never answered.
+	// MaxPendingCommands bounds status.commands.pending. A command that
+	// arrives while it is full takes the slot of an account holding more
+	// than one (whose newest undecided command is dropped); failing that it
+	// is not recorded, and so never answered.
 	MaxPendingCommands = 8
 	// MaxConsumedCommands bounds status.commands.consumed, which keeps the
 	// largest comment ids answered.
 	MaxConsumedCommands = 32
+	// MaxRefusedActors bounds status.commands.refusedActors, which keeps
+	// the latest accounts sent a refusal.
+	MaxRefusedActors = 32
+	// MaxPendingCommandsPerActor is how many commands one account may have
+	// pending on a finding at once; another from it is not recorded. It is
+	// not a schema bound: the webhook handler keeps it, so that no one
+	// account can take every pending slot.
+	MaxPendingCommandsPerActor = 2
 )
 
 // FindingCommands are the human commands made on a finding's tracking
-// issue: those still to be answered, and the comment ids of those answered.
+// issue: those still to be answered, and what the answered ones leave
+// behind to keep a late or repeated delivery from acting twice.
 type FindingCommands struct {
-	// Pending are the commands recorded and not yet answered, each answered
-	// in comment-id order: GitHub's ids grow with creation, so a suspend
-	// and the resume written after it apply in that order however their
-	// deliveries arrive.
+	// Pending are the commands recorded and not yet answered, at most
+	// MaxPendingCommandsPerActor of them from any one account. Their
+	// decisions and effects are taken in comment-id order: GitHub's ids grow
+	// with creation, so a suspend and the resume written after it apply in
+	// that order when both are pending. LastToggle keeps that order for a
+	// suspend or resume that arrives after a later one is answered.
 	// +optional
 	// +listType=map
 	// +listMapKey=commentID
 	// +kubebuilder:validation:MaxItems=8
 	Pending []FindingCommand `json:"pending,omitempty"`
-	// Consumed are the comment ids of the latest commands answered, the
-	// largest MaxConsumedCommands of them, in ascending order. A delivery of
-	// one of them (a redelivery, or a demo replay) records nothing, and
-	// neither does one of a smaller id once the list is full: GitHub's ids
-	// grow with creation, so such a comment was answered long ago.
+	// Consumed are the comment ids of the latest commands answered after
+	// their author's write access was confirmed, the largest
+	// MaxConsumedCommands of them, in ascending order. A delivery of one of
+	// them (a duplicate, or a demo replay) records nothing. A refused
+	// command's id is not kept, so commenting cannot push a maintainer's
+	// command out of the list; a refused command delivered again is only
+	// refused again. An id that has left the list is recorded and answered
+	// again if it is delivered again: a suspend or resume older than
+	// LastToggle as superseded, anything else as the finding's phase then
+	// admits.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=32
 	Consumed []int64 `json:"consumed,omitempty"`
+	// LastToggle is the comment id of the latest suspend or resume decided
+	// Done. One written before it that arrives later is answered
+	// Superseded rather than applied, so the finding stays as the last one
+	// written left it, however late an older delivery arrives; and a
+	// delivery of LastToggle itself records nothing.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	LastToggle int64 `json:"lastToggle,omitempty"`
+	// RefusedActors are the GitHub ids of the accounts already sent a reply
+	// refusing a command on this finding (NotAllowed or UnknownVerb), the
+	// latest MaxRefusedActors of them. A later refusal to one of them is
+	// answered by the reaction alone (FindingCommand.Quiet), so an account
+	// commenting repeatedly cannot make patchy post a reply per comment.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=32
+	RefusedActors []int64 `json:"refusedActors,omitempty"`
 }
 
 // CommandOutcome is patchy's answer to a human command.
-// +kubebuilder:validation:Enum=Done;Unavailable;NotAllowed;UnknownVerb
+// +kubebuilder:validation:Enum=Done;Unavailable;NotAllowed;UnknownVerb;Superseded
 type CommandOutcome string
 
 // Command outcomes.
@@ -560,6 +595,10 @@ const (
 	CommandNotAllowed CommandOutcome = "NotAllowed"
 	// CommandUnknownVerb: the verb is not one a tracking issue offers.
 	CommandUnknownVerb CommandOutcome = "UnknownVerb"
+	// CommandSuperseded: a suspend or resume written before the latest one
+	// decided Done (FindingCommands.LastToggle). It is not applied, so the
+	// later one stands.
+	CommandSuperseded CommandOutcome = "Superseded"
 )
 
 // CommandActor is the GitHub account that wrote a command, as its delivery
@@ -584,7 +623,7 @@ type CommandActor struct {
 // moves from recorded (by the delivery) to decided, applied and answered
 // (by the projection). Each step is one durable write, so a retry after any
 // failure resumes where the last one stopped: a decision is never taken
-// twice, and the spec is never written twice.
+// twice, the spec is never written twice, and the reply is posted once.
 type FindingCommand struct {
 	// CommentID is GitHub's id of the comment carrying the command.
 	// +kubebuilder:validation:Minimum=1
@@ -624,6 +663,18 @@ type FindingCommand struct {
 	// Applied reports that a Done command's effect is written to the spec.
 	// +optional
 	Applied bool `json:"applied,omitempty"`
+	// Quiet marks a refusal answered by the reaction alone: its author was
+	// already sent a refusal on this finding (FindingCommands.RefusedActors).
+	// +optional
+	Quiet bool `json:"quiet,omitempty"`
+	// AnsweringSince is when patchy first set out to answer the command
+	// (the reaction and the reply), written before either. A pass after a
+	// failure therefore knows a reply may already be posted, and looks for
+	// it among the issue's comments since then rather than posting another;
+	// and an answer GitHub keeps failing is given up an hour after it, the
+	// command consumed without it.
+	// +optional
+	AnsweringSince *metav1.Time `json:"answeringSince,omitempty"`
 }
 
 // StaleObservation is one alert reopen set aside as stale: observed at a

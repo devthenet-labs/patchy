@@ -42,11 +42,16 @@ func testFindingCommandsSchema(ctx context.Context, t *testing.T, c client.Clien
 			Verb:      "approve", Note: "ship it", Legacy: true, ReceivedAt: at,
 			Outcome: patchyv1.CommandUnavailable, DecidedAt: &at,
 			Available: []string{"expedite", "suspend"}, Applied: false,
+			Quiet: true, AnsweringSince: &at,
 		}
 	}
+	superseded := command(13)
+	superseded.Verb, superseded.Outcome = "suspend", patchyv1.CommandSuperseded
 	want := &patchyv1.FindingCommands{
-		Pending:  []patchyv1.FindingCommand{command(12)},
-		Consumed: []int64{3, 7},
+		Pending:       []patchyv1.FindingCommand{command(12), superseded},
+		Consumed:      []int64{3, 7},
+		LastToggle:    14,
+		RefusedActors: []int64{583231, 9},
 	}
 	f.Status.Commands = want.DeepCopy()
 	if err := c.Status().Update(ctx, f); err != nil {
@@ -75,6 +80,15 @@ func testFindingCommandsSchema(ctx context.Context, t *testing.T, c client.Clien
 			for i := range patchyv1.MaxConsumedCommands + 1 {
 				cs.Consumed = append(cs.Consumed, int64(200+i))
 			}
+		}},
+		{"more refused accounts than MaxRefusedActors", func(cs *patchyv1.FindingCommands) {
+			cs.RefusedActors = nil
+			for i := range patchyv1.MaxRefusedActors + 1 {
+				cs.RefusedActors = append(cs.RefusedActors, int64(300+i))
+			}
+		}},
+		{"a negative last toggle", func(cs *patchyv1.FindingCommands) {
+			cs.LastToggle = -1
 		}},
 		{"two pending commands for one comment", func(cs *patchyv1.FindingCommands) {
 			cs.Pending = append(cs.Pending, command(12))

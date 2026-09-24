@@ -79,7 +79,15 @@ var lineBreaks = strings.NewReplacer(
 )
 
 // parseGrammar reads "/patchy <verb> [note]" from the first non-blank line.
+// Code indentation is decided twice, and either decision makes the line
+// text: on that line, and on the Markdown line holding it, which GitHub ends
+// only at CRLF, CR and LF. So "    \f/patchy approve", which GitHub renders
+// as one indented code block, is text although the form feed starts the
+// command on a line of its own.
 func parseGrammar(body string) (Command, bool) {
+	if indentedCode(markdownLine(body)) {
+		return Command{}, false
+	}
 	line, below := firstLine(lineBreaks.Replace(body))
 	if indentedCode(line) {
 		return Command{}, false
@@ -128,6 +136,24 @@ func firstLine(body string) (line, below string) {
 		}
 	}
 	return "", ""
+}
+
+// markdownLine returns body's first non-blank line as CommonMark, and so
+// GitHub, splits it: at CRLF, CR and LF, and at no other line break. A CRLF
+// splits here as a CR and an empty line, which is blank and so skipped.
+func markdownLine(body string) string {
+	for body != "" {
+		l := body
+		if i := strings.IndexAny(body, "\r\n"); i >= 0 {
+			l, body = body[:i], body[i+1:]
+		} else {
+			body = ""
+		}
+		if strings.TrimSpace(l) != "" {
+			return l
+		}
+	}
+	return ""
 }
 
 // indentedCode reports whether line opens with four or more columns of

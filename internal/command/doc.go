@@ -22,7 +22,14 @@
 // that looks like one, a quoted command ("> /patchy approve"), one inside a
 // code span or fenced code block, and one indented by four or more columns
 // (a tab counting to the next multiple of four), which GitHub renders as an
-// indented code block, are all text, and text never parses.
+// indented code block, are all text, and text never parses. GitHub's
+// Markdown ends a line only at CRLF, CR and LF, so the indentation is counted
+// both from the start of the command's own line and from the start of the
+// Markdown line holding it, and four columns either way make it text:
+// "    \f/patchy approve" is one indented code block to GitHub, although the
+// form feed starts the command on a line of its own. The other line breaks
+// therefore end the command line and the note's lines but never lift a
+// command out of a code block.
 //
 // # Notes
 //

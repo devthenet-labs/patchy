@@ -79,8 +79,11 @@ func TestParseGrammar(t *testing.T) {
 			"/patchy approve a\u0085b\u2028c\u2029d\ve\ff\rg", approve("a\nb\nc\nd\ne\nf\ng"), true},
 		{"trailing whitespace on the command line stays inside the note",
 			"/patchy approve one  \ntwo", approve("one  \ntwo"), true},
-		// A line break ends the command line wherever it is, so these read as
-		// "/patchy" and, on the next line, a note — as GitHub renders them.
+		// Every line break ends the command line wherever it is, so each of
+		// these is the prefix with no verb and the note "approve", which draws
+		// a help reply rather than an approval. Only the CR ends a line as
+		// GitHub renders Markdown; the others end the command line all the
+		// same, so a verb past one never counts.
 		{"a lone CR ends the command line", "/patchy\r approve", command.Command{Note: "approve"}, true},
 		{"a lone CR right after the prefix", "/patchy\rapprove", command.Command{Note: "approve"}, true},
 		{"a NEL ends the command line", "/patchy\u0085approve", command.Command{Note: "approve"}, true},
@@ -89,6 +92,11 @@ func TestParseGrammar(t *testing.T) {
 		{"a vertical tab ends the command line", "/patchy\vapprove", command.Command{Note: "approve"}, true},
 		{"a form feed ends the command line", "/patchy\fapprove", command.Command{Note: "approve"}, true},
 		{"blank lines ended by lone CRs", "\r \r/patchy approve", approve(""), true},
+		// Markdown does not end a line at the other breaks, so they do not
+		// change the indentation GitHub counts: it is under four columns here,
+		// and on the command's own line too.
+		{"three spaces and a form feed are not code", "   \f/patchy approve", approve(""), true},
+		{"two spaces either side of a form feed are not code", "  \f  /patchy approve", approve(""), true},
 		{"invalid UTF-8 is replaced", "/patchy approve bad \xff byte", approve("bad \uFFFD byte"), true},
 		{"a long note is cut on a rune boundary", "/patchy approve " + long,
 			approve(long[:command.MaxNoteBytes-1]), true},
@@ -116,6 +124,23 @@ func TestParseGrammar(t *testing.T) {
 		{"three spaces and a tab reach four columns", "   \t/patchy approve", command.Command{}, false},
 		{"an indented command after blank lines", "\n \t\n    /patchy approve", command.Command{}, false},
 		{"an indented command after a lone-CR blank line", "\r        /patchy approve", command.Command{}, false},
+		// Markdown ends a line only at CRLF, CR and LF, so after the indent
+		// each of these is still inside the code block GitHub renders, even
+		// though it ends the command line.
+		{"four spaces then a form feed are one code block", "    \f/patchy approve", command.Command{}, false},
+		{"four spaces then a vertical tab", "    \v/patchy approve", command.Command{}, false},
+		{"four spaces then a NEL", "    \u0085/patchy approve", command.Command{}, false},
+		{"four spaces then a line separator", "    \u2028/patchy approve", command.Command{}, false},
+		{"four spaces then a paragraph separator", "    \u2029/patchy approve", command.Command{}, false},
+		{"a tab then a line separator", "\t\u2028/patchy approve", command.Command{}, false},
+		{"a tab then a form feed", "\t\f/patchy approve", command.Command{}, false},
+		{"a tab, a form feed and more indentation", "\t\f  \v /patchy approve", command.Command{}, false},
+		{"four spaces and a form feed after blank lines", "\n \t\r\n    \f/patchy approve", command.Command{}, false},
+		// And here the command's own line is indented as code, which is
+		// enough, although GitHub, counting from before the break, renders
+		// a paragraph: an indented command is text either way.
+		{"a form feed then four spaces", "\f    /patchy approve", command.Command{}, false},
+		{"a line separator then a tab", "\u2028\t/patchy approve", command.Command{}, false},
 		{"a zero-width space before the prefix", "\u200b/patchy approve", command.Command{}, false},
 	})
 }

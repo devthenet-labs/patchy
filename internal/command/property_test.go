@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"testing/quick"
@@ -94,13 +95,24 @@ func genAlias(r *rand.Rand) string {
 }
 
 // lineBreak matches every line break Unicode defines (UAX #14's mandatory
-// breaks), written out here independently of the parser.
-var lineBreak = regexp.MustCompile("\r\n|[\n\r\v\f\u0085\u2028\u2029]")
+// breaks), written out here independently of the parser; markdownBreak only
+// those CommonMark, and so GitHub, ends a line at.
+var (
+	lineBreak     = regexp.MustCompile("\r\n|[\n\r\v\f\u0085\u2028\u2029]")
+	markdownBreak = regexp.MustCompile("\r\n|[\n\r]")
+)
 
-// firstNonBlank is the body's first non-blank line, untrimmed — computed
-// here independently of the parser.
-func firstNonBlank(body string) string {
-	for _, line := range lineBreak.Split(body, -1) {
+// markdownBreaks are the line breaks CommonMark ends a line at; otherBreaks
+// the rest of Unicode's, which end the command line but no Markdown line.
+var (
+	markdownBreaks = []string{"\n", "\r\n", "\r"}
+	otherBreaks    = []string{"\v", "\f", "\u0085", "\u2028", "\u2029"}
+)
+
+// firstNonBlank is the body's first non-blank line, untrimmed, as breaks
+// splits it — computed here independently of the parser.
+func firstNonBlank(body string, breaks *regexp.Regexp) string {
+	for _, line := range breaks.Split(body, -1) {
 		if strings.TrimSpace(line) != "" {
 			return line
 		}
@@ -190,10 +202,11 @@ func TestParseNeverPanicsProperty(t *testing.T) {
 }
 
 // TestParseRequiresPrefixProperty: a body parses only when its first
-// non-blank line is not indented as code and starts with the prefix or, on a
-// Finding issue and nowhere else, the whole trimmed body is the legacy alias
-// form — and text whose first non-blank line starts with anything else, or
-// is indented as code, never parses as the grammar, whatever follows it.
+// non-blank line is not indented as code, counted on that line and on its
+// Markdown line alike, and starts with the prefix or, on a Finding issue and
+// nowhere else, the whole trimmed body is the legacy alias form — and text
+// whose first non-blank line starts with anything else, or is indented as
+// code, never parses as the grammar, whatever follows it.
 func TestParseRequiresPrefixProperty(t *testing.T) {
 	onlyWithPrefix := func(surface, body string) bool {
 		c, ok := command.Parser{Surface: command.Surface(surface)}.Parse(body)
@@ -205,9 +218,9 @@ func TestParseRequiresPrefixProperty(t *testing.T) {
 			return command.Surface(surface) == command.FindingIssue &&
 				(trimmed == command.LegacyApprove || strings.HasPrefix(trimmed, command.LegacyApprove+" "))
 		}
-		raw := firstNonBlank(body)
+		raw := firstNonBlank(body, lineBreak)
 		line := strings.TrimSpace(raw)
-		return indentColumns(raw) < 4 &&
+		return indentColumns(raw) < 4 && indentColumns(firstNonBlank(body, markdownBreak)) < 4 &&
 			len(line) >= len(command.Prefix) && strings.EqualFold(line[:len(command.Prefix)], command.Prefix)
 	}
 	if err := quick.Check(onlyWithPrefix, quickConfig(20260925, genSurface, genHostile)); err != nil {
@@ -225,12 +238,14 @@ func TestParseRequiresPrefixProperty(t *testing.T) {
 		t.Error(err)
 	}
 
-	// Nor does a command indented as a code block, however it is spelled.
-	indented := func(blank, indent, head, rest string) bool {
-		_, ok := command.Parse(blank + indent + head + rest)
+	// Nor does a command indented as a code block, however it is spelled,
+	// even with line breaks Markdown does not end a line at between the
+	// indent and the command.
+	indented := func(blank, indent, gap, head, rest string) bool {
+		_, ok := command.Parse(blank + indent + gap + head + rest)
 		return !ok
 	}
-	cfg := quickConfig(20261005, genBlankLines, genCodeIndent, genCommandLine, genHostile)
+	cfg := quickConfig(20261005, genBlankLines, genCodeIndent, genIndentGap, genCommandLine, genHostile)
 	if err := quick.Check(indented, cfg); err != nil {
 		t.Error(err)
 	}
@@ -242,6 +257,26 @@ func genCodeIndent(r *rand.Rand) string {
 	var b strings.Builder
 	for indentColumns(b.String()) < 4 || r.Intn(3) == 0 {
 		b.WriteString([]string{" ", "\t"}[r.Intn(2)])
+	}
+	return b.String()
+}
+
+// genIndentGap is nothing half the time, and otherwise whitespace holding at
+// least one of the line breaks Markdown does not end a line at.
+func genIndentGap(r *rand.Rand) string {
+	if r.Intn(2) == 0 {
+		return ""
+	}
+	return genInlineBlank(r) + otherBreaks[r.Intn(len(otherBreaks))] + genInlineBlank(r)
+}
+
+// genInlineBlank is up to three pieces of whitespace that end no Markdown
+// line: the inline whitespace and the other line breaks.
+func genInlineBlank(r *rand.Rand) string {
+	pieces := slices.Concat(inline, otherBreaks)
+	var b strings.Builder
+	for range r.Intn(4) {
+		b.WriteString(pieces[r.Intn(len(pieces))])
 	}
 	return b.String()
 }
@@ -264,9 +299,15 @@ func anyCasePrefix(r *rand.Rand) string {
 	return b.String()
 }
 
-// genBlankLines is up to three blank lines.
+// genBlankLines is up to three blank Markdown lines: whitespace, the line
+// breaks Markdown does not end a line at included, each ended by one it does.
 func genBlankLines(r *rand.Rand) string {
-	return strings.Repeat(" \t\r\n", r.Intn(4))
+	var b strings.Builder
+	for range r.Intn(4) {
+		b.WriteString(genInlineBlank(r))
+		b.WriteString(markdownBreaks[r.Intn(len(markdownBreaks))])
+	}
+	return b.String()
 }
 
 // genTextStart opens a line with something other than "/" or whitespace.
@@ -344,10 +385,13 @@ func TestParseNoteExcludesCommandLineProperty(t *testing.T) {
 
 // TestParseLineBreaksProperty: every line break is one to the command line
 // and the note alike. One straight after the prefix leaves the verb empty,
-// whatever follows it; and writing one line break in place of another never
-// changes what a comment parses to.
+// whatever follows it; and writing one line break in place of another of its
+// kind (one Markdown ends a line at for another, or one of the others for
+// another of the others) never changes what a comment parses to. Across the
+// kinds it can: only a Markdown break ends the line GitHub counts code
+// indentation on, which the indented examples in command_test.go pin.
 func TestParseLineBreaksProperty(t *testing.T) {
-	breaks := []string{"\n", "\r\n", "\r", "\v", "\f", "\u0085", "\u2028", "\u2029"}
+	breaks := slices.Concat(markdownBreaks, otherBreaks)
 	genBreak := func(r *rand.Rand) string { return breaks[r.Intn(len(breaks))] }
 	verbless := func(lb, rest string) bool {
 		c, ok := command.Parse(command.Prefix + lb + rest)
@@ -365,9 +409,13 @@ func TestParseLineBreaksProperty(t *testing.T) {
 			noCR = append(noCR, f)
 		}
 	}
+	// A side is sometimes code indentation, where the two kinds part.
 	genSide := func(r *rand.Rand) string {
-		if r.Intn(2) == 0 {
+		switch r.Intn(3) {
+		case 0:
 			return command.Prefix + " " + genVerb(r) + " " + genFrom(r, noCR)
+		case 1:
+			return genCodeIndent(r)
 		}
 		return genFrom(r, noCR)
 	}
@@ -376,7 +424,11 @@ func TestParseLineBreaksProperty(t *testing.T) {
 		if lb == "\r" && strings.HasPrefix(after, "\n") {
 			after = after[1:] // the CR and the LF after it are one CRLF
 		}
-		c2, ok2 := command.Parse(before + "\n" + after)
+		same := "\n"
+		if slices.Contains(otherBreaks, lb) {
+			same = "\v"
+		}
+		c2, ok2 := command.Parse(before + same + after)
 		return c == c2 && ok == ok2
 	}
 	if err := quick.Check(oneBreak, quickConfig(20261004, genSide, genBreak, genSide)); err != nil {

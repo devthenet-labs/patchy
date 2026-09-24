@@ -1,0 +1,51 @@
+{{- /* A plan posted for approval. Everything the build agent will read is
+shown: the summary and body sanitised, the frontmatter verbatim in a code
+block, with nothing collapsed or hidden. The rule after the body separates
+the planner's words from patchy's. One line per paragraph: GitHub renders a
+line break inside an issue comment as a hard break. */ -}}
+{{ .Marker }}
+## Plan r{{ .Revision }}
+{{- with .Summary }}
+
+**Summary:** {{ . }}
+{{- end }}
+{{- with .Body }}
+
+{{ . }}
+{{- end }}
+
+---
+{{- if or .NewDependencies .Questions }}
+
+### Before you approve
+{{- with .NewDependencies }}
+
+The build runs offline, in the image this repository declares, so it cannot fetch anything new. This plan adds dependencies: add them to that image on the default branch before you approve, or the build will fail.
+{{ range . }}
+- {{ . }}
+{{- end }}
+{{- end }}
+{{- with .Questions }}
+
+The planner asks:
+{{ range . }}
+- {{ . }}
+{{- end }}
+
+Answer in a comment, then ask for a new plan.
+{{- end }}
+{{- end }}
+{{- with .Data }}
+
+### Plan data
+
+The plan's frontmatter, exactly as the build agent reads it:
+
+{{ . }}
+{{- end }}
+
+### To approve
+
+Add the {{ code .ApproveLabel }} label to this issue, or comment `/patchy approve`. patchy then builds exactly this plan: r{{ .Revision }}, `{{ .Digest }}`. If this comment or the issue description is edited after patchy posted the plan, the approval is refused and patchy asks for a new plan.
+
+For a different plan, say what should change in a comment, then re-apply the {{ code .TriggerLabel }} label or comment `/patchy replan`. `/patchy cancel` stops work on this intent.

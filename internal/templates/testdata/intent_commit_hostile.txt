@@ -1,0 +1,4 @@
+target: Fixes # 3, closes owner/repo# 4 and GH- 5 resolves https://github.com/o/r/issues/ 6 for @ octocat (mail a@b.com) (devthenet-labs/intents#1, round 2)
+
+Patchy-Intent: patchy/target-1
+Patchy-Run: target-1-bld-r2-patchy-target-a1

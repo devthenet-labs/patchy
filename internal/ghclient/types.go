@@ -38,7 +38,10 @@ func (a Actor) IsBot() bool { return a.Type == "Bot" }
 
 // Comment is one issue comment.
 type Comment struct {
-	ID                int64
+	ID int64
+	// NodeID is the comment's GraphQL node id, which CommentEdited looks it
+	// up by.
+	NodeID            string
 	Body              string
 	UserLogin         string
 	AuthorAssociation string

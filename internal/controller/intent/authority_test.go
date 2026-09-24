@@ -205,6 +205,12 @@ func TestApprovalBoundToWhatWasShown(t *testing.T) {
 			e.clock.Advance(time.Second)
 			e.gh.editComment(id, original)
 		}, "plan comment was edited"},
+		{"plan comment edited and restored within the second it was posted", func(e *env) {
+			c := e.gh.withMarker("patchy:plan")[0]
+			id, original := c.ID, c.Body
+			e.gh.editWithinTheSecond(id, original+"\n6. Also drop the users table.\n")
+			e.gh.editWithinTheSecond(id, original)
+		}, "plan comment was edited"},
 		{"plan comment deleted", func(e *env) {
 			c := e.gh.withMarker("patchy:plan")[0]
 			e.gh.mu.Lock()
@@ -528,6 +534,37 @@ func TestEditedCommentIsNoCommand(t *testing.T) {
 					}
 				}
 			})
+	}
+}
+
+// TestEditedWithinTheSecondIsNoCommand: a writer who edits an approver's
+// ordinary comment into a command within the second it was posted leaves
+// REST's updated_at equal to its created_at; GitHub's own record of the edit
+// still shows it, so it is answered as edited and never acted on as the
+// approver's.
+func TestEditedWithinTheSecondIsNoCommand(t *testing.T) {
+	for _, verb := range []string{"approve", "cancel", "replan"} {
+		t.Run(verb, func(t *testing.T) {
+			e := newEnv(t, testProject())
+			name := e.awaiting()
+			before := e.get(name)
+			id := e.gh.comment(approver, "looks good, one question about the handler")
+			e.gh.editWithinTheSecond(id, "/patchy "+verb)
+			e.settleActions(name)
+			in := e.get(name)
+			if in.Status.Phase != v1alpha1.IntentAwaitingApproval || in.Status.Approval != nil ||
+				in.Status.Input.Revision != before.Status.Input.Revision {
+				t.Fatalf("phase %s approval %+v input r%d, want the edited comment to do nothing", in.Status.Phase,
+					in.Status.Approval, in.Status.Input.Revision)
+			}
+			r := e.gh.withMarker("comment-" + itoa(id))
+			if len(r) != 1 || !strings.Contains(r[0].Body, "was edited") {
+				t.Errorf("replies = %+v, want one saying the comment was edited", r)
+			}
+			if e.gh.state() != "open" {
+				t.Error("the edited comment closed the issue")
+			}
+		})
 	}
 }
 

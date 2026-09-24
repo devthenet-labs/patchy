@@ -17,6 +17,7 @@ import (
 // wrote is told from a human's, so comments decode into this instead.
 type wireComment struct {
 	ID                int64     `json:"id"`
+	NodeID            string    `json:"node_id"`
 	Body              string    `json:"body"`
 	User              *wireUser `json:"user"`
 	AuthorAssociation string    `json:"author_association"`
@@ -31,6 +32,7 @@ func (w *wireComment) comment() *Comment {
 	author := w.User.actor()
 	return &Comment{
 		ID:                w.ID,
+		NodeID:            w.NodeID,
 		Body:              w.Body,
 		UserLogin:         author.Login,
 		AuthorAssociation: w.AuthorAssociation,

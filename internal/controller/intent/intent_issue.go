@@ -64,13 +64,33 @@ func (p *pass) isOwn(c *ghclient.Comment) bool {
 	return strings.EqualFold(c.UserLogin, p.bot)
 }
 
-// edited reports a comment changed after it was posted. GitHub moves a
-// comment's updated_at on every edit, one that restores the original text
-// included, and reports it equal to created_at on a comment never edited.
-// Both are to the second, so an edit made within the second the comment was
-// posted in is the one this cannot see.
+// edited reports a comment changed after it was posted, as far as the REST
+// listing shows it. GitHub moves a comment's updated_at on every edit, one
+// that restores the original text included, and reports it equal to
+// created_at on a comment never edited. Both are to the second, so an edit
+// made within the second the comment was posted in is the one this cannot
+// see: it is the cheap first filter, and everEdited asks GitHub before a
+// comment is acted on.
 func edited(c *ghclient.Comment) bool {
 	return !c.UpdatedAt.IsZero() && c.UpdatedAt.Truncate(time.Second).After(c.CreatedAt.Truncate(time.Second))
+}
+
+// everEdited reports a comment ever edited, by GitHub's own record of its
+// edits (GraphQL lastEditedAt), which an edit in the second of its posting
+// cannot hide from. A comment gone since it was listed counts as edited: it
+// is nothing to act on.
+func (p *pass) everEdited(ctx context.Context, c *ghclient.Comment) (bool, error) {
+	if edited(c) {
+		return true, nil
+	}
+	e, err := p.r.GitHub.CommentEdited(ctx, p.repo(), c.NodeID)
+	switch {
+	case errors.Is(err, ghclient.ErrNodeNotFound):
+		return true, nil
+	case err != nil:
+		return false, fmt.Errorf("read whether comment %d was edited: %w", c.ID, err)
+	}
+	return e, nil
 }
 
 // listComments lists the issue's comments since since (never the whole

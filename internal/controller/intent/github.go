@@ -43,6 +43,11 @@ type GitHub interface {
 	ListIssueEvents(ctx context.Context, repoURL string, number int64) ([]*ghclient.IssueEvent, error)
 	ListIssueComments(ctx context.Context, repoURL string, number int64, since time.Time) ([]*ghclient.Comment, error)
 	GetIssueComment(ctx context.Context, repoURL string, id int64) (*ghclient.Comment, error)
+	// CommentEdited reports whether the comment with GraphQL node id nodeID
+	// was ever edited (ghclient.CommentEdited): GitHub's own fact, where
+	// REST's second-resolution updated_at cannot tell an edit made in the
+	// second the comment was posted.
+	CommentEdited(ctx context.Context, repoURL, nodeID string) (bool, error)
 	CreateIssueComment(ctx context.Context, repoURL string, number int64, body string) (*ghclient.Comment, error)
 	EditIssueComment(ctx context.Context, repoURL string, id int64, body string) error
 	// React adds the eyes reaction to a comment: a command was seen.
@@ -370,6 +375,14 @@ func (g *forgeGitHub) GetIssueComment(ctx context.Context, repoURL string, id in
 		return nil, err
 	}
 	return c.GetIssueComment(ctx, repo, id)
+}
+
+func (g *forgeGitHub) CommentEdited(ctx context.Context, repoURL, nodeID string) (bool, error) {
+	c, _, err := g.client(ctx, repoURL, issuesRead)
+	if err != nil {
+		return false, err
+	}
+	return c.CommentEdited(ctx, nodeID)
 }
 
 func (g *forgeGitHub) CreateIssueComment(ctx context.Context, repoURL string, number int64, body string) (

@@ -101,6 +101,7 @@ var viaApp = &appRef{ID: 1, Slug: AppSlug}
 
 type comment struct {
 	ID        int64     `json:"id"`
+	NodeID    string    `json:"node_id"`
 	Body      string    `json:"body"`
 	User      Actor     `json:"user"`
 	CreatedAt time.Time `json:"created_at"`
@@ -110,6 +111,9 @@ type comment struct {
 	// ViaApp is set on the App's own comments — unlike label events,
 	// comments do carry performed_via_github_app.
 	ViaApp *appRef `json:"performed_via_github_app"`
+	// edited records that the comment was ever edited, which GitHub's
+	// GraphQL reports (lastEditedAt) whatever updated_at says.
+	edited bool
 }
 
 // Comment is a snapshot of one stored comment, for assertions.
@@ -206,7 +210,7 @@ func newState() (*Server, *http.ServeMux) {
 func New() *Server {
 	s, mux := newState()
 	// go-github appends /api/v3 for a non-api.github.com base URL.
-	s.Server = httptest.NewServer(http.StripPrefix("/api/v3", mux))
+	s.Server = httptest.NewServer(s.withGraphQL(http.StripPrefix("/api/v3", mux)))
 	s.externalURL = s.Server.URL
 	return s
 }
@@ -218,7 +222,7 @@ func New() *Server {
 func NewStandalone(externalURL string) (*Server, http.Handler) {
 	s, mux := newState()
 	s.externalURL = externalURL
-	return s, http.StripPrefix("/api/v3", mux)
+	return s, s.withGraphQL(http.StripPrefix("/api/v3", mux))
 }
 
 // Issues returns a snapshot of every issue, ordered by number.
@@ -709,7 +713,8 @@ func (s *Server) createComment(w http.ResponseWriter, r *http.Request) {
 func (s *Server) addComment(number int, body string, author Actor) comment {
 	s.nextCommentID++
 	now := s.now()
-	c := comment{ID: s.nextCommentID, Body: body, User: author, CreatedAt: now, UpdatedAt: now}
+	c := comment{ID: s.nextCommentID, NodeID: fmt.Sprintf("IC_fake%d", s.nextCommentID), Body: body, User: author,
+		CreatedAt: now, UpdatedAt: now}
 	if author == Bot {
 		c.ViaApp = viaApp
 	}
@@ -747,7 +752,7 @@ func (s *Server) editComment(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	c.Body, c.UpdatedAt = body.Body, s.now()
+	c.Body, c.UpdatedAt, c.edited = body.Body, s.now(), true
 	writeJSON(w, c)
 }
 

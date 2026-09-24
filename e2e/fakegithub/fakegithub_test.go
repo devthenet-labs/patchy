@@ -764,6 +764,38 @@ func TestStoredComment(t *testing.T) {
 	}
 }
 
+// TestCommentEdits: a comment carries its node id, and the GraphQL edit
+// record says whether it was ever edited, even by an edit in the second it
+// was posted, when updated_at still equals created_at; an unknown id is
+// NOT_FOUND. A scoped token reads it with issues read.
+func TestCommentEdits(t *testing.T) {
+	srv, _, _ := newFake(t)
+	ctx := context.Background()
+	n := srv.OpenIssue(intents.Owner, intents.Name, "t", "b", nil, human)
+	id := srv.CommentAs(n, "looks good", human)
+	c := scopedClient(t, srv, newApp(t, srv), intents, ghclient.TokenPerms{Issues: ghclient.PermRead})
+	got, err := c.GetIssueComment(ctx, intents, id)
+	if err != nil || got.NodeID == "" {
+		t.Fatalf("GetIssueComment() = %+v, %v; want its node id", got, err)
+	}
+	if edited, err := c.CommentEdited(ctx, got.NodeID); err != nil || edited {
+		t.Errorf("CommentEdited() before an edit = %v, %v; want false", edited, err)
+	}
+	if !srv.EditCommentBody(id, "/patchy approve") {
+		t.Fatal("EditCommentBody() found no comment")
+	}
+	after, err := c.GetIssueComment(ctx, intents, id)
+	if err != nil || !after.UpdatedAt.Equal(after.CreatedAt) {
+		t.Fatalf("GetIssueComment() = %+v, %v; want an edit in the same second", after, err)
+	}
+	if edited, err := c.CommentEdited(ctx, got.NodeID); err != nil || !edited {
+		t.Errorf("CommentEdited() after an edit = %v, %v; want true", edited, err)
+	}
+	if _, err := c.CommentEdited(ctx, "IC_nothing"); !errors.Is(err, ghclient.ErrNodeNotFound) {
+		t.Errorf("CommentEdited(unknown) error = %v, want ErrNodeNotFound", err)
+	}
+}
+
 // TestPullRequestIdentity: a pull request carries its own node id and the
 // head commit its branch points at, on create, read and find alike, and
 // the merge leaves both behind.

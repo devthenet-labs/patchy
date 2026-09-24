@@ -59,8 +59,9 @@
 // cannot show counts as an invalid attempt), Failed → Planning when an
 // approver applies the trigger label again, any non-terminal phase →
 // Closed on a human close, a cancel, or every pull request closed unmerged,
-// and Planning or Building → Blocked on the cost ceiling or a missing,
-// rejected or unusable repository image, resuming to the phase it was
+// and Planning or Building → Blocked on the cost ceiling, a missing,
+// rejected or unusable repository image, or an intent branch or pull request
+// that is not patchy's own (BranchConflict), resuming to the phase it was
 // blocked from once the block no longer holds.
 //
 // # Authority
@@ -72,12 +73,15 @@
 // "read" for everyone), and not be a bot; actions by the App's own bot are
 // never answered. A comment edited after it was posted is never a command:
 // GitHub lets anyone with write access edit anyone's comment and still
-// names the original author. For the same reason an edited comment never
-// reaches a replan's snapshot. An approval is accepted only if it is newer
-// than the plan comment, the plan comment re-fetched still hashes to the
-// digest recorded when it was posted, the issue re-read still renders to the
-// input snapshot's digest, and, for the label, the label is still on the
-// issue.
+// names the original author. The listing's updated_at shows most edits, and
+// before a command is acted on GitHub's own edit record (GraphQL
+// lastEditedAt) is read too, since an edit in the second of the comment's
+// posting leaves updated_at equal to created_at. For the same reason an
+// edited comment never reaches a replan's snapshot. An approval is accepted
+// only if it is newer than the plan comment, the plan comment re-fetched
+// still hashes to the digest recorded when it was posted and was never
+// edited, the issue re-read still renders to the input snapshot's digest,
+// and, for the label, the label is still on the issue.
 //
 // A command from someone refused without asking GitHub (not an approver, or
 // a bot) is refused whatever it says, and its author gets that refusal once

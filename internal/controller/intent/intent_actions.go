@@ -46,6 +46,8 @@ type humanAction struct {
 	// lets anyone with write access edit anyone's comment and still names
 	// the original author, so it is never taken as its author's command.
 	edited bool
+	// comment is the command's comment as listed, nil for a label.
+	comment *ghclient.Comment
 }
 
 // key names what a notice answering the action answers: its id space and id.
@@ -307,7 +309,7 @@ func (p *pass) commands() []humanAction {
 			continue
 		}
 		a := humanAction{source: v1alpha1.IntentActionCommand, id: c.ID, at: c.CreatedAt, actor: c.Author(),
-			verb: cmd.Verb, edited: edited(c)}
+			verb: cmd.Verb, edited: edited(c), comment: c}
 		if p.hasOwnNotice(a.key()) {
 			// Answered. A refusal to an account refused without asking
 			// GitHub is remembered here too, in case the pass that posted
@@ -429,6 +431,16 @@ func (p *pass) settle(ctx context.Context, a humanAction, issue *ghclient.Issue)
 	if err := p.r.GitHub.React(ctx, p.repo(), a.id); err != nil && !ghclient.IsNotFound(err) {
 		return false, fmt.Errorf("react to comment %d: %w", a.id, err)
 	}
+	if !local && !a.recorded && !a.edited && acts(a.verb) && a.comment != nil {
+		// About to act on an approver's authority: confirm with GitHub that
+		// the comment was never edited, which the listing's timestamps
+		// cannot show for an edit in the second of its posting.
+		e, err := p.everEdited(ctx, a.comment)
+		if err != nil {
+			return false, err
+		}
+		a.edited = e
+	}
 	switch {
 	case a.recorded:
 		return true, p.replyDone(ctx, a)
@@ -458,6 +470,12 @@ func (p *pass) settle(ctx context.Context, a humanAction, issue *ghclient.Issue)
 		return true, p.notice(ctx, a.key(), a.at, body, err)
 	}
 	return true, p.decide(ctx, a, issue)
+}
+
+// acts reports a verb that takes effect on the intent (approve, replan,
+// cancel), as against one only answered with help.
+func acts(verb string) bool {
+	return verb == action.VerbApprove || verb == action.VerbReplan || verb == action.VerbCancel
 }
 
 // decide applies or refuses an intent verb, a label's or an approver's
@@ -709,8 +727,15 @@ func (p *pass) approvalChanged(ctx context.Context, issue *ghclient.Issue) (plan
 		planChanged = true
 	case err != nil:
 		return false, false, fmt.Errorf("re-read the plan comment: %w", err)
+	case digest([]byte(c.Body)) != pl.CommentDigest:
+		planChanged = true
 	default:
-		planChanged = digest([]byte(c.Body)) != pl.CommentDigest || edited(c)
+		// Its bytes match, but an edit put back within the second the plan
+		// was posted leaves updated_at at created_at: GitHub's record of the
+		// comment's edits decides.
+		if planChanged, err = p.everEdited(ctx, c); err != nil {
+			return false, false, err
+		}
 	}
 	snap, err := p.inputSnapshot(ctx, input)
 	if err != nil {

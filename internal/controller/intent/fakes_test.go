@@ -151,6 +151,9 @@ type fakeGitHub struct {
 	issues        map[int64]*fakeIssue
 	reactions     map[int64]int
 	closes        map[int64][]string
+	// edited are the comments ever edited, as GitHub's GraphQL records it
+	// whatever their updated_at says.
+	edited map[int64]bool
 
 	commits  []ghclient.CommitRequest
 	branches map[string]string
@@ -174,6 +177,7 @@ func newFakeGitHub(clock *fakeClock) *fakeGitHub {
 		issues:    map[int64]*fakeIssue{},
 		reactions: map[int64]int{},
 		closes:    map[int64][]string{},
+		edited:    map[int64]bool{},
 		branches:  map[string]string{},
 		prs:       map[int64]*fakePR{},
 		heads:     map[string]string{"main": baseSHA},
@@ -280,8 +284,9 @@ func (f *fakeGitHub) comment(login, body string) int64 {
 func (f *fakeGitHub) addComment(n int64, login, body string) *ghclient.Comment {
 	is := f.issues[n]
 	a := actorOf(login)
+	id := f.id()
 	c := &ghclient.Comment{
-		ID: f.id(), Body: body, UserLogin: a.Login, UserID: a.ID, UserType: a.Type,
+		ID: id, NodeID: fmt.Sprintf("IC_%d", id), Body: body, UserLogin: a.Login, UserID: a.ID, UserType: a.Type,
 		CreatedAt: f.clock.Now(), UpdatedAt: f.clock.Now(),
 		HTMLURL: fmt.Sprintf("%s/issues/%d#issuecomment", intentRepoURL, n),
 	}
@@ -298,6 +303,24 @@ func (f *fakeGitHub) editComment(id int64, body string) {
 		for _, c := range is.comments {
 			if c.ID == id {
 				c.Body, c.UpdatedAt = body, f.clock.Now()
+				f.edited[id] = true
+			}
+		}
+	}
+	f.version++
+}
+
+// editWithinTheSecond rewrites comment id as an edit made in the second the
+// comment was posted: REST's updated_at stays equal to its created_at, and
+// only GitHub's record of the edit (GraphQL) shows it.
+func (f *fakeGitHub) editWithinTheSecond(id int64, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, is := range f.issues {
+		for _, c := range is.comments {
+			if c.ID == id {
+				c.Body, c.UpdatedAt = body, c.CreatedAt
+				f.edited[id] = true
 			}
 		}
 	}
@@ -552,6 +575,22 @@ func (f *fakeGitHub) GetIssueComment(_ context.Context, _ string, id int64) (*gh
 	return nil, ghError(http.StatusNotFound, "Not Found")
 }
 
+func (f *fakeGitHub) CommentEdited(_ context.Context, _, nodeID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("CommentEdited"); err != nil {
+		return false, err
+	}
+	for _, is := range f.issues {
+		for _, c := range is.comments {
+			if c.NodeID == nodeID && nodeID != "" {
+				return f.edited[c.ID], nil
+			}
+		}
+	}
+	return false, fmt.Errorf("comment %q: %w", nodeID, ghclient.ErrNodeNotFound)
+}
+
 func (f *fakeGitHub) CreateIssueComment(_ context.Context, _ string, number int64, body string) (
 	*ghclient.Comment, error) {
 	f.mu.Lock()
@@ -577,6 +616,7 @@ func (f *fakeGitHub) EditIssueComment(_ context.Context, _ string, id int64, bod
 		for _, c := range is.comments {
 			if c.ID == id {
 				c.Body, c.UpdatedAt = body, f.clock.Now()
+				f.edited[id] = true
 				return nil
 			}
 		}

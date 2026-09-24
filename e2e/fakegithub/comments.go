@@ -118,6 +118,6 @@ func (s *Server) EditCommentBody(id int64, body string) bool {
 	if c == nil {
 		return false
 	}
-	c.Body, c.UpdatedAt = body, s.now()
+	c.Body, c.UpdatedAt, c.edited = body, s.now(), true
 	return true
 }

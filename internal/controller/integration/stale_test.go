@@ -7,7 +7,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-github/v90/github"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -577,4 +582,86 @@ func TestStaleObservationUnrecordedFailsOpen(t *testing.T) {
 	if want := `msg="stale alert observation not recorded; ingesting"`; !strings.Contains(h.logs.String(), want) {
 		t.Errorf("logs missing %q:\n%s", want, h.logs.String())
 	}
+}
+
+// TestAncestryDeniedSurfacesOnIntegration: GitHub's compare API needs the
+// Contents (read) permission. An Integration credential scoped without it —
+// the documented split between an Integration App and a Forge App — gets a
+// 403 on every lookup, and the stale check fails open (the successor is
+// still created). That must show on the Integration, not only in a WARN line
+// per delivery, and clear once a lookup succeeds again.
+func TestAncestryDeniedSurfacesOnIntegration(t *testing.T) {
+	denied := fmt.Errorf("ghclient: compare: %w", &github.ErrorResponse{
+		Response: &http.Response{
+			StatusCode: http.StatusForbidden,
+			Request:    &http.Request{Method: http.MethodGet, URL: &url.URL{Path: "/repos/o/r/compare/a...b"}},
+		},
+		Message: "Resource not accessible by integration",
+	})
+	commits := &fakeCommits{parents: history, heads: map[string]string{"main": laterMerge}, err: denied}
+	h := newStaleHarness(t, commits)
+	h.merge(t, nil)
+	stale := fixtureFile(t, "code_scanning_alert.reopened.stale.json")
+	h.scan(t, stale)
+
+	get(t, h.client, "finding-1678e4a376-3") // fails open, as before
+	ancestry := func() *metav1.Condition {
+		var integ v1alpha1.Integration
+		if err := h.client.Get(t.Context(), types.NamespacedName{Namespace: "patchy", Name: "github"}, &integ); err != nil {
+			t.Fatalf("get integration: %v", err)
+		}
+		return meta.FindStatusCondition(integ.Status.Conditions, v1alpha1.ConditionCommitAncestry)
+	}
+	if c := ancestry(); c == nil || c.Status != metav1.ConditionFalse || c.Reason != v1alpha1.ReasonContentsReadDenied {
+		t.Fatalf("CommitAncestry condition = %+v, want False/%s", c, v1alpha1.ReasonContentsReadDenied)
+	}
+
+	// A human deletes the duplicate; the next stale reopen fails with an
+	// error that is not a refusal, which says nothing about the credential.
+	dropDuplicate := func() {
+		if err := h.client.Delete(t.Context(), get(t, h.client, "finding-1678e4a376-3")); err != nil {
+			t.Fatalf("delete duplicate: %v", err)
+		}
+	}
+	dropDuplicate()
+	commits.err = errors.New("compare: 502")
+	h.scan(t, stale)
+	if c := ancestry(); c == nil || c.Status != metav1.ConditionFalse {
+		t.Fatalf("CommitAncestry condition after a 502 = %+v, want still False", c)
+	}
+
+	// The permission granted, the next lookup clears it (and the stale
+	// reopen is skipped).
+	dropDuplicate()
+	commits.err = nil
+	h.scan(t, stale)
+	if c := ancestry(); c == nil || c.Status != metav1.ConditionTrue || c.Reason != v1alpha1.ReasonAncestryReadable {
+		t.Errorf("CommitAncestry condition after a successful lookup = %+v, want True/%s", c,
+			v1alpha1.ReasonAncestryReadable)
+	}
+	if n := len(listFindings(t, h.client)); n != 1 {
+		t.Errorf("findings = %d after the lookup succeeded, want only the remediated one", n)
+	}
+}
+
+// TestAncestryHealthyWritesNothing: an Integration whose lookups succeed
+// never gets the condition — the steady state pays no status write.
+func TestAncestryHealthyWritesNothing(t *testing.T) {
+	h := newStaleHarness(t, &fakeCommits{parents: history, heads: map[string]string{"main": laterMerge}})
+	h.merge(t, nil)
+	h.scan(t, fixtureFile(t, "code_scanning_alert.reopened.stale.json"))
+	integ := liveIntegrationWithStatus(t, h)
+	if c := meta.FindStatusCondition(integ.Status.Conditions, v1alpha1.ConditionCommitAncestry); c != nil {
+		t.Errorf("CommitAncestry condition = %+v, want none", c)
+	}
+}
+
+// liveIntegrationWithStatus reads the harness's Integration back.
+func liveIntegrationWithStatus(t *testing.T, h *staleHarness) *v1alpha1.Integration {
+	t.Helper()
+	var integ v1alpha1.Integration
+	if err := h.client.Get(t.Context(), types.NamespacedName{Namespace: "patchy", Name: "github"}, &integ); err != nil {
+		t.Fatalf("get integration: %v", err)
+	}
+	return &integ
 }

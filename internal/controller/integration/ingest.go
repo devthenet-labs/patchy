@@ -226,7 +226,8 @@ func (in *Ingestor) ingest(
 // changes — a later analysis that regresses an alert already open sends
 // nothing.
 //
-// err reports a failed lookup; what failing means is the caller's call.
+// err reports a failed lookup (already reflected on the Integration's
+// CommitAncestry condition); what failing means is the caller's call.
 func (in *Ingestor) supersedingFix(
 	ctx context.Context, integ *v1alpha1.Integration, f source.Finding, family []v1alpha1.Finding,
 ) (*v1alpha1.Finding, error) {
@@ -246,6 +247,7 @@ func (in *Ingestor) supersedingFix(
 		return nil, nil
 	}
 	lookupFailed := func(err error) (*v1alpha1.Finding, error) {
+		in.noteAncestry(ctx, integ, err)
 		return nil, fmt.Errorf("finding %s, merge commit %s, branch %s: %w",
 			latest.Name, pr.MergeCommitSHA, branch, err)
 	}
@@ -254,12 +256,14 @@ func (in *Ingestor) supersedingFix(
 		return lookupFailed(err)
 	}
 	if !older {
+		in.noteAncestry(ctx, integ, nil)
 		return nil, nil
 	}
 	fixed, err := in.Commits.Contains(ctx, integ, f.Repo, branch, pr.MergeCommitSHA)
 	if err != nil {
 		return lookupFailed(err)
 	}
+	in.noteAncestry(ctx, integ, nil)
 	if !fixed {
 		return nil, nil
 	}

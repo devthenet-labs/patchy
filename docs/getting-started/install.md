@@ -74,7 +74,8 @@ kubectl -n patchy-agents create secret generic patchy-copilot --from-literal=tok
 | `patchy-copilot`   | `patchy-agents` | `token`                                              | Copilot runner Job pods (`COPILOT_GITHUB_TOKEN`) — only when the copilot runner is enabled                                               |
 
 A `token` key (a personal access token) is the dev-only fallback and wins over App auth when set. One GitHub Secret may
-serve both CRs, or you can split read and write identities across two GitHub Apps and two Secrets.
+serve both CRs, or you can split read and write identities across two GitHub Apps and two Secrets — the `Integration`'s
+App still needs Contents read, for the commit comparisons ingest makes.
 
 !!! warning "Each enabled non-brokered harness needs its credential"
 

@@ -119,6 +119,14 @@ carries its owner's whole access, and cannot use the delivery sweep below. Each 
 `spec.interval` and reports the result on its `Ready` condition, so a rotated-away credential surfaces as a condition
 rather than as a failed run.
 
+Besides code scanning alerts and issues, the credential needs **Contents: read** — even when a separate App backs the
+[Forge](../forges/github.md#credentials). Ingest compares commits (GitHub's compare API) to recognize a reopen of a
+remediated alert that observed code the merged fix already replaced, and to confirm the fix is still on the branch.
+Without the permission GitHub refuses every such lookup on a private repository, and the check fails open: each of those
+reopens opens a successor Finding, as if the check did not exist, and the `Integration` reports `CommitAncestry=False`
+(reason `ContentsReadDenied`) until a lookup succeeds. It is a separate condition from `Ready` because ingestion itself
+keeps working.
+
 ## The failed-delivery sweep
 
 GitHub does not retry a failed webhook delivery. Anything missed while the receiver was down, or while its queue was

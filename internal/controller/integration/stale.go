@@ -12,6 +12,7 @@ import (
 	"time"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -52,6 +53,53 @@ func (in *Ingestor) recordStale(ctx context.Context, fix *v1alpha1.Finding, f so
 		}
 		return in.Status().Update(ctx, &cur)
 	})
+}
+
+// noteAncestry keeps the Integration's CommitAncestry condition honest after
+// a lookup: False when GitHub refused the credential (the compare API needs
+// Contents: read, which an Integration App split from its Forge App may
+// lack), back to True on the next lookup that succeeds. Other failures say
+// nothing about the credential and leave it alone. The condition is absent
+// until the first refusal and written only when it changes, so a healthy
+// Integration never pays a status write for it — deciding costs a cache
+// read, not an API call.
+func (in *Ingestor) noteAncestry(ctx context.Context, integ *v1alpha1.Integration, err error) {
+	denied := ghclient.IsForbidden(err)
+	if err != nil && !denied {
+		return
+	}
+	werr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var cur v1alpha1.Integration
+		if err := in.Get(ctx, client.ObjectKeyFromObject(integ), &cur); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		prev := meta.FindStatusCondition(cur.Status.Conditions, v1alpha1.ConditionCommitAncestry)
+		cond := metav1.Condition{
+			Type:               v1alpha1.ConditionCommitAncestry,
+			Status:             metav1.ConditionTrue,
+			Reason:             v1alpha1.ReasonAncestryReadable,
+			Message:            "commit ancestry lookups succeed",
+			ObservedGeneration: cur.Generation,
+		}
+		switch {
+		case denied && prev != nil && prev.Status == metav1.ConditionFalse:
+			return nil
+		case denied:
+			cond.Status = metav1.ConditionFalse
+			cond.Reason = v1alpha1.ReasonContentsReadDenied
+			cond.Message = "GitHub refused this Integration's credential the compare API, so reopens of " +
+				"remediated alerts at commits their fix superseded open duplicate findings; grant it the " +
+				"Contents (read) repository permission: " + err.Error()
+		case prev == nil || prev.Status == metav1.ConditionTrue:
+			return nil
+		}
+		meta.SetStatusCondition(&cur.Status.Conditions, cond)
+		return in.Status().Update(ctx, &cur)
+	})
+	if werr != nil {
+		in.log().LogAttrs(ctx, slog.LevelWarn, "commit ancestry condition not recorded",
+			slog.String("integration", integ.Name), slog.Any("error", werr))
+	}
 }
 
 // recheckStale re-reads each alert whose reopen ingest set aside on fnd as

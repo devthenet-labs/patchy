@@ -209,6 +209,11 @@ func (r *RunReconciler) run(ctx context.Context, req ctrl.Request) (ctrl.Result,
 			return ctrl.Result{}, r.launch(ctx, &run)
 		}
 		return r.collect(ctx, &run)
+	case v1alpha1.RunComplete, v1alpha1.RunFailed:
+		// settle deletes a plan run's Repository after the terminal write;
+		// a delete that failed there is retried here, on every event, so
+		// no plan Repository outlives its collection.
+		return ctrl.Result{}, r.deletePlanRepository(ctx, &run)
 	}
 	return ctrl.Result{}, nil
 }

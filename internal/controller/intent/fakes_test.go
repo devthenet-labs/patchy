@@ -814,6 +814,8 @@ type env struct {
 	writes       int
 	failRunEvery int
 	runWrites    int
+	// failRepoDeletes fails the next Repository deletes, one per count.
+	failRepoDeletes int
 }
 
 func testSettings() Settings {
@@ -847,6 +849,13 @@ func newEnv(t *testing.T, objs ...client.Object) *env {
 					obj.SetCreationTimestamp(metav1.NewTime(e.clock.Now()))
 				}
 				return c.Create(ctx, obj, opts...)
+			},
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if _, ok := obj.(*v1alpha1.Repository); ok && e.failRepoDeletes > 0 {
+					e.failRepoDeletes--
+					return errTransient
+				}
+				return c.Delete(ctx, obj, opts...)
 			},
 			SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object,
 				opts ...client.SubResourceUpdateOption) error {

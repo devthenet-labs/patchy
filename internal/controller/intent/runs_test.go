@@ -536,6 +536,44 @@ func TestForeignChildrenAreNeverUsed(t *testing.T) {
 	}
 }
 
+// TestPlanRepositoryDeletedAfterAFailedDelete: a plan Repository whose
+// delete failed after its run's terminal write is deleted by the run's next
+// reconcile, not left until the intent expires.
+func TestPlanRepositoryDeletedAfterAFailedDelete(t *testing.T) {
+	e := newEnv(t, testProject())
+	e.failRepoDeletes = 1
+	name := e.newIntent(approver)
+	ctx := context.Background()
+	var run v1alpha1.IntentRun
+	for range 20 {
+		if runs := e.runsOf(name, v1alpha1.IntentStagePlan); len(runs) > 0 &&
+			runs[0].Status.Phase == v1alpha1.RunComplete {
+			run = runs[0]
+			break
+		}
+		_ = e.reconcileIntent(name)
+		e.readyRepositories("")
+		_, _ = e.runs.Reconcile(ctx, req(runSchedulerRequest))
+		for _, r := range e.intentRuns(name) {
+			_, _ = e.runs.Reconcile(ctx, req(r.Name))
+		}
+	}
+	if run.Name == "" || e.failRepoDeletes != 0 {
+		t.Fatalf("the plan run never completed with its delete failing (%d deletes left to fail)", e.failRepoDeletes)
+	}
+	key := types.NamespacedName{Namespace: testNS, Name: run.Spec.Repository.RepositoryRef.Name}
+	var repo v1alpha1.Repository
+	if err := e.c.Get(ctx, key, &repo); err != nil {
+		t.Fatalf("the plan Repository is gone although its delete failed: %v", err)
+	}
+	if _, err := e.runs.Reconcile(ctx, req(run.Name)); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.c.Get(ctx, key, &repo); err == nil {
+		t.Error("the plan Repository survived its finished run's reconcile")
+	}
+}
+
 // TestSandboxRefusalBlocks: a build Job whose sandbox probe refused trips
 // the breaker, costs no attempt, and blocks the intent until the breaker is
 // clear.

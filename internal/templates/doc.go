@@ -21,6 +21,9 @@
 // pull request's summary — passes through Sanitize (or SanitizeInline)
 // first: nothing it holds renders hidden from a reader, and no mention,
 // issue reference or closing keyword in it is live. The intent renderers
-// take plain values, and the commit message, which GitHub reads as plain
-// text, breaks references apart instead.
+// take plain values. What GitHub may read as plain text — the commit
+// message, the pull request title, and the pull request body, which a
+// merge or squash commit can carry — has every reference and mention
+// broken apart as well, code spans included, since inline code neutralises
+// nothing there.
 package templates

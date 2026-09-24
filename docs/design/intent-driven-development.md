@@ -173,8 +173,8 @@ because the only `LabelFinding` consumers index Investigations, Remediations and
 IntentRun name matches none of them.
 
 The intent `jobs.Client` sets `AllowRepositoryImages`, `EphemeralStorage` and its own runnerguard Breaker.
-`runnerguard.PinFor(spec, repo)` is added beside `Pin`, which is not touched. It has no revival rule: an intent
-brought back by its trigger label is a new plan and a new approval, not a Finding revival.
+`runnerguard.PinFor(spec, repo)` is added beside `Pin`, which is not touched. It has no revival rule: an intent brought
+back by its trigger label is a new plan and a new approval, not a Finding revival.
 
 ### Custom resources
 
@@ -563,15 +563,24 @@ located, and a plan that holds any should be replanned rather than approved.
 
 All other agent-authored text that reaches GitHub passes through one sanitiser in `internal/templates`. That covers the
 plan's summary and dependencies in the header, pull request bodies, status comments that quote agent output, and
-revise-round comments. Its property tests are seeded, and they check that the sanitiser is idempotent, that its output
-never matches GitHub's closing-keyword grammar, and that no raw HTML survives. What it does:
+revise-round comments. Its property tests are seeded, and they check that the sanitiser is idempotent, that no raw HTML
+survives, and that its output, read as markdown, holds no live reference or mention outside code, so GitHub's
+closing-keyword grammar never matches there. What it does:
 
 - **Raw HTML is escaped**, so an HTML comment or a `<details>` block is shown literally. A prompt-injected agent
   therefore cannot hide instructions from the human reading the text. The controller's marker is the only HTML comment.
 - **Closing keywords, issue references and mentions are neutralised** by rendering them as inline code. This covers
-  forms like `fixes #3` and `owner/repo#3`, and `@mentions`.
+  forms like `fixes #3` and `owner/repo#3`, and `@mentions`. Inline code protects them only while GitHub reads the text
+  as markdown.
+- **Plain text is defanged.** A commit message and a PR title are plain text on the default branch, and a repository can
+  set GitHub to copy the PR body, as written, into the merge or squash commit ("Pull request title and description").
+  There a kept code span holding `closes #12` would close issue 12. So wherever agent text can end up as plain text,
+  each reference and mention in it is also broken apart with a space (`# 12`, `@ octocat`, `/issues/ 12`), code spans
+  included. Seeded properties read the raw commit message, PR title and PR body as plain text: none holds a closing
+  keyword with a reference, and the only reference is the intent issue's.
 - **The controller composes the commit message:** `<project>: <summary> (<intent repo>#N, round k)`, plus the trailers
-  `Patchy-Intent:` and `Patchy-Run:`. The agent's own commit messages are dropped.
+  `Patchy-Intent:` and `Patchy-Run:`. The agent's own commit messages are dropped. It also composes the PR title,
+  `<project>: <summary>`, which a squash commit uses as its subject.
 
 This matters for the security flow. A Finding's tracking issue lives in the same app repo, and `Signals.issues` moves
 any non-terminal Finding to `HandedOff` when its tracking issue is closed, no matter who closed it (webhooks.go:85-91).

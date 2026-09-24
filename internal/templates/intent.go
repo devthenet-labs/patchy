@@ -515,6 +515,15 @@ func RenderApprovalRefusedNotice(n ApprovalRefusedNotice) (string, error) {
 // intent issue itself once every pull request has merged, and nothing in the
 // body may close an issue on merge — least of all a Finding's tracking issue
 // in the same repository.
+//
+// The body is read two ways. GitHub renders it as markdown on the pull
+// request, and a repository may have GitHub copy it, as written, into the
+// merge or squash commit on the default branch ("Pull request title and
+// description"), where it is plain text and inline code neutralises
+// nothing: a kept code span holding "closes #12" would close issue 12 there.
+// So the summary is sanitised for the markdown reading and then defanged
+// for the plain one, and read either way the body references only the
+// intent issue, after "Part of", and mentions nobody.
 type IntentPRBody struct {
 	// IntentRepository ("owner/name") and IssueNumber are the intent issue.
 	IntentRepository string
@@ -540,11 +549,27 @@ func RenderIntentPRBody(b IntentPRBody) (string, error) {
 	}{
 		IntentRepository: oneLine(b.IntentRepository),
 		IssueNumber:      b.IssueNumber,
-		Summary:          SanitizeInline(b.Summary),
-		PlanRevision:     b.PlanRevision,
-		Digest:           shortDigest(oneLine(b.PlanDigest)),
-		ApprovedBy:       oneLine(b.ApprovedBy),
+		// defang only inserts a space between punctuation ("@", "#",
+		// "GH-", an issue URL's path segment) and the letter or digit
+		// after it, which no markdown construct turns on, so the result
+		// stays inert markdown.
+		Summary:      defang(SanitizeInline(b.Summary)),
+		PlanRevision: b.PlanRevision,
+		Digest:       shortDigest(oneLine(b.PlanDigest)),
+		ApprovedBy:   oneLine(b.ApprovedBy),
 	})
+}
+
+// IntentPRTitle composes the title of a pull request an intent opens:
+//
+//	<project>: <summary>
+//
+// GitHub links references and mentions in a title, and uses the title as
+// the subject of a squash commit, plain text on the default branch; so,
+// as in IntentCommitMessage, the summary is put on one line, bounded and
+// defanged, and the title references and mentions nothing.
+func IntentPRTitle(project, summary string) string {
+	return defang(oneLine(project) + ": " + commitSummary(summary))
 }
 
 // IntentCommit is the commit patchy composes for an intent's changeset; the
@@ -585,13 +610,20 @@ const MaxCommitSummaryRunes = 200
 // issue, and the one reference it makes is to the intent issue, after "(",
 // where no closing keyword can precede it.
 func IntentCommitMessage(c IntentCommit) string {
-	summary := strings.TrimSpace(strings.ReplaceAll(plainText(c.Summary), "\n", " "))
-	if utf8.RuneCountInString(summary) > MaxCommitSummaryRunes {
-		summary = string([]rune(summary)[:MaxCommitSummaryRunes-1]) + "…"
-	}
 	return fmt.Sprintf("%s: %s (%s#%d, round %d)\n\nPatchy-Intent: %s/%s\nPatchy-Run: %s\n",
-		oneLine(c.Project), defang(summary), oneLine(c.IntentRepository), c.IssueNumber, c.Round,
+		oneLine(c.Project), commitSummary(c.Summary), oneLine(c.IntentRepository), c.IssueNumber, c.Round,
 		oneLine(c.Namespace), oneLine(c.Intent), oneLine(c.Run))
+}
+
+// commitSummary is a plan summary as a commit subject or a pull request
+// title carries it: on one line, at most MaxCommitSummaryRunes runes, and
+// defanged.
+func commitSummary(summary string) string {
+	s := oneLine(summary)
+	if utf8.RuneCountInString(s) > MaxCommitSummaryRunes {
+		s = string([]rune(s)[:MaxCommitSummaryRunes-1]) + "…"
+	}
+	return defang(s)
 }
 
 // defang breaks every mention and issue reference in plain text s so GitHub

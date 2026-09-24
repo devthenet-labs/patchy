@@ -202,13 +202,23 @@ func TestIntentGoldens(t *testing.T) {
 				PlanRevision: 2, PlanDigest: PlanDigest([]byte(testPlan)), ApprovedBy: "peter",
 			})
 		}},
+		// Code spans the agent wrote are kept, and inert as markdown, but
+		// broken apart all the same: a merge or squash commit may carry the
+		// body as plain text.
 		{"intent_pr_body_hostile.md", func() (string, error) {
 			return RenderIntentPRBody(IntentPRBody{
 				IntentRepository: "devthenet-labs/intents", IssueNumber: 1,
 				Summary: "Fixes #3, closes owner/repo#4\n<!-- x --> for @octocat, " +
-					"resolves https://ghe.example.com/acme/app/issues/12",
+					"resolves https://ghe.example.com/acme/app/issues/12 (`closes #12`, `fixes acme/app#3`)",
 				PlanRevision: 2, PlanDigest: PlanDigest([]byte(hostilePlan)), ApprovedBy: "peter",
 			})
+		}},
+		{"intent_pr_title.txt", func() (string, error) {
+			return IntentPRTitle("target", "Add GET /version returning {sha, built} as JSON"), nil
+		}},
+		{"intent_pr_title_hostile.txt", func() (string, error) {
+			return IntentPRTitle("target", "Fixes #3, closes owner/repo#4 and GH-5\nfor @octocat "+
+				"(`closes #12`, https://ghe.example.com/acme/app/issues/12)"), nil
 		}},
 		{"intent_commit.txt", func() (string, error) {
 			return IntentCommitMessage(IntentCommit{
@@ -582,6 +592,9 @@ func planOutcome(report string) (outcome, msg string) {
 // comment shows its report verbatim in a code block, and the agent's
 // summary and dependencies above it sanitised (checkPlanComment). A report
 // that is not UTF-8 is refused.
+// The pull request body holds the same read as plain text, as a merge or
+// squash commit carries it: its one issue reference is the intent issue's,
+// after "Part of", and it mentions nobody.
 func TestIntentCommentProperties(t *testing.T) {
 	cfg := markdownConfig(20260928)
 	cfg.MaxCount = 1500
@@ -630,9 +643,90 @@ func TestIntentCommentProperties(t *testing.T) {
 				return false
 			}
 		}
+		if msg := checkPlainText(pr, len("Part of devthenet-labs/intents")); msg != "" {
+			failure = fmt.Sprintf("pull request body as plain text: %s\nagent text %q\n%s", msg, agent, pr)
+			return false
+		}
 		return true
 	}
 	if err := quick.Check(holds, cfg); err != nil {
+		t.Errorf("%v\n%s", err, failure)
+	}
+}
+
+// checkPlainText returns what in s, read as plain text, as GitHub reads a
+// commit message, could close an issue, reference one or notify anyone,
+// or "": s may reference one issue alone, the intent issue, at offset ref
+// (-1 for none), and nothing else.
+func checkPlainText(s string, ref int) string {
+	if m := closingReference.FindString(s); m != "" {
+		return fmt.Sprintf("closes an issue: %q", m)
+	}
+	refs := liveReference.FindAllStringIndex(s, -1)
+	want := 0
+	if ref >= 0 {
+		want = 1
+	}
+	if len(refs) != want || (want == 1 && refs[0][0] != ref) {
+		var got []string
+		for _, r := range refs {
+			got = append(got, fmt.Sprintf("%q at %d", s[r[0]:r[1]], r[0]))
+		}
+		return fmt.Sprintf("references %v, want only the intent issue's at %d", got, ref)
+	}
+	if m := liveMention.FindString(s); m != "" {
+		return fmt.Sprintf("mentions %q", m)
+	}
+	return ""
+}
+
+// TestIntentPRBodyPlainText: a summary's code spans are inert on the pull
+// request, but a repository may have GitHub copy the body into the merge
+// or squash commit, as plain text, where "closes #12" in one would close
+// issue 12; the body breaks them apart as the commit message does.
+func TestIntentPRBodyPlainText(t *testing.T) {
+	for _, summary := range []string{
+		"Add /version (`closes #12`, `fixes acme/app#3`)",
+		"`Resolves https://github.com/acme/app/issues/7` and `fixes GH-8` for `@octocat`",
+		"``closes #1`` `` `fixes #2` ``",
+	} {
+		body, err := RenderIntentPRBody(IntentPRBody{
+			IntentRepository: "devthenet-labs/intents", IssueNumber: 1, Summary: summary,
+			PlanRevision: 2, PlanDigest: PlanDigest([]byte(testPlan)), ApprovedBy: "peter",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if msg := checkPlainText(body, len("Part of devthenet-labs/intents")); msg != "" {
+			t.Errorf("summary %q: %s\n%s", summary, msg, body)
+		}
+		if msg := checkSanitized(strings.TrimPrefix(body, "Part of devthenet-labs/intents#1\n")); msg != "" {
+			t.Errorf("summary %q: %s\n%s", summary, msg, body)
+		}
+	}
+}
+
+// TestIntentPRTitleProperties: whatever the summary holds, the title is one
+// line, "<project>: " and the summary, and — plain text as a squash commit's
+// subject, linked as a title — references and mentions nothing.
+func TestIntentPRTitleProperties(t *testing.T) {
+	var failure string
+	holds := func(summary string) bool {
+		title := IntentPRTitle("target", summary)
+		switch {
+		case strings.Contains(title, "\n") || !strings.HasPrefix(title, "target: "):
+			failure = fmt.Sprintf("title is not one line headed by the project: %q", title)
+		case utf8.RuneCountInString(title) > len("target: ")+2*MaxCommitSummaryRunes:
+			failure = fmt.Sprintf("title is not bounded: %d runes", utf8.RuneCountInString(title))
+		default:
+			if failure = checkPlainText(title, -1); failure == "" {
+				return true
+			}
+		}
+		failure += fmt.Sprintf("\nsummary %q", summary)
+		return false
+	}
+	if err := quick.Check(holds, markdownConfig(20261001)); err != nil {
 		t.Errorf("%v\n%s", err, failure)
 	}
 }

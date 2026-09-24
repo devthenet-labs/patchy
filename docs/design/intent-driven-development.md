@@ -529,6 +529,28 @@ Sequencing: slice 1a ships the parser, the intent verbs `approve`, `replan` and 
 as its own PR, the Finding migration (`/patchy <verb>`, the `/approve` alias, and the write-permission check). Slice 1b
 adds `revise` with its review alias, and `retry` on intent PRs.
 
+Status: the parser is done, and so is the Finding migration. A Finding's tracking issue takes all five verbs through
+`internal/command`, applied by `action.Apply` exactly as the status page and the CLI apply them. The webhook is
+acknowledged before it is handled and never redelivered, so the handler makes no GitHub call. It only records the
+command on the Finding's status (`status.commands.pending`), and the Finding projection settles it with backoff.
+Settling reads the collaborator permission (`ghclient.CanWrite`), writes the spec, adds the `eyes` reaction and posts
+one reply. The answer's start is recorded before the reply is posted, and only a retry after a failure looks for an
+earlier reply, among the comments since then; the thread is never listed in full, so spam cannot make each answer cost
+more. It then records the comment id in `status.commands.consumed` (the last 32), so a redelivery or a replay never
+applies a command twice. `author_association` is no longer read. Each step is recorded as it completes, so a GitHub
+failure retries without deciding again, writing the spec again or replying again, and an answer GitHub refuses for an
+hour is given up.
+
+Anyone who can comment reaches the pending list before GitHub is asked about them, so the design bounds what a commenter
+without write access can do. The 8 pending slots are shared by account (2 undecided each at most, since a decided
+command only waits on its answer; when all 8 are held, a new command takes the slot of a decided refusal, which loses
+only its answer, or else a doubled-up account's newest undecided one). A refusal is not kept in `consumed`, so spam
+cannot push a maintainer's command out of it, and each account gets one refusal reply per finding and then only the
+reaction. A `suspend` or `resume` that arrives after a later one was applied is answered as superseded (`lastToggle`),
+so the order they were written in holds past the pending list. One limit remains: a command that finds no slot (its
+account already has 2 undecided, or every slot holds an account's only undecided command or a decided command from an
+account with write access) is not recorded, and so is never answered; it is logged. That is the price of the bound.
+
 ### Why polling rather than webhooks
 
 - **It leaves the internet-facing binary alone.** integration-controller, which the security flow depends on, is
@@ -1130,7 +1152,7 @@ devthenet-dev in a separate Helm upgrade from the release that ships them.
 ## Prerequisite fixes
 
 Items 1-3, 5 and 6 are wave 0. Item 4 moves into wave 1 with the other ghclient work. `/approve` accepting any org
-`MEMBER` is fixed by the command-vocabulary PR in slice 1a.
+`MEMBER` is fixed by the command-vocabulary PR in slice 1a (done: the Finding migration requires write access).
 
 1. **Finding PR-close handler.** Make it check the repository and PR number against `status.pullRequest`, not just the
    head ref (internal/controller/integration/webhooks.go:170-216).
@@ -1201,8 +1223,10 @@ Made on 2026-09-23.
    later revise round could take its image from R0 again (`imageFrom` pins it by UID), so the intent would stay
    `Blocked` on `ImageRequired`, or a run whose Repository vanished mid-launch would fail. The command-vocabulary PR,
    which already edits integration-controller, therefore scopes both copies' Repository delete to Finding Repositories
-   (`client.HasLabels{LabelFinding}`); intent Repositories never carry that label. Until that PR is deployed, demo reset
-   must not be used while any intent is active.
+   (`client.HasLabels{LabelFinding}`); intent Repositories never carry that label. **Done** with the Finding migration:
+   both copies delete only Finding Repositories, never Projects, Intents or IntentRuns, and the only issues reset
+   touches are findings' tracking issues, which patchy opened. Tests pin all of this. Until that release is deployed,
+   demo reset must not be used while any intent is active.
 7. Is a 14-day TTL right, or should intents be kept forever, with GitHub as the durable record?
 
 ## Corrections to the candidate designs (verified)

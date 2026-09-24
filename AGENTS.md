@@ -21,7 +21,7 @@ Ten binaries, one module. "Not monolithic" means separate binaries/deployments w
   token, the `/generic/{name}/webhooks` wildcard with strictly per-name HMAC; per-Integration secrets), ingests
   scanner alerts into Findings (accumulation, duplicate merge), projects Findings out as tracking issues
   (trackingRef falls back to the namespace's issues-enabled Integration for non-github sources), applies human
-  signals (issue close, `/approve`, PR merge) back onto Findings, and POSTs dismissal verdicts to generic
+  signals (issue close, `/patchy` commands, PR merge) back onto Findings, and POSTs dismissal verdicts to generic
   integrations' resolver endpoints. With `--repository-images` it also keeps the runner-image sticky comment
   (what patchy did with a repository-declared agent image), reading each finding's Repository.
 - `cmd/source-controller` — `Forge` + `Repository` reconcilers: validates forge credentials, pins
@@ -169,7 +169,10 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   surface (Finding issue, intent issue, intent PR) offers, with the help replies for an unknown verb (`Help`)
   and one the current phase does not admit (`HelpFor`); `Note` is the one note rule, event aliases included.
   Pure: it imports only the standard library and `action` (a test pins that); availability and authorisation
-  are the caller's. Not wired in yet (the Finding migration and intent-controller consume it).
+  are the caller's. Consumed by integration-controller for Finding tracking issues (Signals records a command on
+  `status.commands.pending`, slots shared by account; the projection's `settleCommands` authorises it by
+  `ghclient.CanWrite`, applies it via `action.Apply`, reacts and replies at most once without listing the thread,
+  then consumes it); intent-controller will consume it too.
 - `web` (+ `web/auth`, `web/authz`) — the status-server backend: wire types mirroring the SPA's
   `ui/src/types.ts` (keep the two in lockstep), the action handlers, SSE broker + cache-informer watcher, and
   the embedded UI (`internal/web/ui`, Vite/Preact, single-file build embedded behind the `withui` tag; `mise run

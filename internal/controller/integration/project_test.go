@@ -59,6 +59,27 @@ type fakeTracker struct {
 	// onIssueRead, when set, is called once, after the next GetIssue has
 	// read its answer and before it returns it: what changes meanwhile.
 	onIssueRead func()
+
+	// perms are CollaboratorPermission's answers by login: a login with none
+	// reads "read", as every account does on a public repository, and one
+	// in missing is no account (404). permErrs fail its first calls, in
+	// order; permReads records each login asked about.
+	perms     map[string]string
+	missing   map[string]bool
+	permErrs  []error
+	permReads []string
+	// reactions are each comment's reactions, by comment id; reactErrs fail
+	// CreateIssueCommentReaction's first calls, in order.
+	reactions map[int64][]string
+	reactErrs []error
+	// commentErrs fail CreateComment's first calls, in order. postedErrs
+	// fail the calls after those the way a timeout does: the comment is
+	// posted, and the call still fails.
+	commentErrs, postedErrs []error
+	// recentLists records the since of each ListIssueComments call; clock
+	// stamps each posted comment (testClock when nil).
+	recentLists []time.Time
+	clock       func() time.Time
 }
 
 func newFakeTracker() *fakeTracker {
@@ -67,6 +88,9 @@ func newFakeTracker() *fakeTracker {
 		issues:        map[int]*ghclient.Issue{},
 		issueComments: map[int][]*ghclient.Comment{},
 		unlisted:      map[int64]bool{},
+		perms:         map[string]string{},
+		missing:       map[string]bool{},
+		reactions:     map[int64][]string{},
 	}
 }
 
@@ -139,15 +163,32 @@ func (f *fakeTracker) Comment(ctx context.Context, repo ghclient.Repo, number in
 }
 
 func (f *fakeTracker) CreateComment(_ context.Context, _ ghclient.Repo, number int, body string) (int64, error) {
+	if len(f.commentErrs) > 0 {
+		err := f.commentErrs[0]
+		f.commentErrs = f.commentErrs[1:]
+		return 0, err
+	}
+	if _, ok := f.issues[number]; !ok {
+		return 0, notFound(fmt.Sprintf("comment on issue #%d", number))
+	}
 	if f.onPost != nil {
 		f.onPost()
 	}
 	f.comments = append(f.comments, body)
 	f.nextCommentID++
+	at := testClock
+	if f.clock != nil {
+		at = f.clock()
+	}
 	f.issueComments[number] = append(f.issueComments[number],
-		&ghclient.Comment{ID: f.nextCommentID, Body: body, UserLogin: botLogin})
+		&ghclient.Comment{ID: f.nextCommentID, Body: body, UserLogin: botLogin, CreatedAt: at, UpdatedAt: at})
 	if f.listLag {
 		f.unlisted[f.nextCommentID] = true
+	}
+	if len(f.postedErrs) > 0 {
+		err := f.postedErrs[0]
+		f.postedErrs = f.postedErrs[1:]
+		return 0, err
 	}
 	return f.nextCommentID, nil
 }
@@ -157,6 +198,21 @@ func (f *fakeTracker) ListComments(_ context.Context, _ ghclient.Repo, number in
 	var out []*ghclient.Comment
 	for _, c := range f.issueComments[number] {
 		if !f.unlisted[c.ID] {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// ListIssueComments is ListComments with GitHub's since filter: only the
+// comments updated at or after it.
+func (f *fakeTracker) ListIssueComments(
+	_ context.Context, _ ghclient.Repo, number int, since time.Time,
+) ([]*ghclient.Comment, error) {
+	f.recentLists = append(f.recentLists, since)
+	var out []*ghclient.Comment
+	for _, c := range f.issueComments[number] {
+		if !f.unlisted[c.ID] && !c.UpdatedAt.Before(since) {
 			out = append(out, c)
 		}
 	}
@@ -220,6 +276,37 @@ func (f *fakeTracker) GetPullRequest(_ context.Context, repo ghclient.Repo, numb
 		return nil, notFound(fmt.Sprintf("get PR %s#%d", repo, number))
 	}
 	return pr, nil
+}
+
+func (f *fakeTracker) CollaboratorPermission(_ context.Context, repo ghclient.Repo, login string) (string, error) {
+	f.permReads = append(f.permReads, login)
+	if len(f.permErrs) > 0 {
+		err := f.permErrs[0]
+		f.permErrs = f.permErrs[1:]
+		return "", err
+	}
+	if f.missing[login] {
+		return "", fmt.Errorf("permission of %s on %s: %w: %w", login, repo, ghclient.ErrNoSuchUser,
+			notFound("collaborator permission"))
+	}
+	if p, ok := f.perms[login]; ok {
+		return p, nil
+	}
+	return ghclient.PermissionRead, nil
+}
+
+func (f *fakeTracker) CreateIssueCommentReaction(
+	_ context.Context, _ ghclient.Repo, commentID int64, content string,
+) error {
+	if len(f.reactErrs) > 0 {
+		err := f.reactErrs[0]
+		f.reactErrs = f.reactErrs[1:]
+		return err
+	}
+	if !slices.Contains(f.reactions[commentID], content) {
+		f.reactions[commentID] = append(f.reactions[commentID], content)
+	}
+	return nil
 }
 
 // projectable is a Finding ready for projection.
@@ -497,7 +584,7 @@ func TestProjectAwaitingApprovalNotifies(t *testing.T) {
 
 	notices := 0
 	for _, cm := range tracker.comments {
-		if strings.Contains(cm, "/approve") {
+		if strings.Contains(cm, "`/patchy approve`") {
 			notices++
 		}
 	}

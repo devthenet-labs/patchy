@@ -148,6 +148,47 @@ func TestHandleAdminResetNoIntegrationFallsBack(t *testing.T) {
 	}
 }
 
+// TestHandleAdminResetFallbackLeavesIntentFlow: the fallback delete is the
+// Finding flow's, as the controller's reset is. The intent flow shares the
+// namespace, and its Projects, Intents, IntentRuns and Repositories (which
+// never carry the Finding label) survive; the findings' Repositories go.
+func TestHandleAdminResetFallbackLeavesIntentFlow(t *testing.T) {
+	findingRepo := &v1alpha1.Repository{ObjectMeta: metav1.ObjectMeta{
+		Name: "fnd-1", Namespace: "patchy", Labels: map[string]string{v1alpha1.LabelFinding: "fnd-1"},
+	}}
+	intentRepo := &v1alpha1.Repository{ObjectMeta: metav1.ObjectMeta{
+		Name: "web-12-r0", Namespace: "patchy", Labels: map[string]string{v1alpha1.LabelIntent: "web-12"},
+	}}
+	s := testServer(t, fullFinding(), findingRepo, intentRepo,
+		&v1alpha1.Intent{ObjectMeta: metav1.ObjectMeta{Name: "web-12", Namespace: "patchy"}},
+		&v1alpha1.IntentRun{ObjectMeta: metav1.ObjectMeta{Name: "web-12-plan-1", Namespace: "patchy"}},
+		&v1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "patchy"}},
+	)
+	s.auth, s.granter = stubAuth{id: operator}, stubGranter{grants: allGrants()}
+
+	if res, body := postAdmin(t, s, "reset"); res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200", res.StatusCode, body)
+	}
+
+	var repos v1alpha1.RepositoryList
+	if err := mustClient(s).List(t.Context(), &repos, client.InNamespace("patchy")); err != nil {
+		t.Fatalf("list repositories: %v", err)
+	}
+	if len(repos.Items) != 1 || repos.Items[0].Name != intentRepo.Name {
+		t.Errorf("repositories after reset = %v, want only the intent's", repos.Items)
+	}
+	for _, list := range []client.ObjectList{
+		&v1alpha1.IntentList{}, &v1alpha1.IntentRunList{}, &v1alpha1.ProjectList{},
+	} {
+		if err := mustClient(s).List(t.Context(), list, client.InNamespace("patchy")); err != nil {
+			t.Fatalf("list %T: %v", list, err)
+		}
+		if n := len(asMap(t, list)["items"].([]any)); n != 1 {
+			t.Errorf("%T holds %d items after reset, want 1 (untouched)", list, n)
+		}
+	}
+}
+
 func TestHandleAdminAuthz(t *testing.T) {
 	tests := []struct {
 		name    string

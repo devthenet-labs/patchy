@@ -264,7 +264,7 @@ Not on camera · run through before the room
     | Confidence path | What happens |
     | --------------- | ------------ |
     | `remediate` **≥ 0.75** and no breaking-change hold | **Queued** automatically |
-    | `remediate` **&lt; 0.75** _or_ better-but-breaking alternative | **AwaitingApproval** until `/approve` (issue or status page) |
+    | `remediate` **&lt; 0.75** _or_ better-but-breaking alternative | **AwaitingApproval** until `/patchy approve` (issue or status page) |
 
     Backwards-compatible fixes are always preferred. If a cleaner fix would break callers, the report can still
     recommend the safe path, set `breaking_change_available: true`, and describe the better option for a human.
@@ -275,7 +275,7 @@ Not on camera · run through before the room
 | --------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | **`ignore`**    | False positive (not exploitable, bad dataflow assumption, already mitigated) | **Dismissed** — source alerts dismissed where applicable, issue closed |
 | **`remediate`** | Real issue; automated fix likely to succeed                                  | **Queued** / **AwaitingApproval** / then agent fix                     |
-| **`manual`**    | Real issue; needs domain judgment or is too risky to automate                | **HandedOff** to owners (revivable via `/approve`)                     |
+| **`manual`**    | Real issue; needs domain judgment or is too risky to automate                | **HandedOff** to owners (revivable via `/patchy approve`)              |
 
 !!! tip "Transition"
 
@@ -365,7 +365,7 @@ Not on camera · run through before the room
 
 ??? warning "If confidence is low or breaking-change hold"
 
-    Show **AwaitingApproval** → click **Approve** on the status page (or `/approve` on the issue) → same machine edge
+    Show **AwaitingApproval** → click **Approve** on the status page (or `/patchy approve` on the issue) → same machine edge
     into **Queued**. Status server never moves phases itself; it records approval; the controller owns the edge.
 
 ---
@@ -386,7 +386,7 @@ Not on camera · run through before the room
 
     Not everything should be auto-fixed: auth redesigns, ambiguous product risk, multi-service coordination.
     **`manual`** hands the finding to repository owners via the tracking issue — **HandedOff** — with the full
-    investigation report as context. A later `/approve` can still revive it into the queue if someone decides
+    investigation report as context. A later `/patchy approve` can still revive it into the queue if someone decides
     automation should try.
 
     Humans can also close the tracking issue at any non-terminal phase → **HandedOff** — always able to pull work out

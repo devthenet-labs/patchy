@@ -107,11 +107,11 @@ Register one App for the whole pipeline and install it on the repositories patch
 
 **Webhook URL — exactly one, pointed at the integration-controller:** `https://<your-host>/github/webhooks`. The
 integration-controller is the single receiver: it validates each delivery against the webhook secrets of your configured
-Integrations, ingests scanner events into Findings, and applies the human signals (issue close, `/approve`, PR merge).
-No other controller serves a webhook. The same receiver serves `/google-cloud/webhooks` (Security Command Center via a
-Pub/Sub push subscription), `/wiz/webhooks` (Wiz automation rules), and `/generic/<name>/webhooks` (one per generic
-Integration, under the static `/generic/` prefix) when those Integrations are configured — see their integration docs.
-The base ships a ClusterIP Service and no Ingress: put your Ingress or Gateway in front of
+Integrations, ingests scanner events into Findings, and applies the human signals (issue close, `/patchy` commands, PR
+merge). No other controller serves a webhook. The same receiver serves `/google-cloud/webhooks` (Security Command Center
+via a Pub/Sub push subscription), `/wiz/webhooks` (Wiz automation rules), and `/generic/<name>/webhooks` (one per
+generic Integration, under the static `/generic/` prefix) when those Integrations are configured — see their integration
+docs. The base ships a ClusterIP Service and no Ingress: put your Ingress or Gateway in front of
 `patchy-integration-controller:8080` in your own overlay.
 
 GitHub never retries a failed delivery on its own; enable `spec.github.redelivery` on the Integration and the controller

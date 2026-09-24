@@ -4,14 +4,20 @@
 package integration
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/kube"
@@ -48,7 +54,16 @@ func trackedFinding(phase v1alpha1.Phase) *v1alpha1.Finding {
 
 func newSignals(t *testing.T, objs ...client.Object) (*Signals, client.Client) {
 	t.Helper()
-	c := fake.NewClientBuilder().
+	return newSignalsWith(t, nil, objs...)
+}
+
+// newSignalsWith is newSignals over a fake client configure adjusts; nil
+// adjusts nothing.
+func newSignalsWith(
+	t *testing.T, configure func(*fake.ClientBuilder), objs ...client.Object,
+) (*Signals, client.Client) {
+	t.Helper()
+	b := fake.NewClientBuilder().
 		WithScheme(kube.Scheme()).
 		WithObjects(objs...).
 		WithStatusSubresource(&v1alpha1.Finding{}).
@@ -58,8 +73,11 @@ func newSignals(t *testing.T, objs ...client.Object) (*Signals, client.Client) {
 				return nil
 			}
 			return []string{f.Status.Tracking.URL}
-		}).
-		Build()
+		})
+	if configure != nil {
+		configure(b)
+	}
+	c := b.Build()
 	return &Signals{
 		Client:    c,
 		Namespace: "patchy",
@@ -105,93 +123,6 @@ func TestSignalsReopenAfterDismissal(t *testing.T) {
 	}
 	if got := get(t, c, "finding-aa-1").Status.Phase; got != v1alpha1.PhaseHandedOff {
 		t.Errorf("phase = %q, want HandedOff (edge 19)", got)
-	}
-}
-
-func TestSignalsApprove(t *testing.T) {
-	cases := []struct {
-		name        string
-		association string
-		body        string
-		wantSet     bool
-	}{
-		{"collaborator approves", "COLLABORATOR", "/approve", true},
-		{"owner approves with note", "OWNER", "/approve ship it", true},
-		{"random user ignored", "NONE", "/approve", false},
-		{"non-command ignored", "OWNER", "looks fine to me", false},
-		{"prefix-only word ignored", "OWNER", "/approved", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s, c := newSignals(t, trackedFinding(v1alpha1.PhaseAwaitingApproval))
-			payload := fmt.Sprintf(
-				`{"action":"created","issue":{"html_url":"https://github.com/acme/orders/issues/7"},`+
-					`"comment":{"body":%q,"author_association":%q,"user":{"login":"dev"}}}`,
-				tc.body, tc.association)
-			if err := s.Handle(t.Context(), testIntegration(), event("issue_comment", payload)); err != nil {
-				t.Fatalf("Handle: %v", err)
-			}
-			f := get(t, c, "finding-aa-1")
-			if got := f.Spec.Approval != nil; got != tc.wantSet {
-				t.Errorf("approval set = %v, want %v", got, tc.wantSet)
-			}
-			if tc.wantSet && f.Spec.Approval.By != "dev" {
-				t.Errorf("approval.by = %q, want dev", f.Spec.Approval.By)
-			}
-		})
-	}
-}
-
-func TestSignalsApproveStaleHandedOff(t *testing.T) {
-	approvalAt := func(at time.Time) *v1alpha1.Approval {
-		return &v1alpha1.Approval{By: "old-approver", At: metav1.NewTime(at)}
-	}
-	completed := metav1.NewTime(testClock.Add(-time.Hour))
-	cases := []struct {
-		name        string
-		phase       v1alpha1.Phase
-		approval    *v1alpha1.Approval
-		completedAt *metav1.Time
-		wantBy      string
-	}{
-		{
-			// The recorded approval predates hand-off, so it can never
-			// revive the finding; a fresh /approve replaces it.
-			name:        "stale approval on HandedOff replaced",
-			phase:       v1alpha1.PhaseHandedOff,
-			approval:    approvalAt(testClock.Add(-2 * time.Hour)),
-			completedAt: &completed,
-			wantBy:      "dev",
-		},
-		{
-			name:        "fresh approval on HandedOff kept",
-			phase:       v1alpha1.PhaseHandedOff,
-			approval:    approvalAt(testClock.Add(-30 * time.Minute)),
-			completedAt: &completed,
-			wantBy:      "old-approver",
-		},
-		{
-			name:     "existing approval outside HandedOff kept",
-			phase:    v1alpha1.PhaseAwaitingApproval,
-			approval: approvalAt(testClock.Add(-2 * time.Hour)),
-			wantBy:   "old-approver",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			fnd := trackedFinding(tc.phase)
-			fnd.Spec.Approval = tc.approval
-			fnd.Status.CompletedAt = tc.completedAt
-			s, c := newSignals(t, fnd)
-			payload := `{"action":"created","issue":{"html_url":"https://github.com/acme/orders/issues/7"},` +
-				`"comment":{"body":"/approve","author_association":"OWNER","user":{"login":"dev"}}}`
-			if err := s.Handle(t.Context(), testIntegration(), event("issue_comment", payload)); err != nil {
-				t.Fatalf("Handle: %v", err)
-			}
-			if got := get(t, c, "finding-aa-1").Spec.Approval.By; got != tc.wantBy {
-				t.Errorf("approval.by = %q, want %q", got, tc.wantBy)
-			}
-		})
 	}
 }
 
@@ -337,5 +268,73 @@ func TestSignalsForeignIssueIgnored(t *testing.T) {
 	payload := `{"action":"closed","issue":{"number":99,"html_url":"https://github.com/acme/other/issues/99"}}`
 	if err := s.Handle(t.Context(), testIntegration(), event("issues", payload)); err != nil {
 		t.Fatalf("Handle: %v", err)
+	}
+}
+
+// staleCache stands in for an informer cache that lags the Finding's latest
+// write for longer than a handler's retries last: every Get of the Finding
+// returns the version it held when the cache fell behind. Every other read
+// passes through.
+type staleCache struct {
+	client.Client
+	snapshot *v1alpha1.Finding
+}
+
+func (s *staleCache) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if f, ok := obj.(*v1alpha1.Finding); ok && key == client.ObjectKeyFromObject(s.snapshot) {
+		s.snapshot.DeepCopyInto(f)
+		return nil
+	}
+	return s.Client.Get(ctx, key, obj, opts...)
+}
+
+// TestSignalsWriteReadsPastTheCache: a delivery is answered before it is
+// handled, so the handler's write is the only record of what it carried. A
+// cache still showing the Finding as it was before the projection's last
+// write must not make every retry conflict and lose the command: each
+// attempt re-reads the Finding through the APIReader.
+func TestSignalsWriteReadsPastTheCache(t *testing.T) {
+	s, c := newSignals(t, trackedFinding(v1alpha1.PhaseQueued), testIntegration())
+	before := get(t, c, "finding-aa-1")
+	settled := before.DeepCopy()
+	settled.Status.Commands = &v1alpha1.FindingCommands{Consumed: []int64{40}} // the projection's last write
+	if err := c.Status().Update(t.Context(), settled); err != nil {
+		t.Fatalf("status update: %v", err)
+	}
+	s.Client, s.APIReader = &staleCache{Client: c, snapshot: before}, c
+
+	handle(t, s, "issue_comment", commentPayload(t, 41, "/patchy suspend"))
+	f := get(t, c, "finding-aa-1")
+	if pendingCommand(f, 41) == nil || !slices.Contains(f.Status.Commands.Consumed, 40) {
+		t.Errorf("commands = %+v, want 41 recorded beside the projection's write", f.Status.Commands)
+	}
+}
+
+// TestSignalsOutlastConflictBurst: while a finding's commands settle, the
+// projection writes its status several times per command and the webhook
+// workers write it for each delivery, so a handler's write can conflict
+// several times in a row; one that runs out of retries loses its command
+// for good. The handler outlasts more conflicts in a row than client-go's
+// DefaultRetry allows.
+func TestSignalsOutlastConflictBurst(t *testing.T) {
+	conflicts := retry.DefaultRetry.Steps
+	s, c := newSignalsWith(t, func(b *fake.ClientBuilder) {
+		b.WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, cl client.Client, sub string, obj client.Object,
+				opts ...client.SubResourceUpdateOption) error {
+				if conflicts > 0 {
+					conflicts--
+					return kerrors.NewConflict(v1alpha1.GroupVersion.WithResource("findings").GroupResource(),
+						obj.GetName(), errors.New("the object has been modified"))
+				}
+				return cl.SubResource(sub).Update(ctx, obj, opts...)
+			},
+		})
+	}, trackedFinding(v1alpha1.PhaseQueued), testIntegration())
+
+	handle(t, s, "issue_comment", commentPayload(t, 41, "/patchy suspend"))
+	if pendingCommand(get(t, c, "finding-aa-1"), 41) == nil {
+		t.Errorf("commands = %+v, want 41 recorded after %d conflicts",
+			get(t, c, "finding-aa-1").Status.Commands, retry.DefaultRetry.Steps)
 	}
 }

@@ -28,7 +28,10 @@ type resetClient interface {
 // tracking issue, reopen the dismissed findings' own code-scanning alerts
 // (patchy dismissed them on false-positive verdicts; only the findings we
 // know about — a demo reset happens within the finding TTL, so nothing
-// older lingers), then delete every pipeline resource. GitHub cleanup runs
+// older lingers), then delete the Finding flow's resources
+// (deleteFindingPipeline). The only issues it touches are findings' tracking
+// issues, which patchy opened (createIssue is the only writer of the link):
+// never an intent's issue, which a human wrote. GitHub cleanup runs
 // first and any failure aborts before the deletes — the Findings carry the
 // issue numbers, repositories, and alert numbers the cleanup needs, so
 // state must outlive a retried attempt. Everything here is idempotent, and
@@ -54,16 +57,31 @@ func (r *IntegrationReconciler) runReset(ctx context.Context, namespace string) 
 	if err := errors.Join(errs...); err != nil {
 		return err
 	}
+	return deleteFindingPipeline(ctx, r.Client, namespace)
+}
 
-	for _, obj := range []client.Object{
-		&v1alpha1.Finding{},
-		&v1alpha1.Investigation{},
-		&v1alpha1.Remediation{},
-		&v1alpha1.Repository{},
-		&v1alpha1.FindingRollup{},
+// deleteFindingPipeline deletes the Finding flow's resources in namespace:
+// every Finding, Investigation, Remediation and FindingRollup, and the
+// Repositories the investigation gate created for findings (those labelled
+// v1alpha1.LabelFinding). The intent flow shares the namespace and is left
+// alone: its Projects, Intents and IntentRuns, and its Repositories, which
+// never carry that label (a later round pins its image to the intent's
+// first Repository by UID, so deleting one strands the intent). Keep in
+// lockstep with the status server's reset fallback (internal/web/admin.go).
+func deleteFindingPipeline(ctx context.Context, c client.Writer, namespace string) error {
+	for _, del := range []struct {
+		obj  client.Object
+		opts []client.DeleteAllOfOption
+	}{
+		{&v1alpha1.Finding{}, nil},
+		{&v1alpha1.Investigation{}, nil},
+		{&v1alpha1.Remediation{}, nil},
+		{&v1alpha1.Repository{}, []client.DeleteAllOfOption{client.HasLabels{v1alpha1.LabelFinding}}},
+		{&v1alpha1.FindingRollup{}, nil},
 	} {
-		if err := r.DeleteAllOf(ctx, obj, client.InNamespace(namespace)); err != nil {
-			return fmt.Errorf("delete all %T: %w", obj, err)
+		opts := append([]client.DeleteAllOfOption{client.InNamespace(namespace)}, del.opts...)
+		if err := c.DeleteAllOf(ctx, del.obj, opts...); err != nil {
+			return fmt.Errorf("delete all %T: %w", del.obj, err)
 		}
 	}
 	return nil

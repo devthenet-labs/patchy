@@ -16,10 +16,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/command"
 	"github.com/bitwise-media-group/patchy/internal/forge"
 	"github.com/bitwise-media-group/patchy/internal/ghclient"
 	"github.com/bitwise-media-group/patchy/internal/webhook"
@@ -34,19 +36,23 @@ const TrackingURLIndex = "status.tracking.url"
 // settle it only when the PR is the one recorded for it: isRecordedPR).
 const BranchPrefix = "patchy/"
 
-// approverAssociations are the author associations allowed to /approve.
-var approverAssociations = []string{"OWNER", "MEMBER", "COLLABORATOR"}
-
 // Signals applies human actions on tracking items to Findings: the writer of
 // edges 16/17 (the recorded PR merged/closed), 19 (issue reopened after
-// dismissal), 20 (issue closed by a human), and of spec.approval. A close
-// during review that the delivery alone cannot settle is kept on the finding
-// instead (ConditionReviewClosePending), for the projection to settle
-// against the recorded PR (FindingReconciler.settleReview). Signals itself
-// never calls GitHub: a delivery is answered before it is handled, so
-// nothing retries a handler that fails.
+// dismissal) and 20 (issue closed by a human). A close during review that
+// the delivery alone cannot settle is kept on the finding instead
+// (ConditionReviewClosePending), for the projection to settle against the
+// recorded PR (FindingReconciler.settleReview); a command comment is kept
+// likewise (status.commands), for the projection to authorise, apply and
+// answer (FindingReconciler.settleCommands). Signals itself never calls
+// GitHub: a delivery is answered before it is handled, so nothing retries a
+// handler that fails.
 type Signals struct {
 	client.Client
+	// APIReader reads straight from the API server, past the cache: each
+	// write re-reads the Finding through it (updateFinding). The manager's
+	// API reader in production; nil falls back to the client itself, for a
+	// handler driven over an uncached client in tests.
+	APIReader client.Reader
 	// Namespace the Findings live in.
 	Namespace string
 	// Now is the clock seam; nil means time.Now.
@@ -118,72 +124,209 @@ func (s *Signals) issues(ctx context.Context, payload []byte) error {
 	})
 }
 
-// comment handles the approve command: an authorized commenter sets
-// spec.approval; remediation-controller reacts to the spec change.
+// comment records a human command made on a tracking issue: a comment that
+// opens with "/patchy <verb>" (internal/command's grammar), or the
+// deprecated approve comment. It records the command on the finding's
+// status (status.commands.pending) and does nothing more: whether the
+// commenter may issue it is for GitHub to say, and a delivery is answered
+// before it is handled, so a GitHub call that failed here would lose the
+// command for good. The projection settles it instead
+// (FindingReconciler.settleCommands), retrying while GitHub fails.
+//
+// A command from a bot is ignored, the App's own "<slug>[bot]" among them,
+// and so is one already recorded or answered: a duplicate or redelivered
+// delivery, or a demo replay.
+//
+// Anyone who can comment on the issue reaches this point, and whether they
+// may command the finding is not known until GitHub is asked, so the
+// pending slots are shared out by account (recordCommand) rather than first
+// come, first served: no one account can take them all, and a refusal
+// waiting only on its answer gives its slot up to a new command.
 func (s *Signals) comment(ctx context.Context, integ *v1alpha1.Integration, payload []byte) error {
 	var ev struct {
 		Action  string   `json:"action"`
 		Issue   issueRef `json:"issue"`
 		Comment struct {
-			Body              string `json:"body"`
-			AuthorAssociation string `json:"author_association"`
-			User              struct {
+			ID   int64  `json:"id"`
+			Body string `json:"body"`
+			User struct {
 				Login string `json:"login"`
+				ID    int64  `json:"id"`
+				Type  string `json:"type"`
 			} `json:"user"`
 		} `json:"comment"`
 	}
 	if err := json.Unmarshal(payload, &ev); err != nil {
 		return fmt.Errorf("decode issue_comment event: %w", err)
 	}
-	command := "/approve"
-	if integ.Spec.GitHub != nil && integ.Spec.GitHub.Issues != nil && integ.Spec.GitHub.Issues.ApproveComment != "" {
-		command = integ.Spec.GitHub.Issues.ApproveComment
-	}
-	body := strings.TrimSpace(ev.Comment.Body)
-	if ev.Action != "created" || (body != command && !strings.HasPrefix(body, command+" ")) {
+	if ev.Action != "created" {
 		return nil
 	}
-	if !slices.Contains(approverAssociations, ev.Comment.AuthorAssociation) {
-		s.log().LogAttrs(ctx, slog.LevelInfo, "approve from unauthorized association",
-			slog.String("association", ev.Comment.AuthorAssociation),
-			slog.String("login", ev.Comment.User.Login))
+	parser := command.Parser{Surface: command.FindingIssue, ApproveAlias: approveAlias(integ)}
+	cmd, ok := parser.Parse(ev.Comment.Body)
+	if !ok {
+		return nil
+	}
+	actor := v1alpha1.CommandActor{Login: ev.Comment.User.Login, ID: ev.Comment.User.ID, Type: ev.Comment.User.Type}
+	attrs := make([]slog.Attr, 0, 4) // the finding joins them once resolved
+	attrs = append(attrs,
+		slog.Int64("comment", ev.Comment.ID), slog.String("login", actor.Login), slog.String("verb", cmd.Verb))
+	switch {
+	case isBot(actor):
+		s.log().LogAttrs(ctx, slog.LevelInfo, "command from a bot ignored", attrs...)
+		return nil
+	case ev.Comment.ID <= 0 || actor.Login == "":
+		s.log().LogAttrs(ctx, slog.LevelWarn, "command delivery names no comment or author; ignored", attrs...)
 		return nil
 	}
 	fnd, err := s.findByIssueURL(ctx, ev.Issue.HTMLURL)
 	if err != nil || fnd == "" {
 		return err
 	}
-	note := strings.TrimSpace(strings.TrimPrefix(body, command))
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var cur v1alpha1.Finding
-		if err := s.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: fnd}, &cur); err != nil {
-			return client.IgnoreNotFound(err)
+	attrs = append(attrs, slog.String("finding", fnd))
+	pending := v1alpha1.FindingCommand{
+		CommentID:  ev.Comment.ID,
+		Actor:      actor,
+		Verb:       cmd.Verb,
+		Note:       cmd.Note,
+		Legacy:     cmd.Alias != "",
+		ReceivedAt: metav1.NewTime(s.now()),
+	}
+	return s.updateFinding(ctx, fnd, func(cur *v1alpha1.Finding) error {
+		if commandSeen(cur.Status.Commands, pending.CommentID) {
+			return nil // a duplicate or redelivered delivery, or a replay
 		}
-		// First approval wins — except a HandedOff finding whose recorded
-		// approval predates completion: that approval can never revive it
-		// (remediation-controller requires approval newer than completedAt),
-		// so a fresh /approve replaces it.
-		if cur.Spec.Approval != nil && !staleApproval(&cur) {
-			return nil // first approval wins
+		if cur.Status.Commands == nil {
+			cur.Status.Commands = &v1alpha1.FindingCommands{}
 		}
-		cur.Spec.Approval = &v1alpha1.Approval{
-			By:   ev.Comment.User.Login,
-			At:   metav1.NewTime(s.now()),
-			Note: truncate(note, 1024),
+		recorded, evicted := recordCommand(cur.Status.Commands, pending)
+		switch {
+		case !recorded:
+			s.log().LogAttrs(ctx, slog.LevelWarn, "command not recorded: the account already has its share "+
+				"undecided, or every slot is held by a command that keeps it", attrs...)
+		case evicted != nil:
+			s.log().LogAttrs(ctx, slog.LevelWarn, "command recorded in the slot of another command, dropped",
+				append(attrs, slog.Int64("dropped_comment", evicted.CommentID),
+					slog.String("dropped_login", evicted.Actor.Login),
+					slog.String("dropped_outcome", string(evicted.Outcome)))...)
+		default:
+			s.log().LogAttrs(ctx, slog.LevelInfo, "command recorded", attrs...)
 		}
-		return s.Update(ctx, &cur)
+		return nil
 	})
 }
 
-// staleApproval reports a HandedOff finding whose approval is too old to
-// revive it (not newer than status.completedAt). Keep in lockstep with the
-// status server's copy in internal/web/actions.go.
-func staleApproval(f *v1alpha1.Finding) bool {
-	if f.Status.Phase != v1alpha1.PhaseHandedOff || f.Spec.Approval == nil {
+// recordCommand adds c to cmds.Pending, sharing the slots out by account,
+// and reports whether it did. An account already holding
+// MaxPendingCommandsPerActor undecided commands gets no more; one already
+// decided only waits on its answer, and takes no part of the share. When
+// every slot is held, c takes the slot of another command (slotVictim),
+// which is returned; with none to give, c is not recorded.
+func recordCommand(
+	cmds *v1alpha1.FindingCommands, c v1alpha1.FindingCommand,
+) (recorded bool, evicted *v1alpha1.FindingCommand) {
+	if undecidedBy(cmds.Pending, c.Actor) >= v1alpha1.MaxPendingCommandsPerActor {
+		return false, nil
+	}
+	if len(cmds.Pending) >= v1alpha1.MaxPendingCommands {
+		victim := slotVictim(cmds.Pending)
+		if victim < 0 {
+			return false, nil
+		}
+		dropped := cmds.Pending[victim]
+		evicted = &dropped
+		cmds.Pending = slices.Delete(cmds.Pending, victim, victim+1)
+	}
+	cmds.Pending = append(cmds.Pending, c)
+	return true, evicted
+}
+
+// slotVictim is the index, in a full pending list, of the command a new one
+// takes the slot of, or -1: the one whose loss costs least (dropCost), the
+// newest of those that cost the same.
+func slotVictim(pending []v1alpha1.FindingCommand) int {
+	victim, least := -1, 0
+	for i := range pending {
+		cost := dropCost(pending, &pending[i])
+		if cost == 0 {
+			continue
+		}
+		if victim < 0 || cost < least || (cost == least && pending[i].CommentID > pending[victim].CommentID) {
+			victim, least = i, cost
+		}
+	}
+	return victim
+}
+
+// dropCost ranks what dropping p from pending loses, least first; 0 means p
+// is never dropped. A refusal already decided had no effect, and loses only
+// its answer: 1 for a Quiet one, answered by the reaction alone; 2 for any
+// other, whose reply goes to an account without write access, or names a
+// verb that does not exist. 3 for the undecided command of an account
+// holding more than one undecided, which loses the command but leaves the
+// account one. Any other decided command is never dropped: it came from an
+// account with write access, and its effect may already be on the spec.
+func dropCost(pending []v1alpha1.FindingCommand, p *v1alpha1.FindingCommand) int {
+	switch {
+	case refusal(p.Outcome) && p.Quiet:
+		return 1
+	case refusal(p.Outcome):
+		return 2
+	case p.Outcome == "" && undecidedBy(pending, p.Actor) > 1:
+		return 3
+	}
+	return 0
+}
+
+// undecidedBy counts the commands in pending that actor wrote and that are
+// still to be decided.
+func undecidedBy(pending []v1alpha1.FindingCommand, actor v1alpha1.CommandActor) int {
+	n := 0
+	for _, p := range pending {
+		if p.Outcome == "" && sameActor(p.Actor, actor) {
+			n++
+		}
+	}
+	return n
+}
+
+// sameActor reports whether a and b are one GitHub account: by its numeric
+// id when both carry one (a login can be renamed), else by login, which
+// GitHub compares without case.
+func sameActor(a, b v1alpha1.CommandActor) bool {
+	if a.ID > 0 && b.ID > 0 {
+		return a.ID == b.ID
+	}
+	return strings.EqualFold(a.Login, b.Login)
+}
+
+// approveAlias is the Integration's configured approve comment; empty means
+// the parser's default, "/approve".
+func approveAlias(integ *v1alpha1.Integration) string {
+	if integ == nil || integ.Spec.GitHub == nil || integ.Spec.GitHub.Issues == nil {
+		return ""
+	}
+	return integ.Spec.GitHub.Issues.ApproveComment
+}
+
+// isBot reports a bot account: GitHub's Bot type, which every App's
+// "<slug>[bot]" user carries, or a login of that form.
+func isBot(a v1alpha1.CommandActor) bool {
+	return a.Type == "Bot" || strings.HasSuffix(a.Login, "[bot]")
+}
+
+// commandSeen reports whether the command in comment id is recorded on the
+// finding, or remembered as answered: in consumed, or the last suspend or
+// resume applied. The check is exact. Nothing is inferred from an id's
+// place among those remembered: a delivery can arrive long after later
+// commands are answered (the redelivery sweep resends one the webhook
+// queue turned away), and it must still be answered.
+func commandSeen(cmds *v1alpha1.FindingCommands, id int64) bool {
+	if cmds == nil {
 		return false
 	}
-	done := f.Status.CompletedAt
-	return done != nil && !f.Spec.Approval.At.After(done.Time)
+	return slices.ContainsFunc(cmds.Pending, func(c v1alpha1.FindingCommand) bool { return c.CommentID == id }) ||
+		slices.Contains(cmds.Consumed, id) || (cmds.LastToggle > 0 && id == cmds.LastToggle)
 }
 
 // repoRef is a delivery's reference to a repository.
@@ -356,13 +499,24 @@ func (s *Signals) findByIssueURL(ctx context.Context, url string) (string, error
 	return list.Items[0].Name, nil
 }
 
+// signalRetry paces updateFinding's conflict retries. A delivery is
+// answered before it is handled, so a write that runs out of retries loses
+// what the delivery carried for good (a command, a close); and a finding's
+// status is hot while its commands settle, the projection writing it
+// several times per command while the webhook workers write it for each
+// delivery. So the retries outlast a burst of such writes, about two
+// seconds, the jitter spreading apart the workers that collide.
+var signalRetry = wait.Backoff{Steps: 8, Duration: 10 * time.Millisecond, Factor: 2, Jitter: 0.5}
+
 // updateFinding applies mutate under conflict retry; a vanished Finding, or
 // a delivery that changes nothing (a duplicate, or the second of a merge's
-// two), is a no-op that writes nothing.
+// two), is a no-op that writes nothing. Each attempt re-reads the Finding
+// from the API server, past the cache: a cache lagging the last write would
+// show every attempt the same stale version, and each would conflict.
 func (s *Signals) updateFinding(ctx context.Context, name string, mutate func(*v1alpha1.Finding) error) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retry.RetryOnConflict(signalRetry, func() error {
 		var cur v1alpha1.Finding
-		if err := s.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: name}, &cur); err != nil {
+		if err := s.reader().Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: name}, &cur); err != nil {
 			return client.IgnoreNotFound(err)
 		}
 		before := cur.Status.DeepCopy()
@@ -374,6 +528,14 @@ func (s *Signals) updateFinding(ctx context.Context, name string, mutate func(*v
 		}
 		return s.Status().Update(ctx, &cur)
 	})
+}
+
+// reader is the uncached reader: APIReader, else the client itself.
+func (s *Signals) reader() client.Reader {
+	if s.APIReader != nil {
+		return s.APIReader
+	}
+	return s.Client
 }
 
 func (s *Signals) now() time.Time {

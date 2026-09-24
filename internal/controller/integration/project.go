@@ -22,6 +22,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/action"
+	"github.com/bitwise-media-group/patchy/internal/command"
 	"github.com/bitwise-media-group/patchy/internal/generic"
 	"github.com/bitwise-media-group/patchy/internal/ghas"
 	"github.com/bitwise-media-group/patchy/internal/ghclient"
@@ -75,12 +77,15 @@ type trackerClient interface {
 	Comment(ctx context.Context, repo ghclient.Repo, number int, body string) error
 	CreateComment(ctx context.Context, repo ghclient.Repo, number int, body string) (int64, error)
 	ListComments(ctx context.Context, repo ghclient.Repo, number int) ([]*ghclient.Comment, error)
+	ListIssueComments(ctx context.Context, repo ghclient.Repo, number int, since time.Time) ([]*ghclient.Comment, error)
 	EditComment(ctx context.Context, repo ghclient.Repo, commentID int64, body string) error
 	Assign(ctx context.Context, repo ghclient.Repo, number int, logins []string) error
 	Close(ctx context.Context, repo ghclient.Repo, number int) error
 	DismissAlert(ctx context.Context, repo ghclient.Repo, number int, reason, comment string) error
 	GetAlert(ctx context.Context, repo ghclient.Repo, number int) (*ghclient.Alert, error)
 	GetPullRequest(ctx context.Context, repo ghclient.Repo, number int) (*ghclient.PullRequest, error)
+	CollaboratorPermission(ctx context.Context, repo ghclient.Repo, login string) (string, error)
+	CreateIssueCommentReaction(ctx context.Context, repo ghclient.Repo, commentID int64, content string) error
 }
 
 // FindingReconciler projects each Finding (and its children's results) onto
@@ -158,6 +163,21 @@ func (r *FindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		requeue = wait
 	}
 
+	// Ahead of the projection too: a pass that answers a command is
+	// re-queued by its own writes, and one with no Integration to read
+	// GitHub through waits. A GitHub failure that wrote nothing is held back
+	// instead, and returned for the backoff only once the stale re-check and
+	// the projection have run: a command whose tracking issue keeps failing
+	// must not stop the finding's own projection (its notices, its close on
+	// Remediated or Dismissed) with it.
+	settled, wait, cmdErr := r.settleCommands(ctx, &fnd)
+	if settled {
+		return ctrl.Result{}, cmdErr
+	}
+	if wait > 0 && (requeue == 0 || wait < requeue) {
+		requeue = wait
+	}
+
 	// Ahead of the projection, so a finding whose tracking issue keeps
 	// failing still has its stale reopens re-read.
 	if wait := r.recheckStale(ctx, &fnd); wait > 0 && (requeue == 0 || wait < requeue) {
@@ -165,9 +185,9 @@ func (r *FindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if err := r.project(ctx, &fnd); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, errors.Join(cmdErr, err)
 	}
-	return ctrl.Result{RequeueAfter: requeue}, nil
+	return ctrl.Result{RequeueAfter: requeue}, cmdErr
 }
 
 // resolveSource writes the pipeline's verdict back to the originating
@@ -532,7 +552,8 @@ func (r *FindingReconciler) projectPhase(
 	switch phase {
 	case v1alpha1.PhaseAwaitingApproval:
 		notice := "patchy is holding this remediation for human approval. " +
-			"Comment `" + r.approveCommand(ctx, fnd) + "` to let it proceed."
+			"Comment `" + command.Prefix + " " + action.VerbApprove + "` to let it proceed " +
+			"(anyone with write access to this repository can)."
 		if err := notify(ctx, tracker, repo, number, fnd.Status.Owners, post, notice); err != nil {
 			return err
 		}
@@ -859,20 +880,6 @@ func phaseLabel(p v1alpha1.Phase) string {
 		b.WriteRune(r)
 	}
 	return b.String()
-}
-
-// approveCommand is the integration's configured approve comment.
-func (r *FindingReconciler) approveCommand(ctx context.Context, fnd *v1alpha1.Finding) string {
-	var integ v1alpha1.Integration
-	if fnd.Spec.TrackingRef != nil {
-		key := types.NamespacedName{Namespace: fnd.Namespace, Name: fnd.Spec.TrackingRef.Name}
-		if err := r.Get(ctx, key, &integ); err == nil &&
-			integ.Spec.GitHub != nil && integ.Spec.GitHub.Issues != nil &&
-			integ.Spec.GitHub.Issues.ApproveComment != "" {
-			return integ.Spec.GitHub.Issues.ApproveComment
-		}
-	}
-	return "/approve"
 }
 
 // noticeReason explains a hand-off from the finding's state.

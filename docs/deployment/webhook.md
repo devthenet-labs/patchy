@@ -10,7 +10,7 @@ https://<webhook.host>/github/webhooks
 Each delivery's HMAC signature is validated against the `webhookSecret` of your configured `Integration` resources
 before anything else happens; a delivery no Integration's secret matches is rejected with `401`. There is no routing
 tier and nothing to fan deliveries out to — scanner events are ingested into `Finding` resources and human signals
-(issue close, `/approve`, PR merge) are applied to them, all inside this one controller.
+(issue close, `/patchy` commands, PR merge) are applied to them, all inside this one controller.
 
 Two properties follow:
 

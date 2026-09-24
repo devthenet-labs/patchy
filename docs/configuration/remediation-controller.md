@@ -88,8 +88,9 @@ when the cumulative output-token count is exceeded; the harness CLI has no such 
 
 ## Behavior
 
-- **Queue admission** — `AwaitingApproval → Queued` and `HandedOff → Queued` on an accepted `/approve` (`spec.approval`,
-  written by the integration-controller from the tracking comment webhook).
+- **Queue admission** — `AwaitingApproval → Queued` and `HandedOff → Queued` on an accepted approval (`spec.approval`,
+  written by the status page, the CLI, or the integration-controller's projection once a `/patchy approve` on the
+  tracking issue is authorised).
 - **Scheduling** — `Queued → Remediating` when a slot frees, highest effective priority first; waiting findings gain +1
   effective priority per `--priority-aging-interval` up to `--priority-aging-cap`, so low-priority work cannot starve.
   Each grant creates one immutable `Remediation` child and its agent Job.

@@ -6,9 +6,10 @@
         "html_url": "https://github.com/acme/shop/issues/102"
     },
     "comment": {
+        "id": 2001,
         "body": "/approve",
         "author_association": "MEMBER",
-        "user": { "login": "octocat" }
+        "user": { "login": "octocat", "id": 583231, "type": "User" }
     },
     "repository": {
         "name": "shop",

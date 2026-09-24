@@ -44,7 +44,7 @@ integrations: []
 #           # proxyUsername + proxyPassword, never in the url.
 #           issues:
 #               enabled: true       # tracking projection + human signals
-#               approveComment: /approve
+#               # approveComment: /approve   # deprecated alias of /patchy approve
 #               # fallbackRepository: acme/security      # where cloud findings
 #               # with no resolvable repository get their tracking issue
 #           codeScanningAlerts:

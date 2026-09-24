@@ -5,8 +5,8 @@ webhooks — `POST /github/webhooks` (per-Integration HMAC secrets), `POST /goog
 tokens), `POST /wiz/webhooks` (per-Integration bearer tokens), `POST /generic/<name>/webhooks` (each generic
 Integration's own HMAC secret) — and ingests scanner alerts into `Finding` resources — accumulation, duplicate merge.
 Outbound: it projects Findings to their tracking issues (body, labels, enrichment and report comments) and applies human
-signals (issue close and reopen, `/approve` comments, PR merge/close) back onto Findings. It holds no GitHub credential
-itself — the credentials live in the Secrets your Integrations reference, read on demand.
+signals (issue close and reopen, `/patchy` command comments, PR merge/close) back onto Findings. It holds no GitHub
+credential itself — the credentials live in the Secrets your Integrations reference, read on demand.
 
 ```sh
 integration-controller serve --namespace patchy --accumulation-window 1h
@@ -74,15 +74,16 @@ never fatal: the reconcile loops are the retry mechanism, and the webhook path o
   applicable, whether the finding fell back to the default runner image or was parked (`onReject: handoff`), and how to
   fix it; or that a run on the image ended `image_incompatible` or was refused with `SandboxUnenforced`. A repository
   that declares nothing gets no comment.
-- **Human signals** — issue close (`→ HandedOff`), issue reopen (`Dismissed → HandedOff`), accepted `/approve` comments
-  (recorded on `spec.approval`), and `pull_request` webhooks for the finding's recorded PR on its `patchy/<finding>`
-  branch (`InReview → Remediated` on merge, `→ Failed` on unmerged close). An issue closed during review is checked
-  against that PR first (read with the Integration's credential), since its merge closes the issue too: merged or
-  closed, the PR's outcome applies; still open or unreadable (404/403), the finding is handed off if the issue, read
-  again, is still closed. A PR close from a repository other than the recorded one (renamed since) is confirmed against
-  the recorded PR as well: merged or closed, its outcome applies; still open or unreadable, nothing moves. The webhook
-  handler only records such a close (`ReviewClosePending`); the finding projection reads the PR, retrying with backoff
-  until GitHub answers, because a webhook GitHub has delivered is never redelivered. While no issues-enabled Integration
-  exists (suspended, issues turned off, deleted) the close is held, re-checked every five minutes, not settled blind.
+- **Human signals** — issue close (`→ HandedOff`), issue reopen (`Dismissed → HandedOff`),
+  [`/patchy <verb>` commands](../integrations/sources/github.md#commands) (and the deprecated `/approve`), and
+  `pull_request` webhooks for the finding's recorded PR on its `patchy/<finding>` branch (`InReview → Remediated` on
+  merge, `→ Failed` on unmerged close). An issue closed during review is checked against that PR first (read with the
+  Integration's credential), since its merge closes the issue too: merged or closed, the PR's outcome applies; still
+  open or unreadable (404/403), the finding is handed off if the issue, read again, is still closed. A PR close from a
+  repository other than the recorded one (renamed since) is confirmed against the recorded PR as well: merged or closed,
+  its outcome applies; still open or unreadable, nothing moves. The webhook handler only records such a close
+  (`ReviewClosePending`); the finding projection reads the PR, retrying with backoff until GitHub answers, because a
+  webhook GitHub has delivered is never redelivered. While no issues-enabled Integration exists (suspended, issues
+  turned off, deleted) the close is held, re-checked every five minutes, not settled blind.
 - **Credential revalidation** — an Integration reconciler validates each Integration's referenced Secret on its
   `spec.interval` and maintains its `Ready` condition.

@@ -303,8 +303,12 @@ spec:
                     properties:
                       approveComment:
                         default: /approve
-                        description: ApproveComment is the comment command that approves
-                          a held remediation.
+                        description: |-
+                          ApproveComment is the deprecated alias of "/patchy approve" on a
+                          finding's tracking issue: a comment that is exactly it, or starts
+                          with it and a space, approves as "/patchy approve" does, with the same
+                          write-access check and reply. "/patchy <verb>" is the command grammar
+                          every tracking issue accepts whatever this says.
                         type: string
                       enabled:
                         description: Enabled turns the issues capability on.

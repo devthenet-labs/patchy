@@ -73,13 +73,13 @@ an agent pod, so the agents' default-deny ingress policy is untouched. Turn it o
 
 The action bar renders only the verbs the signed-in user is granted _and_ the finding's state machine allows:
 
-| Action       | Available when                    | What the server writes                                          |
-| ------------ | --------------------------------- | --------------------------------------------------------------- |
-| **Approve**  | `AwaitingApproval` or `HandedOff` | `spec.approval` — the same record the `/approve` comment writes |
-| **Retry**    | `Failed`                          | `spec.retry` — a recovery request                               |
-| **Expedite** | any phase up to `Queued`          | `spec.expedite` — a standing urgency mark                       |
-| **Suspend**  | any non-terminal phase            | `spec.suspend: true`                                            |
-| **Resume**   | a suspended finding               | `spec.suspend: false`                                           |
+| Action       | Available when                    | What the server writes                                                 |
+| ------------ | --------------------------------- | ---------------------------------------------------------------------- |
+| **Approve**  | `AwaitingApproval` or `HandedOff` | `spec.approval` — the same record the `/patchy approve` comment writes |
+| **Retry**    | `Failed`                          | `spec.retry` — a recovery request                                      |
+| **Expedite** | any phase up to `Queued`          | `spec.expedite` — a standing urgency mark                              |
+| **Suspend**  | any non-terminal phase            | `spec.suspend: true`                                                   |
+| **Resume**   | a suspended finding               | `spec.suspend: false`                                                  |
 
 One action lives on Integrations rather than findings — the configuration view's backfill trigger:
 
@@ -89,8 +89,8 @@ One action lives on Integrations rather than findings — the configuration view
 
 The status server never moves a phase. Approving records the approval; the remediation-controller's spawner then drives
 `AwaitingApproval → Queued` (or revives `HandedOff → Queued` when the approval is newer than the finding's completion)
-exactly as it does for a `/approve` issue comment — the state machine's one-writer-per-edge rule holds no matter which
-surface the human used.
+exactly as it does for a `/patchy approve` issue comment — the state machine's one-writer-per-edge rule holds no matter
+which surface the human used.
 
 **Retry** recovers a `Failed` finding to the state immediately before the failure: a failed investigation reverts to
 `Enhanced` (the gate opens the next attempt), a failed remediation — or a pull request closed without merging — re-

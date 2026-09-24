@@ -57,7 +57,7 @@ The same controller projects every Finding out as a GitHub tracking issue — bo
 trimmed [label vocabulary](labels.md#the-projected-labels) (source, advisories, phase, severity, priority,
 recommendation). The projection is one-way: nothing ever parses issue state back into the pipeline. Human signals do
 flow back — an issue closed by a human hands the finding off (in review, only if GitHub does not report its PR closed),
-a `/approve` comment releases a held finding, and the merge of the finding's recorded PR completes it.
+a `/patchy approve` comment releases a held finding, and the merge of the finding's recorded PR completes it.
 
 ## 3. Context before code
 
@@ -87,10 +87,10 @@ writes a report with parseable YAML frontmatter: `exploitability`, `likelihood`,
 `recommendation` (`ignore` | `remediate` | `manual`), `severity`, `priority`, a `confidence` value in [0, 1], and — for
 `remediate` — the model it wants for the fix (clamped later to an operator allowlist) and its **estimate** of the turns
 and tokens the fix will take. The estimate never shrinks the run: every remediation gets at least the operator's
-ceiling. Estimating _above_ that ceiling instead holds the finding for a human `/approve`, and approving grants the
-larger budget. Backwards-compatible fixes are always favoured; if a better-but-breaking fix exists, the report says so
-and the pipeline holds the same way. The runtime never talks to GitHub or the Kubernetes API — results leave the pod as
-a `PATCHY-EVENT:` JSONL stream on stdout.
+ceiling. Estimating _above_ that ceiling instead holds the finding for a human `/patchy approve`, and approving grants
+the larger budget. Backwards-compatible fixes are always favoured; if a better-but-breaking fix exists, the report says
+so and the pipeline holds the same way. The runtime never talks to GitHub or the Kubernetes API — results leave the pod
+as a `PATCHY-EVENT:` JSONL stream on stdout.
 
 ## 6. Verdicts route
 
@@ -100,8 +100,8 @@ the ratings feed a 0–100 scheduling priority) and routes:
 | Verdict                                                 | Route                                                                            |
 | ------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | `ignore` (false positive)                               | Dismiss the accumulated alerts, close the issue — `Dismissed`                    |
-| `manual`                                                | Hand to the repository owners — `HandedOff` (revivable by `/approve`)            |
-| `remediate`, confidence < threshold, or a breaking hold | `AwaitingApproval` — a human `/approve` comment releases it                      |
+| `manual`                                                | Hand to the repository owners — `HandedOff` (revivable by `/patchy approve`)     |
+| `remediate`, confidence < threshold, or a breaking hold | `AwaitingApproval` — a human `/patchy approve` comment releases it               |
 | `remediate`, confidence ≥ threshold (0.75)              | `Queued` for remediation                                                         |
 | Stage failed (timeout, budget, invalid report, …)       | Retry within `--max-attempts`, then `Failed` — a partial report is never trusted |
 
@@ -126,7 +126,7 @@ Data API (blob → tree → commit → ref) onto a `patchy/<finding>` branch, op
 
 Merging the PR fires a `pull_request` webhook: the integration-controller moves the finding to `Remediated`. Closing the
 PR unmerged, or exhausting retries anywhere above, lands it at `Failed`; `manual` verdicts and human-closed issues land
-at `HandedOff`, which a later `/approve` can revive back into the queue. The merge closes the tracking issue too
+at `HandedOff`, which a later `/patchy approve` can revive back into the queue. The merge closes the tracking issue too
 (`Fixes #N`), and the two webhooks arrive in either order, so an issue closed during review is checked against the PR
 first: merged or closed, the PR's outcome applies; otherwise (still open, or unreadable) a human closed the issue, as
 long as GitHub still reports it closed. Completed findings are kept for a TTL (14 days by default) and then deleted;

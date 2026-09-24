@@ -55,12 +55,12 @@ kubectl -n patchy-agents logs job/<job-name> -f   # the PATCHY-EVENT: stream
 When the analysis lands, the Finding's `VERDICT` column fills in, the report is posted to the tracking issue, and one of
 four things happens:
 
-| Verdict                          | What you'll see                                                                       |
-| -------------------------------- | ------------------------------------------------------------------------------------- |
-| False positive (`ignore`)        | GHAS alerts dismissed as _false positive_, issue closed, phase `Dismissed`            |
-| Human-only (`manual`)            | Phase `HandedOff` — the owners take it from the issue; `/approve` can still revive it |
-| Low confidence / breaking change | Phase `AwaitingApproval` — comment `/approve` on the issue to release the attempt     |
-| High confidence (`remediate`)    | Phase `Queued`, then `Remediating` when the priority scheduler grants a slot          |
+| Verdict                          | What you'll see                                                                              |
+| -------------------------------- | -------------------------------------------------------------------------------------------- |
+| False positive (`ignore`)        | GHAS alerts dismissed as _false positive_, issue closed, phase `Dismissed`                   |
+| Human-only (`manual`)            | Phase `HandedOff` — the owners take it from the issue; `/patchy approve` can still revive it |
+| Low confidence / breaking change | Phase `AwaitingApproval` — comment `/patchy approve` on the issue to release the attempt     |
+| High confidence (`remediate`)    | Phase `Queued`, then `Remediating` when the priority scheduler grants a slot                 |
 
 ## 5. The pull request
 

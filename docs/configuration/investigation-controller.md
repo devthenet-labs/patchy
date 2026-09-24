@@ -122,14 +122,14 @@ point for the analysis stage.
 When the analysis Job completes, the controller stamps the summary onto `Finding.status.investigation`, sets the
 scheduling priority, and moves the phase:
 
-| Report says                                                 | Finding moves to                                        |
-| ----------------------------------------------------------- | ------------------------------------------------------- |
-| `ignore` (false positive)                                   | `Dismissed` — alerts dismissed, issue closed            |
-| `ignore` from a run on a repository-declared image          | `HandedOff` — the alert is **not** dismissed            |
-| `manual`                                                    | `HandedOff` — owners take over; `/approve` can revive   |
-| `remediate`, confidence < threshold or breaking-change hold | `AwaitingApproval`                                      |
-| `remediate`, confidence ≥ threshold                         | `Queued`                                                |
-| Stage outcome not `ok`                                      | `Enhanced` (retry) while attempts remain, then `Failed` |
+| Report says                                                 | Finding moves to                                             |
+| ----------------------------------------------------------- | ------------------------------------------------------------ |
+| `ignore` (false positive)                                   | `Dismissed` — alerts dismissed, issue closed                 |
+| `ignore` from a run on a repository-declared image          | `HandedOff` — the alert is **not** dismissed                 |
+| `manual`                                                    | `HandedOff` — owners take over; `/patchy approve` can revive |
+| `remediate`, confidence < threshold or breaking-change hold | `AwaitingApproval`                                           |
+| `remediate`, confidence ≥ threshold                         | `Queued`                                                     |
+| Stage outcome not `ok`                                      | `Enhanced` (retry) while attempts remain, then `Failed`      |
 
 A partial report is never trusted: outcomes other than `ok` (`runtime_error`, `timeout`, `budget_exceeded`,
 `report_missing`, `report_invalid`, `image_incompatible`) always retry or fail — they never route on whatever

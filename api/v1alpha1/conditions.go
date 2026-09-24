@@ -48,6 +48,15 @@ const (
 	// open — every reopen of a remediated alert opens a successor finding.
 	// Absent until the first lookup is denied.
 	ConditionCommitAncestry = "CommitAncestry"
+	// ConditionReviewClosePending marks a Finding in review whose review
+	// may have ended in a way the delivery alone cannot settle: its tracking
+	// issue closed (ReasonTrackingIssueClosed), or a PR close named it from
+	// a repository other than the recorded one (ReasonUnrecordedRepository).
+	// The recorded PR's own state decides, and the integration-controller
+	// reads it until GitHub answers — a webhook delivery is never redelivered
+	// once answered, so the condition is what keeps the close. Removed as the
+	// finding leaves review.
+	ConditionReviewClosePending = "ReviewClosePending"
 
 	// Per-scope rollup markers. A scope's finalizer is removed only when its
 	// condition is True and deletion is underway — remaining finalizers show
@@ -79,6 +88,17 @@ const (
 	// at Opened rather than advancing it without a repository. Bounded by the
 	// accumulation window; past that the finding advances regardless.
 	ReasonRepositoryUnresolved = "RepositoryUnresolved"
+	// ReasonTrackingIssueClosed: the tracking issue closed during review.
+	// The PR body's "Fixes #N" closes it on merge too, so a merged or closed
+	// PR settles the finding as its own delivery would; a PR still open means
+	// a human closed the issue to take the finding over (HandedOff).
+	ReasonTrackingIssueClosed = "TrackingIssueClosed"
+	// ReasonUnrecordedRepository: a PR close named the finding with its
+	// recorded number, from a branch in the repository it closed in, but not
+	// the recorded repository — renamed or transferred since (GitHub sends
+	// the new name and redirects the old), or another repository's PR of the
+	// same number. A recorded PR still open means the latter: nothing moves.
+	ReasonUnrecordedRepository = "UnrecordedRepository"
 
 	// Repository runner-image reasons, all set by source-controller.
 

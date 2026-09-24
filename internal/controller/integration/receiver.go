@@ -341,27 +341,6 @@ func (g githubCommits) compare(
 	return c.CompareStatus(ctx, r, base, head)
 }
 
-// githubPulls adapts Integration credentials to the PullRequestReader seam.
-type githubPulls struct {
-	creds *Creds
-}
-
-// NewPullRequestReader reads pull requests through each Integration's own
-// GitHub credential — the one that projects the finding's tracking issue
-// into the repository its remediation PR is opened in.
-func NewPullRequestReader(creds *Creds) PullRequestReader { return githubPulls{creds: creds} }
-
-// GetPullRequest implements PullRequestReader.
-func (g githubPulls) GetPullRequest(
-	ctx context.Context, integ *v1alpha1.Integration, repo ghclient.Repo, number int,
-) (*ghclient.PullRequest, error) {
-	c, err := g.creds.Client(ctx, integ, repo)
-	if err != nil {
-		return nil, err
-	}
-	return c.GetPullRequest(ctx, repo, number)
-}
-
 func (r *Receiver) log() *slog.Logger {
 	if r.Log == nil {
 		return slog.New(slog.DiscardHandler)

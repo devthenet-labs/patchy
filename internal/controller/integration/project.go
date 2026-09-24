@@ -80,6 +80,7 @@ type trackerClient interface {
 	Close(ctx context.Context, repo ghclient.Repo, number int) error
 	DismissAlert(ctx context.Context, repo ghclient.Repo, number int, reason, comment string) error
 	GetAlert(ctx context.Context, repo ghclient.Repo, number int) (*ghclient.Alert, error)
+	GetPullRequest(ctx context.Context, repo ghclient.Repo, number int) (*ghclient.PullRequest, error)
 }
 
 // FindingReconciler projects each Finding (and its children's results) onto
@@ -142,6 +143,13 @@ func (r *FindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// entirely — must still have its alerts resolved in the tool they came
 	// from, or they sit open there after patchy has closed them here.
 	if err := r.resolveSource(ctx, &fnd); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Ahead of the projection: a settled finding is re-queued by its own
+	// status write and projects its new phase then, and one whose PR cannot
+	// be read yet retries on the reconcile's backoff.
+	if settled, err := r.settleReview(ctx, &fnd); err != nil || settled {
 		return ctrl.Result{}, err
 	}
 

@@ -4,19 +4,16 @@
 package integration
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"slices"
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
-	"github.com/bitwise-media-group/patchy/internal/ghclient"
 	"github.com/bitwise-media-group/patchy/internal/kube"
 	"github.com/bitwise-media-group/patchy/internal/webhook"
 )
@@ -262,21 +259,26 @@ func TestSignalsPullRequest(t *testing.T) {
 // TestSignalsPullRequestNotRecorded: the head ref names the finding, but
 // anyone who can open a pull request can name a branch patchy/<finding>. A
 // close settles the finding only when it is the recorded remediation PR:
-// the same number, in the finding's repository, from a branch there.
+// the same number, in the finding's repository, from a branch there. One
+// that differs only in its repository — a rename or transfer looks so — is
+// kept pending for the recorded PR's own state to settle; the rest are
+// ignored outright.
 func TestSignalsPullRequestNotRecorded(t *testing.T) {
 	cases := []struct {
-		name      string
-		payload   string
-		wantPhase v1alpha1.Phase
+		name        string
+		payload     string
+		wantPhase   v1alpha1.Phase
+		wantPending bool
 	}{
-		{"recorded PR merges", prClosed("acme/orders", 11, "acme/orders", true), v1alpha1.PhaseRemediated},
+		{"recorded PR merges", prClosed("acme/orders", 11, "acme/orders", true), v1alpha1.PhaseRemediated, false},
 		{"repository matches case-insensitively", prClosed("Acme/Orders", 11, "Acme/Orders", true),
-			v1alpha1.PhaseRemediated},
-		{"another repository", prClosed("acme/billing", 11, "acme/billing", true), v1alpha1.PhaseInReview},
-		{"another number", prClosed("acme/orders", 12, "acme/orders", true), v1alpha1.PhaseInReview},
-		{"another number closed unmerged", prClosed("acme/orders", 12, "acme/orders", false), v1alpha1.PhaseInReview},
-		{"from a fork", prClosed("acme/orders", 11, "mallory/orders", true), v1alpha1.PhaseInReview},
-		{"from a deleted fork", prClosed("acme/orders", 11, "", false), v1alpha1.PhaseInReview},
+			v1alpha1.PhaseRemediated, false},
+		{"another repository", prClosed("acme/billing", 11, "acme/billing", true), v1alpha1.PhaseInReview, true},
+		{"another number", prClosed("acme/orders", 12, "acme/orders", true), v1alpha1.PhaseInReview, false},
+		{"another number closed unmerged", prClosed("acme/orders", 12, "acme/orders", false),
+			v1alpha1.PhaseInReview, false},
+		{"from a fork", prClosed("acme/orders", 11, "mallory/orders", true), v1alpha1.PhaseInReview, false},
+		{"from a deleted fork", prClosed("acme/orders", 11, "", false), v1alpha1.PhaseInReview, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -289,7 +291,14 @@ func TestSignalsPullRequestNotRecorded(t *testing.T) {
 				t.Errorf("phase = %q, want %q", f.Status.Phase, tc.wantPhase)
 			}
 			if tc.wantPhase == v1alpha1.PhaseInReview && f.Status.PullRequest.State != "open" {
-				t.Errorf("pr state = %q, want open (an ignored close records nothing)", f.Status.PullRequest.State)
+				t.Errorf("pr state = %q, want open (an unsettled close records nothing)", f.Status.PullRequest.State)
+			}
+			pending := meta.FindStatusCondition(f.Status.Conditions, v1alpha1.ConditionReviewClosePending)
+			switch {
+			case tc.wantPending && (pending == nil || pending.Reason != v1alpha1.ReasonUnrecordedRepository):
+				t.Errorf("pending close = %+v, want %s", pending, v1alpha1.ReasonUnrecordedRepository)
+			case !tc.wantPending && pending != nil:
+				t.Errorf("pending close = %+v, want none", pending)
 			}
 		})
 	}
@@ -320,170 +329,6 @@ func TestSignalsPullRequestRepositoryFallback(t *testing.T) {
 				t.Errorf("phase = %q, want %q", got, tc.wantPhase)
 			}
 		})
-	}
-}
-
-// fakePulls is a PullRequestReader answering every lookup with pr, or
-// failing with err; it records each repo#number asked for.
-type fakePulls struct {
-	pr    *ghclient.PullRequest
-	err   error
-	asked []string
-}
-
-func (f *fakePulls) GetPullRequest(
-	_ context.Context, _ *v1alpha1.Integration, repo ghclient.Repo, number int,
-) (*ghclient.PullRequest, error) {
-	f.asked = append(f.asked, fmt.Sprintf("%s#%d", repo, number))
-	return f.pr, f.err
-}
-
-const (
-	// issueClosed is the tracking issue's issues.closed delivery.
-	issueClosed = `{"action":"closed","issue":{"number":7,"html_url":"https://github.com/acme/orders/issues/7"}}`
-	mergeSHA    = "fa82fcdc7efab2777d432ba3385517fa735e0ae0"
-)
-
-// mergedPR is acme/orders#11 as the API reports it once merged.
-func mergedPR() *ghclient.PullRequest {
-	return &ghclient.PullRequest{
-		Number: 11, State: "closed", Merged: true,
-		MergedAt: time.Date(2026, 7, 21, 13, 0, 0, 0, time.UTC), MergeCommitSHA: mergeSHA,
-	}
-}
-
-// TestSignalsIssueClosedDuringReview: the remediation PR's body says
-// "Fixes #N", so merging it closes the tracking issue too, and deliveries
-// are handled unordered — the issue's close can land first. The PR's live
-// state decides: merged settles as the merge does, closed unmerged as that
-// close does, and only a PR still open means a human closed the issue on
-// purpose.
-func TestSignalsIssueClosedDuringReview(t *testing.T) {
-	cases := []struct {
-		name      string
-		pr        *ghclient.PullRequest
-		wantPhase v1alpha1.Phase
-		wantState string
-		wantSHA   string
-	}{
-		{"merged PR remediates", mergedPR(), v1alpha1.PhaseRemediated, "merged", mergeSHA},
-		{
-			"closed unmerged PR fails",
-			&ghclient.PullRequest{Number: 11, State: "closed", MergeCommitSHA: mergeSHA},
-			v1alpha1.PhaseFailed, "closed", "",
-		},
-		{
-			"open PR hands off",
-			&ghclient.PullRequest{Number: 11, State: "open", MergeCommitSHA: mergeSHA},
-			v1alpha1.PhaseHandedOff, "open", "",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s, c := newSignals(t, inReview())
-			pulls := &fakePulls{pr: tc.pr}
-			s.PullRequests = pulls
-			if err := s.Handle(t.Context(), testIntegration(), event("issues", issueClosed)); err != nil {
-				t.Fatalf("Handle: %v", err)
-			}
-			f := get(t, c, "finding-aa-1")
-			if f.Status.Phase != tc.wantPhase {
-				t.Errorf("phase = %q, want %q", f.Status.Phase, tc.wantPhase)
-			}
-			if want := []string{"acme/orders#11"}; !slices.Equal(pulls.asked, want) {
-				t.Errorf("looked up %v, want %v", pulls.asked, want)
-			}
-			if f.Status.PullRequest.State != tc.wantState {
-				t.Errorf("pr state = %q, want %q", f.Status.PullRequest.State, tc.wantState)
-			}
-			if got := f.Status.PullRequest.MergeCommitSHA; got != tc.wantSHA {
-				t.Errorf("mergeCommitSHA = %q, want %q", got, tc.wantSHA)
-			}
-			if tc.wantSHA != "" && (f.Status.PullRequest.MergedAt == nil ||
-				!f.Status.PullRequest.MergedAt.Equal(&metav1.Time{Time: mergedPR().MergedAt})) {
-				t.Errorf("mergedAt = %v, want %v", f.Status.PullRequest.MergedAt, mergedPR().MergedAt)
-			}
-			if f.Status.Tracking.State != "closed" {
-				t.Errorf("tracking state = %q, want closed", f.Status.Tracking.State)
-			}
-		})
-	}
-}
-
-// TestSignalsMergeEitherOrder: a merge sends both deliveries; whichever is
-// handled first settles the finding Remediated, and the second changes
-// nothing — the pull_request close arriving second writes nothing at all.
-func TestSignalsMergeEitherOrder(t *testing.T) {
-	prMerged := event("pull_request", prClosed("acme/orders", 11, "acme/orders", true))
-	cases := []struct {
-		name   string
-		first  webhook.Event
-		second webhook.Event
-	}{
-		{"issue close first", event("issues", issueClosed), prMerged},
-		{"PR close first", prMerged, event("issues", issueClosed)},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s, c := newSignals(t, inReview())
-			s.PullRequests = &fakePulls{pr: mergedPR()}
-			if err := s.Handle(t.Context(), testIntegration(), tc.first); err != nil {
-				t.Fatalf("Handle first: %v", err)
-			}
-			settled := get(t, c, "finding-aa-1")
-			if err := s.Handle(t.Context(), testIntegration(), tc.second); err != nil {
-				t.Fatalf("Handle second: %v", err)
-			}
-			f := get(t, c, "finding-aa-1")
-			if f.Status.Phase != v1alpha1.PhaseRemediated {
-				t.Fatalf("phase = %q, want Remediated", f.Status.Phase)
-			}
-			if f.Status.PullRequest.State != "merged" || f.Status.PullRequest.MergeCommitSHA != mergeSHA {
-				t.Errorf("pr = %+v, want merged at %s", f.Status.PullRequest, mergeSHA)
-			}
-			if !f.Status.CompletedAt.Equal(settled.Status.CompletedAt) {
-				t.Errorf("completedAt moved from %v to %v", settled.Status.CompletedAt, f.Status.CompletedAt)
-			}
-			if tc.second.Type == "pull_request" && f.ResourceVersion != settled.ResourceVersion {
-				t.Errorf("the PR close arriving second wrote the finding (resourceVersion %s -> %s)",
-					settled.ResourceVersion, f.ResourceVersion)
-			}
-		})
-	}
-}
-
-// TestSignalsIssueClosedLookupFails: when GitHub cannot say whether the PR
-// merged, the close is not guessed at — the finding stays in review for the
-// PR's own delivery to settle, rather than handed off with its merge lost.
-func TestSignalsIssueClosedLookupFails(t *testing.T) {
-	s, c := newSignals(t, inReview())
-	s.PullRequests = &fakePulls{err: errors.New("github unavailable")}
-	if err := s.Handle(t.Context(), testIntegration(), event("issues", issueClosed)); err == nil {
-		t.Error("Handle: nil error, want the lookup failure")
-	}
-	f := get(t, c, "finding-aa-1")
-	if f.Status.Phase != v1alpha1.PhaseInReview {
-		t.Errorf("phase = %q, want InReview", f.Status.Phase)
-	}
-	if f.Status.Tracking.State != "open" {
-		t.Errorf("tracking state = %q, want open (nothing recorded)", f.Status.Tracking.State)
-	}
-}
-
-// TestSignalsIssueClosedOutsideReviewNoLookup: only a finding in review has
-// a PR whose merge could have closed its issue.
-func TestSignalsIssueClosedOutsideReviewNoLookup(t *testing.T) {
-	s, c := newSignals(t, trackedFinding(v1alpha1.PhaseQueued))
-	pulls := &fakePulls{pr: mergedPR()}
-	s.PullRequests = pulls
-	if err := s.Handle(t.Context(), testIntegration(), event("issues", issueClosed)); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
-	if got := get(t, c, "finding-aa-1").Status.Phase; got != v1alpha1.PhaseHandedOff {
-		t.Errorf("phase = %q, want HandedOff", got)
-	}
-	if len(pulls.asked) != 0 {
-		t.Errorf("looked up %v, want no lookup", pulls.asked)
 	}
 }
 

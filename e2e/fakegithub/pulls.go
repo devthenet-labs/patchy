@@ -41,7 +41,25 @@ func (s *Server) MergePull(number int, head, mergeCommitSHA string) {
 	p.State, p.Merged, p.MergedAt, p.MergeCommitSHA = "closed", true, &at, mergeCommitSHA
 }
 
-// getPull answers GET /repos/{o}/{r}/pulls/{number}.
+// OpenPull records pull request number, from branch head, as open — a PR
+// patchy opened earlier, fabricated by a test that runs no job controllers.
+func (s *Server) OpenPull(number int, head string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pulls[number] = &pull{Number: number, State: "open", Head: ref{Ref: head}, Base: ref{Ref: "main"}}
+}
+
+// FailPullReads makes the next n reads of a single pull request answer 502,
+// as GitHub does during an outage.
+func (s *Server) FailPullReads(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pullReadFailures = n
+}
+
+// getPull answers GET /repos/{o}/{r}/pulls/{number}. Pulls are keyed by
+// number alone, so a renamed repository's old name still reaches its pulls,
+// as GitHub's redirect does.
 func (s *Server) getPull(w http.ResponseWriter, r *http.Request) {
 	n, err := strconv.Atoi(r.PathValue("number"))
 	if err != nil {
@@ -49,6 +67,12 @@ func (s *Server) getPull(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
+	if s.pullReadFailures > 0 {
+		s.pullReadFailures--
+		s.mu.Unlock()
+		http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
+		return
+	}
 	p, ok := s.pulls[n]
 	var out pull
 	if ok {

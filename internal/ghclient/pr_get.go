@@ -8,9 +8,10 @@ import (
 	"fmt"
 )
 
-// GetPullRequest fetches one pull request's current state — what a tracking
-// issue's close consults to tell a merged fix (whose "Fixes #N" closed the
-// issue) from a human closing it.
+// GetPullRequest fetches one pull request's current state — what a close
+// seen during review consults: a tracking issue's, to tell a merged fix
+// (whose "Fixes #N" closed the issue) from a human closing it, or a PR's
+// from a repository renamed since it was recorded.
 func (c *Client) GetPullRequest(ctx context.Context, repo Repo, number int) (*PullRequest, error) {
 	pr, _, err := c.gh.PullRequests.Get(ctx, repo.Owner, repo.Name, number)
 	if err != nil {

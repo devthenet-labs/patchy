@@ -36,8 +36,9 @@ const (
 // component (enforced in review, documented per edge):
 //
 //   - integration-controller: ""→Opened (ingest), InReview→Remediated/Failed
-//     (PR webhooks), Dismissed→HandedOff (issue reopened), and every
-//     non-terminal→HandedOff (human closed the tracking issue).
+//     (the recorded PR merged/closed), Dismissed→HandedOff (issue reopened),
+//     and every non-terminal→HandedOff (human closed the tracking issue; in
+//     review, only while the recorded PR is open).
 //   - context-controller: Opened→Enhanced.
 //   - investigation-controller: Enhanced→Investigating (child create is the
 //     lease), Investigating→Enhanced (retry revert), and the verdict routing

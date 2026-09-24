@@ -76,8 +76,10 @@ type Server struct {
 	// their state and most recent instance, by number.
 	moved map[int]movedAlert
 	pulls    map[int]*pull
-	git      gitData
-	next     int
+	// pullReadFailures is how many single-PR reads still answer 502.
+	pullReadFailures int
+	git              gitData
+	next             int
 	// Now stamps created_at; tests override it to age issues instantly.
 	Now func() time.Time
 }

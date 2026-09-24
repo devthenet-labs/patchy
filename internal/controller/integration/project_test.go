@@ -50,6 +50,11 @@ type fakeTracker struct {
 	// onPost, when set, is called as each issue or comment is posted.
 	onPost func()
 	alerts map[int]*ghclient.Alert // GetAlert's answers
+	// pulls are GetPullRequest's answers; pullErrs fail its first calls,
+	// in order; pullReads records each repo#number asked for.
+	pulls     map[int]*ghclient.PullRequest
+	pullErrs  []error
+	pullReads []string
 }
 
 func newFakeTracker() *fakeTracker {
@@ -191,6 +196,20 @@ func (f *fakeTracker) GetAlert(_ context.Context, _ ghclient.Repo, number int) (
 			&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusNotFound}})
 	}
 	return a, nil
+}
+
+func (f *fakeTracker) GetPullRequest(_ context.Context, repo ghclient.Repo, number int) (*ghclient.PullRequest, error) {
+	f.pullReads = append(f.pullReads, fmt.Sprintf("%s#%d", repo, number))
+	if len(f.pullErrs) > 0 {
+		err := f.pullErrs[0]
+		f.pullErrs = f.pullErrs[1:]
+		return nil, err
+	}
+	pr, ok := f.pulls[number]
+	if !ok {
+		return nil, notFound(fmt.Sprintf("get PR %s#%d", repo, number))
+	}
+	return pr, nil
 }
 
 // projectable is a Finding ready for projection.

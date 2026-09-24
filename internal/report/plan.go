@@ -6,6 +6,7 @@ package report
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 )
@@ -140,7 +141,10 @@ func (p *Plan) validate() error {
 	switch {
 	case p.Confidence == nil:
 		errs = append(errs, errors.New("confidence is required"))
-	case *p.Confidence < 0 || *p.Confidence > 1:
+	case math.IsNaN(*p.Confidence) || *p.Confidence < 0 || *p.Confidence > 1:
+		// NaN is named because it fails both comparisons: YAML's .nan would
+		// pass as in range, and JSON cannot encode it, so the plan event
+		// carrying it would never leave the pod.
 		errs = append(errs, fmt.Errorf("confidence %v is outside [0, 1]", *p.Confidence))
 	}
 	if p.EstimatedMaxTurns < 1 {

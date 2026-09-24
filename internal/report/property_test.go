@@ -5,6 +5,7 @@ package report
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"reflect"
 	"slices"
@@ -274,12 +275,21 @@ func planWithinBounds(p *Plan) bool {
 		p.EstimatedMaxTurns >= 1 && p.EstimatedTokenBudget >= 1 && len(p.Body) <= BodyMaxBytes
 }
 
+// badConfidences are the confidences no plan may carry: outside [0, 1], and
+// the IEEE values that compare false both ways (NaN) or sit past every
+// bound. yaml.Marshal writes them as YAML's own .nan, .inf and -.inf.
+var badConfidences = []float64{math.NaN(), math.Inf(1), math.Inf(-1), -0.25, -math.SmallestNonzeroFloat64, 1.5}
+
 // TestPlanParseBoundedProperty: however a plan is damaged, parsing it never
 // panics, never accepts a document past the size bound, and whatever it
 // does accept honours every bound of the contract.
 func TestPlanParseBoundedProperty(t *testing.T) {
 	cfg := quickConfig(propertySeed+3, func(args []reflect.Value, r *rand.Rand) {
 		p := genPlan(r)
+		if r.Intn(4) == 0 {
+			bad := badConfidences[r.Intn(len(badConfidences))]
+			p.Confidence = &bad
+		}
 		raw, err := yaml.Marshal(p)
 		if err != nil {
 			panic(err)

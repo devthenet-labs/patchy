@@ -203,6 +203,12 @@ func TestParsePlanErrors(t *testing.T) {
 		{"a map item", planWith(questions, "questions:\n  - {a: b}"), "cannot unmarshal"},
 		{"missing confidence", planWith("confidence: 0.8\n", ""), "confidence is required"},
 		{"confidence out of range", planWith("confidence: 0.8", "confidence: 1.2"), "outside [0, 1]"},
+		// NaN fails every comparison, so a range check alone passes it, and
+		// JSON cannot encode it: the plan event would be dropped in the pod.
+		{"confidence NaN", planWith("confidence: 0.8", "confidence: .nan"), "outside [0, 1]"},
+		{"confidence NaN, capitalised", planWith("confidence: 0.8", "confidence: .NaN"), "outside [0, 1]"},
+		{"confidence infinite", planWith("confidence: 0.8", "confidence: .inf"), "outside [0, 1]"},
+		{"confidence negative infinite", planWith("confidence: 0.8", "confidence: -.inf"), "outside [0, 1]"},
 		{"missing estimated_max_turns", planWith("estimated_max_turns: 40\n", ""), "estimated_max_turns"},
 		{"zero estimated_token_budget", planWith("estimated_token_budget: 200000", "estimated_token_budget: 0"),
 			"estimated_token_budget"},

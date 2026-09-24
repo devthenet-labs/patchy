@@ -219,6 +219,11 @@ func TestPlanFailures(t *testing.T) {
 		{"report invalid", step{stdout: streamSuccess, writes: map[string]string{
 			"reports/plan.md": strings.Replace(goodPlan, "https://github.com", "http://github.com", 1),
 		}}, envelope.OutcomeReportInvalid, "not an https"},
+		// JSON cannot encode NaN: were it accepted, the plan event would fail
+		// to encode and the stage would end with no event at all.
+		{"report with a NaN confidence", step{stdout: streamSuccess, writes: map[string]string{
+			"reports/plan.md": strings.Replace(goodPlan, "confidence: 0.8", "confidence: .nan", 1),
+		}}, envelope.OutcomeReportInvalid, "outside [0, 1]"},
 		{"report oversized", step{stdout: streamSuccess, writes: map[string]string{
 			"reports/plan.md": goodPlan + strings.Repeat("x", 4*report.ReportMaxBytes),
 		}}, envelope.OutcomeReportInvalid, "over the 65536-byte bound"},

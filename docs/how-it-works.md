@@ -56,8 +56,8 @@ enhancement runs concurrently. Alerts arriving after the window close open a fre
 The same controller projects every Finding out as a GitHub tracking issue — body, enrichment and report comments, and a
 trimmed [label vocabulary](labels.md#the-projected-labels) (source, advisories, phase, severity, priority,
 recommendation). The projection is one-way: nothing ever parses issue state back into the pipeline. Human signals do
-flow back — an issue closed by a human hands the finding off, a `/approve` comment releases a held finding, and the PR
-merge webhook completes it.
+flow back — an issue closed by a human hands the finding off (in review, only once its PR is confirmed still open), a
+`/approve` comment releases a held finding, and the merge of the finding's recorded PR completes it.
 
 ## 3. Context before code
 
@@ -126,9 +126,11 @@ Data API (blob → tree → commit → ref) onto a `patchy/<finding>` branch, op
 
 Merging the PR fires a `pull_request` webhook: the integration-controller moves the finding to `Remediated`. Closing the
 PR unmerged, or exhausting retries anywhere above, lands it at `Failed`; `manual` verdicts and human-closed issues land
-at `HandedOff`, which a later `/approve` can revive back into the queue. Completed findings are kept for a TTL (14 days
-by default) and then deleted; per-scope `FindingRollup` resources retain the all-time statistics — success rates,
-verdict mix, token and cost totals per repository, harness, and model.
+at `HandedOff`, which a later `/approve` can revive back into the queue. The merge closes the tracking issue too
+(`Fixes #N`), and the two webhooks arrive in either order, so an issue closed during review is checked against the PR
+first: merged or closed, the PR's outcome applies, and only a PR still open means a human closed the issue. Completed
+findings are kept for a TTL (14 days by default) and then deleted; per-scope `FindingRollup` resources retain the
+all-time statistics — success rates, verdict mix, token and cost totals per repository, harness, and model.
 
 Watch it all with the shared kubectl category:
 

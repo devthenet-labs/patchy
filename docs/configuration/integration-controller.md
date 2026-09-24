@@ -78,6 +78,9 @@ never fatal: the reconcile loops are the retry mechanism, and the webhook path o
   (recorded on `spec.approval`), and `pull_request` webhooks for the finding's recorded PR on its `patchy/<finding>`
   branch (`InReview → Remediated` on merge, `→ Failed` on unmerged close). An issue closed during review is checked
   against that PR first (read with the Integration's credential), since its merge closes the issue too: merged or
-  closed, the PR's outcome applies; still open, the finding is handed off.
+  closed, the PR's outcome applies; still open, the finding is handed off. So is a PR close from a repository other than
+  the recorded one (renamed or transferred since). The webhook handler only records such a close (`ReviewClosePending`);
+  the finding projection reads the PR, retrying with backoff until GitHub answers, because a webhook GitHub has
+  delivered is never redelivered.
 - **Credential revalidation** — an Integration reconciler validates each Integration's referenced Secret on its
   `spec.interval` and maintains its `Ready` condition.

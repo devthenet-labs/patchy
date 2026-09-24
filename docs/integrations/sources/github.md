@@ -103,6 +103,9 @@ A PR close counts only when it is the PR the finding recorded — the same numbe
 branch there, not a fork's — so a stray branch named `patchy/<finding>` moves nothing. The PR body's `Fixes #N` closes
 the tracking issue as the PR merges, and the two deliveries can arrive in either order: an issue closed while its
 finding is `InReview` is checked against the PR first, and only a PR still open means a human closed it (`HandedOff`).
+Renaming or transferring the repository during review is covered too: a close from the new name is checked against the
+recorded PR, which GitHub still serves under the old name. Until GitHub answers, the close waits on the finding as the
+`ReviewClosePending` condition and is retried, so an API outage delays it rather than losing it.
 
 `approveComment` changes the command; it defaults to `/approve`. Who may approve is RBAC on the status page and the CLI,
 but on an issue it is whoever can comment — so treat the comment as a convenience for repositories whose write access

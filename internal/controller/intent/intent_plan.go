@@ -263,10 +263,11 @@ func (p *pass) planRefused(run *v1alpha1.IntentRun) bool {
 
 // writeBack offers a completed plan for approval, in two durable steps. The
 // first stores the plan's bytes in their immutable ConfigMap and records the
-// plan (its digest is those bytes'). The second removes any approve label
-// (none may predate the plan it approves), posts the estimate notice when the
-// plan expects more than its build is granted, posts the plan comment once
-// (a retry finds its own), and records the comment GitHub stored: its id, the
+// plan (its digest is those bytes'). The second, unless a retry finds the plan
+// comment already posted, removes any approve label (none may predate the
+// plan it approves), posts the estimate notice when the plan expects more
+// than its build is granted, and posts the plan comment; then it records the
+// comment GitHub stored: its id, the
 // digest of its body as GitHub returned it, and GitHub's created_at, which an
 // approval must postdate.
 func (p *pass) writeBack(ctx context.Context, run *v1alpha1.IntentRun) (bool, error) {
@@ -311,13 +312,7 @@ func (p *pass) writeBack(ctx context.Context, run *v1alpha1.IntentRun) (bool, er
 	if err != nil {
 		return false, fmt.Errorf("render plan r%d: %w", round, err)
 	}
-	if err := p.r.GitHub.RemoveLabel(ctx, p.repo(), p.number(), approveLabel(p.proj)); err != nil {
-		return false, fmt.Errorf("remove the approve label: %w", err)
-	}
 	since := p.enteredAt().Add(-clockSkew)
-	if err := p.estimateNotice(ctx, round, raw, since); err != nil {
-		return false, err
-	}
 	marker := templates.PlanMarker(p.in.Namespace, p.in.Name, round, pl.Digest)
 	c, err := p.findOwn(ctx, marker, since)
 	if err != nil {
@@ -326,7 +321,17 @@ func (p *pass) writeBack(ctx context.Context, run *v1alpha1.IntentRun) (bool, er
 	if c == nil || c.Body != body || edited(c) {
 		// Not found, or found edited before it was recorded (even back to
 		// its original bytes, which an approval would refuse): post the plan
-		// afresh, so what is recorded is what patchy posted, unedited.
+		// afresh, so what is recorded is what patchy posted, unedited. No
+		// approve label may predate the plan it approves, so any is removed
+		// first. Once the plan is posted the label is left alone: a retry
+		// that finds the plan must not take away an approver's label added
+		// since, which is an approval to answer.
+		if err := p.r.GitHub.RemoveLabel(ctx, p.repo(), p.number(), approveLabel(p.proj)); err != nil {
+			return false, fmt.Errorf("remove the approve label: %w", err)
+		}
+		if err := p.estimateNotice(ctx, round, raw, since); err != nil {
+			return false, err
+		}
 		if c, err = p.r.GitHub.CreateIssueComment(ctx, p.repo(), p.number(), body); err != nil {
 			return false, fmt.Errorf("post plan r%d: %w", round, err)
 		}

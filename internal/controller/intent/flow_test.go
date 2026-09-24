@@ -140,6 +140,38 @@ func TestPlanCommentExactlyOnce(t *testing.T) {
 	}
 }
 
+// TestApprovalDuringPlanRecordRetry: an approver's approve label added after
+// the plan was posted, while recording the plan failed, is an approval: the
+// retry that finds the posted plan leaves the label alone.
+func TestApprovalDuringPlanRecordRetry(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.newIntent(approver)
+	e.failStatusIf = func(in *v1alpha1.Intent) bool {
+		return in.Status.Plan != nil && in.Status.Plan.CommentID != 0
+	}
+	for range 30 {
+		if e.failed > 0 {
+			break
+		}
+		_ = e.reconcileIntent(name)
+		e.readyRepositories("")
+		e.runRuns()
+		e.clock.Advance(time.Minute)
+	}
+	if e.failed == 0 {
+		t.Fatal("the plan comment was never recorded")
+	}
+	e.clock.Advance(time.Second)
+	id := e.gh.label(1, "patchy:approved", approver)
+	in := e.drive(name, v1alpha1.IntentBuilding, repoImage)
+	if ap := in.Status.Approval; ap == nil || ap.EventID != id || ap.Source != v1alpha1.IntentActionLabel {
+		t.Fatalf("approval = %+v, want the label %d", ap, id)
+	}
+	if n := len(e.gh.withMarker("patchy:plan")); n != 1 {
+		t.Errorf("plan comments = %d, want exactly one", n)
+	}
+}
+
 // TestEstimateNotice: a plan whose estimate exceeds the build grant is
 // flagged before it is posted, once.
 func TestEstimateNotice(t *testing.T) {

@@ -142,21 +142,20 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   score, rollup delta arithmetic + OTel taps.
 - `labels` — the trimmed human-facing label vocabulary the issue projection renders (one-way; never parsed back
   into state).
-- `templates` — the finding handoff/issue body, the stage prompts (investigate, remediate, and the intent plan
-  and build), and the PR body, rendered from embedded templates with golden tests. Also the intent side (not wired in yet): the plan comment, which shows the
-  plan report VERBATIM (its exact bytes) in a ```markdown block whose fence no line of it can close, only
-  patchy's header outside it, and refuses (`ErrPlanRefused`, with a notice to post instead) a plan over
-  GitHub's comment limit, not UTF-8, or holding characters no block can show (tag characters, bidi controls,
-  stray variation selectors: `planview.go`), whose header otherwise counts what the block hides at a glance
-  (other invisible characters less an emoji's, lines past 100 columns, long blank runs);
-  `Sanitize`/`SanitizeInline`, the pass every OTHER piece of agent
-  text bound for GitHub takes (hidden markup shown literally, tables as text, characters that render as
-  nothing as their code point; mentions, issue references on any host and so closing keywords made inline
-  code); both with seeded properties checked against goldmark as a stand-in for GitHub; and the intent
-  status comment, notices, PR body ("Part of", never a closing keyword), PR title and commit message, over
-  plain values. The last three can land on the default branch as plain text (a squash commit copies the title
-  and, if the repo says so, the body), where inline code protects nothing, so each also `defang`s every
-  reference and mention, code spans included; seeded properties read them raw.
+- `templates` — the finding handoff/issue body, the stage prompts (investigate, remediate, and the intent plan and
+  build), and the PR body, rendered from embedded templates with golden tests. Also the intent side (not wired in yet):
+  the plan comment, which shows the plan report VERBATIM (its exact bytes) in a ```markdown block whose fence no line of
+  it can close, only patchy's header outside it, and refuses (`ErrPlanRefused`, with a notice to post instead) a plan
+  over GitHub's comment limit, not UTF-8, or holding characters no block can show (tag characters, bidi controls, stray
+  variation selectors: `planview.go`), whose header otherwise counts what the block hides at a glance (other invisible
+  characters less an emoji's, lines past 100 columns, long blank runs); `Sanitize`/`SanitizeInline`, the pass every
+  OTHER piece of agent text bound for GitHub takes (hidden markup shown literally, tables as text, characters that
+  render as nothing as their code point; mentions, issue references on any host and so closing keywords made inline
+  code); both with seeded properties checked against goldmark as a stand-in for GitHub; and the intent status comment,
+  notices, PR body ("Part of", never a closing keyword), PR title and commit message, over plain values. The last three
+  can land on the default branch as plain text (a squash commit copies the title and, if the repo says so, the body),
+  where inline code protects nothing, so each also `defang`s every reference and mention, code spans included; seeded
+  properties read them raw.
 - `webhook`, `telemetry`, `cli`, `version` — service plumbing (the webhook server is used by
   integration-controller only).
 - `action` — the human-action vocabulary (the custom verbs) and the state-machine gating behind each one:

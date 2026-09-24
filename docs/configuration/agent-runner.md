@@ -33,7 +33,9 @@ carries the IntentRun's name, `input/issue.md` the intent snapshot, and `input/i
   `PATCHY_INVESTIGATE_MAX_TURNS`/`_TOKEN_BUDGET` as its ceiling, which a per-Job grant may lower but never raise.
 - **`build`** builds the approved plan with the workspace writable — the first build and every revise round — writes
   `reports/build.md` and `commit.sh`, and emits a `remediation` event with the changeset. It runs on the remediate
-  stage's configuration and grant clamp.
+  stage's configuration, with `PATCHY_REMEDIATE_MANUAL_MAX_TURNS`/`_TOKEN_BUDGET` as its ceiling, which a per-Job grant
+  may lower but never raise. Unlike a remediation's, a build's grant has no floor: one below
+  `PATCHY_REMEDIATE_AUTO_MAX_TURNS`/`_TOKEN_BUDGET` is honoured, and those apply only to a build Job with no grant.
 
 Both run on **brokered claude only**: any other harness, or claude without `PATCHY_BROKER_TOKEN_FILE`, is refused with a
 fatal event before a model is called, because codex and copilot do not honour the sandbox postures. No configuration key

@@ -76,32 +76,48 @@ func (a *Agent) intentHarness(id string) error {
 // never raise. The intent controller grants each run its Project's per-stage
 // limits, already clamped to its own ceilings; the runner checks again
 // against the ceiling it was configured with, because it is what spends the
-// money. (A build takes the remediate stage's grant() instead: the same
-// grant channel, clamped between the automated and the manual budgets.)
+// money.
 func (a *Agent) planLimits() (maxTurns, budget int) {
-	maxTurns, budget = a.cfg.InvestigateMaxTurns, a.cfg.InvestigateTokenBudget
-	if g := a.cfg.GrantedMaxTurns; g > 0 {
-		if g > maxTurns {
-			a.cfg.Log.Warn("granted max_turns clamped to the plan stage's limit", "granted", g, "limit", maxTurns)
-		} else {
-			maxTurns = g
-		}
+	return a.lowered("max_turns", a.cfg.GrantedMaxTurns, a.cfg.InvestigateMaxTurns, a.cfg.InvestigateMaxTurns),
+		a.lowered("token_budget", a.cfg.GrantedTokenBudget, a.cfg.InvestigateTokenBudget, a.cfg.InvestigateTokenBudget)
+}
+
+// buildLimits resolves the build stage's turns and output tokens with the
+// plan stage's semantics, not a remediation's grant(): the remediate
+// stage's manual budget is the ceiling, and a per-Job grant may lower it
+// but never raise it. A build's grant is its Project's build or revise
+// limit, which the operator chose and the controller already clamped — not
+// an estimate a low guess could starve, as a Finding's is — so the
+// automated budget is no floor under it, and a Project that tightens a
+// stage below it is honoured. Only a Job with no grant falls back to the
+// automated budget.
+func (a *Agent) buildLimits() (maxTurns, budget int) {
+	return a.lowered("max_turns", a.cfg.GrantedMaxTurns, a.cfg.RemediateManualMaxTurns,
+			min(a.cfg.RemediateAutoMaxTurns, a.cfg.RemediateManualMaxTurns)),
+		a.lowered("token_budget", a.cfg.GrantedTokenBudget, a.cfg.RemediateManualTokenBudget,
+			min(a.cfg.RemediateAutoTokenBudget, a.cfg.RemediateManualTokenBudget))
+}
+
+// lowered resolves one intent-stage limit from its per-Job grant: the grant
+// when it is set and within the stage's ceiling, the ceiling when the grant
+// is above it, and fallback when there is no grant.
+func (a *Agent) lowered(name string, grant, ceiling, fallback int) int {
+	switch {
+	case grant <= 0:
+		return fallback
+	case grant > ceiling:
+		a.cfg.Log.Warn("granted "+name+" clamped to the stage's ceiling",
+			"stage", a.cfg.Phase, "granted", grant, "ceiling", ceiling)
+		return ceiling
 	}
-	if g := a.cfg.GrantedTokenBudget; g > 0 {
-		if g > budget {
-			a.cfg.Log.Warn("granted token_budget clamped to the plan stage's limit", "granted", g, "limit", budget)
-		} else {
-			budget = g
-		}
-	}
-	return maxTurns, budget
+	return grant
 }
 
 // buildInput validates the approved plan the controller handed the build —
 // the Job's analysis handoff, input/investigation.md — and resolves what
-// the run may spend, exactly as remediationInput does for a fix. Only the
-// plan's frontmatter is checked (report.ParsePlanInput): a revise round
-// follows the plan with that round's feedback, past the plan's own bounds.
+// the run may spend (buildLimits). Only the plan's frontmatter is checked
+// (report.ParsePlanInput): a revise round follows the plan with that
+// round's feedback, past the plan's own bounds.
 func (a *Agent) buildInput() (remediationParams, error) {
 	raw, err := os.ReadFile(a.cfg.inputInvestigation())
 	if err != nil {
@@ -110,7 +126,7 @@ func (a *Agent) buildInput() (remediationParams, error) {
 	if _, err := report.ParsePlanInput(raw); err != nil {
 		return remediationParams{}, fmt.Errorf("input plan: %w", err)
 	}
-	maxTurns, budget := a.grant()
+	maxTurns, budget := a.buildLimits()
 	return remediationParams{maxTurns: maxTurns, budget: budget}, nil
 }
 
@@ -157,8 +173,7 @@ func (a *Agent) plan(ctx context.Context) *envelope.Plan {
 		IssuePath:  a.cfg.issuePath(),
 		ReportPath: a.cfg.planPath(),
 		Intent:     string(intent),
-		// The most a build can be granted: grant() clamps it to the manual
-		// budget.
+		// The most a build can be granted: buildLimits' ceiling.
 		BuildMaxTurns:    a.cfg.RemediateManualMaxTurns,
 		BuildTokenBudget: a.cfg.RemediateManualTokenBudget,
 		PreviousAttempt:  a.cfg.PreviousAttempt,

@@ -254,8 +254,8 @@ type Spec struct {
 	// already resolved controller-side against the automated budget, the
 	// estimate and the manual budget. Zero leaves the pod on its own
 	// configured automated budget. An intent run's grant rides the same
-	// channel: a build's is clamped as a remediation's, and a plan's may
-	// only lower the stage's configured limits.
+	// channel, but a plan's or a build's may only lower its stage's
+	// configured ceiling: the automated budget is no floor under it.
 	MaxTurns    int32
 	TokenBudget int64
 	// Calibration is pre-serialized JSON describing how earlier estimates
@@ -926,7 +926,7 @@ var credentialChannelEnv = func() map[string]bool {
 //
 // An intent phase reads its Finding counterpart's names, and with them that
 // stage's whole configuration: build is the writing stage, on the remediate
-// harness, model, timeout and grant clamp (PATCHY_REMEDIATE_*), and plan the
+// harness, model, timeout and budgets (PATCHY_REMEDIATE_*), and plan the
 // read-only one, on the investigate stage's (PATCHY_INVESTIGATE_*). No new
 // configuration key exists for them, so neither the per-Job names nor the
 // blanks a repository-image Job carries change.

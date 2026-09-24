@@ -6,12 +6,14 @@ package agentrun
 import (
 	"bytes"
 	"context"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"testing/quick"
 
 	"github.com/bitwise-media-group/patchy/internal/envelope"
 	"github.com/bitwise-media-group/patchy/internal/harness"
@@ -202,6 +204,85 @@ func TestPlanLimits(t *testing.T) {
 	}
 }
 
+// TestBuildLimits: a build's grant, like a plan's, may lower its stage's
+// ceiling (the manual budget) but never raise it — and, unlike a
+// remediation's, a grant below the automated budget is honoured, not
+// raised to it: it is the Project's own limit, not an estimate.
+func TestBuildLimits(t *testing.T) {
+	tests := []struct {
+		name               string
+		granted            [2]int
+		wantTurns, wantTok int
+	}{
+		{"no grant runs on the automated budget", [2]int{0, 0}, 80, 400000},
+		{"a grant below the automated budget is honoured", [2]int{40, 100000}, 40, 100000},
+		{"a grant between the budgets is honoured", [2]int{150, 800000}, 150, 800000},
+		{"a grant at the ceiling is honoured", [2]int{240, 1200000}, 240, 1200000},
+		{"a grant may not raise the ceiling", [2]int{400, 9000000}, 240, 1200000},
+		{"a grant may set one limit alone", [2]int{40, 0}, 40, 400000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			cfg, _ := intentConfig(t, PhaseBuild, &out) // auto 80/400000, manual 240/1200000
+			cfg.GrantedMaxTurns, cfg.GrantedTokenBudget = tt.granted[0], tt.granted[1]
+			turns, budget := New(cfg, &fakeExec{}).buildLimits()
+			if turns != tt.wantTurns || budget != tt.wantTok {
+				t.Errorf("buildLimits() = %d/%d, want %d/%d", turns, budget, tt.wantTurns, tt.wantTok)
+			}
+		})
+	}
+	// The Finding flow keeps its floor: the same sub-automated grant buys a
+	// remediation the automated budget.
+	var out bytes.Buffer
+	cfg, _ := intentConfig(t, PhaseBuild, &out)
+	cfg.GrantedMaxTurns, cfg.GrantedTokenBudget = 40, 100000
+	if turns, budget := New(cfg, &fakeExec{}).grant(); turns != 80 || budget != 400000 {
+		t.Errorf("grant() = %d/%d, want the remediation floor 80/400000", turns, budget)
+	}
+}
+
+// TestIntentLimitsProperty: for any configured budgets and any grant, each
+// intent stage runs on at most its ceiling and at most a positive grant,
+// runs on exactly a grant within the ceiling, and falls back only when no
+// grant is set — so neither stage can spend past what it was granted.
+func TestIntentLimitsProperty(t *testing.T) {
+	cfg := &quick.Config{Rand: rand.New(rand.NewSource(20260924)), MaxCount: 500}
+	// resolves checks one resolved limit against its grant, ceiling and
+	// no-grant fallback.
+	resolves := func(got, grant, ceiling, fallback int) bool {
+		switch {
+		case grant <= 0:
+			return got == fallback
+		case grant <= ceiling:
+			return got == grant
+		}
+		return got == ceiling
+	}
+	ws := t.TempDir()
+	prop := func(auto, extra, investigate, granted [2]int16) bool {
+		var out bytes.Buffer
+		c := newConfig(t, ws, &out)
+		abs := func(v int16) int { return max(int(v), -int(v)) }
+		// FromEnv refuses a manual budget below the automated one.
+		c.RemediateAutoMaxTurns, c.RemediateAutoTokenBudget = abs(auto[0]), abs(auto[1])
+		c.RemediateManualMaxTurns = c.RemediateAutoMaxTurns + abs(extra[0])
+		c.RemediateManualTokenBudget = c.RemediateAutoTokenBudget + abs(extra[1])
+		c.InvestigateMaxTurns, c.InvestigateTokenBudget = abs(investigate[0]), abs(investigate[1])
+		c.GrantedMaxTurns, c.GrantedTokenBudget = int(granted[0]), int(granted[1])
+		a := New(c, &fakeExec{})
+		planTurns, planBudget := a.planLimits()
+		buildTurns, buildBudget := a.buildLimits()
+		return resolves(planTurns, c.GrantedMaxTurns, c.InvestigateMaxTurns, c.InvestigateMaxTurns) &&
+			resolves(planBudget, c.GrantedTokenBudget, c.InvestigateTokenBudget, c.InvestigateTokenBudget) &&
+			resolves(buildTurns, c.GrantedMaxTurns, c.RemediateManualMaxTurns, c.RemediateAutoMaxTurns) &&
+			resolves(buildBudget, c.GrantedTokenBudget, c.RemediateManualTokenBudget, c.RemediateAutoTokenBudget)
+	}
+	if err := quick.Check(prop, cfg); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestPlanFailures(t *testing.T) {
 	budgetLines := []string{
 		`{"type":"assistant","message":{"usage":{"output_tokens":100000}}}`,
@@ -350,8 +431,8 @@ func TestBuildPackagesChangeset(t *testing.T) {
 }
 
 // TestBuildRunsOnTheGrant pins what the build stage asks the real CLI for:
-// the workspace-write posture and the remediate stage's grant, clamp and
-// all.
+// the workspace-write posture and its grant — here one below the automated
+// budget, which a build honours.
 func TestBuildRunsOnTheGrant(t *testing.T) {
 	var out bytes.Buffer
 	cfg, ws := intentConfig(t, PhaseBuild, &out)
@@ -360,7 +441,7 @@ func TestBuildRunsOnTheGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.RemediateHarness, cfg.BrokerTokenFile = "claude", tokenFile
-	cfg.GrantedMaxTurns = 150 // auto 80, manual 240
+	cfg.GrantedMaxTurns = 40 // auto 80, manual 240
 	fx := &fakeExec{steps: []step{{ws: ws, stdout: streamSuccess,
 		writes:    map[string]string{"reports/build.md": goodBuild, "commit.sh": buildCommitScript},
 		repoWrite: map[string]string{"app.js": "version();\n"},
@@ -379,8 +460,8 @@ func TestBuildRunsOnTheGrant(t *testing.T) {
 	if got := at("--allowedTools"); got != "Read Glob Grep Edit Write NotebookEdit Bash" {
 		t.Errorf("--allowedTools = %q, want the workspace-write posture", got)
 	}
-	if got := at("--max-turns"); got != "150" {
-		t.Errorf("--max-turns = %s, want the grant", got)
+	if got := at("--max-turns"); got != "40" {
+		t.Errorf("--max-turns = %s, want the grant, not the automated budget", got)
 	}
 	prompt := at("-p")
 	for _, want := range []string{

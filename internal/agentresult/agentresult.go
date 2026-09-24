@@ -10,6 +10,7 @@ package agentresult
 
 import (
 	"encoding/json"
+	"math"
 	"strconv"
 	"unicode/utf8"
 
@@ -145,21 +146,25 @@ func Analysis(a envelope.AnalysisResult) *v1alpha1.Analysis {
 }
 
 // FormatCost renders a float cost as the CRD's decimal string (6 fractional
-// digits — micro-USD precision); empty when unreported.
+// digits — micro-USD precision); empty when unreported or not finite (NaN
+// slips past a positivity check and +Inf passes it, and neither renders as a
+// decimal the CRD pattern admits).
 func FormatCost(f float64) string {
-	if f <= 0 {
+	if f <= 0 || math.IsNaN(f) || math.IsInf(f, 1) {
 		return ""
 	}
 	return strconv.FormatFloat(f, 'f', 6, 64)
 }
 
 // FormatConfidence renders confidence as the CRD's decimal string; empty
-// when out of range.
+// when out of range or NaN (which compares false against both bounds).
 func FormatConfidence(f float64) string {
-	if f < 0 || f > 1 {
+	if math.IsNaN(f) || f < 0 || f > 1 {
 		return ""
 	}
-	return strconv.FormatFloat(f, 'f', 4, 64)
+	// Adding zero turns a negative zero, which is in range, into a positive
+	// one: rendered as-is it is "-0.0000", which the CRD pattern rejects.
+	return strconv.FormatFloat(f+0, 'f', 4, 64)
 }
 
 // TruncateReport caps a report markdown for a CRD field.

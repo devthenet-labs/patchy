@@ -10,19 +10,22 @@
 //
 //	/patchy <verb> [note]
 //
+// A line ends at every line break Unicode defines (UAX #14: CRLF, CR, LF,
+// VT, FF, NEL, U+2028 and U+2029), for the command line and the note alike.
 // The prefix is a whole word, matched without regard to ASCII case, and any
-// whitespace separates it from the verb. The verb is the next
-// whitespace-delimited word, lower-cased; a word that is not 1-32 ASCII
-// letters parses as an empty verb, so a caller can still answer with the
-// verbs it offers and can echo a non-empty verb without escaping it. The note
-// is everything after the verb: the rest of that line and every line below
-// it. Only the first non-blank line is ever a command. A later line that
-// looks like one, a quoted command ("> /patchy approve") or one inside a code
-// span is text, and text never parses.
+// other whitespace separates it from the verb. The verb is the next
+// whitespace-delimited word on that line, lower-cased; a word that is not
+// 1-32 ASCII letters parses as an empty verb, so a caller can still answer
+// with the verbs it offers and can echo a non-empty verb without escaping it.
+// The note is everything after the verb: the rest of that line and every line
+// below it. Only the first non-blank line is ever a command. A later line
+// that looks like one, a quoted command ("> /patchy approve") or one inside a
+// code span is text, and text never parses.
 //
-// A note has invalid UTF-8 replaced, line breaks normalised to "\n", control
-// and format characters other than "\n" and "\t" removed, surrounding
-// whitespace trimmed, and is cut to at most MaxNoteBytes on a rune boundary.
+// A note has invalid UTF-8 replaced, every line break normalised to "\n",
+// control and format characters other than "\n" and "\t" removed,
+// surrounding whitespace trimmed, and is cut to at most MaxNoteBytes on a
+// rune boundary.
 //
 // # Aliases
 //

@@ -6,6 +6,7 @@ package command_test
 import (
 	"math/rand"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"testing/quick"
@@ -26,13 +27,13 @@ import (
 var hostile = []string{
 	"/patchy", "/PATCHY", "/Patchy", "/patchy ", "/approve", "/approve ", "/approved", "@patchy approve",
 	"approve", "retry", "revise", "cancel", "replan", "Approve",
-	" ", "  ", "\t", "\n", "\n\n", "\r\n", "\r", "\v", "\f", "\u0085", "\u00a0", "\u2028", "\u3000",
+	" ", "  ", "\t", "\n", "\n\n", "\r\n", "\r", "\v", "\f", "\u0085", "\u00a0", "\u2028", "\u2029", "\u3000",
 	"\x00", "\x1b", "\x7f", "\u200b", "\u202e", "\ufeff",
 	">", "`", "```", "#", "-", ",", "<b>", "x", "é", "日本", "\xff", "\xe2\x80", "ship it",
 }
 
 // whitespace are White_Space runes, some of them control characters too.
-var whitespace = []string{" ", "\t", "\n", "\r\n", "\r", "\v", "\f", "\u0085", "\u00a0", "\u2028", "\u3000"}
+var whitespace = []string{" ", "\t", "\n", "\r\n", "\r", "\v", "\f", "\u0085", "\u00a0", "\u2028", "\u2029", "\u3000"}
 
 // genFrom concatenates fragments from alphabet: mostly short, occasionally
 // well past the note bound so the cut is exercised.
@@ -91,10 +92,14 @@ func genAlias(r *rand.Rand) string {
 	return genHostile(r)
 }
 
+// lineBreak matches every line break Unicode defines (UAX #14's mandatory
+// breaks), written out here independently of the parser.
+var lineBreak = regexp.MustCompile("\r\n|[\n\r\v\f\u0085\u2028\u2029]")
+
 // firstNonBlank is the body's first non-blank line, trimmed — computed here
 // independently of the parser.
 func firstNonBlank(body string) string {
-	for line := range strings.Lines(body) {
+	for _, line := range lineBreak.Split(body, -1) {
 		if t := strings.TrimSpace(line); t != "" {
 			return t
 		}
@@ -103,12 +108,13 @@ func firstNonBlank(body string) string {
 }
 
 // wellFormedNote reports what every note must be: valid UTF-8, within the
-// bound, trimmed, and free of control and format characters other than "\n"
-// and "\t".
+// bound, trimmed, with "\n" its only line break, and free of control and
+// format characters other than "\n" and "\t".
 func wellFormedNote(note string) bool {
 	return utf8.ValidString(note) && len(note) <= command.MaxNoteBytes && note == strings.TrimSpace(note) &&
 		!strings.ContainsFunc(note, func(r rune) bool {
-			return r != '\n' && r != '\t' && (unicode.IsControl(r) || unicode.Is(unicode.Cf, r))
+			return r != '\n' && r != '\t' &&
+				(unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029')
 		})
 }
 
@@ -224,8 +230,8 @@ func spelling(r *rand.Rand) string {
 	return b.String()
 }
 
-// inline are the whitespace runes that do not end a line.
-var inline = []string{" ", "\t", "\r", "\v", "\f", "\u0085", "\u00a0", "\u2028", "\u3000"}
+// inline are whitespace runes that do not end a line.
+var inline = []string{" ", "\t", "\u00a0", "\u2003", "\u202f", "\u3000"}
 
 // genVerb is a real verb or an unknown one.
 func genVerb(r *rand.Rand) string {
@@ -256,6 +262,48 @@ func TestParseNoteExcludesCommandLineProperty(t *testing.T) {
 			!strings.Contains(c.Note, command.LegacyApprove)
 	}
 	if err := quick.Check(legacy, quickConfig(20260928, noteText)); err != nil {
+		t.Error(err)
+	}
+}
+
+// TestParseLineBreaksProperty: every line break is one to the command line
+// and the note alike. One straight after the prefix leaves the verb empty,
+// whatever follows it; and writing one line break in place of another never
+// changes what a comment parses to.
+func TestParseLineBreaksProperty(t *testing.T) {
+	breaks := []string{"\n", "\r\n", "\r", "\v", "\f", "\u0085", "\u2028", "\u2029"}
+	genBreak := func(r *rand.Rand) string { return breaks[r.Intn(len(breaks))] }
+	verbless := func(lb, rest string) bool {
+		c, ok := command.Parse(command.Prefix + lb + rest)
+		return ok && c.Verb == ""
+	}
+	if err := quick.Check(verbless, quickConfig(20261003, genBreak, genHostile)); err != nil {
+		t.Error(err)
+	}
+
+	// Without CRs of their own, the text before the break cannot end in the
+	// CR of a CRLF, nor the text after it start one.
+	var noCR []string
+	for _, f := range hostile {
+		if !strings.Contains(f, "\r") {
+			noCR = append(noCR, f)
+		}
+	}
+	genSide := func(r *rand.Rand) string {
+		if r.Intn(2) == 0 {
+			return command.Prefix + " " + genVerb(r) + " " + genFrom(r, noCR)
+		}
+		return genFrom(r, noCR)
+	}
+	oneBreak := func(before, lb, after string) bool {
+		c, ok := command.Parse(before + lb + after)
+		if lb == "\r" && strings.HasPrefix(after, "\n") {
+			after = after[1:] // the CR and the LF after it are one CRLF
+		}
+		c2, ok2 := command.Parse(before + "\n" + after)
+		return c == c2 && ok == ok2
+	}
+	if err := quick.Check(oneBreak, quickConfig(20261004, genSide, genBreak, genSide)); err != nil {
 		t.Error(err)
 	}
 }

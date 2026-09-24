@@ -71,6 +71,20 @@ func TestParseGrammar(t *testing.T) {
 			"/patchy revise fix\x00 the\x1b[31m bug\t\u202eplease\u200b\u007f",
 			command.Command{Verb: action.VerbRevise, Note: "fix the[31m bug\tplease"}, true},
 		{"a lone CR is a line break", "/patchy approve one\rtwo", approve("one\ntwo"), true},
+		{"every Unicode line break becomes a newline in the note",
+			"/patchy approve a\u0085b\u2028c\u2029d\ve\ff\rg", approve("a\nb\nc\nd\ne\nf\ng"), true},
+		{"trailing whitespace on the command line stays inside the note",
+			"/patchy approve one  \ntwo", approve("one  \ntwo"), true},
+		// A line break ends the command line wherever it is, so these read as
+		// "/patchy" and, on the next line, a note — as GitHub renders them.
+		{"a lone CR ends the command line", "/patchy\r approve", command.Command{Note: "approve"}, true},
+		{"a lone CR right after the prefix", "/patchy\rapprove", command.Command{Note: "approve"}, true},
+		{"a NEL ends the command line", "/patchy\u0085approve", command.Command{Note: "approve"}, true},
+		{"a line separator ends the command line", "/patchy\u2028approve", command.Command{Note: "approve"}, true},
+		{"a paragraph separator ends the command line", "/patchy\u2029approve", command.Command{Note: "approve"}, true},
+		{"a vertical tab ends the command line", "/patchy\vapprove", command.Command{Note: "approve"}, true},
+		{"a form feed ends the command line", "/patchy\fapprove", command.Command{Note: "approve"}, true},
+		{"blank lines ended by lone CRs", "\r \r/patchy approve", approve(""), true},
 		{"invalid UTF-8 is replaced", "/patchy approve bad \xff byte", approve("bad \uFFFD byte"), true},
 		{"a long note is cut on a rune boundary", "/patchy approve " + long,
 			approve(long[:command.MaxNoteBytes-1]), true},
@@ -85,6 +99,9 @@ func TestParseGrammar(t *testing.T) {
 		{"prefix glued to punctuation", "/patchy-approve", command.Command{}, false},
 		{"no slash", "patchy approve", command.Command{}, false},
 		{"a command below the first line", "Thanks!\n/patchy approve", command.Command{}, false},
+		{"a command after a lone CR is below the first line", "Thanks!\r/patchy approve", command.Command{}, false},
+		{"a command after a line separator is below the first line", "Thanks!\u2028/patchy approve",
+			command.Command{}, false},
 		{"a quoted command", "> /patchy approve\n\nI disagree", command.Command{}, false},
 		{"a command in a code span", "`/patchy approve`", command.Command{}, false},
 		{"a command in a code block", "```\n/patchy approve\n```", command.Command{}, false},
@@ -111,6 +128,7 @@ func TestParseLegacyApprove(t *testing.T) {
 		{"the note keeps the lines below", "/approve ship it\nafter the review\n", legacy("ship it\nafter the review"), true},
 		{"extra spaces before the note", "/approve   ship it", legacy("ship it"), true},
 		{"CRLF in the note is normalised", "/approve ship it\r\nthanks", legacy("ship it\nthanks"), true},
+		{"every line break in the note is normalised", "/approve ship\u0085it\u2028now", legacy("ship\nit\nnow"), true},
 		// Today's rule needs an ASCII space after the command, so these have
 		// never approved and must not start to.
 		{"a note on the next line", "/approve\nship it", command.Command{}, false},

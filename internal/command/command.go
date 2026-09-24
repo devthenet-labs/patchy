@@ -70,9 +70,18 @@ func (p Parser) Parse(body string) (Command, bool) {
 	return p.parseAlias(body)
 }
 
+// lineBreaks turns every line break Unicode says must end a line (UAX #14:
+// CRLF, CR, LF, VT, FF, NEL, U+2028 and U+2029) into "\n". The grammar and
+// the note both use it, so the command line ends exactly where the note's
+// first line break does.
+var lineBreaks = strings.NewReplacer(
+	"\r\n", "\n", "\r", "\n", "\v", "\n", "\f", "\n", "\u0085", "\n", "\u2028", "\n", "\u2029", "\n",
+)
+
 // parseGrammar reads "/patchy <verb> [note]" from the first non-blank line.
 func parseGrammar(body string) (Command, bool) {
-	line, below := firstLine(body)
+	line, below := firstLine(lineBreaks.Replace(body))
+	line = strings.TrimLeftFunc(line, unicode.IsSpace)
 	if len(line) < len(Prefix) || !strings.EqualFold(line[:len(Prefix)], Prefix) {
 		return Command{}, false
 	}
@@ -105,13 +114,13 @@ func (p Parser) parseAlias(body string) (Command, bool) {
 	}, true
 }
 
-// firstLine returns body's first non-blank line, trimmed, and the text below
-// it; both are empty when body has no such line.
+// firstLine returns body's first non-blank "\n"-terminated line, as it
+// stands, and the text below it; both are empty when body has no such line.
 func firstLine(body string) (line, below string) {
 	for body != "" {
 		var l string
 		l, body, _ = strings.Cut(body, "\n")
-		if l = strings.TrimSpace(l); l != "" {
+		if strings.TrimSpace(l) != "" {
 			return l, body
 		}
 	}
@@ -144,12 +153,9 @@ func verb(word string) string {
 // control and format characters other than "\n" and "\t" removed, trimmed,
 // and at most MaxNoteBytes, cut on a rune boundary.
 func sanitize(s string) string {
-	s = strings.ToValidUTF8(s, string(utf8.RuneError))
-	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = lineBreaks.Replace(strings.ToValidUTF8(s, string(utf8.RuneError)))
 	s = strings.Map(func(r rune) rune {
 		switch {
-		case r == '\r':
-			return '\n'
 		case r == '\n' || r == '\t':
 			return r
 		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r):

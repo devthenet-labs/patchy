@@ -4,10 +4,11 @@
 # Defence in depth for the agent sandbox on Istio meshes: the same egress
 # allowlist as the Cilium component, enforced by the sidecar (REGISTRY_ONLY +
 # a ServiceEntry; the proxy matches the client-hello SNI, TLS is not
-# terminated). One ServiceEntry + Sidecar is rendered per enabled runner: each
-# Sidecar's workloadSelector scopes it to that harness's pods (by the harness
-# label) and its egress lists only that runner's model hosts, so a claude pod
-# reaches only api.anthropic.com and a codex pod only api.openai.com. Sidecar
+# terminated). One ServiceEntry + Sidecar is rendered per enabled runner (on
+# either fleet: patchy.harnessEnabled): each Sidecar's workloadSelector scopes
+# it to that harness's pods (by the harness label) and its egress lists only
+# that runner's model hosts, so a claude pod reaches only api.anthropic.com
+# and a codex pod only api.openai.com. Sidecar
 # injection is switched on by the namespace label the chart adds when this is
 # enabled (agent.networkPolicy.istio.injectionLabel).
 #
@@ -20,7 +21,7 @@
 {{- if and .Values.agent.networkPolicy.create (eq (include "patchy.egressMode" .) "istio") }}
 {{- $root := . }}
 {{- range $id, $r := .Values.agent.runners }}
-{{- if $r.enabled }}
+{{- if include "patchy.harnessEnabled" (dict "root" $root "id" $id) }}
 {{- if $r.hosts }}
 ---
 # One runner's model API. exportTo: "." keeps the entry private to the agent

@@ -52,6 +52,26 @@ helm template patchy charts/patchy \
   --set statusServer.rbac.userRoles=true \
   --set-json 'statusServer.auth.config={"mode":"oidc","oidc":{"issuerURL":"https://sso.example.com","clientID":"patchy-status","clientSecret":"placeholder"}}' >/dev/null
 
+# The optional evaluation controller (default off): its own template plus
+# source-controller's :9791 fragments, under every egress mode, with both
+# exposure flavours, and as the only fleet that runs claude.
+helm lint charts/patchy -f hack/testdata/chart-render/evaluation-controller.yaml
+helm template patchy charts/patchy -f hack/testdata/chart-render/evaluation-controller.yaml >/dev/null
+helm template patchy charts/patchy -f hack/testdata/chart-render/evaluation-controller.yaml \
+  --set agent.networkPolicy.mode=cilium >/dev/null
+helm template patchy charts/patchy -f hack/testdata/chart-render/evaluation-controller.yaml \
+  --set agent.networkPolicy.mode=gke >/dev/null
+helm template patchy charts/patchy -f hack/testdata/chart-render/evaluation-controller.yaml \
+  --set agent.networkPolicy.mode=istio >/dev/null
+helm template patchy charts/patchy -f hack/testdata/chart-render/evaluation-controller.yaml \
+  --set evaluationController.host=patchy-evals.example.com \
+  --set evaluationController.ingress.enabled=true --set evaluationController.ingress.className=nginx \
+  --set-json 'evaluationController.httpRoute={"enabled":true,"annotations":{},"parentRefs":[{"name":"gw","namespace":"gateway-system"}]}' \
+  --set evaluationController.rbac.userRoles=true >/dev/null
+helm template patchy charts/patchy -f hack/testdata/chart-render/evaluation-controller.yaml \
+  --set agent.runners.claude.enabled=false --set agent.runners.codex.enabled=true \
+  --set evaluationController.runners.codex.enabled=true >/dev/null
+
 # The CR chart: the empty default plus a populated render of both arrays.
 helm lint charts/patchy-config
 helm template patchy-config charts/patchy-config >/dev/null

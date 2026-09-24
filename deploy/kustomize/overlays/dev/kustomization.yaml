@@ -43,6 +43,9 @@ images:
     - name: ghcr.io/devthenet-labs/patchy/remediation-controller
       newName: patchy/remediation-controller
       newTag: dev
+    - name: ghcr.io/devthenet-labs/patchy/evaluation-controller
+      newName: patchy/evaluation-controller
+      newTag: dev
     - name: ghcr.io/devthenet-labs/patchy/claude-agent-runner
       newName: patchy/claude-agent-runner
       newTag: dev
@@ -76,6 +79,22 @@ patches:
           - op: add
             path: /spec/ports/0/nodePort
             value: 30079
+    # The evaluation controller reads the shared ConfigMap too, where
+    # PATCHY_HARNESSES: fake (configmap-patch.yaml) names a runner it has no
+    # image for (there is no fake evolve runner), so it would exit at startup.
+    # Pod env wins over envFrom, as with the base's PATCHY_AUTH_CONFIG:
+    # restrict it to the brokered claude runner, which needs nothing to start.
+    # An evaluation that calls the model needs the real key secret-dev.yaml
+    # describes for patchy-anthropic.
+    - target:
+          kind: Deployment
+          name: patchy-evaluation-controller
+      patch: |
+          - op: add
+            path: /spec/template/spec/containers/0/env/-
+            value:
+                name: PATCHY_HARNESSES
+                value: claude
     # Laptop-sized. Requests tiny — a kind node has no headroom. Limits stay
     # (kubescape C-0270/C-0271 gate on them) but loose enough to never
     # throttle a dev loop.

@@ -4,8 +4,9 @@
 # Defence in depth for the agent sandbox on Cilium CNIs: FQDN matching on top
 # of the base "TCP 443 anywhere" NetworkPolicy. Requires Cilium with
 # DNS-based policy enabled (the DNS proxy). One policy is rendered per enabled
-# runner, selecting that harness's pods by their harness label, so a claude pod
-# may reach only api.anthropic.com and a codex pod only api.openai.com.
+# runner (on either fleet: patchy.harnessEnabled), selecting that harness's
+# pods by their harness label, so a claude pod may reach only
+# api.anthropic.com and a codex pod only api.openai.com.
 #
 # Each runner's pods need exactly two destinations:
 #
@@ -34,7 +35,7 @@
 {{- $root := . }}
 {{- $clusterDNS := .Values.agent.networkPolicy.clusterDNSPatterns | default list }}
 {{- range $id, $r := .Values.agent.runners }}
-{{- if $r.enabled }}
+{{- if include "patchy.harnessEnabled" (dict "root" $root "id" $id) }}
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy

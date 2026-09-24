@@ -11,7 +11,7 @@ remediation-controller serve --namespace patchy \
 
 ## Pipeline flags
 
-The [shared flags](index.md#shared-flags-all-five-controllers), plus:
+The [shared flags](index.md#shared-flags-every-controller), plus:
 
 | Flag                               | Env                                     | Default          | Purpose                                                                      |
 | ---------------------------------- | --------------------------------------- | ---------------- | ---------------------------------------------------------------------------- |

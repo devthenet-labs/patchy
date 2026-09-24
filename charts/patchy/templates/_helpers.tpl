@@ -120,6 +120,22 @@ yes
 {{- end }}
 
 {{/*
+Whether a harness runs anywhere (findings or evaluations), by the same rule
+as patchy.brokerEnabled. Evaluation Jobs carry the same harness label as
+finding Jobs, so the per-harness egress policies (Cilium, GKE FQDN, Istio)
+render for a harness enabled on either fleet; hosts and dnsPatterns still
+come from agent.runners.<id>. Takes (dict "root" $ "id" $id); returns a
+non-empty string for yes.
+*/}}
+{{- define "patchy.harnessEnabled" -}}
+{{- $agent := index .root.Values.agent.runners .id | default dict -}}
+{{- $eval := index .root.Values.evaluationController.runners .id | default dict -}}
+{{- if or $agent.enabled (and .root.Values.evaluationController.enabled $eval.enabled) -}}
+yes
+{{- end -}}
+{{- end }}
+
+{{/*
 The egress broker's in-cluster base URL — what PATCHY_BROKER_URL is stamped
 with and what the agent pods' gateway env points at.
 */}}

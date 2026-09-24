@@ -445,11 +445,11 @@ spec:
                   pending:
                     description: |-
                       Pending are the commands recorded and not yet answered, at most
-                      MaxPendingCommandsPerActor of them from any one account. Their
-                      decisions and effects are taken in comment-id order: GitHub's ids grow
-                      with creation, so a suspend and the resume written after it apply in
-                      that order when both are pending. LastToggle keeps that order for a
-                      suspend or resume that arrives after a later one is answered.
+                      MaxPendingCommandsPerActor of them undecided from any one account.
+                      Their decisions and effects are taken in comment-id order: GitHub's
+                      ids grow with creation, so a suspend and the resume written after it
+                      apply in that order when both are pending. LastToggle keeps that order
+                      for a suspend or resume that arrives after a later one is answered.
                     items:
                       description: |-
                         FindingCommand is one human command made on the tracking issue, as it

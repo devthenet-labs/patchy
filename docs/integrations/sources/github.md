@@ -150,9 +150,10 @@ a status-page action.
 **Delivery.** GitHub's webhook is answered before it is handled and never redelivered once answered, so the webhook
 handler only records the command on the finding (`status.commands.pending`). Anyone who can comment on the issue gets
 that far before GitHub is asked whether they may command it, so the 8 pending slots are shared out by account: one
-account holds at most 2, and when all 8 are held a new account's command takes the slot of the newest undecided command
-of an account holding 2. A command that finds no slot is not recorded, so it is never answered; the controller logs it.
-Comment again once the pending commands are answered, which normally takes seconds.
+account holds at most 2 still to be decided (a decided one only waits on its answer), and when all 8 are held a new
+command takes the slot of a refusal already decided, which loses only its answer, or else of the newest undecided
+command of an account holding 2. A command that finds no slot is not recorded, so it is never answered; the controller
+logs it. Comment again once the pending commands are answered, which normally takes seconds.
 
 The finding projection then asks GitHub for the commenter's permission, applies the command, reacts and replies,
 retrying with backoff while GitHub fails, so a command is never decided without GitHub's answer. Each step is recorded

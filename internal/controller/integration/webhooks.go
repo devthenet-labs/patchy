@@ -134,7 +134,8 @@ func (s *Signals) issues(ctx context.Context, payload []byte) error {
 // Anyone who can comment on the issue reaches this point, and whether they
 // may command the finding is not known until GitHub is asked, so the
 // pending slots are shared out by account (recordCommand) rather than first
-// come, first served: no one account can take them all.
+// come, first served: no one account can take them all, and a refusal
+// waiting only on its answer gives its slot up to a new command.
 func (s *Signals) comment(ctx context.Context, integ *v1alpha1.Integration, payload []byte) error {
 	var ev struct {
 		Action  string   `json:"action"`
@@ -195,12 +196,13 @@ func (s *Signals) comment(ctx context.Context, integ *v1alpha1.Integration, payl
 		recorded, evicted := recordCommand(cur.Status.Commands, pending)
 		switch {
 		case !recorded:
-			s.log().LogAttrs(ctx, slog.LevelWarn,
-				"command not recorded: the account already has its share pending, or every slot is held", attrs...)
+			s.log().LogAttrs(ctx, slog.LevelWarn, "command not recorded: the account already has its share "+
+				"undecided, or every slot is held by a command that keeps it", attrs...)
 		case evicted != nil:
-			s.log().LogAttrs(ctx, slog.LevelWarn, "command recorded in the slot of another account's newer command",
+			s.log().LogAttrs(ctx, slog.LevelWarn, "command recorded in the slot of another command, dropped",
 				append(attrs, slog.Int64("dropped_comment", evicted.CommentID),
-					slog.String("dropped_login", evicted.Actor.Login))...)
+					slog.String("dropped_login", evicted.Actor.Login),
+					slog.String("dropped_outcome", string(evicted.Outcome)))...)
 		default:
 			s.log().LogAttrs(ctx, slog.LevelInfo, "command recorded", attrs...)
 		}
@@ -210,24 +212,18 @@ func (s *Signals) comment(ctx context.Context, integ *v1alpha1.Integration, payl
 
 // recordCommand adds c to cmds.Pending, sharing the slots out by account,
 // and reports whether it did. An account already holding
-// MaxPendingCommandsPerActor gets no more. When every slot is held, c takes
-// the slot of the newest undecided command of an account holding more than
-// one, which is returned; with no such command, c is not recorded. A
-// decided command is never dropped: it may already have taken effect.
+// MaxPendingCommandsPerActor undecided commands gets no more; one already
+// decided only waits on its answer, and takes no part of the share. When
+// every slot is held, c takes the slot of another command (slotVictim),
+// which is returned; with none to give, c is not recorded.
 func recordCommand(
 	cmds *v1alpha1.FindingCommands, c v1alpha1.FindingCommand,
 ) (recorded bool, evicted *v1alpha1.FindingCommand) {
-	if pendingBy(cmds.Pending, c.Actor) >= v1alpha1.MaxPendingCommandsPerActor {
+	if undecidedBy(cmds.Pending, c.Actor) >= v1alpha1.MaxPendingCommandsPerActor {
 		return false, nil
 	}
 	if len(cmds.Pending) >= v1alpha1.MaxPendingCommands {
-		victim := -1
-		for i, p := range cmds.Pending {
-			if p.Outcome == "" && pendingBy(cmds.Pending, p.Actor) > 1 &&
-				(victim < 0 || p.CommentID > cmds.Pending[victim].CommentID) {
-				victim = i
-			}
-		}
+		victim := slotVictim(cmds.Pending)
 		if victim < 0 {
 			return false, nil
 		}
@@ -239,11 +235,49 @@ func recordCommand(
 	return true, evicted
 }
 
-// pendingBy counts the commands in pending that actor wrote.
-func pendingBy(pending []v1alpha1.FindingCommand, actor v1alpha1.CommandActor) int {
+// slotVictim is the index, in a full pending list, of the command a new one
+// takes the slot of, or -1: the one whose loss costs least (dropCost), the
+// newest of those that cost the same.
+func slotVictim(pending []v1alpha1.FindingCommand) int {
+	victim, least := -1, 0
+	for i := range pending {
+		cost := dropCost(pending, &pending[i])
+		if cost == 0 {
+			continue
+		}
+		if victim < 0 || cost < least || (cost == least && pending[i].CommentID > pending[victim].CommentID) {
+			victim, least = i, cost
+		}
+	}
+	return victim
+}
+
+// dropCost ranks what dropping p from pending loses, least first; 0 means p
+// is never dropped. A refusal already decided had no effect, and loses only
+// its answer: 1 for a Quiet one, answered by the reaction alone; 2 for any
+// other, whose reply goes to an account without write access, or names a
+// verb that does not exist. 3 for the undecided command of an account
+// holding more than one undecided, which loses the command but leaves the
+// account one. Any other decided command is never dropped: it came from an
+// account with write access, and its effect may already be on the spec.
+func dropCost(pending []v1alpha1.FindingCommand, p *v1alpha1.FindingCommand) int {
+	switch {
+	case refusal(p.Outcome) && p.Quiet:
+		return 1
+	case refusal(p.Outcome):
+		return 2
+	case p.Outcome == "" && undecidedBy(pending, p.Actor) > 1:
+		return 3
+	}
+	return 0
+}
+
+// undecidedBy counts the commands in pending that actor wrote and that are
+// still to be decided.
+func undecidedBy(pending []v1alpha1.FindingCommand, actor v1alpha1.CommandActor) int {
 	n := 0
 	for _, p := range pending {
-		if sameActor(p.Actor, actor) {
+		if p.Outcome == "" && sameActor(p.Actor, actor) {
 			n++
 		}
 	}

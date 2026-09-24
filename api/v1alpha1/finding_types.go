@@ -515,9 +515,11 @@ type FindingStatus struct {
 // literals; keep the two in lockstep.
 const (
 	// MaxPendingCommands bounds status.commands.pending. A command that
-	// arrives while it is full takes the slot of an account holding more
-	// than one (whose newest undecided command is dropped); failing that it
-	// is not recorded, and so never answered.
+	// arrives while it is full takes the slot of a refusal already decided,
+	// which had no effect and so loses only its answer; failing that, the
+	// slot of an account holding more than one undecided command (whose
+	// newest is dropped); failing that it is not recorded, and so never
+	// answered.
 	MaxPendingCommands = 8
 	// MaxConsumedCommands bounds status.commands.consumed, which keeps the
 	// largest comment ids answered.
@@ -525,10 +527,11 @@ const (
 	// MaxRefusedActors bounds status.commands.refusedActors, which keeps
 	// the latest accounts sent a refusal.
 	MaxRefusedActors = 32
-	// MaxPendingCommandsPerActor is how many commands one account may have
-	// pending on a finding at once; another from it is not recorded. It is
-	// not a schema bound: the webhook handler keeps it, so that no one
-	// account can take every pending slot.
+	// MaxPendingCommandsPerActor is how many undecided commands one account
+	// may have pending on a finding at once; another from it is not
+	// recorded. A decided command only waits on its answer and counts for
+	// none. It is not a schema bound: the webhook handler keeps it, so that
+	// no one account can take every pending slot.
 	MaxPendingCommandsPerActor = 2
 )
 
@@ -537,11 +540,11 @@ const (
 // behind to keep a late or repeated delivery from acting twice.
 type FindingCommands struct {
 	// Pending are the commands recorded and not yet answered, at most
-	// MaxPendingCommandsPerActor of them from any one account. Their
-	// decisions and effects are taken in comment-id order: GitHub's ids grow
-	// with creation, so a suspend and the resume written after it apply in
-	// that order when both are pending. LastToggle keeps that order for a
-	// suspend or resume that arrives after a later one is answered.
+	// MaxPendingCommandsPerActor of them undecided from any one account.
+	// Their decisions and effects are taken in comment-id order: GitHub's
+	// ids grow with creation, so a suspend and the resume written after it
+	// apply in that order when both are pending. LastToggle keeps that order
+	// for a suspend or resume that arrives after a later one is answered.
 	// +optional
 	// +listType=map
 	// +listMapKey=commentID

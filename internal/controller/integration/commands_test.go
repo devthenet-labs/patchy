@@ -809,10 +809,11 @@ func pendingIDs(t *testing.T, c client.Client) []int64 {
 // TestCommandSlotsSharedByAccount: whether a commenter may command the
 // finding is not known until GitHub is asked, so the pending slots are
 // shared out by account. One account holds at most
-// MaxPendingCommandsPerActor, however many it writes; and when every slot
-// is held, a new account's command takes the slot of the newest undecided
-// command of an account holding more than one, so a flood from a few
-// accounts cannot keep a maintainer's command out.
+// MaxPendingCommandsPerActor undecided, however many it writes, and a
+// command decided only waits on its answer, holding none of that share;
+// and when every slot is held, a new account's command takes the slot of
+// the newest undecided command of an account holding more than one, so a
+// flood from a few accounts cannot keep a maintainer's command out.
 func TestCommandSlotsSharedByAccount(t *testing.T) {
 	t.Run("one account holds at most its share", func(t *testing.T) {
 		s, _, _, c := newReview(t, trackedFinding(v1alpha1.PhaseAwaitingApproval))
@@ -850,24 +851,158 @@ func TestCommandSlotsSharedByAccount(t *testing.T) {
 		}
 	})
 
-	t.Run("a decided command keeps its slot", func(t *testing.T) {
-		fnd := trackedFinding(v1alpha1.PhaseAwaitingApproval)
-		decided := metav1.NewTime(testClock)
-		fnd.Status.Commands = &v1alpha1.FindingCommands{}
-		for i := range v1alpha1.MaxPendingCommands {
-			login := fmt.Sprintf("drive-by-%d", i/2) // four accounts, two each
-			fnd.Status.Commands.Pending = append(fnd.Status.Commands.Pending, v1alpha1.FindingCommand{
-				CommentID: int64(100 + i), Verb: "approve", ReceivedAt: decided,
-				Actor:   v1alpha1.CommandActor{Login: login, ID: accountID(login), Type: "User"},
-				Outcome: v1alpha1.CommandNotAllowed, DecidedAt: &decided,
-			})
+	t.Run("a decided command takes no part of its account's share", func(t *testing.T) {
+		fnd := trackedFinding(v1alpha1.PhaseQueued)
+		answering := decidedCommands(v1alpha1.CommandDone, "expedite")[:2] // account-0's two
+		for i := range answering {
+			answering[i].Actor = v1alpha1.CommandActor{Login: maintainer, ID: accountID(maintainer), Type: "User"}
 		}
+		fnd.Status.Commands = &v1alpha1.FindingCommands{Pending: answering}
 		s, _, _, c := newReview(t, fnd)
 		handle(t, s, "issue_comment", commentPayload(t, 200, "/patchy suspend"))
-		if got := pendingIDs(t, c); slices.Contains(got, 200) || len(got) != v1alpha1.MaxPendingCommands {
-			t.Errorf("pending = %v, want every decided command kept and 200 not recorded", got)
+		handle(t, s, "issue_comment", commentPayload(t, 201, "/patchy resume"))
+		handle(t, s, "issue_comment", commentPayload(t, 202, "/patchy expedite"))
+		if got := pendingIDs(t, c); !slices.Equal(got, []int64{100, 101, 200, 201}) {
+			t.Errorf("pending = %v, want the two answers awaited and two undecided commands", got)
 		}
 	})
+}
+
+// TestCommandSlotGivenUp: when every slot is held, a new command takes the
+// slot whose loss costs least. A refusal already decided had no effect and
+// loses only its answer, so it goes first, a quiet one (a reaction alone)
+// before one owed a reply; then the newest undecided command of an account
+// holding more than one. An account's only undecided command, and a command
+// decided anything but a refusal (its author has write access, and its
+// effect may already be on the spec), are never taken.
+func TestCommandSlotGivenUp(t *testing.T) {
+	t.Run("a full list gives up the slot that costs least", func(t *testing.T) {
+		// Two refusals of one account, waiting on their answers (the
+		// second quiet), four accounts' single undecided commands, and a
+		// flooder's two: every slot held.
+		fnd := trackedFinding(v1alpha1.PhaseAwaitingApproval)
+		pending := decidedCommands(v1alpha1.CommandNotAllowed, "approve")[:2]
+		for i, login := range []string{"b", "c", "d", "e", "flooder", "flooder"} {
+			pending = append(pending, v1alpha1.FindingCommand{
+				CommentID: int64(102 + i), Verb: "approve", ReceivedAt: metav1.NewTime(testClock),
+				Actor: v1alpha1.CommandActor{Login: login, ID: accountID(login), Type: "User"},
+			})
+		}
+		fnd.Status.Commands = &v1alpha1.FindingCommands{Pending: pending}
+		s, _, _, c := newReview(t, fnd)
+
+		// The quiet refusal goes first (it loses a reaction), then the other
+		// refusal (a reply to an account without write access), then the
+		// flooder's newer command; the rest are never taken.
+		for _, step := range []struct {
+			id      int64
+			login   string
+			dropped int64
+		}{
+			{200, maintainer, 101},
+			{201, "x", 100},
+			{202, "y", 107},
+			{203, "z", 0},
+		} {
+			handle(t, s, "issue_comment", commentBy(t, step.id, "/patchy suspend", step.login))
+			got := pendingIDs(t, c)
+			if len(got) != v1alpha1.MaxPendingCommands {
+				t.Fatalf("after %d: pending = %v, want every slot held", step.id, got)
+			}
+			if step.dropped == 0 {
+				if slices.Contains(got, step.id) {
+					t.Errorf("after %d: pending = %v, want it not recorded: nothing left to give up", step.id, got)
+				}
+				continue
+			}
+			if !slices.Contains(got, step.id) || slices.Contains(got, step.dropped) {
+				t.Errorf("after %d: pending = %v, want it recorded in %d's slot", step.id, got, step.dropped)
+			}
+		}
+	})
+
+	t.Run("a command decided for an account with write access keeps its slot", func(t *testing.T) {
+		fnd := trackedFinding(v1alpha1.PhaseQueued)
+		fnd.Status.Commands = &v1alpha1.FindingCommands{Pending: decidedCommands(v1alpha1.CommandDone, "expedite")}
+		s, _, _, c := newReview(t, fnd)
+		handle(t, s, "issue_comment", commentPayload(t, 200, "/patchy suspend"))
+		handle(t, s, "issue_comment", commentBy(t, 201, "/patchy suspend", "account-0"))
+		if got := pendingIDs(t, c); slices.Contains(got, 200) || slices.Contains(got, 201) ||
+			len(got) != v1alpha1.MaxPendingCommands {
+			t.Errorf("pending = %v, want every command decided Done kept, and neither new one recorded", got)
+		}
+	})
+}
+
+// decidedCommands is a full pending list of verb commands decided outcome
+// and still waiting on their answers: four accounts (account-0..3), two each
+// (comments 100..107), the second of each Quiet when outcome is a refusal,
+// and each applied when it is Done.
+func decidedCommands(outcome v1alpha1.CommandOutcome, verb string) []v1alpha1.FindingCommand {
+	at := metav1.NewTime(testClock)
+	out := make([]v1alpha1.FindingCommand, 0, v1alpha1.MaxPendingCommands)
+	for i := range v1alpha1.MaxPendingCommands {
+		login := fmt.Sprintf("account-%d", i/2)
+		out = append(out, v1alpha1.FindingCommand{
+			CommentID: int64(100 + i), Verb: verb, ReceivedAt: at,
+			Actor:   v1alpha1.CommandActor{Login: login, ID: accountID(login), Type: "User"},
+			Outcome: outcome, DecidedAt: &at, AnsweringSince: &at,
+			Applied: outcome == v1alpha1.CommandDone,
+			Quiet:   refusal(outcome) && i%2 == 1,
+		})
+	}
+	return out
+}
+
+// TestCommandAwaitingAnswerHoldsNoShare: GitHub fails patchy's content
+// writes (a secondary rate limit on comments, say) while its reads still
+// work. A maintainer's suspend and expedite are decided and applied, and
+// their answers keep failing. The maintainer's resume is still recorded and
+// takes effect, although their account has two commands pending: those only
+// wait on their answers. Once GitHub recovers, all three are answered and
+// the finding is not left suspended.
+func TestCommandAwaitingAnswerHoldsNoShare(t *testing.T) {
+	s, r, tracker, c := newReview(t, trackedFinding(v1alpha1.PhaseQueued))
+	tracker.perms[maintainer] = ghclient.PermissionWrite
+	for range 20 {
+		tracker.reactErrs = append(tracker.reactErrs, badGateway("react"))
+		tracker.commentErrs = append(tracker.commentErrs, badGateway("comment"))
+	}
+	handle(t, s, "issue_comment", commentPayload(t, 41, "/patchy suspend"))
+	handle(t, s, "issue_comment", commentPayload(t, 42, "/patchy expedite"))
+	for range 4 {
+		_, _ = reconcileOnce(t, r)
+	}
+	f := get(t, c, "finding-aa-1")
+	for _, id := range []int64{41, 42} {
+		if p := pendingCommand(f, id); p == nil || !p.Applied {
+			t.Fatalf("pending %d = %+v, want it applied and still being answered", id, p)
+		}
+	}
+	if !f.Spec.Suspend || f.Spec.Expedite == nil {
+		t.Fatalf("spec = %+v, want suspended and expedited", f.Spec)
+	}
+
+	handle(t, s, "issue_comment", commentPayload(t, 43, "/patchy resume"))
+	if pendingCommand(get(t, c, "finding-aa-1"), 43) == nil {
+		t.Fatal("the resume was not recorded: two commands waiting on their answers held the account's share")
+	}
+	for range 4 {
+		_, _ = reconcileOnce(t, r)
+	}
+	if get(t, c, "finding-aa-1").Spec.Suspend {
+		t.Error("spec.suspend = true: the resume waited behind the failing answers")
+	}
+
+	tracker.reactErrs, tracker.commentErrs = nil, nil
+	settleAll(t, r, c)
+	f = get(t, c, "finding-aa-1")
+	assertAnswered(t, tracker, f, 41, "`/patchy suspend` is done")
+	assertAnswered(t, tracker, f, 42, "`/patchy expedite` is done")
+	assertAnswered(t, tracker, f, 43, "`/patchy resume` is done")
+	if f.Spec.Suspend {
+		t.Error("spec.suspend = true once GitHub recovered, want the resume to stand")
+	}
 }
 
 // TestCommandSeenIsExact: a delivery is skipped only for a command recorded

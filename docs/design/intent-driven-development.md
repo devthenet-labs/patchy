@@ -509,13 +509,14 @@ failure retries without deciding again, writing the spec again or replying again
 hour is given up.
 
 Anyone who can comment reaches the pending list before GitHub is asked about them, so the design bounds what a commenter
-without write access can do. The 8 pending slots are shared by account (2 each at most; a new account takes a doubled-up
-account's newest undecided slot when all 8 are held). A refusal is not kept in `consumed`, so spam cannot push a
-maintainer's command out of it, and each account gets one refusal reply per finding and then only the reaction. A
-`suspend` or `resume` that arrives after a later one was applied is answered as superseded (`lastToggle`), so the order
-they were written in holds past the pending list. One limit remains: a command that finds no slot (its account already
-has 2 pending, or 8 accounts hold one each) is not recorded, and so is never answered; it is logged. That is the price
-of the bound.
+without write access can do. The 8 pending slots are shared by account (2 undecided each at most, since a decided
+command only waits on its answer; when all 8 are held, a new command takes the slot of a decided refusal, which loses
+only its answer, or else a doubled-up account's newest undecided one). A refusal is not kept in `consumed`, so spam
+cannot push a maintainer's command out of it, and each account gets one refusal reply per finding and then only the
+reaction. A `suspend` or `resume` that arrives after a later one was applied is answered as superseded (`lastToggle`),
+so the order they were written in holds past the pending list. One limit remains: a command that finds no slot (its
+account already has 2 undecided, or every slot holds an account's only undecided command or a decided command from an
+account with write access) is not recorded, and so is never answered; it is logged. That is the price of the bound.
 
 ### Why polling rather than webhooks
 

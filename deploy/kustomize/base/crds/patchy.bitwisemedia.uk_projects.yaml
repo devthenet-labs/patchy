@@ -164,10 +164,11 @@ spec:
                       Trigger is the label that both starts an intent and names this
                       Project: an issue carrying it becomes the Intent <project>-<issue>,
                       and an approver re-applying it asks for a replan. Empty means
-                      "patchy:<project name>", which intent-controller derives (a schema
-                      default cannot see the object's name) — so a Project named "approved"
-                      must set it explicitly or its derived trigger equals the default
-                      approve label, which the controller reports as not Ready. Two
+                      "patchy:<project name>" (ProjectTriggerLabel), which intent-controller
+                      derives because a schema default cannot see the object's name. The
+                      name budget keeps it within GitHub's label limit. A root-level rule
+                      refuses a derived trigger that equals the approve label, so a Project
+                      named "approved" must set this, or a different approve label. Two
                       Projects sharing an intent repository must use different triggers.
                       50 characters is GitHub's own label-name limit.
                     maxLength: 50
@@ -293,7 +294,12 @@ spec:
                   8 — the multi-repo shape — but slice 1 builds in exactly one:
                   intent-controller reports a Project with more as not Ready rather
                   than the schema refusing it, so the CRD does not change when
-                  multi-repo intents land.
+                  multi-repo intents land. Each entry names a different repository:
+                  the Intent records its pull requests by repository URL, and every
+                  repository's branch is the same patchy-intent/<intent>, so two
+                  entries for one repository would fan two builds into one branch. URLs
+                  are compared the way forges compare them — case-insensitively, with
+                  any .git suffix dropped.
                 items:
                   description: |-
                     ProjectRepository is one application repository the Project's intents may
@@ -328,6 +334,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+                x-kubernetes-validations:
+                - message: two repositories have the same URL (compared case-insensitively,
+                    ignoring a .git suffix)
+                  rule: 'self.all(r, self.exists_one(s, (s.url.endsWith(''.git'')
+                    ? s.url.substring(0, size(s.url) - 4) : s.url).lowerAscii() ==
+                    (r.url.endsWith(''.git'') ? r.url.substring(0, size(r.url) - 4)
+                    : r.url).lowerAscii()))'
               requireRepositoryImage:
                 default: true
                 description: |-
@@ -444,6 +457,10 @@ spec:
         - message: Project names are at most 25 characters, so every Intent and IntentRun
             name derived from them fits in a label value
           rule: size(self.metadata.name) <= 25
+        - message: the derived trigger label patchy:<name> equals labels.approve;
+            set labels.trigger or a different labels.approve
+          rule: '!has(self.spec.labels) || has(self.spec.labels.trigger) || !has(self.spec.labels.approve)
+            || ''patchy:'' + self.metadata.name != self.spec.labels.approve.lowerAscii()'
     served: true
     storage: true
     subresources:

@@ -157,6 +157,24 @@ func testProjectBounds(ctx context.Context, t *testing.T, c client.Client) {
 			p.Spec.Repositories = append(repos(1),
 				patchyv1.ProjectRepository{Name: "app0", URL: "https://github.com/acme/other"})
 		}, true},
+		// One entry per repository: pull requests are keyed by URL, and
+		// every repository shares the intent branch.
+		{"two keys for one repository url", func(p *patchyv1.Project) {
+			p.Spec.Repositories = append(repos(1),
+				patchyv1.ProjectRepository{Name: "again", URL: "https://github.com/acme/app0"})
+		}, true},
+		{"two repository urls differing only in case", func(p *patchyv1.Project) {
+			p.Spec.Repositories = append(repos(1),
+				patchyv1.ProjectRepository{Name: "again", URL: "https://GitHub.com/Acme/App0"})
+		}, true},
+		{"a repository url and its .git form", func(p *patchyv1.Project) {
+			p.Spec.Repositories = append(repos(1),
+				patchyv1.ProjectRepository{Name: "again", URL: "https://github.com/acme/app0.git"})
+		}, true},
+		{"a repository whose name embeds .git", func(p *patchyv1.Project) {
+			p.Spec.Repositories = append(repos(1),
+				patchyv1.ProjectRepository{Name: "pages", URL: "https://github.com/acme/app0.github.io"})
+		}, false},
 		{"repository key not a DNS label", func(p *patchyv1.Project) { p.Spec.Repositories[0].Name = "Shop" }, true},
 		{"repository key at the name budget", func(p *patchyv1.Project) {
 			p.Spec.Repositories[0].Name = strings.Repeat("a", patchyv1.MaxRepositoryKeyLength)
@@ -187,6 +205,17 @@ func testProjectBounds(ctx context.Context, t *testing.T, c client.Client) {
 		{"trigger equals the defaulted approve label, case-insensitively", func(p *patchyv1.Project) {
 			p.Spec.Labels = patchyv1.ProjectLabels{Trigger: "Patchy:Approved"}
 		}, true},
+		// The derived trigger (patchy:<name>) must not be the approve label.
+		{"a project named approved with a derived trigger", func(p *patchyv1.Project) { p.Name = "approved" }, true},
+		{"a project named approved with its own trigger", func(p *patchyv1.Project) {
+			p.Name, p.Spec.Labels.Trigger = "approved", "patchy:target"
+		}, false},
+		{"a derived trigger equal to a custom approve label, case-insensitively", func(p *patchyv1.Project) {
+			p.Name, p.Spec.Labels.Approve = "ship", "Patchy:Ship"
+		}, true},
+		{"a derived trigger apart from a custom approve label", func(p *patchyv1.Project) {
+			p.Name, p.Spec.Labels.Approve = "ship", "patchy:ok"
+		}, false},
 		{"a 50-character label", func(p *patchyv1.Project) { p.Spec.Labels.Trigger = strings.Repeat("l", 50) }, false},
 		{"a 51-character label", func(p *patchyv1.Project) { p.Spec.Labels.Trigger = strings.Repeat("l", 51) }, true},
 		{"cost ceiling at its cap", func(p *patchyv1.Project) { p.Spec.Limits.MaxCostMicroUSD = 1000000000 }, false},

@@ -44,7 +44,8 @@ const DefaultTriggerLabelPrefix = "patchy:"
 
 // ProjectTriggerLabel returns the label that starts an intent for the Project
 // (and names it): spec.labels.trigger when set, else patchy:<project name>,
-// which the name budget keeps inside GitHub's 50-character label limit.
+// which the name budget keeps inside GitHub's 50-character label limit. The
+// schema refuses a Project whose derived trigger equals its approve label.
 func ProjectTriggerLabel(p *Project) string {
 	if p.Spec.Labels.Trigger != "" {
 		return p.Spec.Labels.Trigger
@@ -78,10 +79,11 @@ type ProjectLabels struct {
 	// Trigger is the label that both starts an intent and names this
 	// Project: an issue carrying it becomes the Intent <project>-<issue>,
 	// and an approver re-applying it asks for a replan. Empty means
-	// "patchy:<project name>", which intent-controller derives (a schema
-	// default cannot see the object's name) — so a Project named "approved"
-	// must set it explicitly or its derived trigger equals the default
-	// approve label, which the controller reports as not Ready. Two
+	// "patchy:<project name>" (ProjectTriggerLabel), which intent-controller
+	// derives because a schema default cannot see the object's name. The
+	// name budget keeps it within GitHub's label limit. A root-level rule
+	// refuses a derived trigger that equals the approve label, so a Project
+	// named "approved" must set this, or a different approve label. Two
 	// Projects sharing an intent repository must use different triggers.
 	// 50 characters is GitHub's own label-name limit.
 	// +optional
@@ -256,11 +258,17 @@ type ProjectSpec struct {
 	// 8 — the multi-repo shape — but slice 1 builds in exactly one:
 	// intent-controller reports a Project with more as not Ready rather
 	// than the schema refusing it, so the CRD does not change when
-	// multi-repo intents land.
+	// multi-repo intents land. Each entry names a different repository:
+	// the Intent records its pull requests by repository URL, and every
+	// repository's branch is the same patchy-intent/<intent>, so two
+	// entries for one repository would fan two builds into one branch. URLs
+	// are compared the way forges compare them — case-insensitively, with
+	// any .git suffix dropped.
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=8
 	// +listType=map
 	// +listMapKey=name
+	// +kubebuilder:validation:XValidation:rule="self.all(r, self.exists_one(s, (s.url.endsWith('.git') ? s.url.substring(0, size(s.url) - 4) : s.url).lowerAscii() == (r.url.endsWith('.git') ? r.url.substring(0, size(r.url) - 4) : r.url).lowerAscii()))",message="two repositories have the same URL (compared case-insensitively, ignoring a .git suffix)"
 	Repositories []ProjectRepository `json:"repositories"`
 	// Limits bound each intent's spend.
 	// +optional
@@ -329,6 +337,7 @@ type ProjectStatus struct {
 // which are written into 63-character label values (see the name budget),
 // and Intent.spec.project holds it.
 // +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 25",message="Project names are at most 25 characters, so every Intent and IntentRun name derived from them fits in a label value"
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.labels) || has(self.spec.labels.trigger) || !has(self.spec.labels.approve) || 'patchy:' + self.metadata.name != self.spec.labels.approve.lowerAscii()",message="the derived trigger label patchy:<name> equals labels.approve; set labels.trigger or a different labels.approve"
 type Project struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

@@ -704,7 +704,7 @@
                             "type": "string"
                         },
                         "trigger": {
-                            "description": "Trigger is the label that both starts an intent and names this\nProject: an issue carrying it becomes the Intent <project>-<issue>,\nand an approver re-applying it asks for a replan. Empty means\n\"patchy:<project name>\", which intent-controller derives (a schema\ndefault cannot see the object's name) — so a Project named \"approved\"\nmust set it explicitly or its derived trigger equals the default\napprove label, which the controller reports as not Ready. Two\nProjects sharing an intent repository must use different triggers.\n50 characters is GitHub's own label-name limit.",
+                            "description": "Trigger is the label that both starts an intent and names this\nProject: an issue carrying it becomes the Intent <project>-<issue>,\nand an approver re-applying it asks for a replan. Empty means\n\"patchy:<project name>\" (ProjectTriggerLabel), which intent-controller\nderives because a schema default cannot see the object's name. The\nname budget keeps it within GitHub's label limit. A root-level rule\nrefuses a derived trigger that equals the approve label, so a Project\nnamed \"approved\" must set this, or a different approve label. Two\nProjects sharing an intent repository must use different triggers.\n50 characters is GitHub's own label-name limit.",
                             "maxLength": 50,
                             "minLength": 1,
                             "type": "string"
@@ -817,7 +817,7 @@
                     "additionalProperties": false
                 },
                 "repositories": {
-                    "description": "Repositories are the application repositories intents build in; the\nfirst entry is also the planning repository. The schema admits up to\n8 — the multi-repo shape — but slice 1 builds in exactly one:\nintent-controller reports a Project with more as not Ready rather\nthan the schema refusing it, so the CRD does not change when\nmulti-repo intents land.",
+                    "description": "Repositories are the application repositories intents build in; the\nfirst entry is also the planning repository. The schema admits up to\n8 — the multi-repo shape — but slice 1 builds in exactly one:\nintent-controller reports a Project with more as not Ready rather\nthan the schema refusing it, so the CRD does not change when\nmulti-repo intents land. Each entry names a different repository:\nthe Intent records its pull requests by repository URL, and every\nrepository's branch is the same patchy-intent/<intent>, so two\nentries for one repository would fan two builds into one branch. URLs\nare compared the way forges compare them — case-insensitively, with\nany .git suffix dropped.",
                     "items": {
                         "description": "ProjectRepository is one application repository the Project's intents may\nbuild in.",
                         "properties": {

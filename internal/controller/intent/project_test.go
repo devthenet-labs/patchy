@@ -198,6 +198,86 @@ func TestDiscoveryPausedUnderTheRateFloor(t *testing.T) {
 	}
 }
 
+// TestSkippedPollsArePaced: a Project that has polled and then cannot (the
+// App uninstalled, so not Ready; suspended; the rate budget under the floor)
+// is looked at once per poll interval, not in a loop: its requeue is a whole
+// interval, and the passes an event starts in between call GitHub for
+// nothing.
+func TestSkippedPollsArePaced(t *testing.T) {
+	ctx := context.Background()
+	for _, tt := range []struct {
+		name   string
+		break_ func(e *env)
+		calls  string
+	}{
+		{"not Ready", func(e *env) {
+			e.gh.installedErr = ghError(http.StatusNotFound, "Not Found")
+			e.clock.Advance(revalidateEvery)
+		}, "Installed"},
+		{"suspended", func(e *env) {
+			p := e.getProject()
+			p.Spec.Suspend = true
+			if err := e.c.Update(ctx, p); err != nil {
+				e.t.Fatal(err)
+			}
+			e.clock.Advance(time.Minute)
+		}, "ListIssues"},
+		{"under the rate floor", func(e *env) {
+			e.gh.remaining = 10
+			e.clock.Advance(time.Minute)
+		}, "RateRemaining"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t, testProject())
+			e.reconcileProject()
+			if e.getProject().Status.LastPolledAt == nil {
+				t.Fatal("the Project never polled")
+			}
+			tt.break_(e)
+			for i := range 5 {
+				res, err := e.project.Reconcile(ctx, req("target"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if i == 0 && tt.name == "not Ready" && meta.IsStatusConditionTrue(e.getProject().Status.Conditions,
+					v1alpha1.ConditionReady) {
+					t.Fatal("the Project is still Ready")
+				}
+				// The interval from the skipped poll, less the seconds since.
+				if want := time.Minute - time.Duration(i)*time.Second; res.RequeueAfter != want {
+					t.Fatalf("pass %d: requeue after %s, want %s", i, res.RequeueAfter, want)
+				}
+				if i == 0 {
+					e.gh.calls = map[string]int{}
+				}
+				e.clock.Advance(time.Second)
+			}
+			if n := e.gh.calls[tt.calls]; n != 0 {
+				t.Errorf("%s called %d times between polls", tt.calls, n)
+			}
+		})
+	}
+}
+
+// TestForgeChangeRevalidates: a Project that is not Ready is re-checked at
+// the next poll interval, or at once when a Forge changes.
+func TestForgeChangeRevalidates(t *testing.T) {
+	e := newEnv(t, testProject())
+	e.gh.installedErr = ghError(http.StatusNotFound, "Not Found")
+	e.reconcileProject()
+	e.gh.installedErr = nil // the App is installed
+	e.clock.Advance(time.Second)
+	e.reconcileProject()
+	if meta.IsStatusConditionTrue(e.getProject().Status.Conditions, v1alpha1.ConditionReady) {
+		t.Fatal("re-checked within the interval with nothing changed")
+	}
+	e.project.forgeChanges.Add(1) // the Forge watch saw a change
+	e.reconcileProject()
+	if !meta.IsStatusConditionTrue(e.getProject().Status.Conditions, v1alpha1.ConditionReady) {
+		t.Error("a Forge change did not re-check the Project")
+	}
+}
+
 // TestSuspendedProjectDiscoversNothing.
 func TestSuspendedProjectDiscoversNothing(t *testing.T) {
 	p := testProject()

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -43,8 +44,10 @@ const (
 )
 
 // revalidateEvery re-checks a Ready Project's forge, installation and labels
-// this often; a Project that is not Ready is re-checked every poll, so a fix
-// (a Forge added, the App installed) is picked up within one.
+// this often; a Project that is not Ready is re-checked once per poll
+// interval, never more often, so a fix (the App installed) is picked up
+// within one while a broken installation costs one check per interval. A
+// change to the Project or to any Forge re-checks it on the next pass.
 const revalidateEvery = 10 * time.Minute
 
 // Label colors for the labels patchy creates; a human may restyle them.
@@ -71,6 +74,9 @@ type ProjectReconciler struct {
 
 	mu    sync.Mutex
 	polls map[string]*projectPoll
+	// forgeChanges counts the Forge changes the watch has seen: a Project
+	// validated before the latest is validated again on its next pass.
+	forgeChanges atomic.Int64
 }
 
 // projectPoll is one Project's discovery state, in memory: a restart
@@ -84,10 +90,18 @@ type projectPoll struct {
 	waiting map[int]bool
 	// conflicts are the issues whose Intent name another repository holds.
 	conflicts map[int]string
-	polledAt  time.Time
-	// validatedGen/validatedAt are when the Project was last validated.
-	validatedGen int64
-	validatedAt  time.Time
+	// polledAt is when discovery last listed the intent repository;
+	// attemptedAt when a poll was last due, whether it listed or was
+	// skipped (the Project not Ready or suspended, or the rate budget
+	// under the floor). The next pass is paced from attemptedAt, so a
+	// skipped poll waits a whole interval rather than retrying at once.
+	polledAt    time.Time
+	attemptedAt time.Time
+	// validatedGen/validatedAt/validatedForges are the Project generation,
+	// time and Forge change count the Project was last validated at.
+	validatedGen    int64
+	validatedAt     time.Time
+	validatedForges int64
 }
 
 func (r *ProjectReconciler) now() time.Time {
@@ -135,16 +149,18 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	cur := p.DeepCopy()
 	now := r.now()
 
-	ready := meta.FindStatusCondition(p.Status.Conditions, v1alpha1.ConditionReady)
-	if ready == nil || ready.Status != metav1.ConditionTrue || poll.validatedGen != p.Generation ||
-		now.Sub(poll.validatedAt) >= revalidateEvery {
+	ready := meta.IsStatusConditionTrue(p.Status.Conditions, v1alpha1.ConditionReady)
+	forges := r.forgeChanges.Load()
+	sinceValidated := now.Sub(poll.validatedAt)
+	if poll.validatedAt.IsZero() || poll.validatedGen != p.Generation || poll.validatedForges != forges ||
+		sinceValidated >= revalidateEvery || (!ready && sinceValidated >= settings.PollInterval) {
 		cond, err := r.validate(ctx, &p)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("project %s: validate: %w", p.Name, err)
 		}
 		cond.ObservedGeneration = p.Generation
 		meta.SetStatusCondition(&cur.Status.Conditions, cond)
-		poll.validatedGen, poll.validatedAt = p.Generation, now
+		poll.validatedGen, poll.validatedAt, poll.validatedForges = p.Generation, now, forges
 	}
 	cur.Status.ObservedGeneration = p.Generation
 
@@ -154,7 +170,10 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 	cur.Status.ActiveIntents = activeIntents(&intents, p.Name)
 
-	due := poll.polledAt.IsZero() || now.Sub(poll.polledAt) >= settings.PollInterval
+	due := poll.attemptedAt.IsZero() || now.Sub(poll.attemptedAt) >= settings.PollInterval
+	if due {
+		poll.attemptedAt = now
+	}
 	if meta.IsStatusConditionTrue(cur.Status.Conditions, v1alpha1.ConditionReady) && !p.Spec.Suspend && due {
 		polled, created, err := r.discover(ctx, &p, poll, &intents, settings)
 		if err != nil {
@@ -178,10 +197,10 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 	}
-	next := settings.PollInterval
-	if !poll.polledAt.IsZero() {
-		next = max(time.Second, poll.polledAt.Add(settings.PollInterval).Sub(now))
-	}
+	// Paced from the last due pass, skipped or not: a Project that cannot
+	// poll (not Ready, suspended, under the rate floor) is looked at once
+	// per interval, never in a loop.
+	next := max(time.Second, poll.attemptedAt.Add(settings.PollInterval).Sub(now))
 	return ctrl.Result{RequeueAfter: next}, nil
 }
 
@@ -476,6 +495,7 @@ func setConflict(p *v1alpha1.Project, poll *projectPoll) {
 // every Project, since resolution may have changed.
 func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	mapForge := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []ctrl.Request {
+		r.forgeChanges.Add(1)
 		var projects v1alpha1.ProjectList
 		if err := mgr.GetClient().List(ctx, &projects, client.InNamespace(obj.GetNamespace())); err != nil {
 			return nil

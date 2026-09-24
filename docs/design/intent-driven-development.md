@@ -45,7 +45,8 @@ within:
 - **The Finding flow is untouched in the first slice.** No edit to integration-, investigation- or
   remediation-controller, the Finding types, `transitions.go`, either admission-policy copy, the envelope version or the
   golden Job YAMLs. With intents off, the cluster is byte-for-byte what it is today. The one deliberate exception is the
-  command-vocabulary change (see "Human commands"), which ships as its own PR behind its own regression gate.
+  command-vocabulary change (see "Human commands"), which ships as its own PR behind its own regression gate. That PR
+  also narrows demo reset's Repository delete to Finding Repositories (see open question 6).
 - **Authority comes from GitHub's API.** Every decision about human authority (trigger, approval, revision feedback) is
   taken from facts GitHub reports through its API and checked against an allowlist the operator owns. It is never taken
   from a handler-time stamp or from `author_association`.
@@ -96,8 +97,9 @@ within:
     - the labels exist.
 
     It then sets `Ready`. It polls each intent repo once per interval for open issues carrying a trigger label, using a
-    conditional list request (ETag). For each new one it creates the Intent `<project>-<issue>` and tolerates
-    AlreadyExists.
+    conditional list request (ETag). For each new one it creates the Intent `<project>-<issue>`. An AlreadyExists is
+    tolerated only when the existing Intent is this issue's; otherwise the Project reports a conflict (see "Ending an
+    intent, and its name").
 
   - _intent_ is the only writer of Intent: spec at creation, and all of status. It:
     - runs the phase machine;
@@ -109,7 +111,8 @@ within:
   - _scheduler/run_ keeps a singleton request key and counts slots from the cluster. It uses `schedule.Pick` FIFO, with
     stage priority revise, then build, then plan. The pool is `--max-concurrent-runs=1`, separate from remediation's. It
     launches with `jobs.Create`, collects with `jobs.Result`, persists transcripts and validates changesets.
-  - _ttl_ deletes an Intent 14 days after `completedAt`. Owner references cascade to everything else.
+  - _ttl_ deletes an Intent 14 days after `completedAt`, with foreground propagation. Owner references cascade to
+    everything else, and the Intent's name stays taken until they are gone.
 - **source-controller** is unchanged. It pins intent Repositories exactly as it pins Finding ones. A revise Repository
   sets `spec.ref.branch` to the PR branch, which `HeadSHA` already resolves (ghclient/repos.go:23).
 - **agent-runner** gains two phases:
@@ -122,7 +125,8 @@ within:
 - **egress-broker** is unchanged and carries intent model traffic. Intents run on brokered claude only. codex and
   copilot ignore the sandbox postures (codex.go:68, copilot.go:64-67), so they are refused.
 - **The other components are unchanged in slice 1**: integration-, investigation-, remediation- and context-controller,
-  and the status-server. Three things keep the Finding flow from ever acting on intent objects:
+  and the status-server, apart from the command-vocabulary PR (which also narrows both copies of demo reset; see open
+  question 6). Three things keep the Finding flow from ever acting on intent objects:
   - Intent branches use the `patchy-intent/` prefix, which never matches the Finding PR handler's `patchy/` check.
   - Intent Repositories never carry `LabelFinding`, so the Finding mappers ignore them (gate_controller.go:391,
     project.go:929).
@@ -199,7 +203,8 @@ names, and a seeded property test checks that they are label-safe and unique wit
 - **Writers.** The operator writes the spec through the patchy-config chart; only intent-controller writes status.
   Writing `projects` is admin-only in RBAC, because a Project is the power to point agents at repositories.
 - **Spec:**
-  - `intentRepository`
+  - `intentRepository`, immutable (CEL-enforced). Intent names leave the repository out, so a Project moved to another
+    intent repo would find its new issues' names held by the old repo's Intents. Moving a project means a new Project.
   - `labels.trigger` (default `patchy:<name>`) and `labels.approve` (default `patchy:approved`). The schema refuses a
     derived trigger that equals the approve label.
   - `approvers.logins[]` (1-20): the only logins whose trigger, approval and review feedback count
@@ -217,6 +222,7 @@ names, and a seeded property test checks that they are label-safe and unique wit
   - `suspend`
 - **Status:**
   - the `Ready` condition, with reasons `ForgeUnresolved`, `AppNotInstalled` and `AmbiguousIntentRepository`
+  - the `IntentNameConflict` condition: an issue whose Intent name is held by another repository's issue
   - `activeIntents`
   - `lastPolledAt`
 
@@ -234,10 +240,13 @@ names, and a seeded property test checks that they are label-safe and unique wit
     is the input revision it was planned from.
   - `approval{by, source, eventID, at, planRevision, planDigest, inputDigest}`. `source` (`label` or `command`) says
     which GitHub id space `eventID` is in: a labeled issue event and an issue comment have separate ids.
-  - `lastTrigger{source, eventID, login, at}`: the newest trigger action consumed after `requestedBy` (a replan or
-    revival, or one refused with a notice). Later polls consider only actions GitHub dates after it. So a revival whose
-    plan fails again, posting no plan to anchor on, cannot re-consume the action that revived it, and GitHub's clock is
-    never compared with the controller's.
+  - `lastTrigger{source, eventID, login, at}`: the newest trigger action consumed after `requestedBy`. Every trigger
+    action the controller answers is consumed, whatever the answer: a replan or revival, a refusal because the actor is
+    not an approver, or "not available in this phase". Later polls consider only actions GitHub dates after it, and
+    GitHub's clock is never compared with the controller's. So an answered action never takes effect later. A replan
+    refused while `Building` does not revive the intent when the build then fails, and one refused while `Planning` does
+    not replay once the plan is posted. A revival whose plan fails again, posting no plan to anchor on, cannot
+    re-consume the action that revived it.
   - `branch`
   - `pullRequests[]` (at most 8, keyed by repository):
     `{repository, number, url, nodeID, headSHA, state, mergedAt, mergeCommitSHA}`
@@ -255,18 +264,19 @@ names, and a seeded property test checks that they are label-safe and unique wit
 - **Lifecycle.** Creating it under its deterministic name acts as the lease. The Intent is its owner. It carries
   `FinalizerJobs`, and it owns its Repository and its input ConfigMap.
 - **Spec** (`self == oldSelf`):
-  - `intentRef` (pinned by UID)
+  - `intentRef`, whose UID the schema requires: it is what an adoption on AlreadyExists compares
   - `stage`: `plan`, `build` or `revise`
   - `trigger` (revise runs only): `review`, `command` or `checks`
   - `repository{url, repositoryRef}`
   - `round` and `attempt`. The round comes from a counter that never repeats, because runs are kept and the create is
     the lease: a plan run takes the input revision, a build run the approved plan revision (CEL-enforced), and a revise
     run the Intent's `rounds` ordinal. Retries and the one `head_moved` re-run are further attempts of the same round.
-  - `inputs{configMap, inputDigest, planRevision, planDigest, reviewIDs[], checkRunIDs[], commandID}`, each list at most
-    32 ids. The schema requires each trigger's own record (`reviewIDs` for `review`, `checkRunIDs` for `checks`,
-    `commandID` for `command`) and keeps each record to its kind of round. A command round may also consume the reviews
-    since the last round.
-  - `imageFrom`: the build-round Repository, used by revise runs
+  - `inputs{configMap, inputDigest, planRevision, planDigest, reviewIDs[], checkRunIDs[], statusIDs[], commandID}`, each
+    list at most 32 ids. The schema requires each trigger's own record (`reviewIDs` for `review`, `checkRunIDs` or
+    `statusIDs` for `checks`, `commandID` for `command`) and keeps each record to its kind of round. A command round may
+    also consume the reviews since the last round. Check runs and commit statuses are separate GitHub id spaces, so each
+    has its own list.
+  - `imageFrom`: the build-round Repository, used by revise runs, with its UID required by the schema
   - `grant{maxTurns, tokenBudget, timeout}`
   - `previousAttempt`
 - **Status:**
@@ -277,7 +287,9 @@ names, and a seeded property test checks that they are label-safe and unique wit
   - `usage` and `transcript`
   - timestamps
 - **Names:** `<intent>-plan-r<rev>-a<n>`, `<intent>-bld-r<rev>-<repokey>-a<n>` and `<intent>-rev<k>-<repokey>-a<n>`,
-  inside the name budget. A controller that adopts an existing run on AlreadyExists checks its `intentRef` UID.
+  inside the name budget. A name can repeat across Intents, for example when the TTL deleted an Intent and its issue
+  became the same-named Intent again. So a controller that adopts an existing run on AlreadyExists checks its
+  `intentRef` UID, and never adopts a run whose UID is not its Intent's.
 
 **Repository** is reused as it is.
 
@@ -306,18 +318,22 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
   polled in both phases. The running round's Job is deleted through the finalizer, and no false resume through
   `InReview` is recorded while a block still holds.
 - Any non-terminal phase → `Closed` when a human closes the intent issue or runs `/patchy cancel`, or when every PR is
-  closed unmerged.
-- `Planning` or `Building` → `Failed` when attempts are exhausted or the plan is invalid twice. `Failed` stamps
-  `completedAt`, but an approver re-applying the trigger label revives it to `Planning`.
-- `Merged` and `Closed` are terminal.
+  closed unmerged. For cancel and the closed PRs, patchy closes the issue itself.
+- `Planning` or `Building` → `Failed` when attempts are exhausted or the plan is invalid twice. Entering `Failed`
+  removes the trigger label from the issue and stamps `completedAt`. An approver applying the label again revives the
+  intent to `Planning`.
+- `Merged` and `Closed` are terminal. No terminal Intent leaves its trigger in place (see "Ending an intent, and its
+  name").
 
 ### End-to-end flow (slice 1)
 
 1. **Trigger.** A human opens an issue in `devthenet-labs/intents` through the project's issue form, which applies
    `patchy:target`.
 2. **Discovery.** Within one poll interval (default 60 s), the conditional list returns the issue. The reconciler reads
-   the issue's events and takes the actor of the `labeled` event:
-   - An actor outside `approvers.logins`, or a Bot, gets one notice, and the Intent goes to `Closed`.
+   the issue's events and takes the actor of the newest `labeled` event for the trigger label that is newer than the
+   issue's last `closed` event:
+   - An actor outside `approvers.logins`, or a Bot, gets one notice, the trigger label is removed, and the Intent goes
+     to `Closed`.
    - Otherwise the Intent moves from `Pending` to `Planning`, and the status comment
      `<!-- patchy:intent patchy/target-1 -->` is posted exactly once.
 3. **Planning.**
@@ -389,10 +405,47 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
     `Merged`, gets a final summary comment (PRs, revisions, cost), and the intent issue is closed with
     `state_reason: completed`.
 
-    If a human closes the intent issue, or every PR is closed unmerged, the Intent moves to `Closed` instead. Running
-    Jobs are deleted through the finalizer, and open PRs are left to the human.
+    If a human closes the intent issue, or every PR is closed unmerged, the Intent moves to `Closed` instead. When every
+    PR was closed, patchy closes the issue with `state_reason: not_planned`. Running Jobs are deleted through the
+    finalizer, and open PRs are left to the human.
 
-13. **TTL.** 14 days after `completedAt`, the Intent is deleted and everything it owns cascades.
+13. **TTL.** 14 days after `completedAt`, the Intent is deleted in the foreground and everything it owns cascades.
+
+### Ending an intent, and its name
+
+Discovery creates an Intent for every open issue that carries a trigger label and has no Intent yet, and the TTL deletes
+an Intent 14 days after it ends. Without the rules below, an issue left open and labelled would become an intent again
+after the TTL, on the trigger that started the first one. `lastTrigger` exists to prevent that re-consumption, but the
+TTL deletes it along with the Intent. A new Intent could also meet the objects of its deleted namesake.
+
+- **No terminal Intent leaves its trigger in place.**
+  - `Failed`, and `Closed` for a trigger that was not an approver's, leave the issue open, so intent-controller removes
+    the trigger label on entry. The removal comes before the status write that enters the phase and is idempotent (a
+    label already gone counts as removed). A restart in between repeats it, and `completedAt`, from which the TTL
+    counts, is never set while the label is still there.
+  - `/patchy cancel` and every PR closed unmerged close the issue (`state_reason: not_planned`), the same way that
+    `Merged` closes it as completed. A human's close needs nothing more.
+  - Revival from `Failed` is therefore an approver applying the label again. That is also the new `labeled` event that
+    revival needs, because GitHub records no event for a label that is already on the issue.
+- **Discovery counts only a trigger applied since the issue was last closed.** It takes `requestedBy` from the newest
+  `labeled` event for the trigger label, and only when that event is newer than the issue's newest `closed` event. A
+  reopened issue becomes an intent again only once someone applies the label after reopening it.
+- **A trigger on the issue of an Intent that still exists goes to that Intent.** Discovery hands it to the intent
+  reconciler. On a `Failed` Intent it is a revival request. On a `Merged` or `Closed` one it gets one notice (the intent
+  has ended; open a new issue), the label is removed again, and the action is recorded in `lastTrigger`.
+- **A name is taken again only after its first holder is gone.** The ttl reconciler deletes with foreground propagation,
+  so the Intent keeps its name until everything it owns is gone, including IntentRuns still held by the Job finalizer.
+  Until then discovery's create meets the terminating Intent and is retried on a later poll. Independently, every create
+  under a derived name adopts an existing object on AlreadyExists only when it belongs to this Intent: an IntentRun by
+  its `intentRef` UID, which the schema requires, and a ConfigMap or Repository by the UID of its controller owner
+  reference (this Intent, or one of this Intent's runs). Anything else is left alone, and the create is retried after a
+  backoff.
+- **A name held by another repository's issue is reported, never skipped silently.** On AlreadyExists, discovery reads
+  the existing Intent. If its `spec.issue.repository` is the Project's intent repository (compared as forges compare
+  URLs: case-insensitively, with any `.git` suffix dropped), the issue already has its Intent. If it is not, the name is
+  held by an issue of another repository. `intentRepository` is immutable, so only a Project deleted and recreated under
+  the same name on another intent repository can cause this. The Project gets the condition `IntentNameConflict`, naming
+  the issue and the Intent, and the issue waits until that Intent is deleted or expires.
 
 ### Human commands: one vocabulary
 
@@ -432,7 +485,8 @@ there is one grammar, and everything else is an alias for it.
   available in this phase (listing what is), or not allowed. An unknown verb gets the list of verbs available there.
   Commands and events from the App's own bot login are ignored. That login is `<slug>[bot]`, with the slug from
   `GET /app`, and the actor type is `Bot`. Label events carry `performed_via_github_app: null` even when the App applied
-  the label, so the actor is the only way to recognise them.
+  the label, so the actor is the only way to recognise them. An answered action is consumed whatever the outcome, so it
+  never takes effect later; for `replan` and its trigger-label alias the record is `lastTrigger`.
 - **One parser.** A pure package, `internal/command`, parses the grammar. integration-controller uses it on the webhook
   path for Findings, and intent-controller uses it on the poll path for intents. It has seeded property tests: parsing
   never panics, text that does not start with the command prefix never parses as a command, and the note never contains
@@ -535,19 +589,21 @@ iterates on those failures itself, using the revise machinery.
 
 - **Trigger.** After every patchy push (build or revise), the controller polls the PR head's check runs and commit
   statuses until they settle, or until `checks.timeout` (default 30 m) passes. If any check the Project names concluded
-  `failure`, `timed_out` or `startup_failure`, a fix round starts without a human. The approved plan already covers the
-  work, and the round is bounded. Cancelled, skipped and neutral checks do not count.
-- **Which checks.** `Project.spec.checks.fix[]` is an explicit list of check names, such as `test` and `lint`. An empty
-  list means patchy never auto-fixes: a failing check is reported in the status comment, and an approver can run
-  `/patchy revise`. The list is explicit because a flaky or unrelated check would otherwise burn budget, as the CodeQL
-  zero-rule upload glitch would have.
+  `failure`, `timed_out` or `startup_failure`, or any commit status it names reports `failure` or `error`, a fix round
+  starts without a human. The approved plan already covers the work, and the round is bounded. Cancelled, skipped and
+  neutral checks do not count.
+- **Which checks.** `Project.spec.checks.fix[]` is an explicit list of check names (a check run's name, or a commit
+  status's context), such as `test` and `lint`. An empty list means patchy never auto-fixes: a failing check is reported
+  in the status comment, and an approver can run `/patchy revise`. The list is explicit because a flaky or unrelated
+  check would otherwise burn budget, as the CodeQL zero-rule upload glitch would have.
 - **Only on patchy's own head.** A fix round starts only when the failing head is the commit patchy pushed. If a human
   has pushed since, the failure is reported and a human decides.
 - **What the agent sees.** For each failed check:
   - the name and conclusion;
   - the check run's output title, summary and text;
   - up to 50 annotations (path, line and message);
-  - for a GitHub Actions job, the last 32 KiB of the failed job's log.
+  - for a GitHub Actions job, the last 32 KiB of the failed job's log;
+  - for a commit status, which carries no output or annotations, its context, state and description.
 
   All of it is bounded (48 KiB in total), stripped of control characters and fenced as data, exactly like review
   feedback. The round is pinned at the PR head, uses the R0 image, and pushes fast-forward only.
@@ -556,9 +612,12 @@ iterates on those failures itself, using the revise machinery.
   cost ceiling. If a check fails again after a fix round with the same failure signature (its annotations, or the tail
   of its log), the controller stops and the Intent goes to `Blocked` with the condition `ChecksFailing` and a notice.
   The agent cannot touch `.github/**`, so a failure in the CI configuration is reported, not fixed.
-- **Records.** IntentRun gains `spec.trigger` (`review`, `command` or `checks`), `spec.inputs.checkRunIDs[]` (at
-  most 32) and `spec.inputs.commandID`, so a check failure or a command is consumed exactly once. A checks round
-  consumes check runs only, so it is never counted against `maxRevisions`.
+- **Records.** IntentRun gains `spec.trigger` (`review`, `command` or `checks`), `spec.inputs.checkRunIDs[]` and
+  `spec.inputs.statusIDs[]` (each at most 32) and `spec.inputs.commandID`, so a check failure or a command is consumed
+  exactly once. A failed check run is recorded by its check-run id and a failed commit status by its status id: the two
+  are separate GitHub id spaces, and an id recorded in the wrong list could equal, and mark consumed, an unrelated
+  failure. A checks round records at least one of the two lists and consumes failed checks only, so it is never counted
+  against `maxRevisions`.
 - **GitHub App.** Checks: read, Commit statuses: read and Actions: read (for job logs). All three are read-only, and the
   installation owner accepts them when they are added.
 - **Security Findings.** Remediation PRs do not get this in this design. The same mechanism could later drive a Finding
@@ -1010,7 +1069,14 @@ Made on 2026-09-23.
    (`ghclient.CanWrite`) as well as the allowlist.
 5. Should the status page or the CLI also be able to approve, through a custom verb and a VAP on Intent? Deferred.
 6. Should demo reset delete Intents? It lists kinds by hand in `integration/reset.go` and `web/admin.go`. Slice 1 leaves
-   them out, and reset must never close human-authored intent issues.
+   them out, and reset must never close human-authored intent issues. Its Repository delete is not left open, though.
+   Both copies run `DeleteAllOf(&Repository{})` over the whole namespace, which intents share, so a reset while an
+   intent is active would delete R0 and any plan or revise Repository in flight, but not the Intents or IntentRuns. No
+   later revise round could take its image from R0 again (`imageFrom` pins it by UID), so the intent would stay
+   `Blocked` on `ImageRequired`, or a run whose Repository vanished mid-launch would fail. The command-vocabulary PR,
+   which already edits integration-controller, therefore scopes both copies' Repository delete to Finding Repositories
+   (`client.HasLabels{LabelFinding}`); intent Repositories never carry that label. Until that PR is deployed, demo reset
+   must not be used while any intent is active.
 7. Is a 14-day TTL right, or should intents be kept forever, with GitHub as the durable record?
 
 ## Corrections to the candidate designs (verified)

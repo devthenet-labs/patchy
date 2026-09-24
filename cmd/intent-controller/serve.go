@@ -196,6 +196,9 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		AgentNamespace:          agentNS,
 		HealthAddr:              opts.String("health-addr"),
 		Log:                     log,
+		// Only intent-labelled ConfigMaps: never the Finding transcripts
+		// beside them in the release namespace.
+		ConfigMapSelector: intent.ConfigMapSelector(),
 	})
 	if err != nil {
 		return err

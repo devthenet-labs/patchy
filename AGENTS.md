@@ -151,7 +151,9 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   writer reconciler per status and its own phase table, `v1alpha1.SetIntentPhase`, beside Finding's; `doc.go` holds
   the single-writer table and the durable-settle rules).
 - `kube` — the controller-runtime manager wrapper: scheme, kubeconfig/in-cluster config, leader election,
-  multi-namespace cache, health probes, logr↔slog bridge. Secrets are never cached.
+  multi-namespace cache, health probes, logr↔slog bridge. Secrets are never cached; a controller that needs only
+  its own ConfigMaps confines their informer by label (`ConfigMapSelector`; intent-controller does, so the Finding
+  transcripts beside them are never in its memory).
 - `forge` — the shared forge seam: resolve a repository URL to its covering `Forge` CR (host → orgs → repo
   regexes; most-constrained wins) and mint scoped read/write tokens. Consumers: source (read), remediation
   (write), intent (a token per operation, one repository and one permission each: `TokenWith`). `ghclient`,

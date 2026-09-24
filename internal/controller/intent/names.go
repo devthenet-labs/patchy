@@ -12,6 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
+
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/forge"
 )
@@ -51,6 +54,22 @@ const (
 	keyRepositories = "repositories"
 	keyComments     = "comments"
 )
+
+// ConfigMapSelector selects the ConfigMaps intent-controller reads and
+// watches through its cache: every one it creates (the input snapshot, the
+// plan, a run's input, a run's transcript) carries LabelIntent. Its manager
+// confines the ConfigMap informer to them (kube.Options.ConfigMapSelector),
+// so the Finding flow's transcripts beside them never fill its memory. One
+// it reads that may lack the label (an object met under a derived name) is
+// read through the API reader.
+func ConfigMapSelector() labels.Selector {
+	req, err := labels.NewRequirement(v1alpha1.LabelIntent, selection.Exists, nil)
+	if err != nil {
+		// LabelIntent is a constant, valid key: never. Fail closed.
+		return labels.Nothing()
+	}
+	return labels.NewSelector().Add(*req)
+}
 
 // digest is the sha256 digest of b, as every intent digest is written.
 func digest(b []byte) string {

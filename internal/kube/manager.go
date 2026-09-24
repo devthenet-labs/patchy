@@ -10,6 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -54,6 +55,14 @@ type Options struct {
 	HealthAddr string
 	// Log is bridged to controller-runtime's logr. nil discards.
 	Log *slog.Logger
+	// ConfigMapSelector confines the ConfigMap informer to the ConfigMaps it
+	// selects; nil caches every ConfigMap in Namespaces. A controller that
+	// reads or watches only its own ConfigMaps sets it, since the release
+	// namespace also holds every Finding transcript (up to about 1 MiB
+	// each, kept for the finding TTL) and a namespace-wide informer would
+	// hold them all in memory. A ConfigMap outside it is invisible to the
+	// cached client: read one through the API reader.
+	ConfigMapSelector labels.Selector
 }
 
 // Scheme returns a runtime scheme holding the client-go kinds, batch Jobs,
@@ -139,6 +148,24 @@ func NewManager(opts Options) (ctrl.Manager, error) {
 		return nil, err
 	}
 
+	mgr, err := ctrl.NewManager(cfg, managerOptions(opts))
+	if err != nil {
+		return nil, fmt.Errorf("build manager: %w", err)
+	}
+	if opts.HealthAddr != "" {
+		if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
+			return nil, fmt.Errorf("add healthz check: %w", err)
+		}
+		if err := mgr.AddReadyzCheck("ping", healthz.Ping); err != nil {
+			return nil, fmt.Errorf("add readyz check: %w", err)
+		}
+	}
+	return mgr, nil
+}
+
+// managerOptions are the controller-runtime options NewManager builds a
+// manager with.
+func managerOptions(opts Options) ctrl.Options {
 	mgrOpts := ctrl.Options{
 		Scheme:                 Scheme(),
 		Metrics:                metricsserver.Options{BindAddress: bindAddr(opts.MetricsAddr)},
@@ -165,27 +192,19 @@ func NewManager(opts Options) (ctrl.Manager, error) {
 		}
 		mgrOpts.Cache.DefaultNamespaces = nss
 	}
+	byObject := map[client.Object]cache.ByObject{}
 	if opts.AgentNamespace != "" {
 		agentNS := map[string]cache.Config{opts.AgentNamespace: {}}
-		mgrOpts.Cache.ByObject = map[client.Object]cache.ByObject{
-			&batchv1.Job{}: {Namespaces: agentNS},
-			&corev1.Pod{}:  {Namespaces: agentNS},
-		}
+		byObject[&batchv1.Job{}] = cache.ByObject{Namespaces: agentNS}
+		byObject[&corev1.Pod{}] = cache.ByObject{Namespaces: agentNS}
 	}
-
-	mgr, err := ctrl.NewManager(cfg, mgrOpts)
-	if err != nil {
-		return nil, fmt.Errorf("build manager: %w", err)
+	if opts.ConfigMapSelector != nil {
+		byObject[&corev1.ConfigMap{}] = cache.ByObject{Label: opts.ConfigMapSelector}
 	}
-	if opts.HealthAddr != "" {
-		if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
-			return nil, fmt.Errorf("add healthz check: %w", err)
-		}
-		if err := mgr.AddReadyzCheck("ping", healthz.Ping); err != nil {
-			return nil, fmt.Errorf("add readyz check: %w", err)
-		}
+	if len(byObject) > 0 {
+		mgrOpts.Cache.ByObject = byObject
 	}
-	return mgr, nil
+	return mgrOpts
 }
 
 // bindAddr maps the empty MetricsAddr to controller-runtime's "disabled"

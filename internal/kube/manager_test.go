@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -142,5 +144,42 @@ func TestScheme(t *testing.T) {
 		if !s.Recognizes(gvk) {
 			t.Errorf("scheme does not recognize %s", gvk)
 		}
+	}
+}
+
+// TestManagerOptionsConfigMapSelector: a ConfigMapSelector confines the
+// ConfigMap informer to what it selects, beside the agent namespace's Job
+// and Pod informers; without one, ConfigMaps take the defaults.
+func TestManagerOptionsConfigMapSelector(t *testing.T) {
+	sel := labels.SelectorFromSet(labels.Set{"app": "x"})
+	for _, tt := range []struct {
+		name  string
+		opts  Options
+		want  labels.Selector
+		kinds int
+	}{
+		{"none", Options{Namespaces: []string{"patchy"}}, nil, 0},
+		{"with the agent namespace", Options{Namespaces: []string{"patchy"}, AgentNamespace: "agents",
+			ConfigMapSelector: sel}, sel, 3},
+		{"alone", Options{Namespaces: []string{"patchy"}, ConfigMapSelector: sel}, sel, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			byObject := managerOptions(tt.opts).Cache.ByObject
+			if len(byObject) != tt.kinds {
+				t.Fatalf("ByObject has %d kinds, want %d", len(byObject), tt.kinds)
+			}
+			var got labels.Selector
+			for obj, by := range byObject {
+				if _, ok := obj.(*corev1.ConfigMap); ok {
+					got = by.Label
+					if len(by.Namespaces) != 0 {
+						t.Errorf("ConfigMap namespaces = %v, want the defaults", by.Namespaces)
+					}
+				}
+			}
+			if (got == nil) != (tt.want == nil) || (got != nil && got.String() != tt.want.String()) {
+				t.Errorf("ConfigMap selector = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

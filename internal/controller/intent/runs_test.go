@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/envelope"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/runnerguard"
+	"github.com/bitwise-media-group/patchy/internal/transcript"
 )
 
 // runsOf are the Intent's runs of stage, by name.
@@ -935,6 +937,43 @@ func TestPullRequestPollHonoursTheRateFloor(t *testing.T) {
 	}
 	e.gh.remaining = 5000
 	e.drive(name, v1alpha1.IntentMerged, repoImage)
+}
+
+// TestEveryConfigMapIsSelected: every ConfigMap an intent's life creates (its
+// snapshot, its plan, its runs' inputs and transcripts) is one the manager's
+// label-scoped ConfigMap informer caches (ConfigMapSelector), so no cached
+// read of one ever misses.
+func TestEveryConfigMapIsSelected(t *testing.T) {
+	e := newEnv(t, testProject())
+	e.jobs.output = func(spec jobs.Spec) jobs.RunOutput {
+		out := defaultOutput(spec)
+		out.Turns = []transcript.Turn{{Seq: 1, Role: transcript.RoleAssistant, Kind: transcript.KindText, Text: "done"}}
+		return out
+	}
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	var list corev1.ConfigMapList
+	if err := e.c.List(context.Background(), &list, client.InNamespace(testNS)); err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]bool{}
+	for _, cm := range list.Items {
+		if !ConfigMapSelector().Matches(labels.Set(cm.Labels)) {
+			t.Errorf("configmap %s (labels %v) is outside the cached selection", cm.Name, cm.Labels)
+		}
+		for _, suffix := range []string{"-input-r1", "-plan-r1", "-input", "-transcript"} {
+			if strings.HasSuffix(cm.Name, suffix) {
+				kinds[suffix] = true
+			}
+		}
+	}
+	if len(kinds) != 4 {
+		t.Errorf("configmaps %v: want a snapshot, a plan, run inputs and transcripts", kinds)
+	}
+	if ConfigMapSelector().Matches(labels.Set{"patchy.bitwisemedia.uk/finding": "f"}) {
+		t.Error("a Finding transcript's labels are selected")
+	}
 }
 
 // TestClosedPullRequestClosesTheIntent: every pull request closed unmerged

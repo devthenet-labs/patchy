@@ -179,6 +179,15 @@ func TestParsePlanErrors(t *testing.T) {
 			"over 200"},
 		{"multi-line summary", planWith(summary, "summary: |\n  one\n  two"), "line break"},
 		{"summary with a bidi override", planWith(summary, `summary: "safe \u202e evil"`), "format character"},
+		// U+2028 and U+2029 are neither control nor format characters, yet
+		// renderers and tokenizers break a line on them; NEL is a control.
+		{"summary with a line separator", planWith(summary, `summary: "line one\u2028line two"`), "line break"},
+		{"question with a paragraph separator", planWith(questions, `questions:
+  - "one\u2029two"`), "line break"},
+		{"dependency with a next line", planWith(deps, `new_dependencies:
+  - "example.com/dep\u0085v1"`), "line break"},
+		{"repository with a line separator", repo(`https://github.com/devthenet-labs/patchy\u2028target`),
+			"not an https"},
 		{"missing repositories", planWith(repos+"\n", ""), "repositories is required"},
 		{"empty repositories", planWith(repos, "repositories: []"), "repositories is required"},
 		{"nine repositories", planWith(repos, items("repositories", PlanMaxRepositories+1, repoURL)), "over 8"},

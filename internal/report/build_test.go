@@ -113,6 +113,11 @@ func TestParseBuildErrors(t *testing.T) {
 			"success is true but the tests that ran did not pass"},
 		{"a multi-line command", buildWith(`command: "go test ./..."`, `command: "go vet ./...\ngo test ./..."`),
 			"line break"},
+		{"a command with a line separator", buildWith(`command: "go test ./..."`,
+			`command: "go vet ./...\u2028go test ./..."`), "line break"},
+		{"a note with a paragraph separator", buildWith(
+			`  - "The build time comes from a linker flag; check the Dockerfile sets it."`,
+			`  - "Check the flag.\u2029Then the Dockerfile."`), "line break"},
 		{"eleven notes", buildWith(`notes:
   - "The build time comes from a linker flag; check the Dockerfile sets it."`, items("notes", BuildMaxNotes+1,
 			func(i int) string { return fmt.Sprintf("note %d", i) })), "over 10"},

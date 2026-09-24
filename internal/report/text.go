@@ -54,8 +54,9 @@ func checkBody(kind, body string) error {
 
 // oneLine trims s and checks it is a non-empty single line of at most
 // maxChars characters, free of control and format characters (a line break,
-// a terminal escape, a bidi override, a zero-width space). These values
-// reach GitHub and later prompts, so they carry nothing a reader cannot see.
+// a terminal escape, a bidi override, a zero-width space) and of the Unicode
+// line and paragraph separators. These values reach GitHub and later
+// prompts, so they carry nothing a reader cannot see and break nowhere.
 func oneLine(field, s string, maxChars int) (string, error) {
 	s = strings.TrimSpace(s)
 	switch {
@@ -69,8 +70,14 @@ func oneLine(field, s string, maxChars int) (string, error) {
 	return s, nil
 }
 
-// invisible reports a control or format character.
-func invisible(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }
+// invisible reports a rune no one-line value may carry: a control character
+// (Cc, which holds NEL, U+0085), a format character (Cf), or U+2028 LINE
+// SEPARATOR or U+2029 PARAGRAPH SEPARATOR (Zl and Zp). The separators are
+// neither, yet YAML, JavaScript and many renderers and tokenizers break a
+// line on them, so a "single line" holding one would read as two.
+func invisible(r rune) bool {
+	return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
+}
 
 // lines applies oneLine to every item of a list of at most maxItems,
 // trimming each in place.

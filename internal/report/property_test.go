@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"testing/quick"
+	"unicode"
 	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
@@ -26,11 +27,12 @@ const (
 )
 
 // textAlphabet is dense in what breaks YAML scalars, markdown and naive
-// bounds: colons, quotes, comment and indicator characters, backslashes and
-// multi-byte runes.
+// bounds: colons, quotes, comment and indicator characters, backslashes,
+// multi-byte runes, and space separators (a no-break and an ideographic
+// space), which a line may hold where a line or paragraph separator may not.
 var textAlphabet = []string{
 	"a", "b", "Z", "0", " ", ":", ": ", `"`, "'", "#", " #", "-", "- ", "`", "@", "\\", "{", "[", "|", ">",
-	"*", "&", "!", "%", "é", "漢", "🙂", "---", "~", "?",
+	"*", "&", "!", "%", "é", "漢", "🙂", "---", "~", "?", "\u00a0", "\u3000",
 }
 
 // genLine builds a valid one-line value of at most maxChars characters:
@@ -232,7 +234,8 @@ func TestBuildRoundTripProperty(t *testing.T) {
 // alphabet, the document cut short, or padded past every bound.
 func mutate(r *rand.Rand, doc []byte) []byte {
 	out := slices.Clone(doc)
-	junk := []string{":", "\n", "- ", "\"", "'", "{", "[", "---", "\xff", "\x00", "\u202e", " ", "#", "&a", "*a", "|"}
+	junk := []string{":", "\n", "- ", "\"", "'", "{", "[", "---", "\xff", "\x00", "\u202e", " ", "#", "&a", "*a", "|",
+		"\u2028", "\u2029", "\u0085", "\u200b", "\u00a0"}
 	for range 1 + r.Intn(6) {
 		switch op := r.Intn(8); {
 		case op < 3 && len(out) > 0:
@@ -255,12 +258,28 @@ func mutate(r *rand.Rand, doc []byte) []byte {
 	return out
 }
 
+// forbiddenInLine is the properties' own statement of what a one-line value
+// may never carry, written apart from the parser's predicate so that a gap in
+// that predicate fails a property instead of being shared by its oracle: the
+// C0 and C1 controls and DEL (NEL, U+0085, among them), U+2028 LINE
+// SEPARATOR and U+2029 PARAGRAPH SEPARATOR, and the format characters (bidi
+// controls, zero-width characters, the BOM, tag characters).
+func forbiddenInLine(r rune) bool {
+	switch {
+	case r < 0x20, r == 0x7f, r >= 0x80 && r <= 0x9f:
+		return true
+	case r == 0x2028, r == 0x2029:
+		return true
+	}
+	return unicode.Is(unicode.Cf, r)
+}
+
 // planWithinBounds reports whether an accepted plan honours every bound the
 // contract promises.
 func planWithinBounds(p *Plan) bool {
 	ok := func(s string, maxChars int) bool {
 		return s != "" && s == strings.TrimSpace(s) && utf8.RuneCountInString(s) <= maxChars &&
-			!strings.ContainsFunc(s, invisible)
+			!strings.ContainsFunc(s, forbiddenInLine)
 	}
 	all := func(items []string, maxItems, maxChars int) bool {
 		return len(items) <= maxItems && !slices.ContainsFunc(items, func(s string) bool { return !ok(s, maxChars) })
@@ -268,7 +287,8 @@ func planWithinBounds(p *Plan) bool {
 	return ok(p.Summary, SummaryMaxChars) &&
 		len(p.Repositories) >= 1 && len(p.Repositories) <= PlanMaxRepositories &&
 		!slices.ContainsFunc(p.Repositories, func(u string) bool {
-			return len(u) > RepositoryURLMaxBytes || !repositoryURL.MatchString(u)
+			return len(u) > RepositoryURLMaxBytes || !repositoryURL.MatchString(u) ||
+				strings.ContainsFunc(u, forbiddenInLine)
 		}) &&
 		all(p.NewDependencies, PlanMaxNewDependencies, ItemMaxChars) && all(p.Questions, PlanMaxQuestions, ItemMaxChars) &&
 		p.Confidence != nil && *p.Confidence >= 0 && *p.Confidence <= 1 &&
@@ -332,9 +352,10 @@ func TestBuildParseBoundedProperty(t *testing.T) {
 }
 
 // boundedLine reports whether s is a trimmed line of at most maxChars
-// characters with no control or format character; empty passes.
+// characters with no rune forbiddenInLine; empty passes.
 func boundedLine(s string, maxChars int) bool {
-	return s == strings.TrimSpace(s) && utf8.RuneCountInString(s) <= maxChars && !strings.ContainsFunc(s, invisible)
+	return s == strings.TrimSpace(s) && utf8.RuneCountInString(s) <= maxChars &&
+		!strings.ContainsFunc(s, forbiddenInLine)
 }
 
 // buildWithinBounds reports whether an accepted build report honours every

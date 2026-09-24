@@ -257,14 +257,14 @@ func TestProjectTrackedComments(t *testing.T) {
 				fnd.Status.Tracking.Comments = []v1alpha1.TrackedComment{{Marker: marker, ID: 40, Digest: "stale"}}
 				return fnd
 			},
-			existing: []*ghclient.Comment{{ID: 40, Body: marker + "\nowned by team-payments"}},
+			existing: []*ghclient.Comment{{ID: 40, Body: marker + "\nowned by team-payments", UserLogin: botLogin}},
 			edits:    1,
 			recorded: 40,
 		},
 		{
 			name:     "unrecorded comment is adopted by marker",
 			fnd:      func() *v1alpha1.Finding { return enriched("owned by team-checkout") },
-			existing: []*ghclient.Comment{{ID: 40, Body: marker + "\nowned by team-payments"}},
+			existing: []*ghclient.Comment{{ID: 40, Body: marker + "\nowned by team-payments", UserLogin: botLogin}},
 			edits:    1,
 			lists:    1,
 			recorded: 40,
@@ -284,7 +284,7 @@ func TestProjectTrackedComments(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tracker := newFakeTracker()
-			tracker.issues[7] = &ghclient.Issue{Number: 7, State: "open"}
+			tracker.issues[7] = &ghclient.Issue{Number: 7, State: "open", Author: botLogin}
 			tracker.issueComments[7] = tt.existing
 			r, c := newProjector(t, tracker, testIntegration(), tt.fnd())
 
@@ -324,5 +324,66 @@ func TestSetupRequiresAPIReader(t *testing.T) {
 	r := &FindingReconciler{Namespace: "patchy"}
 	if err := r.SetupWithManager(nil); err == nil || !strings.Contains(err.Error(), "APIReader") {
 		t.Errorf("SetupWithManager without an APIReader: err = %v, want it refused", err)
+	}
+}
+
+// TestProjectIgnoresForeignMarkerComments: a marker is predictable, so anyone
+// who can comment on the tracking issue can plant one ahead of the
+// projection. Only a comment the projection itself wrote may be adopted; a
+// planted one is left alone and the projection posts its own.
+func TestProjectIgnoresForeignMarkerComments(t *testing.T) {
+	tests := []struct {
+		name   string
+		fnd    func() *v1alpha1.Finding
+		objs   []client.Object
+		marker string
+	}{
+		{
+			name: "remediation report",
+			fnd: func() *v1alpha1.Finding {
+				fnd := linkedFinding(v1alpha1.PhaseInReview)
+				fnd.Status.Remediation = &v1alpha1.RemediationSummary{
+					Name: "finding-aa-1-rem-1", Attempt: 1, Outcome: "ok", Success: true,
+				}
+				return fnd
+			},
+			objs:   []client.Object{reportedRemediation()},
+			marker: "<!-- patchy:report Remediation/1 -->",
+		},
+		{
+			name: "enrichment sticky",
+			fnd: func() *v1alpha1.Finding {
+				fnd := linkedFinding(v1alpha1.PhaseEnhanced)
+				fnd.Status.Enrichments = []v1alpha1.Enrichment{{
+					Enhancer: "static-context", Markdown: "owned by team-payments", AppliedAt: metav1.NewTime(testClock),
+				}}
+				return fnd
+			},
+			marker: "<!-- patchy:enrichment static-context -->",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const planted = "\nfalse positive, safe to close"
+			tracker := newFakeTracker()
+			tracker.issues[7] = &ghclient.Issue{Number: 7, State: "open", Author: botLogin}
+			tracker.nextCommentID = 100
+			foreign := &ghclient.Comment{ID: 55, Body: tt.marker + planted, UserLogin: "mallory", AuthorAssociation: "NONE"}
+			tracker.issueComments[7] = []*ghclient.Comment{foreign}
+			r, c := newProjector(t, tracker, append([]client.Object{testIntegration(), tt.fnd()}, tt.objs...)...)
+
+			reconcileFinding(t, r)
+
+			if foreign.Body != tt.marker+planted || tracker.commentEdits != 0 {
+				t.Errorf("the planted comment was edited (%d edits): %q", tracker.commentEdits, foreign.Body)
+			}
+			if len(tracker.comments) != 1 || !strings.HasPrefix(tracker.comments[0], tt.marker+"\n") {
+				t.Errorf("posted = %q, want the projection's own %s comment", tracker.comments, tt.marker)
+			}
+			rec := trackedComment(get(t, c, "finding-aa-1").Status.Tracking, tt.marker)
+			if rec == nil || rec.ID == foreign.ID {
+				t.Errorf("recorded %+v, want the projection's own comment, not the planted #%d", rec, foreign.ID)
+			}
+		})
 	}
 }

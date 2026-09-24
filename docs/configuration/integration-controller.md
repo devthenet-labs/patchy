@@ -57,8 +57,10 @@ never fatal: the reconcile loops are the retry mechanism, and the webhook path o
 - **Projection** — a Finding reconciler renders each Finding to its tracking issue: the templated body, the
   [projected labels](../labels.md#the-projected-labels), enrichments and investigation reports as comments, and
   open/closed state. One-way only. Each marker-headed comment's id is recorded on `status.tracking.comments` and the
-  comment is edited by that id thereafter; every post (issue, comment, notice) is first confirmed against the API server
-  rather than the controller's cache, so a projection never posts the same thing twice.
+  comment is edited by that id thereafter; a comment with no recorded id is adopted by its marker only when patchy wrote
+  it (its author opened the tracking issue), never a comment someone else headed with a marker. Every post (issue,
+  comment, notice) is first confirmed against the API server rather than the controller's cache, so a projection never
+  posts the same thing twice.
 - **Runner-image comment** — with `--repository-images`, one sticky comment (headed `<!-- patchy:runner-image -->`,
   edited in place) tells the repository owner what patchy did with the agent image the repository declared: which file
   declared which image and the digest it was pinned to; or why the declaration was rejected or the devcontainer.json not

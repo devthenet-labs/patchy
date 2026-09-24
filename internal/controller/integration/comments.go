@@ -59,7 +59,7 @@ type issueComments struct {
 	number  int
 
 	fresh   *v1alpha1.Finding   // the API server's copy, once read
-	listed  []*ghclient.Comment // the issue's comments, once listed
+	listed  []*ghclient.Comment // the projection's own comments, once listed
 	didList bool
 }
 
@@ -98,7 +98,7 @@ func (c *issueComments) upsert(ctx context.Context, body string) error {
 		// the whole issue is gone resurfaces from the listing, where the
 		// caller unlinks it.
 	}
-	existing, err := c.list(ctx)
+	existing, err := c.own(ctx)
 	if err != nil {
 		return err
 	}
@@ -159,14 +159,29 @@ func (c *issueComments) latest(ctx context.Context, marker string) (*v1alpha1.Tr
 	return trackedComment(c.fresh.Status.Tracking, marker), nil
 }
 
-// list returns the issue's comments, listing them once per pass.
-func (c *issueComments) list(ctx context.Context) ([]*ghclient.Comment, error) {
+// own returns the issue's comments the projection itself wrote, listing them
+// once per pass. Markers are predictable, so anyone who can comment on the
+// issue can open a comment with one; adopting such a comment would hand its
+// author the projection's comment, to rewrite at will. The projection opened
+// the tracking issue — createIssue is the only writer of the link — so the
+// issue's author is the projection's own login, and a comment by anyone else
+// is never a candidate.
+func (c *issueComments) own(ctx context.Context) ([]*ghclient.Comment, error) {
 	if !c.didList {
+		issue, err := c.tracker.GetIssue(ctx, c.repo, c.number)
+		if err != nil {
+			return nil, fmt.Errorf("get tracking issue: %w", err)
+		}
 		cs, err := c.tracker.ListComments(ctx, c.repo, c.number)
 		if err != nil {
 			return nil, err
 		}
-		c.listed, c.didList = cs, true
+		for _, cm := range cs {
+			if issue.Author != "" && cm.UserLogin == issue.Author {
+				c.listed = append(c.listed, cm)
+			}
+		}
+		c.didList = true
 	}
 	return c.listed, nil
 }

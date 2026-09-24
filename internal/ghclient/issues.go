@@ -175,6 +175,7 @@ func issueFromGitHub(is *github.Issue) *Issue {
 		Body:      is.GetBody(),
 		State:     is.GetState(),
 		CreatedAt: is.GetCreatedAt().Time,
+		Author:    is.GetUser().GetLogin(),
 	}
 	for _, l := range is.Labels {
 		out.Labels = append(out.Labels, l.GetName())

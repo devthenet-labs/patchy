@@ -85,6 +85,23 @@ func TestCreate(t *testing.T) {
 	}
 }
 
+// TestGetIssueAuthor: GetIssue carries the login that opened the issue — the
+// identity the projection recognises its own comments by.
+func TestGetIssueAuthor(t *testing.T) {
+	mux, c := newFakeClient(t)
+	mux.HandleFunc("GET /repos/o/r/issues/5", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, `{"number":5,"title":"T","state":"open","user":{"login":"patchy[bot]"}}`)
+	})
+
+	got, err := c.GetIssue(context.Background(), testRepo, 5)
+	if err != nil {
+		t.Fatalf("GetIssue() error = %v", err)
+	}
+	if got.Author != "patchy[bot]" {
+		t.Errorf("GetIssue().Author = %q, want patchy[bot]", got.Author)
+	}
+}
+
 func TestListComments(t *testing.T) {
 	mux, c := newFakeClient(t)
 	page1 := `[{"id":11,"body":"first","user":{"login":"u1"},"author_association":"MEMBER"}]`

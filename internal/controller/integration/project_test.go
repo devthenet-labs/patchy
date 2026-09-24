@@ -24,6 +24,9 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/kube"
 )
 
+// botLogin is the login fakeTracker posts as: the projection's own identity.
+const botLogin = "patchy[bot]"
+
 // fakeTracker records every tracking-system write.
 type fakeTracker struct {
 	nextNumber    int
@@ -69,7 +72,9 @@ func (f *fakeTracker) Create(
 	}
 	n := f.nextNumber
 	f.nextNumber++
-	is := &ghclient.Issue{Repo: repo, Number: n, Title: req.Title, Body: req.Body, State: "open", Labels: req.Labels}
+	is := &ghclient.Issue{
+		Repo: repo, Number: n, Title: req.Title, Body: req.Body, State: "open", Labels: req.Labels, Author: botLogin,
+	}
 	f.issues[n] = is
 	return is, nil
 }
@@ -115,7 +120,8 @@ func (f *fakeTracker) CreateComment(_ context.Context, _ ghclient.Repo, number i
 	}
 	f.comments = append(f.comments, body)
 	f.nextCommentID++
-	f.issueComments[number] = append(f.issueComments[number], &ghclient.Comment{ID: f.nextCommentID, Body: body})
+	f.issueComments[number] = append(f.issueComments[number],
+		&ghclient.Comment{ID: f.nextCommentID, Body: body, UserLogin: botLogin})
 	if f.listLag {
 		f.unlisted[f.nextCommentID] = true
 	}

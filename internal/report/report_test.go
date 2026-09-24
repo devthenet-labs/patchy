@@ -4,8 +4,13 @@
 package report
 
 import (
+	"math"
+	"math/rand"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"testing/quick"
 )
 
 const validInvestigation = `---
@@ -234,5 +239,79 @@ func TestParseRemediationErrors(t *testing.T) {
 				t.Error("ParseRemediation() error = nil, want error")
 			}
 		})
+	}
+}
+
+// TestParseRefusesNonFiniteConfidence pins YAML's non-finite float spellings
+// as invalid reports. NaN compares false against both bounds, so the range
+// check alone let it through; in the pod it then reached the envelope
+// encoder, which cannot marshal NaN, and the stage's only result event was
+// dropped instead of reporting report_invalid.
+func TestParseRefusesNonFiniteConfidence(t *testing.T) {
+	for _, spelling := range []string{".nan", ".NaN", ".NAN", ".inf", ".Inf", "+.inf", "-.inf", "-.INF"} {
+		t.Run(spelling, func(t *testing.T) {
+			inv := strings.Replace(validInvestigation, "confidence: 0.85", "confidence: "+spelling, 1)
+			if _, err := ParseInvestigation([]byte(inv)); err == nil || !strings.Contains(err.Error(), "confidence") {
+				t.Errorf("ParseInvestigation() error = %v, want a confidence error", err)
+			}
+			rem := "---\nsuccess: true\nconfidence: " + spelling + "\n---\nbody"
+			if _, err := ParseRemediation([]byte(rem)); err == nil || !strings.Contains(err.Error(), "confidence") {
+				t.Errorf("ParseRemediation() error = %v, want a confidence error", err)
+			}
+		})
+	}
+}
+
+// yamlFloat spells c as a YAML float scalar: the core schema's spellings for
+// the non-finite values (strconv's "NaN" and "+Inf" read back as strings),
+// strconv's shortest round-tripping form for the rest.
+func yamlFloat(c float64) string {
+	switch {
+	case math.IsNaN(c):
+		return ".nan"
+	case math.IsInf(c, 1):
+		return ".inf"
+	case math.IsInf(c, -1):
+		return "-.inf"
+	}
+	return strconv.FormatFloat(c, 'g', -1, 64)
+}
+
+// TestConfidenceAcceptanceProperty states the confidence rule as an
+// invariant over both report kinds: a report is accepted exactly when its
+// confidence lies in [0, 1], and an accepted confidence is the value written.
+// The generator mixes uniform values straddling the interval with the IEEE
+// edge cases — NaN, both infinities, both zeros, each bound's outer
+// neighbour — so the non-finite values are drawn on every seed.
+func TestConfidenceAcceptanceProperty(t *testing.T) {
+	edges := []float64{
+		math.NaN(), math.Inf(1), math.Inf(-1), 0, math.Copysign(0, -1), 1,
+		math.Nextafter(1, 2), math.Nextafter(0, -1), math.SmallestNonzeroFloat64,
+		math.MaxFloat64, -math.MaxFloat64,
+	}
+	cfg := &quick.Config{
+		MaxCount: 500,
+		Rand:     rand.New(rand.NewSource(20260924)),
+		Values: func(args []reflect.Value, r *rand.Rand) {
+			c := r.Float64()*2 - 0.5 // [-0.5, 1.5)
+			if r.Intn(4) == 0 {
+				c = edges[r.Intn(len(edges))]
+			}
+			args[0] = reflect.ValueOf(c)
+		},
+	}
+	acceptedIffInRange := func(c float64) bool {
+		want := c >= 0 && c <= 1
+		scalar := yamlFloat(c)
+		inv, invErr := ParseInvestigation([]byte(
+			strings.Replace(validInvestigation, "confidence: 0.85", "confidence: "+scalar, 1)))
+		rem, remErr := ParseRemediation([]byte("---\nsuccess: true\nconfidence: " + scalar + "\n---\nbody"))
+		if (invErr == nil) != want || (remErr == nil) != want {
+			return false
+		}
+		return !want || (*inv.Confidence == c && *rem.Confidence == c)
+	}
+	if err := quick.Check(acceptedIffInRange, cfg); err != nil {
+		t.Error(err)
 	}
 }

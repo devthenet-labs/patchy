@@ -557,6 +557,15 @@ func TestInvestigationFailures(t *testing.T) {
 			}},
 			want: envelope.OutcomeReportInvalid,
 		},
+		{
+			// A NaN confidence once passed validation and then failed to
+			// encode, so the stage emitted no event at all.
+			name: "NaN confidence is an invalid report",
+			step: step{stdout: streamSuccess, writes: map[string]string{
+				"reports/investigation.md": strings.Replace(goodInvestigation, "confidence: 0.9", "confidence: .nan", 1),
+			}},
+			want: envelope.OutcomeReportInvalid,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -758,6 +767,33 @@ func TestRemediationReportsFailureHonestly(t *testing.T) {
 	}
 	if rem.Changeset != nil {
 		t.Error("a failed remediation must not carry a changeset")
+	}
+}
+
+// TestRemediationRefusesNonFiniteConfidence pins a NaN confidence to the
+// invalid-report outcome. It once passed validation and then failed to
+// encode, so the stage emitted no event at all and the controller was left
+// with nothing to record.
+func TestRemediationRefusesNonFiniteConfidence(t *testing.T) {
+	var out bytes.Buffer
+	cfg, ws := remediateConfig(t, goodInvestigation, &out)
+	nan := strings.Replace(goodRemediation, "confidence: 0.88", "confidence: .nan", 1)
+	fx := &fakeExec{steps: []step{{
+		ws: ws, stdout: streamSuccess,
+		writes:    map[string]string{"reports/remediation.md": nan, "commit.sh": commitScript},
+		repoWrite: map[string]string{"app.js": "escaped();\n"},
+	}}}
+
+	if err := New(cfg, fx).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	evs := events(t, out.String())
+	if len(evs) != 1 {
+		t.Fatalf("events = %d, want 1", len(evs))
+	}
+	rem := evs[0].Remediation
+	if rem.Outcome != envelope.OutcomeReportInvalid || rem.Success || rem.Changeset != nil {
+		t.Errorf("remediation = %+v, want outcome %q with no success or changeset", rem, envelope.OutcomeReportInvalid)
 	}
 }
 

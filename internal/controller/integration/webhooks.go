@@ -18,6 +18,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/forge"
+	"github.com/bitwise-media-group/patchy/internal/ghclient"
 	"github.com/bitwise-media-group/patchy/internal/webhook"
 )
 
@@ -26,7 +28,8 @@ import (
 const TrackingURLIndex = "status.tracking.url"
 
 // BranchPrefix prefixes every remediation branch; the finding name follows,
-// so pull-request webhooks resolve their Finding from the head ref alone.
+// so pull-request webhooks resolve their Finding from the head ref (and
+// settle it only when the PR is the one recorded for it: isRecordedPR).
 const BranchPrefix = "patchy/"
 
 // approverAssociations are the author associations allowed to /approve.
@@ -165,8 +168,14 @@ func staleApproval(f *v1alpha1.Finding) bool {
 	return done != nil && !f.Spec.Approval.At.After(done.Time)
 }
 
+// repoRef is a delivery's reference to a repository.
+type repoRef struct {
+	FullName string `json:"full_name"`
+}
+
 // pullRequest handles merge/close of a remediation PR, resolved to its
-// Finding by the branch name.
+// Finding by the branch name and settled only when it is the PR recorded
+// for that Finding (isRecordedPR).
 func (s *Signals) pullRequest(ctx context.Context, payload []byte) error {
 	var ev struct {
 		Action      string `json:"action"`
@@ -177,9 +186,11 @@ func (s *Signals) pullRequest(ctx context.Context, payload []byte) error {
 			MergedAt       string `json:"merged_at"`
 			MergeCommitSHA string `json:"merge_commit_sha"`
 			Head           struct {
-				Ref string `json:"ref"`
+				Ref  string  `json:"ref"`
+				Repo repoRef `json:"repo"`
 			} `json:"head"`
 		} `json:"pull_request"`
+		Repository repoRef `json:"repository"`
 	}
 	if err := json.Unmarshal(payload, &ev); err != nil {
 		return fmt.Errorf("decode pull_request event: %w", err)
@@ -191,6 +202,14 @@ func (s *Signals) pullRequest(ctx context.Context, payload []byte) error {
 	return s.updateFinding(ctx, fnd, func(cur *v1alpha1.Finding) error {
 		if cur.Status.Phase != v1alpha1.PhaseInReview {
 			return nil // stale or duplicate delivery
+		}
+		if !isRecordedPR(cur, ev.Repository.FullName, ev.PullRequest.Head.Repo.FullName, ev.PullRequest.Number) {
+			s.log().LogAttrs(ctx, slog.LevelInfo, "closed pull request is not the finding's recorded one; ignored",
+				slog.String("finding", cur.Name),
+				slog.String("repository", ev.Repository.FullName),
+				slog.Int64("number", ev.PullRequest.Number),
+				slog.String("head_repository", ev.PullRequest.Head.Repo.FullName))
+			return nil
 		}
 		to := v1alpha1.PhaseFailed
 		state := "closed"
@@ -214,6 +233,38 @@ func (s *Signals) pullRequest(ctx context.Context, payload []byte) error {
 		}
 		return v1alpha1.SetPhase(cur, to, s.now())
 	})
+}
+
+// isRecordedPR reports whether a closed pull request — number, in repo, from
+// a branch in headRepo (owner/name each) — is the remediation PR recorded
+// for the finding: the same number, in the repository the record names, from
+// a branch in that same repository. The head ref alone proves nothing:
+// anyone who can open a pull request can name a branch patchy/<finding>, and
+// a fork's branch carries whatever name its owner chose.
+func isRecordedPR(f *v1alpha1.Finding, repo, headRepo string, number int64) bool {
+	pr := f.Status.PullRequest
+	if pr == nil || pr.Number != number {
+		return false
+	}
+	want, ok := recordedPRRepo(f)
+	return ok && strings.EqualFold(repo, want.String()) && strings.EqualFold(headRepo, repo)
+}
+
+// recordedPRRepo is the repository the finding's remediation PR lives in:
+// the one its recorded URL names, else the finding's own, where
+// remediation-controller opens every PR. false when neither parses.
+func recordedPRRepo(f *v1alpha1.Finding) (ghclient.Repo, bool) {
+	if pr := f.Status.PullRequest; pr != nil && pr.URL != "" {
+		if _, repo, err := forge.ParseRepoURL(pr.URL); err == nil {
+			return repo, true
+		}
+	}
+	if f.Spec.Repository != nil {
+		if repo, err := parseOwnerRepo(f.Spec.Repository.Name); err == nil {
+			return repo, true
+		}
+	}
+	return ghclient.Repo{}, false
 }
 
 // findByIssueURL resolves a Finding by its projected tracking URL; empty

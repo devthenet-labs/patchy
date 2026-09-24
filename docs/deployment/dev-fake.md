@@ -47,12 +47,14 @@ curl -s http://localhost:30990/api/v3/repos/acme/shop/pulls  | jq '.[].number'  
 
 (30990 is the fake's Service NodePort, forwarded to `localhost` by colima like the webhook's 30079.)
 
-Close the loop by "merging" the PR — the merge signal resolves the Finding by its branch name, so substitute the real
-finding name into the recorded fixture:
+Close the loop by "merging" the PR — the merge signal resolves the Finding by its branch name and settles it only when
+the PR number is the one the Finding recorded, so substitute the real finding name and PR number into the recorded
+fixture:
 
 ```sh
 name=$(kubectl -n patchy get findings -o jsonpath='{.items[0].metadata.name}')
-sed "s/patchy\/finding-cccccccccc-1/patchy\/$name/" \
+number=$(kubectl -n patchy get finding "$name" -o jsonpath='{.status.pullRequest.number}')
+sed -e "s/patchy\/finding-cccccccccc-1/patchy\/$name/" -e "s/\"number\": 901/\"number\": $number/" \
   e2e/fixtures/webhooks/pull_request.merged.json > /tmp/merged.json
 mise run replay -- -dev-secret /tmp/merged.json
 ```

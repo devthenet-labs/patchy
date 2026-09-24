@@ -6,8 +6,8 @@
         "merged": true,
         "merged_at": "2026-07-21T12:00:00Z",
         "merge_commit_sha": "fa82fcdc7efab2777d432ba3385517fa735e0ae0",
-        "head": { "ref": "patchy/finding-cccccccccc-1" },
-        "base": { "ref": "main" }
+        "head": { "ref": "patchy/finding-cccccccccc-1", "repo": { "name": "shop", "full_name": "acme/shop" } },
+        "base": { "ref": "main", "repo": { "name": "shop", "full_name": "acme/shop" } }
     },
     "repository": {
         "name": "shop",

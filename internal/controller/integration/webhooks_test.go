@@ -27,6 +27,11 @@ func trackedFinding(phase v1alpha1.Phase) *v1alpha1.Finding {
 			IntegrationRef: v1alpha1.LocalObjectReference{Name: "gh"},
 			Source:         "ghas",
 			Advisories:     []string{"CVE-2026-0001"},
+			Repository: &v1alpha1.FindingRepository{
+				Type: v1alpha1.RepositoryTypeGitHub,
+				URL:  "https://github.com/acme/orders",
+				Name: "acme/orders",
+			},
 		},
 		Status: v1alpha1.FindingStatus{
 			Phase: phase,
@@ -189,6 +194,27 @@ func TestSignalsApproveStaleHandedOff(t *testing.T) {
 	}
 }
 
+// inReview is trackedFinding in review of its recorded remediation PR,
+// acme/orders#11.
+func inReview() *v1alpha1.Finding {
+	fnd := trackedFinding(v1alpha1.PhaseInReview)
+	fnd.Status.PullRequest = &v1alpha1.PullRequestStatus{
+		Number: 11, URL: "https://github.com/acme/orders/pull/11", State: "open",
+	}
+	return fnd
+}
+
+// prClosed is a pull_request.closed delivery for PR number in repo, from the
+// finding's remediation branch (patchy/finding-aa-1) in headRepo.
+func prClosed(repo string, number int, headRepo string, merged bool) string {
+	return fmt.Sprintf(
+		`{"action":"closed","pull_request":{"number":%d,"merged":%v,`+
+			`"merged_at":"2026-07-21T13:00:00Z","merge_commit_sha":"fa82fcdc7efab2777d432ba3385517fa735e0ae0",`+
+			`"head":{"ref":"patchy/finding-aa-1","repo":{"full_name":%q}},"base":{"ref":"main","repo":{"full_name":%q}}},`+
+			`"repository":{"full_name":%q}}`,
+		number, merged, headRepo, repo, repo)
+}
+
 func TestSignalsPullRequest(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -201,14 +227,8 @@ func TestSignalsPullRequest(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			fnd := trackedFinding(v1alpha1.PhaseInReview)
-			fnd.Status.PullRequest = &v1alpha1.PullRequestStatus{Number: 11, State: "open"}
-			s, c := newSignals(t, fnd)
-			payload := fmt.Sprintf(
-				`{"action":"closed","pull_request":{"number":11,"merged":%v,`+
-					`"merged_at":"2026-07-21T13:00:00Z","merge_commit_sha":"fa82fcdc7efab2777d432ba3385517fa735e0ae0",`+
-					`"head":{"ref":"patchy/finding-aa-1"}}}`,
-				tc.merged)
+			s, c := newSignals(t, inReview())
+			payload := prClosed("acme/orders", 11, "acme/orders", tc.merged)
 			if err := s.Handle(t.Context(), testIntegration(), event("pull_request", payload)); err != nil {
 				t.Fatalf("Handle: %v", err)
 			}
@@ -230,6 +250,70 @@ func TestSignalsPullRequest(t *testing.T) {
 			}
 			if got := f.Status.PullRequest.MergeCommitSHA; got != wantSHA {
 				t.Errorf("mergeCommitSHA = %q, want %q", got, wantSHA)
+			}
+		})
+	}
+}
+
+// TestSignalsPullRequestNotRecorded: the head ref names the finding, but
+// anyone who can open a pull request can name a branch patchy/<finding>. A
+// close settles the finding only when it is the recorded remediation PR:
+// the same number, in the finding's repository, from a branch there.
+func TestSignalsPullRequestNotRecorded(t *testing.T) {
+	cases := []struct {
+		name      string
+		payload   string
+		wantPhase v1alpha1.Phase
+	}{
+		{"recorded PR merges", prClosed("acme/orders", 11, "acme/orders", true), v1alpha1.PhaseRemediated},
+		{"repository matches case-insensitively", prClosed("Acme/Orders", 11, "Acme/Orders", true),
+			v1alpha1.PhaseRemediated},
+		{"another repository", prClosed("acme/billing", 11, "acme/billing", true), v1alpha1.PhaseInReview},
+		{"another number", prClosed("acme/orders", 12, "acme/orders", true), v1alpha1.PhaseInReview},
+		{"another number closed unmerged", prClosed("acme/orders", 12, "acme/orders", false), v1alpha1.PhaseInReview},
+		{"from a fork", prClosed("acme/orders", 11, "mallory/orders", true), v1alpha1.PhaseInReview},
+		{"from a deleted fork", prClosed("acme/orders", 11, "", false), v1alpha1.PhaseInReview},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, c := newSignals(t, inReview())
+			if err := s.Handle(t.Context(), testIntegration(), event("pull_request", tc.payload)); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			f := get(t, c, "finding-aa-1")
+			if f.Status.Phase != tc.wantPhase {
+				t.Errorf("phase = %q, want %q", f.Status.Phase, tc.wantPhase)
+			}
+			if tc.wantPhase == v1alpha1.PhaseInReview && f.Status.PullRequest.State != "open" {
+				t.Errorf("pr state = %q, want open (an ignored close records nothing)", f.Status.PullRequest.State)
+			}
+		})
+	}
+}
+
+// TestSignalsPullRequestRepositoryFallback: a record without a URL is
+// matched against the finding's own repository, where remediation opens
+// every PR.
+func TestSignalsPullRequestRepositoryFallback(t *testing.T) {
+	cases := []struct {
+		name      string
+		repo      string
+		wantPhase v1alpha1.Phase
+	}{
+		{"finding's repository", "acme/orders", v1alpha1.PhaseRemediated},
+		{"another repository", "acme/billing", v1alpha1.PhaseInReview},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fnd := inReview()
+			fnd.Status.PullRequest.URL = ""
+			s, c := newSignals(t, fnd)
+			payload := prClosed(tc.repo, 11, tc.repo, true)
+			if err := s.Handle(t.Context(), testIntegration(), event("pull_request", payload)); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			if got := get(t, c, "finding-aa-1").Status.Phase; got != tc.wantPhase {
+				t.Errorf("phase = %q, want %q", got, tc.wantPhase)
 			}
 		})
 	}

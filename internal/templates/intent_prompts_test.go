@@ -84,7 +84,10 @@ func TestIntentPromptGoldens(t *testing.T) {
 // report in visible text only; and that the tests the agent writes are
 // part of the change it commits. A live run that was told only to leave a
 // clean tree wrote a regression test, ran it, and deleted it; a
-// commit_failed retry is told a test it wrote belongs in commit.sh.
+// commit_failed retry is told a test it wrote belongs in commit.sh. It
+// states no layout rule, which report.ParseBuild does not apply, and does
+// not tell the agent its report becomes the pull request's description,
+// which patchy renders from the approved plan.
 func TestBuildPromptStatesTheRules(t *testing.T) {
 	for _, prev := range []*PreviousAttempt{
 		nil,
@@ -108,11 +111,17 @@ func TestBuildPromptStatesTheRules(t *testing.T) {
 			"the code and every test you wrote for it",
 			"Write the whole report in plain, visible text",
 			"at most 56 KiB",
-			"no gap of more\nthan 16 spaces",
+			"writes the pull request's description itself",
 			"It is all you are given of the request",
 		} {
 			if !strings.Contains(got, want) {
 				t.Errorf("previous attempt %+v: build prompt lacks %q", prev, want)
+			}
+		}
+		for _, stale := range []string{"no gap of more", "combining marks", "becomes the pull request's"} {
+			if strings.Contains(got, stale) {
+				t.Errorf("previous attempt %+v: build prompt states %q, a rule the build report is not held to",
+					prev, stale)
 			}
 		}
 		if want := "a test you wrote, a lockfile"; prev != nil && prev.Outcome == "commit_failed" &&

@@ -373,7 +373,8 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
      and column. The approver reads the plan verbatim and its digest covers every byte, so no byte may be one the
      approver cannot see. For the same reason no visible text may sit out of view: the layout rule (see "Plan contract
      and output sanitisation") refuses padding and stacked combining marks, with where they start. The build report
-     follows the same rules.
+     follows the visible-text rule but not the layout rule: no approver reads it in a code block, and patchy renders the
+     pull request's description itself.
    - Reject a plan that names repositories outside the Project.
    - Store the raw report in the immutable ConfigMap `<intent>-plan-r1`. Its digest is the sha256 of those bytes.
    - Delete the plan Repository.
@@ -567,11 +568,20 @@ plan one backtick longer than its longest run (hence no run of more than 16 back
 approval is therefore `report_invalid` in the pod, where a retry is told why, rather than refused once recorded.
 
 The plan is read in a code block, which GitHub does not wrap, so its layout is bounded too: no gap of more than 16
-columns of spaces and tabs before more text on a line (a tab counts as 8), no indentation past 64 columns, and no more
-than 4 combining marks in a row. Without those bounds, a step padded past the block's right edge, or a stack of marks
-drawn over the lines around it, would be text the approver never saw and the build still reads. The build report is held
-to the same layout rule, as a pull-request description. The build input is not: its plan passed the rule when it was
-written, and a revise round's compare patch is source whose indentation routinely exceeds it.
+columns of blank characters before more text on a line (a tab counts as 8, and any blank character but a space as 2), no
+indentation past 64 columns, and no more than 4 combining marks in a row. A blank character is a tab, a space separator,
+or one that is not whitespace but draws as empty space: U+2800 BRAILLE PATTERN BLANK, U+1D159 MUSICAL SYMBOL NULL
+NOTEHEAD, or a private-use character. Without those bounds, a step padded past the block's right edge, or a stack of
+marks drawn over the lines around it, would be text the approver never saw and the build still reads. A line that is
+merely long is not refused: its text runs off the block's edge mid-sentence, where the approver can see there is more,
+and the approval comment counts such lines.
+
+Neither the build report nor the build input is held to the layout rule. The build report is recorded on its run, and
+the pull request's description is rendered from the approved plan, never from the report; the tool output a build quotes
+to show how it verified the change (pytest's right-aligned progress, `go tool cover -func`'s tab-aligned columns)
+routinely exceeds the bounds, and refusing it would throw away a build that had implemented and committed its plan. The
+build input's plan passed the rule when it was written, and a revise round's compare patch is source whose indentation
+routinely exceeds it.
 
 The estimates never bind the build, which runs on its grant. A plan whose estimate exceeds the build grant is posted
 with that stated beside the estimate, so the approver sees it before approving. Approving does not raise the grant: the

@@ -29,16 +29,18 @@ const (
 
 // textAlphabet is dense in what breaks YAML scalars, markdown and naive
 // bounds: colons, quotes, comment and indicator characters, backslashes,
-// multi-byte runes, and space separators (a no-break and an ideographic
-// space), which a line may hold where a line or paragraph separator may not.
+// multi-byte runes, space separators (a no-break and an ideographic
+// space), which a line may hold where a line or paragraph separator may
+// not, and blank characters that are not whitespace (a braille blank, a
+// private-use character), which a line may hold short runs of.
 var textAlphabet = []string{
 	"a", "b", "Z", "0", " ", ":", ": ", `"`, "'", "#", " #", "-", "- ", "`", "@", "\\", "{", "[", "|", ">",
 	"*", "&", "!", "%", "é", "漢", "🙂", "---", "~", "?", "\u00a0", "\u3000",
+	string(rune(0x2800)), string(rune(0xe000)),
 }
 
-// padRune reports a rune checkLayout counts in a gap: a tab or a space
-// separator.
-func padRune(r rune) bool { return r == '\t' || unicode.Is(unicode.Zs, r) }
+// padRune reports a rune checkLayout counts in a gap, as gapRun states it.
+func padRune(r rune) bool { return gapRun.MatchString(string(r)) }
 
 // writeElem appends e to b, first putting an "x" between them when b ends
 // and e starts with whitespace, or both with a backtick: a valid report
@@ -519,9 +521,7 @@ func TestBuildParseBoundedProperty(t *testing.T) {
 		if err != nil {
 			return true
 		}
-		_, _, _, outOfView := firstOutOfView(doc)
-		return len(doc) <= ReportMaxBytes && utf8.Valid(doc) && visibleDocument(doc) && !outOfView &&
-			buildWithinBounds(b)
+		return len(doc) <= ReportMaxBytes && utf8.Valid(doc) && visibleDocument(doc) && buildWithinBounds(b)
 	}
 	if err := quick.Check(bounded, cfg); err != nil {
 		t.Error(err)
@@ -717,18 +717,21 @@ func TestHiddenCharacterRefusedProperty(t *testing.T) {
 	}
 }
 
-// gapRun, markRun and tickRun match, in one line, a run of spaces and
-// tabs, of combining marks and of backticks: the properties' own statement
-// of the runs the layout rules bound, by regular expression where the
-// parsers scan rune by rune.
+// gapRun, markRun and tickRun match, in one line, a run of blank
+// characters, of combining marks and of backticks: the properties' own
+// statement of the runs the layout rules bound, by regular expression where
+// the parsers scan rune by rune. A blank character is a tab, a space
+// separator, or one that is not whitespace but draws as empty space: a
+// private-use character, U+2800 BRAILLE PATTERN BLANK or U+1D159 MUSICAL
+// SYMBOL NULL NOTEHEAD.
 var (
-	gapRun  = regexp.MustCompile(`[\t\p{Zs}]+`)
+	gapRun  = regexp.MustCompile(`[\t\p{Zs}\p{Co}\x{2800}\x{1D159}]+`)
 	markRun = regexp.MustCompile(`[\p{Mn}\p{Me}]+`)
 	tickRun = regexp.MustCompile("`+")
 )
 
-// gapColumns is the width the layout rule gives a run of spaces and tabs:
-// a space one column, a tab TabColumns, any other space separator two.
+// gapColumns is the width the layout rule gives a run of blank characters:
+// a space one column, a tab TabColumns, any other blank character two.
 func gapColumns(run string) int {
 	n := 0
 	for _, r := range run {
@@ -745,7 +748,7 @@ func gapColumns(run string) int {
 }
 
 // firstOutOfView is the properties' own scan of a document for the first
-// run the layout rule refuses: a gap of spaces and tabs with more text
+// run the layout rule refuses: a gap of blank characters with more text
 // after it on its line, wider than PadMaxColumns, or than IndentMaxColumns
 // when it indents the line; or more than CombiningMaxMarks combining marks
 // in a row. It returns where the run starts (its line, and its column in
@@ -777,6 +780,22 @@ func firstOutOfView(doc []byte) (line, column int, gap, found bool) {
 	return 0, 0, false, false
 }
 
+// gapOther returns the first blank character that is neither a space nor a
+// tab in the gap starting at line and column (as firstOutOfView places it),
+// or 0: the one a gap's refusal names.
+func gapOther(doc []byte, line, column int) rune {
+	l := strings.TrimSuffix(strings.Split(string(doc), "\n")[line-1], "\r")
+	for _, r := range []rune(l)[column-1:] {
+		if !padRune(r) {
+			break
+		}
+		if r != ' ' && r != '\t' {
+			return r
+		}
+	}
+	return 0
+}
+
 // firstLongBacktickRun finds a document's first run of more than
 // PlanMaxBacktickRun backticks: its line, column and length.
 func firstLongBacktickRun(doc []byte) (line, column, run int, found bool) {
@@ -791,11 +810,12 @@ func firstLongBacktickRun(doc []byte) (line, column, run int, found bool) {
 }
 
 // genOutOfView builds a run for the layout property to insert, as often
-// within its bound as past it: a gap of spaces and tabs (and other space
-// separators) with a visible "x" after it, which indents the line when it
-// lands at a line's start; a stack of combining marks; and, when backticks
-// is set, a run of backticks. Built from code points, so that no editor
-// renders one away.
+// within its bound as past it: a gap of blank characters — spaces and tabs,
+// other space separators, and the characters that draw as empty space
+// without being whitespace — with a visible "x" after it, which indents the
+// line when it lands at a line's start; a stack of combining marks; and,
+// when backticks is set, a run of backticks. Built from code points, so
+// that no editor renders one away.
 func genOutOfView(r *rand.Rand, backticks bool) string {
 	kind := r.Intn(3)
 	if backticks {
@@ -812,7 +832,9 @@ func genOutOfView(r *rand.Rand, backticks bool) string {
 	case 3:
 		return strings.Repeat("`", 1+r.Intn(3*PlanMaxBacktickRun))
 	}
-	pads := []string{" ", " ", " ", "\t", string(rune(0x00a0)), string(rune(0x2003)), string(rune(0x3000))}
+	pads := []string{" ", " ", " ", " ", " ", "\t", "\t", string(rune(0x00a0)), string(rune(0x2003)),
+		string(rune(0x3000)), string(rune(0x2800)), string(rune(0x1d159)), string(rune(0xe000)),
+		string(rune(0x10fffd))}
 	width := 1 + r.Intn(2*IndentMaxColumns+PadMaxColumns)
 	var b strings.Builder
 	for w := 0; w < width; {
@@ -843,95 +865,142 @@ func layoutRefusal(err error) bool {
 		strings.Contains(err.Error(), "combining marks in a row") || strings.Contains(err.Error(), "backticks, over")
 }
 
-// TestLayoutRefusedProperty: whatever a document the parser accepts holds,
-// inserting a run the layout rule bounds — a gap of whitespace before more
-// text, an indentation, a stack of combining marks, and in a plan a run of
+// layoutSpare is the room a layout property's documents keep for any run
+// genOutOfView builds.
+const layoutSpare = 1 << 10
+
+// outOfViewRefusal checks err as the refusal of the run firstOutOfView
+// found in damaged at line and column, a gap when gap is set: it must name
+// where the run starts and, for a gap, its first blank character that is
+// neither a space nor a tab, and only then. It returns the cases the
+// refusal counts as, or what is wrong with it.
+func outOfViewRefusal(err error, damaged []byte, line, column int, gap bool) (cases []string, problem string) {
+	want, what := fmt.Sprintf("line %d, column %d: ", line, column), "combining marks in a row"
+	if gap {
+		what = fmt.Sprintf("(a tab counts as %d)", TabColumns)
+	}
+	if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), what) {
+		return nil, fmt.Sprintf("error = %v, want it to name %q and %q", err, want, what)
+	}
+	if !gap {
+		return []string{"marks"}, ""
+	}
+	other, among := gapOther(damaged, line, column), "among them"
+	if other != 0 {
+		among = fmt.Sprintf(" (U+%04X among them)", other)
+	}
+	if strings.Contains(err.Error(), among) != (other != 0) {
+		return nil, fmt.Sprintf("error = %v, want it to name %q: %v", err, among, other != 0)
+	}
+	cases = []string{"gap"}
+	if strings.Contains(err.Error(), "is indented") {
+		cases[0] = "indent"
+	}
+	if other != 0 && !unicode.IsSpace(other) {
+		cases = append(cases, "blank but not whitespace")
+	}
+	return cases, ""
+}
+
+// TestLayoutRefusedProperty: whatever a plan the parser accepts holds,
+// inserting a run the layout rule bounds — a gap of blank characters before
+// more text, an indentation, a stack of combining marks, a run of
 // backticks — anywhere, is refused exactly when the properties' own scan
-// finds a run past its bound, naming where that run starts; within every
-// bound, the layout rule refuses nothing. A build report may hold a run of
-// backticks of any length: only the plan is fenced for its approver.
+// finds a run past its bound, naming where that run starts and, for a gap,
+// its first blank character that is neither a space nor a tab; within every
+// bound, the layout rule refuses nothing.
 func TestLayoutRefusedProperty(t *testing.T) {
-	const spare = 1 << 10 // room for any run genOutOfView builds
-	parsers := []struct {
-		name      string
-		seed      int64
-		gen       func(*rand.Rand, int) []byte
-		parse     func([]byte) error
-		backticks bool
-	}{
-		{"ParsePlan", propertySeed + 9, planDocumentSpare,
-			func(doc []byte) error { _, err := ParsePlan(doc); return err }, true},
-		{"ParseBuild", propertySeed + 10, buildDocumentSpare,
-			func(doc []byte) error { _, err := ParseBuild(doc); return err }, false},
+	cfg := quickConfig(propertySeed+9, func(args []reflect.Value, r *rand.Rand) {
+		doc := planDocumentSpare(r, layoutSpare)
+		args[0] = reflect.ValueOf(doc)
+		args[1] = reflect.ValueOf(insertVisible(r, doc, genOutOfView(r, r.Intn(2) == 0)))
+	})
+	parse := func(doc []byte) error { _, err := ParsePlan(doc); return err }
+	// seen counts the refusals the property checked, by what they name, so
+	// that a generator drifting off the bounds cannot leave it checking
+	// nothing.
+	seen := map[string]int{}
+	refused := func(doc, damaged []byte) bool {
+		if err := parse(doc); err != nil {
+			t.Logf("ParsePlan(valid) error = %v", err)
+			return false
+		}
+		err := parse(damaged)
+		if line, column, gap, found := firstOutOfView(damaged); found {
+			cases, problem := outOfViewRefusal(err, damaged, line, column, gap)
+			if problem != "" {
+				t.Logf("ParsePlan(damaged) %s", problem)
+				return false
+			}
+			for _, c := range cases {
+				seen[c]++
+			}
+			return true
+		}
+		if line, column, run, found := firstLongBacktickRun(damaged); found {
+			want := fmt.Sprintf("line %d, column %d: a run of %d backticks, over %d", line, column, run,
+				PlanMaxBacktickRun)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Logf("ParsePlan(damaged) error = %v, want it to name %q", err, want)
+				return false
+			}
+			seen["backticks"]++
+			return true
+		}
+		// Nothing past a bound: the insertion may have broken the
+		// frontmatter's YAML, but the layout rule refuses nothing.
+		if err != nil && layoutRefusal(err) {
+			t.Logf("ParsePlan(damaged) error = %v, want no layout refusal", err)
+			return false
+		}
+		seen["within bounds"]++
+		return true
 	}
-	for _, p := range parsers {
-		t.Run(p.name, func(t *testing.T) {
-			cfg := quickConfig(p.seed, func(args []reflect.Value, r *rand.Rand) {
-				doc := p.gen(r, spare)
-				args[0] = reflect.ValueOf(doc)
-				args[1] = reflect.ValueOf(insertVisible(r, doc, genOutOfView(r, r.Intn(2) == 0)))
-			})
-			// seen counts the refusals the property checked, by what they
-			// name, so that a generator drifting off the bounds cannot leave
-			// it checking nothing.
-			seen := map[string]int{}
-			refused := func(doc, damaged []byte) bool {
-				if err := p.parse(doc); err != nil {
-					t.Logf("%s(valid) error = %v", p.name, err)
-					return false
-				}
-				err := p.parse(damaged)
-				if line, column, gap, found := firstOutOfView(damaged); found {
-					want, what := fmt.Sprintf("line %d, column %d: ", line, column), "combining marks in a row"
-					if gap {
-						what = fmt.Sprintf("(a tab counts as %d)", TabColumns)
-					}
-					if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), what) {
-						t.Logf("%s(damaged) error = %v, want it to name %q and %q", p.name, err, want, what)
-						return false
-					}
-					switch {
-					case !gap:
-						seen["marks"]++
-					case strings.Contains(err.Error(), "is indented"):
-						seen["indent"]++
-					default:
-						seen["gap"]++
-					}
-					return true
-				}
-				if line, column, run, found := firstLongBacktickRun(damaged); found && p.backticks {
-					want := fmt.Sprintf("line %d, column %d: a run of %d backticks, over %d", line, column, run,
-						PlanMaxBacktickRun)
-					if err == nil || !strings.Contains(err.Error(), want) {
-						t.Logf("%s(damaged) error = %v, want it to name %q", p.name, err, want)
-						return false
-					}
-					seen["backticks"]++
-					return true
-				}
-				// Nothing past a bound: the insertion may have broken the
-				// frontmatter's YAML, but the layout rule refuses nothing.
-				if err != nil && layoutRefusal(err) {
-					t.Logf("%s(damaged) error = %v, want no layout refusal", p.name, err)
-					return false
-				}
-				seen["within bounds"]++
-				return true
-			}
-			if err := quick.Check(refused, cfg); err != nil {
-				t.Error(err)
-			}
-			want := []string{"gap", "indent", "marks", "within bounds"}
-			if p.backticks {
-				want = append(want, "backticks")
-			}
-			for _, k := range want {
-				if seen[k] == 0 {
-					t.Errorf("no case of %q among %v: the generator no longer reaches it", k, seen)
-				}
-			}
-			t.Logf("cases: %v", seen)
-		})
+	if err := quick.Check(refused, cfg); err != nil {
+		t.Error(err)
 	}
+	for _, k := range []string{"gap", "indent", "marks", "backticks", "blank but not whitespace", "within bounds"} {
+		if seen[k] == 0 {
+			t.Errorf("no case of %q among %v: the generator no longer reaches it", k, seen)
+		}
+	}
+	t.Logf("cases: %v", seen)
+}
+
+// TestBuildLayoutAcceptedProperty: a build report is held to the
+// visible-text rule alone, so whatever a report the parser accepts holds,
+// inserting any of the runs the plan's layout rule bounds, however far
+// past the bound, never draws a layout refusal; and a report the insertion
+// left valid YAML is accepted with the run in it.
+func TestBuildLayoutAcceptedProperty(t *testing.T) {
+	cfg := quickConfig(propertySeed+10, func(args []reflect.Value, r *rand.Rand) {
+		doc := buildDocumentSpare(r, layoutSpare)
+		args[0] = reflect.ValueOf(doc)
+		args[1] = reflect.ValueOf(insertVisible(r, doc, genOutOfView(r, r.Intn(2) == 0)))
+	})
+	seen := map[string]int{}
+	accepted := func(doc, damaged []byte) bool {
+		if _, err := ParseBuild(doc); err != nil {
+			t.Logf("ParseBuild(valid) error = %v", err)
+			return false
+		}
+		_, err := ParseBuild(damaged)
+		if err != nil && layoutRefusal(err) {
+			t.Logf("ParseBuild(damaged) error = %v, want no layout refusal", err)
+			return false
+		}
+		_, _, _, outOfView := firstOutOfView(damaged)
+		_, _, _, longRun := firstLongBacktickRun(damaged)
+		if err == nil && (outOfView || longRun) {
+			seen["accepted past the plan's bounds"]++
+		}
+		return true
+	}
+	if err := quick.Check(accepted, cfg); err != nil {
+		t.Error(err)
+	}
+	if seen["accepted past the plan's bounds"] == 0 {
+		t.Errorf("no report past the plan's layout bounds was accepted: the generator no longer reaches one")
+	}
+	t.Logf("cases: %v", seen)
 }

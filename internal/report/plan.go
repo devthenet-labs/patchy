@@ -119,6 +119,9 @@ func ParsePlan(data []byte) (*Plan, error) {
 	if err := checkDocument("plan", data); err != nil {
 		return nil, err
 	}
+	if err := checkLayout("plan", data); err != nil {
+		return nil, err
+	}
 	if err := checkBacktickRuns(data); err != nil {
 		return nil, err
 	}

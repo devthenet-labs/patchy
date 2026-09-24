@@ -57,12 +57,15 @@ invisibly or reorders text (a format character such as a zero-width space or a b
 variation selector, or another default-ignorable code point). The detail names the first one's code point, line and
 column. A human approves the plan by reading every byte of it, so nothing in it may be hidden.
 
-The two reports are also held to a layout rule, since a plan is read in a code block that does not wrap and a build
-report becomes a pull-request description: no gap of more than 16 columns of spaces and tabs before more text on a line
-(a tab counts as 8), no indentation past 64 columns, and no more than 4 combining marks in a row; the detail names where
-the run starts. A report is at most 56 KiB, its frontmatter is plain YAML (one document, no explicit tag), and a plan
-holds no run of more than 16 backticks and no new dependency over 200 bytes, so that every plan accepted here fits in
-the GitHub comment that shows it for approval. The build input is held to the visible-text rule only.
+The plan is also held to a layout rule, since it is read in a code block that does not wrap: no gap of more than 16
+columns of blank characters before more text on a line (a tab counts as 8, and any blank character but a space as 2;
+blank characters are tabs, space separators, U+2800 BRAILLE PATTERN BLANK, U+1D159 MUSICAL SYMBOL NULL NOTEHEAD and the
+private-use characters), no indentation past 64 columns, and no more than 4 combining marks in a row; the detail names
+where the run starts. A report is at most 56 KiB, its frontmatter is plain YAML (one document, no explicit tag), and a
+plan holds no run of more than 16 backticks and no new dependency over 200 bytes, so that every plan accepted here fits
+in the GitHub comment that shows it for approval. The build report and the build input are held to the visible-text rule
+only: the build report is recorded on its run, patchy renders the pull request's description from the approved plan, and
+the tool output a build quotes routinely aligns its columns past the plan's bounds.
 
 ## Stage configuration
 

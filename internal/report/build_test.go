@@ -191,11 +191,10 @@ func TestParseBuildErrors(t *testing.T) {
 	}
 }
 
-// TestParseBuildRefusesHiddenCharacters: a build report becomes the pull
-// request's description, and its free text the commit and the notes a
-// reviewer reads, so it holds a plan's rule — nothing that renders
-// invisibly or reorders text, anywhere — refused with the code point, line
-// and column.
+// TestParseBuildRefusesHiddenCharacters: a build report is recorded for
+// people to read, its notes among it, so it holds a plan's visible-text
+// rule — nothing that renders invisibly or reorders text, anywhere —
+// refused with the code point, line and column.
 func TestParseBuildRefusesHiddenCharacters(t *testing.T) {
 	refusesHiddenAt(t, "build", func(doc []byte) error { _, err := ParseBuild(doc); return err }, []hiddenSite{
 		{"in the summary", func(s string) string {

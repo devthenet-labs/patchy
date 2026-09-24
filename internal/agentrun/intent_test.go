@@ -529,6 +529,11 @@ func TestIntentStageTimeouts(t *testing.T) {
 func TestBuildOutcomes(t *testing.T) {
 	failedBuild := "---\nsuccess: false\nsummary: \"Could not build\"\ntests:\n  ran: false\n  passed: false\n" +
 		"reason: \"The plan needs golang.org/x/mod, which the image lacks.\"\n---\nNothing changed.\n"
+	// What agents paste under how they verified a change: pytest
+	// right-aligns its progress after a wide run of spaces, and go tool
+	// cover aligns its columns with tabs.
+	toolOutput := goodBuild + "\n```\ntests/test_version.py ." + strings.Repeat(" ", 48) + "[100%]\n" +
+		"example.com/app/version.go:12:\t\t\tVersion\t\t\t100.0%\n```\n"
 	tests := []struct {
 		name        string
 		step        step
@@ -550,8 +555,8 @@ func TestBuildOutcomes(t *testing.T) {
 				"commit.sh":        buildCommitScript,
 			}, repoWrite: map[string]string{"app.js": "version();\n"}},
 			envelope.OutcomeReportInvalid, false, "did not pass"},
-		// The report becomes the pull request's description: a bidi override
-		// in it is refused, and no changeset is packaged for the claim.
+		// The report is recorded for people to read: a bidi override in it is
+		// refused, and no changeset is packaged for the claim.
 		{"a report with a bidi override is an invalid report", step{stdout: streamSuccess,
 			writes: map[string]string{
 				"reports/build.md": strings.Replace(goodBuild, "Added the handler",
@@ -559,6 +564,13 @@ func TestBuildOutcomes(t *testing.T) {
 				"commit.sh": buildCommitScript,
 			}, repoWrite: map[string]string{"app.js": "version();\n"}},
 			envelope.OutcomeReportInvalid, false, "report: build: line 10, column 11: U+202E is a format character"},
+		// The plan's layout rule is not the report's: a build that implemented
+		// and committed its plan is not thrown away for the tool output it
+		// quotes.
+		{"a report quoting aligned tool output is packaged", step{stdout: streamSuccess,
+			writes:    map[string]string{"reports/build.md": toolOutput, "commit.sh": buildCommitScript},
+			repoWrite: map[string]string{"app.js": "version();\n"}},
+			envelope.OutcomeOK, true, ""},
 		{"report missing", step{stdout: streamSuccess}, envelope.OutcomeReportMissing, false, ""},
 		{"runtime error", step{stdout: streamExecError}, envelope.OutcomeRuntimeError, false, ""},
 	}
@@ -577,6 +589,9 @@ func TestBuildOutcomes(t *testing.T) {
 			}
 			if !rem.Success && rem.Changeset != nil {
 				t.Error("an unsuccessful build carries a changeset")
+			}
+			if rem.Success && rem.Changeset == nil {
+				t.Error("a successful build carries no changeset")
 			}
 		})
 	}

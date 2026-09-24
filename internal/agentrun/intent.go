@@ -367,8 +367,9 @@ func (a *Agent) build(ctx context.Context, params remediationParams) *envelope.R
 		ev.Detail = err.Error()
 		return ev
 	}
-	// Raw, frontmatter included, as a remediation's: the controller strips
-	// the fence before rendering the pull-request body.
+	// Raw, frontmatter included, as a remediation's. The controller records
+	// it on the run; the pull request's body is its own, rendered from the
+	// approved plan, never from this report.
 	ev.ReportMarkdown = string(raw)
 	ev.Outcome = envelope.OutcomeOK
 

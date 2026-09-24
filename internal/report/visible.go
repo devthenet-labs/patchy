@@ -124,28 +124,28 @@ func checkVisible(kind string, data []byte) error {
 	return nil
 }
 
-// Layout bounds every intent report shares (checkLayout).
+// Layout bounds a plan is held to (checkLayout).
 const (
-	// PadMaxColumns bounds a gap of spaces and tabs between two characters
-	// of one line, in columns (TabColumns).
+	// PadMaxColumns bounds a gap of blank characters (blank) between two
+	// characters of one line, in columns (TabColumns).
 	PadMaxColumns = 16
 	// IndentMaxColumns bounds a line's indentation before its first
 	// character, in columns.
 	IndentMaxColumns = 64
 	// TabColumns is the width a tab counts as: GitHub's default tab size,
-	// and a terminal's. Any other space but U+0020 counts as two columns,
-	// the widest of them (an ideographic space, an em quad).
+	// and a terminal's. Any other blank character but U+0020 counts as two
+	// columns, the widest of them (an ideographic space, an em quad).
 	TabColumns = 8
 	// CombiningMaxMarks bounds the combining marks in a row, nonspacing or
 	// enclosing, stacked on one character.
 	CombiningMaxMarks = 4
 )
 
-// layoutError refuses an intent report for text a reader would not see
-// though every character of it is visible: text pushed out of view by
-// whitespace, or a stack of combining marks drawn over the text around it.
+// layoutError refuses a plan for text a reader would not see though every
+// character of it is visible: text pushed out of view by blank space, or a
+// stack of combining marks drawn over the text around it.
 type layoutError struct {
-	// kind is the report: "plan" or "build".
+	// kind is the report the rule holds: "plan".
 	kind string
 	// line and column place the start of the offending run, as hiddenError
 	// places a character.
@@ -155,39 +155,50 @@ type layoutError struct {
 	width  int
 	indent bool
 	marks  int
+	// other is the gap's first blank character that is neither a space nor
+	// a tab, or 0: named, because a reader told only of spaces and tabs
+	// would not know to look for a no-break space or a braille blank.
+	other rune
 }
 
 func (e *layoutError) Error() string {
 	at := fmt.Sprintf("report: %s: line %d, column %d: ", e.kind, e.line, e.column)
+	var among string
+	if e.other != 0 {
+		among = fmt.Sprintf(" (U+%04X among them)", e.other)
+	}
 	switch {
 	case e.marks > 0:
 		return at + fmt.Sprintf("%d combining marks in a row, over %d: stacked that high they draw over "+
 			"the text around them", e.marks, CombiningMaxMarks)
 	case e.indent:
-		return at + fmt.Sprintf("the line is indented %d columns, over %d (a tab counts as %d): a code "+
-			"block does not wrap, so text indented that far sits out of the reader's view",
-			e.width, IndentMaxColumns, TabColumns)
+		return at + fmt.Sprintf("the line is indented %d columns of blank characters%s, over %d (a tab "+
+			"counts as %d): a code block does not wrap, so text indented that far sits out of the reader's view",
+			e.width, among, IndentMaxColumns, TabColumns)
 	}
-	return at + fmt.Sprintf("a gap of %d columns of spaces and tabs before more text, over %d (a tab "+
-		"counts as %d): a code block does not wrap, so text past a gap that wide sits out of the reader's view",
-		e.width, PadMaxColumns, TabColumns)
+	return at + fmt.Sprintf("a gap of %d columns of spaces, tabs or other blank characters%s before more "+
+		"text, over %d (a tab counts as %d): a code block does not wrap, so text past a gap that wide sits "+
+		"out of the reader's view", e.width, among, PadMaxColumns, TabColumns)
 }
 
-// checkLayout refuses a document that lays visible text out where its
-// reader would not see it. The approver reads a plan verbatim, in a code
-// block, and GitHub renders a code block unwrapped, scrolling sideways —
-// often with no scroll bar shown — so text after a wide gap of spaces or
-// tabs sits past the block's right edge while the line before it looks
-// complete; and a tall stack of combining marks draws over the lines around
-// it. A build report becomes a pull request's description, whose code
-// blocks render the same way. So:
+// checkLayout refuses a plan that lays visible text out where its approver
+// would not see it. The approver reads a plan verbatim, in a code block, and
+// GitHub renders a code block unwrapped, scrolling sideways — often with no
+// scroll bar shown — so text after a wide gap of blank characters sits past
+// the block's right edge while the line before it looks complete; and a
+// tall stack of combining marks draws over the lines around it. So:
 //
-//   - a gap of spaces and tabs before more text on its line is at most
-//     PadMaxColumns wide, or IndentMaxColumns when it is the line's
-//     indentation — a tab counting as TabColumns, any other space but
-//     U+0020 as two; whitespace that ends a line hides nothing, and is not
-//     bounded;
+//   - a gap of blank characters (blank) before more text on its line is at
+//     most PadMaxColumns wide, or IndentMaxColumns when it is the line's
+//     indentation — a tab counting as TabColumns, any other blank character
+//     but U+0020 as two; blank space that ends a line hides nothing, and is
+//     not bounded;
 //   - at most CombiningMaxMarks combining marks (Mn, Me) stand in a row.
+//
+// A long line is not refused for its length: prose runs off the block's
+// edge mid-text, where the approver can see there is more, and the approval
+// comment counts such lines. A gap is what makes a cut-off line look
+// finished, so a gap is what the rule bounds.
 //
 // checkVisible has run first, so data is valid UTF-8 and every carriage
 // return in it ends a CRLF.
@@ -206,18 +217,22 @@ func checkLayout(kind string, data []byte) error {
 func lineLayout(line string) *layoutError {
 	column := 0
 	gap, gapStart := 0, 0
+	var gapOther rune
 	marks, marksStart := 0, 0
 	for _, r := range line {
 		column++
 		switch {
-		case r == '\t' || unicode.Is(unicode.Zs, r):
+		case blank(r):
 			if gap == 0 {
-				gapStart = column
+				gapStart, gapOther = column, 0
+			}
+			if gapOther == 0 && r != ' ' && r != '\t' {
+				gapOther = r
 			}
 			gap += padColumns(r)
 		case gap > 0:
 			if gap > padLimit(gapStart) {
-				return &layoutError{column: gapStart, width: gap, indent: gapStart == 1}
+				return &layoutError{column: gapStart, width: gap, indent: gapStart == 1, other: gapOther}
 			}
 			gap = 0
 		}
@@ -239,7 +254,27 @@ func lineLayout(line string) *layoutError {
 	return nil
 }
 
-// padColumns is the width a space or a tab counts as.
+// blank reports a character checkLayout counts in a gap: one that takes a
+// column and draws as empty space. That is a tab, a space separator (Zs),
+// and the characters that are not whitespace but draw no ink in the fonts a
+// browser picks for them: U+2800 BRAILLE PATTERN BLANK and U+1D159 MUSICAL
+// SYMBOL NULL NOTEHEAD, which are symbols (So), and the private-use
+// characters (Co), which have no standard glyph and in many fonts draw as
+// nothing. None of them is hidden — each is a character a reader could
+// see, if it showed anything — so checkVisible admits them, and only a run
+// of them before more text is refused: padded with them, a line looks
+// finished while text sits past the code block's right edge. The
+// characters that render as nothing and take no column (hidden),
+// checkVisible has refused already.
+func blank(r rune) bool {
+	switch r {
+	case '\t', 0x2800, 0x1d159:
+		return true
+	}
+	return unicode.In(r, unicode.Zs, unicode.Co)
+}
+
+// padColumns is the width a blank character counts as.
 func padColumns(r rune) int {
 	switch r {
 	case ' ':

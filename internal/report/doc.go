@@ -10,8 +10,9 @@
 // human approves) is derived from these files. The intent reports are also
 // bounded end to end — every field, the body and the whole document —
 // because their text is posted to GitHub and recorded on status, and they
-// hold only visible text, laid out in view: a document with a character
-// that renders invisibly or reorders text, anywhere, or with text pushed
-// out of view by padding or drawn over by stacked marks, is refused,
-// because a human approves a plan by reading every byte of it.
+// hold only visible text: a document with a character that renders
+// invisibly or reorders text, anywhere, is refused. A plan is also laid out
+// in view — one with text pushed out of view by padding or drawn over by
+// stacked marks is refused — because a human approves it by reading every
+// byte of it, in a code block that does not wrap.
 package report

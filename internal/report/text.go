@@ -45,20 +45,18 @@ const (
 
 // checkDocument applies the bounds every intent report shares before any of
 // it is parsed: the whole document's size, then what it may hold
-// (checkVisible) and how it may lay its text out (checkLayout). Invalid
-// UTF-8, invisible characters and text pushed out of view are refused
-// rather than repaired, because the report's exact bytes are what the
-// plan's approval digest is taken over — a repair would change what was
-// approved, and JSON would silently rewrite invalid UTF-8 on the way out of
-// the pod.
+// (checkVisible). Invalid UTF-8 and invisible characters are refused rather
+// than repaired, because the report's exact bytes are what the plan's
+// approval digest is taken over — a repair would change what was approved,
+// and JSON would silently rewrite invalid UTF-8 on the way out of the pod.
+// How a report lays its text out (checkLayout) only the plan is held to:
+// only the plan is read verbatim, in a code block, by the human approving
+// what the build will do.
 func checkDocument(kind string, data []byte) error {
 	if len(data) > ReportMaxBytes {
 		return fmt.Errorf("report: %s: %d bytes, over the %d-byte bound", kind, len(data), ReportMaxBytes)
 	}
-	if err := checkVisible(kind, data); err != nil {
-		return err
-	}
-	return checkLayout(kind, data)
+	return checkVisible(kind, data)
 }
 
 // checkBody applies the body bound.

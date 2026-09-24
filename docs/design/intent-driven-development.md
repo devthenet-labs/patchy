@@ -749,7 +749,10 @@ The waves:
   - Kustomize opt-in component, goreleaser entries, the `policy_test` skip-list entry and CLI Kinds.
   - Docs: a DESIGN.md section, CLAUDE.md orientation, and a configuration page.
   - e2e: drive fakegithub state from `Pending` to `Merged`, asserting Job shapes, pushes and PRs, and run one existing
-    Finding e2e with intent-controller running.
+    Finding e2e with intent-controller running. The harness Forge already authenticates as a GitHub App against
+    fakegithub, which holds every token it mints to that token's repositories and permissions (403 "Resource not
+    accessible by integration" outside them) and attributes installation-token writes to the bot. So `TokenWith`,
+    `BotLogin` and the per-operation scoping all run in e2e, and a call made with the wrong token fails there.
 
 **Estimate.** 1a is about 6-8 working days and 1b about 4-5, each including its regression gates. Intents are enabled on
 devthenet-dev in a separate Helm upgrade from the release that ships them.

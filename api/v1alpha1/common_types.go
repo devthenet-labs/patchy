@@ -43,6 +43,13 @@ const (
 	LabelEvaluation = "patchy.bitwisemedia.uk/evaluation"
 	// LabelUnitIndex carries the unit's 0-based index within its Evaluation.
 	LabelUnitIndex = "patchy.bitwisemedia.uk/unit-index"
+	// LabelIntent names the owning Intent on IntentRuns and on the
+	// Repositories intent-controller creates. Intent Repositories never
+	// carry LabelFinding, so the Finding flow's mappers ignore them.
+	LabelIntent = "patchy.bitwisemedia.uk/intent"
+	// LabelIntentRun names the owning IntentRun on the Repositories
+	// intent-controller creates.
+	LabelIntentRun = "patchy.bitwisemedia.uk/intent-run"
 
 	// AnnotationRepo carries the true "owner/name" on Investigation and
 	// Remediation children (label values cannot hold it), so the rollup can

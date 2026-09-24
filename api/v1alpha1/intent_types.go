@@ -1,0 +1,527 @@
+// Copyright 2026 Bitwise Media Group Ltd.
+// SPDX-License-Identifier: MIT
+
+package v1alpha1
+
+import (
+	"fmt"
+	"slices"
+	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// IntentBranchPrefix prefixes every branch intent-controller creates in an
+// app repository (patchy-intent/<intent>). It deliberately never matches the
+// Finding flow's "patchy/" branch check, so the Finding pull-request handler
+// can never act on an intent pull request.
+const IntentBranchPrefix = "patchy-intent/"
+
+// MaxIntentPhaseTimes bounds status.phaseTimes. Replans and review rounds
+// are human-driven and so unbounded in number; SetIntentPhase keeps the most
+// recent entries so the log can never outgrow the schema's MaxItems.
+const MaxIntentPhaseTimes = 64
+
+// IntentPhase is the lifecycle of one intent. It is a local enum, not part of
+// the Finding phase taxonomy in transitions.go, and its edge table
+// (intentTransitions below) is separate from Finding's: intent-controller is
+// the single writer of every edge.
+// +kubebuilder:validation:Enum=Pending;Planning;AwaitingApproval;Building;InReview;Revising;Blocked;Merged;Closed;Failed
+type IntentPhase string
+
+// Intent phases.
+const (
+	// IntentPending: discovered, the trigger's authority not yet decided.
+	IntentPending IntentPhase = "Pending"
+	// IntentPlanning: a plan run is pending, running, or being written back.
+	IntentPlanning IntentPhase = "Planning"
+	// IntentAwaitingApproval: the plan is posted on the issue; waiting for an
+	// approver's approval (or a replan request).
+	IntentAwaitingApproval IntentPhase = "AwaitingApproval"
+	// IntentBuilding: the approved plan is being built into a changeset,
+	// pushed, and opened as pull requests.
+	IntentBuilding IntentPhase = "Building"
+	// IntentInReview: every pull request is open; waiting on reviews, checks
+	// and merge.
+	IntentInReview IntentPhase = "InReview"
+	// IntentRevising: a revise or check-fix round is running against the
+	// pull request head.
+	IntentRevising IntentPhase = "Revising"
+	// IntentBlocked: a limit or a precondition stops progress (revision
+	// limit, cost ceiling, missing or rejected repository image, tripped
+	// sandbox breaker, repeated check failure); the conditions say which.
+	// Re-evaluated when the Project changes, so raising a limit resumes the
+	// intent in the phase it was blocked from (IntentBlockedFrom).
+	IntentBlocked IntentPhase = "Blocked"
+	// IntentMerged: every pull request merged; the issue is closed as
+	// completed. Terminal.
+	IntentMerged IntentPhase = "Merged"
+	// IntentClosed: a human closed the issue or ran /patchy cancel, every
+	// pull request was closed unmerged, or the trigger was not an
+	// approver's. Terminal.
+	IntentClosed IntentPhase = "Closed"
+	// IntentFailed: plan or build attempts exhausted, or the plan was
+	// invalid twice. Stamps completedAt, but an approver re-applying the
+	// trigger label revives it to Planning.
+	IntentFailed IntentPhase = "Failed"
+)
+
+// intentTransitions is the Intent's legal edge table. Every edge has one
+// writer component, intent-controller; the reconciler and the reason are
+// noted per edge:
+//
+//   - ""→Pending: the intent reconciler's first status write on an Intent the
+//     project reconciler created (the create itself is spec-only).
+//   - Pending→Planning: the trigger label was applied by an approver.
+//   - Pending→Closed: the trigger was not an approver's (or was a Bot's); one
+//     notice is posted.
+//   - Planning→AwaitingApproval: a valid plan was posted on the issue.
+//   - Planning→Failed: plan attempts exhausted, or the plan invalid twice.
+//   - AwaitingApproval→Building: an approval was accepted (approve label or
+//     /patchy approve, bound to the plan and input digests).
+//   - AwaitingApproval→Planning: an approver asked for a replan (re-applied
+//     the trigger label or ran /patchy replan).
+//   - Building→InReview: every pull request is open.
+//   - Building→Failed: build attempts exhausted.
+//   - InReview→Revising: a review round, /patchy revise, or a check-fix round
+//     started (slice 1b).
+//   - Revising→InReview: the round pushed, or failed (a condition is set and
+//     a notice posted; a failed round never fails the intent).
+//   - InReview→Merged: every pull request merged.
+//   - every non-terminal phase→Blocked: a limit or precondition stopped it.
+//   - Blocked→the phase it was blocked from: the Project changed and the
+//     block no longer holds (IntentBlockedFrom names the target).
+//   - every non-terminal phase→Closed: a human closed the issue or ran
+//     /patchy cancel, or every pull request was closed unmerged.
+//   - Failed→Planning: revival — an approver re-applied the trigger label.
+var intentTransitions = map[IntentPhase][]IntentPhase{
+	"":                     {IntentPending},
+	IntentPending:          {IntentPlanning, IntentBlocked, IntentClosed},
+	IntentPlanning:         {IntentAwaitingApproval, IntentBlocked, IntentClosed, IntentFailed},
+	IntentAwaitingApproval: {IntentBuilding, IntentPlanning, IntentBlocked, IntentClosed},
+	IntentBuilding:         {IntentInReview, IntentBlocked, IntentClosed, IntentFailed},
+	IntentInReview:         {IntentRevising, IntentMerged, IntentBlocked, IntentClosed},
+	IntentRevising:         {IntentInReview, IntentBlocked, IntentClosed},
+	IntentBlocked: {
+		IntentPending, IntentPlanning, IntentAwaitingApproval,
+		IntentBuilding, IntentInReview, IntentRevising, IntentClosed,
+	},
+	IntentMerged: nil,
+	IntentClosed: nil,
+	IntentFailed: {IntentPlanning}, // revival by an approver's trigger label
+}
+
+// intentTerminal is the set of phases that complete an Intent for TTL
+// purposes (status.completedAt is set on entry). Merged and Closed have no
+// outgoing edges; Failed is revivable, and revival clears completedAt.
+// Blocked is NOT terminal: a blocked intent waits for a human and must not
+// expire while it does.
+var intentTerminal = map[IntentPhase]bool{
+	IntentMerged: true,
+	IntentClosed: true,
+	IntentFailed: true,
+}
+
+// CanTransitionIntent reports whether moving an Intent from phase `from` to
+// `to` is legal. The empty phase means a new Intent. Self-transitions are
+// always legal no-ops.
+func CanTransitionIntent(from, to IntentPhase) bool {
+	if from == to {
+		return true
+	}
+	return slices.Contains(intentTransitions[from], to)
+}
+
+// IntentTerminal reports whether the phase completes an Intent (starts its
+// TTL). Failed is terminal but revivable.
+func IntentTerminal(p IntentPhase) bool {
+	return intentTerminal[p]
+}
+
+// IntentBlockedFrom returns the phase a Blocked intent resumes to once its
+// block no longer holds — the phase it was blocked from — or "" when the
+// Intent is not Blocked or its history holds no earlier phase. Blocked has
+// no self-entries in phaseTimes (self-transitions do not append), so the
+// latest non-Blocked entry is always the one immediately before it.
+func IntentBlockedFrom(i *Intent) IntentPhase {
+	if i.Status.Phase != IntentBlocked {
+		return ""
+	}
+	prior := IntentPhase("")
+	for _, pt := range i.Status.PhaseTimes {
+		if pt.Phase != IntentBlocked {
+			prior = pt.Phase
+		}
+	}
+	return prior
+}
+
+// SetIntentPhase moves the Intent to phase `to` at time `now`: it validates
+// the transition, appends to status.phaseTimes (keeping the newest
+// MaxIntentPhaseTimes entries), and maintains status.completedAt (set on
+// terminal entry, cleared on revival — the TTL contract is completedAt +
+// TTL). Callers running under conflict retry must call SetIntentPhase again
+// after every re-Get so the transition is re-validated against fresh state;
+// an illegal transition returns an error and mutates nothing.
+func SetIntentPhase(i *Intent, to IntentPhase, now time.Time) error {
+	from := i.Status.Phase
+	if !CanTransitionIntent(from, to) {
+		return fmt.Errorf("illegal intent transition %q -> %q", from, to)
+	}
+	if from == to {
+		return nil
+	}
+	t := metav1.NewTime(now)
+	i.Status.Phase = to
+	times := append(i.Status.PhaseTimes, IntentPhaseTime{Phase: to, At: t})
+	if over := len(times) - MaxIntentPhaseTimes; over > 0 {
+		times = slices.Clone(times[over:])
+	}
+	i.Status.PhaseTimes = times
+	if IntentTerminal(to) {
+		i.Status.CompletedAt = &t
+	} else {
+		i.Status.CompletedAt = nil
+	}
+	return nil
+}
+
+// IntentIssue locates the intent issue: the human-written task.
+type IntentIssue struct {
+	// Repository is the https URL of the intent repository, copied from the
+	// Project's spec.intentRepository at creation.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:Pattern=`^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$`
+	Repository string `json:"repository"`
+	// Number of the issue.
+	// +kubebuilder:validation:Minimum=1
+	Number int64 `json:"number"`
+	// URL is the issue's html URL, for display.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:Pattern=`^https://`
+	URL string `json:"url,omitempty"`
+}
+
+// IntentRequest records who triggered the intent, as GitHub's issue events
+// API reports it — never a handler-time stamp, which is not evidence of
+// ordering under webhook redelivery and replay.
+type IntentRequest struct {
+	// Login of the actor that applied the trigger label. It may be anyone,
+	// including a Bot ("<name>[bot]"): the intent reconciler decides
+	// authority from it, and a non-approver's trigger closes the Intent.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9_.-]*(\[bot\])?$`
+	Login string `json:"login"`
+	// At is the labeled event's created_at.
+	At metav1.Time `json:"at"`
+	// EventID is the GitHub id of the labeled issue event.
+	// +kubebuilder:validation:Minimum=1
+	EventID int64 `json:"eventID"`
+}
+
+// IntentSpec identifies one intent issue. intent-controller writes it once,
+// at creation; it is immutable except spec.suspend, which humans may patch
+// with the native verb (CEL-enforced per field, so a mutation of any other
+// field is refused at admission).
+type IntentSpec struct {
+	// Project names the Project this intent belongs to (the Project whose
+	// trigger label the issue carries).
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.project is immutable"
+	Project string `json:"project"`
+	// Issue is the intent issue.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.issue is immutable"
+	Issue IntentIssue `json:"issue"`
+	// RequestedBy is who applied the trigger label, from the issue events.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.requestedBy is immutable"
+	RequestedBy IntentRequest `json:"requestedBy"`
+	// Suspend pauses the intent (human-written): no run is launched and
+	// nothing is written to GitHub for it until cleared. Running Jobs
+	// finish.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
+}
+
+// IntentPhaseTime records when the intent entered a phase.
+type IntentPhaseTime struct {
+	// Phase entered.
+	Phase IntentPhase `json:"phase"`
+	// At is the entry time.
+	At metav1.Time `json:"at"`
+}
+
+// IntentInput is the immutable snapshot of the issue a plan was made from.
+type IntentInput struct {
+	// Revision of the snapshot, 1-based; a replan takes a new one.
+	// +kubebuilder:validation:Minimum=1
+	Revision int32 `json:"revision"`
+	// Digest is the sha256 of the snapshot bytes; an approval is bound to
+	// it, and a changed issue body refuses the approval.
+	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
+	Digest string `json:"digest"`
+	// ConfigMap names the immutable ConfigMap holding the snapshot
+	// (<intent>-input-r<revision>): the issue title and body, plus, on a
+	// replan, the approvers' comments since the previous plan.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	ConfigMap string `json:"configMap"`
+}
+
+// IntentPlan is the plan posted for approval.
+type IntentPlan struct {
+	// Revision of the plan, 1-based.
+	// +kubebuilder:validation:Minimum=1
+	Revision int32 `json:"revision"`
+	// Digest is the sha256 of the raw plan report bytes stored in
+	// ConfigMap; the build run re-hashes them at launch and refuses a
+	// mismatch.
+	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
+	Digest string `json:"digest"`
+	// ConfigMap names the immutable ConfigMap holding the raw plan report
+	// (<intent>-plan-r<revision>).
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	ConfigMap string `json:"configMap"`
+	// CommentID is GitHub's id of the posted plan comment; zero until
+	// posted.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	CommentID int64 `json:"commentID,omitempty"`
+	// CommentDigest is the sha256 of the comment body as GitHub returned it
+	// when posted. The approval re-fetches the comment and refuses if it no
+	// longer hashes to this, so the builder builds what the approver saw.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
+	CommentDigest string `json:"commentDigest,omitempty"`
+	// PostedAt is the comment's created_at as GitHub returned it; only an
+	// approval event strictly after it counts.
+	// +optional
+	PostedAt *metav1.Time `json:"postedAt,omitempty"`
+	// Summary is the plan's one-line summary from its frontmatter.
+	// +optional
+	// +kubebuilder:validation:MaxLength=200
+	Summary string `json:"summary,omitempty"`
+	// Repositories are the URLs of the Project repositories the plan
+	// touches (a subset of the Project's; a plan naming any other is
+	// rejected).
+	// +optional
+	// +kubebuilder:validation:MaxItems=8
+	// +listType=set
+	// +kubebuilder:validation:items:MaxLength=256
+	Repositories []string `json:"repositories,omitempty"`
+}
+
+// IntentApproval records the accepted approval and exactly what it approved.
+type IntentApproval struct {
+	// By is the approver's login. Only an approver's approval is ever
+	// accepted, and a Bot never is, so the pattern admits no "[bot]".
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9_.-]*$`
+	By string `json:"by"`
+	// EventID is GitHub's id of the approving action: the labeled issue
+	// event for the approve label, or the comment carrying /patchy approve.
+	// +kubebuilder:validation:Minimum=1
+	EventID int64 `json:"eventID"`
+	// At is the approving action's created_at, as GitHub reports it.
+	At metav1.Time `json:"at"`
+	// PlanRevision is the plan revision approved.
+	// +kubebuilder:validation:Minimum=1
+	PlanRevision int32 `json:"planRevision"`
+	// PlanDigest is the digest of the plan approved.
+	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
+	PlanDigest string `json:"planDigest"`
+	// InputDigest is the digest of the issue snapshot the plan was made
+	// from.
+	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
+	InputDigest string `json:"inputDigest"`
+}
+
+// IntentPullRequest is one pull request patchy opened for the intent. Pull
+// requests are correlated only by the (repository, number, nodeID) recorded
+// here when patchy opened them — never by head ref, and never a fork's.
+type IntentPullRequest struct {
+	// Repository is the https URL of the app repository the pull request
+	// is in (one of the Project's repositories); the list key.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	Repository string `json:"repository"`
+	// Number of the pull request.
+	// +kubebuilder:validation:Minimum=1
+	Number int64 `json:"number"`
+	// URL is the pull request's html URL.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	URL string `json:"url,omitempty"`
+	// NodeID is GitHub's global node id of the pull request.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	NodeID string `json:"nodeID,omitempty"`
+	// HeadSHA is the head commit last observed (patchy's push, or a human's
+	// since).
+	// +optional
+	// +kubebuilder:validation:Pattern=`^([0-9a-f]{40}|[0-9a-f]{64})$`
+	HeadSHA string `json:"headSHA,omitempty"`
+	// State of the pull request.
+	// +optional
+	// +kubebuilder:validation:Enum=open;merged;closed
+	State string `json:"state,omitempty"`
+	// MergedAt is when the pull request merged.
+	// +optional
+	MergedAt *metav1.Time `json:"mergedAt,omitempty"`
+	// MergeCommitSHA is the commit the merge put on the base branch.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^([0-9a-f]{40}|[0-9a-f]{64})$`
+	MergeCommitSHA string `json:"mergeCommitSHA,omitempty"`
+}
+
+// IntentUsage totals the agent spend of every run of the intent. Money is
+// int64 micro-USD (structural schemas forbid floats, and a sum of decimal
+// strings would round); zeroes mean nothing was reported.
+type IntentUsage struct {
+	// CostMicroUSD is the summed harness-reported cost in micro-USD,
+	// checked against the Project's maxCostMicroUSD before every launch.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	CostMicroUSD int64 `json:"costMicroUSD,omitempty"`
+	// InputTokens consumed.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	InputTokens int64 `json:"inputTokens,omitempty"`
+	// OutputTokens produced.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	OutputTokens int64 `json:"outputTokens,omitempty"`
+	// CacheReadTokens read from prompt cache.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	CacheReadTokens int64 `json:"cacheReadTokens,omitempty"`
+	// CacheCreationTokens written to prompt cache.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	CacheCreationTokens int64 `json:"cacheCreationTokens,omitempty"`
+}
+
+// IntentTracking locates the one status comment kept on the intent issue.
+type IntentTracking struct {
+	// StatusCommentID is GitHub's id of the status comment, posted exactly
+	// once (marker <!-- patchy:intent <project>/<issue> -->) and edited
+	// thereafter.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	StatusCommentID int64 `json:"statusCommentID,omitempty"`
+	// StatusDigest is the sha256 of the body last written to it, so an
+	// unchanged status is never re-written.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
+	StatusDigest string `json:"statusDigest,omitempty"`
+}
+
+// IntentStatus is the intent's observed state. Written only by
+// intent-controller's intent reconciler.
+type IntentStatus struct {
+	// Phase of the lifecycle (see intentTransitions for edges and writers).
+	// +optional
+	Phase IntentPhase `json:"phase,omitempty"`
+	// PhaseTimes is the phase entry log, newest last, bounded to the most
+	// recent MaxIntentPhaseTimes entries.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	PhaseTimes []IntentPhaseTime `json:"phaseTimes,omitempty"`
+	// Conditions of the intent: BudgetExhausted, RevisionLimitReached,
+	// ImageRequired, ApprovalRejected and (slice 1b) ChecksFailing.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	// +kubebuilder:validation:MaxItems=16
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	// ObservedGeneration is the last spec generation acted on.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// Input is the current issue snapshot.
+	// +optional
+	Input *IntentInput `json:"input,omitempty"`
+	// Plan is the current plan.
+	// +optional
+	Plan *IntentPlan `json:"plan,omitempty"`
+	// Approval is the accepted approval of the current plan; nil until one
+	// is accepted, and cleared by a replan.
+	// +optional
+	Approval *IntentApproval `json:"approval,omitempty"`
+	// Branch is the branch every pull request of the intent is opened from:
+	// patchy-intent/<intent>, created once and then only fast-forwarded.
+	// +optional
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^patchy-intent/[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`
+	Branch string `json:"branch,omitempty"`
+	// PullRequests are the pull requests patchy opened, one per app
+	// repository.
+	// +optional
+	// +listType=map
+	// +listMapKey=repository
+	// +kubebuilder:validation:MaxItems=8
+	PullRequests []IntentPullRequest `json:"pullRequests,omitempty"`
+	// Revisions counts completed review-driven revise rounds, against the
+	// Project's maxRevisions.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	Revisions int32 `json:"revisions,omitempty"`
+	// CheckFixes counts check-fix rounds, against the Project's
+	// maxCheckFixes (slice 1b).
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	CheckFixes int32 `json:"checkFixes,omitempty"`
+	// Usage totals the spend of every run.
+	// +optional
+	Usage IntentUsage `json:"usage,omitempty"`
+	// Tracking locates the status comment on the intent issue.
+	// +optional
+	Tracking *IntentTracking `json:"tracking,omitempty"`
+	// ActiveRun points at the IntentRun currently holding the run lease
+	// (the lease itself is the deterministic IntentRun create).
+	// +optional
+	ActiveRun *ObjectReference `json:"activeRun,omitempty"`
+	// CompletedAt is set on terminal-phase entry and cleared on revival;
+	// the TTL contract is completedAt + TTL.
+	// +optional
+	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:categories=patchy
+// +kubebuilder:printcolumn:name="Project",type=string,JSONPath=`.spec.project`
+// +kubebuilder:printcolumn:name="Issue",type=string,JSONPath=`.spec.issue.url`
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="PRs",type=string,JSONPath=`.status.pullRequests[*].url`,description="The first pull request (slice 1 opens exactly one)"
+// +kubebuilder:printcolumn:name="Revisions",type=integer,JSONPath=`.status.revisions`
+// +kubebuilder:printcolumn:name="Cost",type=integer,JSONPath=`.status.usage.costMicroUSD`,description="Total spend in micro-USD"
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// Intent is one unit of human-requested development work: an issue in a
+// Project's intent repository carried from plan, through a human approval,
+// to built pull requests and their merge. It is the state machine for that
+// work (a local phase enum, single writer intent-controller), owns one
+// immutable IntentRun per agent attempt, and expires on a TTL after
+// completion. The issue is the human-facing projection.
+type Intent struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec IntentSpec `json:"spec"`
+	// +optional
+	Status IntentStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// IntentList contains a list of Intent.
+type IntentList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []Intent `json:"items"`
+}

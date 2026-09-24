@@ -36,7 +36,10 @@ func addKnownTypes(s *runtime.Scheme) error {
 		&FindingRollup{}, &FindingRollupList{},
 		&Forge{}, &ForgeList{},
 		&Integration{}, &IntegrationList{},
+		&Intent{}, &IntentList{},
+		&IntentRun{}, &IntentRunList{},
 		&Investigation{}, &InvestigationList{},
+		&Project{}, &ProjectList{},
 		&Remediation{}, &RemediationList{},
 		&Repository{}, &RepositoryList{},
 	)

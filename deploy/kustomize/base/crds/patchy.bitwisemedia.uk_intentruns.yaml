@@ -1,0 +1,547 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: intentruns.patchy.bitwisemedia.uk
+spec:
+  group: patchy.bitwisemedia.uk
+  names:
+    categories:
+    - patchy
+    kind: IntentRun
+    listKind: IntentRunList
+    plural: intentruns
+    shortNames:
+    - irun
+    singular: intentrun
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.intentRef.name
+      name: Intent
+      type: string
+    - jsonPath: .spec.stage
+      name: Stage
+      type: string
+    - jsonPath: .spec.round
+      name: Round
+      type: integer
+    - jsonPath: .spec.attempt
+      name: Attempt
+      type: integer
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.outcome
+      name: Outcome
+      type: string
+    - jsonPath: .spec.repository.url
+      name: Repository
+      priority: 1
+      type: string
+    - jsonPath: .spec.trigger
+      name: Trigger
+      priority: 1
+      type: string
+    - jsonPath: .status.usage.costUSD
+      name: Cost
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          IntentRun is one immutable attempt of one agent stage (plan, build or
+          revise) on one repository for an Intent, which owns it. It carries the
+          jobs finalizer and owns its Repository, its input ConfigMap and its
+          transcript; the changeset itself never appears here.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              IntentRunSpec identifies one attempt of one stage on one repository. It is
+              immutable — a new attempt is a new IntentRun (CEL-enforced) — and
+              intent-controller writes it once, at creation. Creating it under its
+              deterministic name is the run lease:
+
+                - plan:   <intent>-plan-r<round>-a<attempt>
+                - build:  <intent>-bld-<repository key>-a<attempt>
+                - revise: <intent>-rev<round>-<repository key>-a<attempt>
+
+              Beyond immutability the schema holds the stage invariants the design's
+              security posture rests on, so a malformed run record is refused at
+              admission rather than launched: a build or revise run always pins an
+              approved plan, and a revise run always names its trigger and takes its
+              image from the build round's Repository.
+            properties:
+              attempt:
+                description: Attempt ordinal within the round, 1-based.
+                format: int32
+                maximum: 16
+                minimum: 1
+                type: integer
+              grant:
+                description: Grant bounds the run.
+                properties:
+                  maxTurns:
+                    description: MaxTurns granted.
+                    format: int32
+                    maximum: 1000
+                    minimum: 0
+                    type: integer
+                  timeoutMilliseconds:
+                    description: |-
+                      TimeoutMilliseconds bounds the stage's wall clock, inside the Job
+                      deadline (itself inside the broker caller token's lifetime), at most
+                      24h.
+                    format: int64
+                    maximum: 86400000
+                    minimum: 0
+                    type: integer
+                  tokenBudget:
+                    description: TokenBudget granted (output tokens; the runner's
+                      kill switch).
+                    format: int64
+                    maximum: 100000000
+                    minimum: 0
+                    type: integer
+                type: object
+              imageFrom:
+                description: |-
+                  ImageFrom is the build round's Repository (UID-pinned), whose
+                  accepted runner image a revise run launches on — never the image the
+                  pull request head declares, since an agent could otherwise choose its
+                  own next sandbox. Set on every revise run and on no other.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    minLength: 1
+                    type: string
+                  uid:
+                    description: UID of the referent at the time the reference was
+                      written.
+                    type: string
+                required:
+                - name
+                type: object
+              inputs:
+                description: Inputs pin what the run was given.
+                properties:
+                  checkRunIDs:
+                    description: |-
+                      CheckRunIDs are the check-run ids whose failure a check-fix round
+                      consumed (slice 1b), so a check failure is consumed exactly once.
+                    items:
+                      format: int64
+                      type: integer
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-type: set
+                  configMap:
+                    description: |-
+                      ConfigMap names the run's own input ConfigMap (owned by this run):
+                      the issue.md and investigation.md handed to the Job — the intent
+                      snapshot, and for build and revise runs the approved plan plus, for a
+                      revise run, that round's feedback and compare patch.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  inputDigest:
+                    description: |-
+                      InputDigest is the digest of the Intent's issue snapshot the run was
+                      given (Intent status.input.digest).
+                    pattern: ^sha256:[0-9a-f]{64}$
+                    type: string
+                  planDigest:
+                    description: |-
+                      PlanDigest is the approved plan's digest (Intent
+                      status.approval.planDigest); the plan bytes are re-hashed at launch
+                      and a mismatch stops it. Empty for a plan run.
+                    pattern: ^sha256:[0-9a-f]{64}$
+                    type: string
+                  planRevision:
+                    description: |-
+                      PlanRevision is the approved plan revision a build or revise run
+                      executes; zero for a plan run.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  reviewIDs:
+                    description: |-
+                      ReviewIDs are the GitHub review ids a revise round consumed (slice
+                      1b): recorded here, on the immutable spec, so no review ever starts
+                      a second round.
+                    items:
+                      format: int64
+                      type: integer
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-type: set
+                required:
+                - configMap
+                - inputDigest
+                type: object
+              intentRef:
+                description: IntentRef is the owning Intent (UID-pinned).
+                properties:
+                  name:
+                    description: Name of the referent.
+                    minLength: 1
+                    type: string
+                  uid:
+                    description: UID of the referent at the time the reference was
+                      written.
+                    type: string
+                required:
+                - name
+                type: object
+              previousAttempt:
+                description: |-
+                  PreviousAttempt is the failed attempt this one retries, rendered into
+                  the prompt so the agent does not repeat the failure. Nil on a first
+                  attempt.
+                properties:
+                  attempt:
+                    description: Attempt ordinal of the failed run.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  detail:
+                    description: |-
+                      Detail explains the outcome — for commit_failed, the git status
+                      excerpt the runner found after commit.sh.
+                    maxLength: 4096
+                    type: string
+                  name:
+                    description: Name of the failed run (an Investigation or Remediation).
+                    type: string
+                  outcome:
+                    description: |-
+                      Outcome is the failed run's stage outcome (StageResult.Outcome), or
+                      pull_request_closed when its pull request was closed unmerged.
+                    maxLength: 64
+                    type: string
+                required:
+                - attempt
+                - name
+                - outcome
+                type: object
+              repository:
+                description: Repository is the tree the run works on.
+                properties:
+                  repositoryRef:
+                    description: |-
+                      RepositoryRef names the Repository artifact this run owns and works
+                      from: the default branch head for plan and build runs, the pull
+                      request head (spec.ref.branch = the intent branch) for revise runs.
+                    properties:
+                      name:
+                        description: Name of the referent.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  url:
+                    description: URL is the https URL of the app repository (one of
+                      the Project's).
+                    maxLength: 256
+                    minLength: 1
+                    pattern: ^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$
+                    type: string
+                required:
+                - repositoryRef
+                - url
+                type: object
+              round:
+                description: |-
+                  Round is the plan revision for a plan run, zero for a build run, and
+                  the revise round (1-based) for a revise run.
+                format: int32
+                maximum: 1000
+                minimum: 0
+                type: integer
+              stage:
+                description: Stage the run executes.
+                enum:
+                - plan
+                - build
+                - revise
+                type: string
+              trigger:
+                description: |-
+                  Trigger names what started a revise round (slice 1b); set on every
+                  revise run and on no other.
+                enum:
+                - review
+                - command
+                - checks
+                type: string
+            required:
+            - attempt
+            - inputs
+            - intentRef
+            - repository
+            - round
+            - stage
+            type: object
+            x-kubernetes-validations:
+            - message: spec is immutable; create a new IntentRun for a new attempt
+              rule: self == oldSelf
+            - message: spec.round is 0 for a build run and at least 1 for plan and
+                revise runs
+              rule: 'self.stage == ''build'' ? self.round == 0 : self.round >= 1'
+            - message: build and revise runs pin the approved plan (inputs.planRevision
+                and inputs.planDigest)
+              rule: self.stage == 'plan' || (has(self.inputs.planRevision) && self.inputs.planRevision
+                >= 1 && has(self.inputs.planDigest))
+            - message: spec.trigger is set on revise runs, and only on them
+              rule: (self.stage == 'revise') == has(self.trigger)
+            - message: spec.imageFrom is set on revise runs, and only on them
+              rule: (self.stage == 'revise') == has(self.imageFrom)
+          status:
+            description: |-
+              IntentRunStatus records how the run ran. Written only by
+              intent-controller's run scheduler.
+            properties:
+              baseSHA:
+                description: |-
+                  BaseSHA is the commit the run worked on (its Repository's pin), which
+                  the changeset's base must equal.
+                pattern: ^([0-9a-f]{40}|[0-9a-f]{64})$
+                type: string
+              conditions:
+                description: Conditions of the run (Complete, SandboxRefused).
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              detail:
+                description: |-
+                  Detail explains a non-ok outcome for humans. Untrusted: it can quote
+                  output from the repository or image the run executed on.
+                maxLength: 4096
+                type: string
+              finishedAt:
+                description: FinishedAt is when the run was collected.
+                format: date-time
+                type: string
+              jobRef:
+                description: JobRef locates the agent Job in the agents namespace.
+                properties:
+                  name:
+                    description: Name of the Job.
+                    type: string
+                  namespace:
+                    description: Namespace the Job runs in.
+                    type: string
+                  uid:
+                    description: UID of the Job.
+                    type: string
+                required:
+                - name
+                - namespace
+                type: object
+              observedGeneration:
+                description: ObservedGeneration is the last spec generation acted
+                  on.
+                format: int64
+                type: integer
+              outcome:
+                description: |-
+                  Outcome is the envelope outcome vocabulary, plus the controller's
+                  own: changeset_rejected, branch_exists, head_moved, and aborted for a
+                  run killed with no envelope.
+                maxLength: 64
+                type: string
+              phase:
+                description: Phase of the run.
+                enum:
+                - Pending
+                - Running
+                - Complete
+                - Failed
+                type: string
+              pushedCommit:
+                description: |-
+                  PushedCommit is the commit created from the run's changeset, recorded
+                  before any ref moves so a restart can adopt its own ref.
+                pattern: ^([0-9a-f]{40}|[0-9a-f]{64})$
+                type: string
+              report:
+                description: |-
+                  Report is the run's report markdown (for a plan run, the plan; the
+                  raw bytes also land in the Intent's immutable plan ConfigMap).
+                maxLength: 65536
+                type: string
+              runnerImage:
+                description: |-
+                  RunnerImage is the image the Job actually launched on, written beside
+                  JobRef from what the Job client returned — never from configuration.
+                  A build or revise run that reports the default image is refused.
+                properties:
+                  image:
+                    description: |-
+                      Image is the image reference the agent container ran, as written into
+                      the Job. With Source "repository" it is the digest-pinned reference
+                      resolved onto the Repository's status. With Source "default" it is the
+                      per-harness runner image exactly as the operator configured it, which
+                      is digest-pinned only if that configuration pins it (a tag otherwise).
+                    type: string
+                  manifest:
+                    description: |-
+                      Manifest is the declaring file's repository-relative path, copied from
+                      the Repository at launch when Source is "repository" so the tracking
+                      issue and describe can name the file; empty otherwise.
+                    type: string
+                  source:
+                    description: |-
+                      Source is RunnerImageSourceRepository when the image came from the
+                      Repository's declaration and RunnerImageSourceDefault when the
+                      per-harness runner image ran (nothing declared, a non-claude harness,
+                      the kill switch).
+                    enum:
+                    - repository
+                    - default
+                    type: string
+                required:
+                - image
+                - source
+                type: object
+              startedAt:
+                description: StartedAt is when the Job launched.
+                format: date-time
+                type: string
+              transcript:
+                description: |-
+                  Transcript points at the conversation the run produced, in a
+                  ConfigMap owned by this run.
+                properties:
+                  name:
+                    description: Name of the ConfigMap holding the turns, in the run's
+                      own namespace.
+                    type: string
+                  truncated:
+                    description: |-
+                      Truncated reports that recording bounds cut the conversation short, so
+                      readers know the record is partial rather than complete.
+                    type: boolean
+                  turns:
+                    description: Turns is how many the transcript holds.
+                    format: int32
+                    type: integer
+                required:
+                - name
+                type: object
+              usage:
+                description: Usage accounting for the run, as the harness reported
+                  it.
+                properties:
+                  cacheCreationTokens:
+                    description: CacheCreationTokens written to prompt cache.
+                    format: int64
+                    type: integer
+                  cacheReadTokens:
+                    description: CacheReadTokens read from prompt cache.
+                    format: int64
+                    type: integer
+                  costUSD:
+                    description: |-
+                      CostUSD is the harness-reported cost as a decimal string (structural
+                      schemas forbid floats).
+                    pattern: ^[0-9]+(\.[0-9]{1,6})?$
+                    type: string
+                  inputTokens:
+                    description: InputTokens consumed.
+                    format: int64
+                    type: integer
+                  outputTokens:
+                    description: OutputTokens produced.
+                    format: int64
+                    type: integer
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

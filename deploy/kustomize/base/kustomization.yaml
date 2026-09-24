@@ -14,7 +14,10 @@ resources:
     - crds/patchy.bitwisemedia.uk_findingrollups.yaml
     - crds/patchy.bitwisemedia.uk_forges.yaml
     - crds/patchy.bitwisemedia.uk_integrations.yaml
+    - crds/patchy.bitwisemedia.uk_intents.yaml
+    - crds/patchy.bitwisemedia.uk_intentruns.yaml
     - crds/patchy.bitwisemedia.uk_investigations.yaml
+    - crds/patchy.bitwisemedia.uk_projects.yaml
     - crds/patchy.bitwisemedia.uk_remediations.yaml
     - crds/patchy.bitwisemedia.uk_repositories.yaml
     - namespace.yaml

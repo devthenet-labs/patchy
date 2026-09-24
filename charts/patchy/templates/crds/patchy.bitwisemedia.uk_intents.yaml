@@ -1,0 +1,581 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+{{- if .Values.crds.install }}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    {{- if .Values.crds.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: intents.patchy.bitwisemedia.uk
+spec:
+  group: patchy.bitwisemedia.uk
+  names:
+    categories:
+    - patchy
+    kind: Intent
+    listKind: IntentList
+    plural: intents
+    singular: intent
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.project
+      name: Project
+      type: string
+    - jsonPath: .spec.issue.url
+      name: Issue
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - description: The first pull request (slice 1 opens exactly one)
+      jsonPath: .status.pullRequests[*].url
+      name: PRs
+      type: string
+    - jsonPath: .status.revisions
+      name: Revisions
+      type: integer
+    - description: Total spend in micro-USD
+      jsonPath: .status.usage.costMicroUSD
+      name: Cost
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Intent is one unit of human-requested development work: an issue in a
+          Project's intent repository carried from plan, through a human approval,
+          to built pull requests and their merge. It is the state machine for that
+          work (a local phase enum, single writer intent-controller), owns one
+          immutable IntentRun per agent attempt, and expires on a TTL after
+          completion. The issue is the human-facing projection.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              IntentSpec identifies one intent issue. intent-controller writes it once,
+              at creation; it is immutable except spec.suspend, which humans may patch
+              with the native verb (CEL-enforced per field, so a mutation of any other
+              field is refused at admission).
+            properties:
+              issue:
+                description: Issue is the intent issue.
+                properties:
+                  number:
+                    description: Number of the issue.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  repository:
+                    description: |-
+                      Repository is the https URL of the intent repository, copied from the
+                      Project's spec.intentRepository at creation.
+                    maxLength: 256
+                    minLength: 1
+                    pattern: ^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$
+                    type: string
+                  url:
+                    description: URL is the issue's html URL, for display.
+                    maxLength: 512
+                    pattern: ^https://
+                    type: string
+                required:
+                - number
+                - repository
+                type: object
+                x-kubernetes-validations:
+                - message: spec.issue is immutable
+                  rule: self == oldSelf
+              project:
+                description: |-
+                  Project names the Project this intent belongs to (the Project whose
+                  trigger label the issue carries).
+                maxLength: 63
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: spec.project is immutable
+                  rule: self == oldSelf
+              requestedBy:
+                description: RequestedBy is who applied the trigger label, from the
+                  issue events.
+                properties:
+                  at:
+                    description: At is the labeled event's created_at.
+                    format: date-time
+                    type: string
+                  eventID:
+                    description: EventID is the GitHub id of the labeled issue event.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  login:
+                    description: |-
+                      Login of the actor that applied the trigger label. It may be anyone,
+                      including a Bot ("<name>[bot]"): the intent reconciler decides
+                      authority from it, and a non-approver's trigger closes the Intent.
+                    maxLength: 64
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9][A-Za-z0-9_.-]*(\[bot\])?$
+                    type: string
+                required:
+                - at
+                - eventID
+                - login
+                type: object
+                x-kubernetes-validations:
+                - message: spec.requestedBy is immutable
+                  rule: self == oldSelf
+              suspend:
+                description: |-
+                  Suspend pauses the intent (human-written): no run is launched and
+                  nothing is written to GitHub for it until cleared. Running Jobs
+                  finish.
+                type: boolean
+            required:
+            - issue
+            - project
+            - requestedBy
+            type: object
+          status:
+            description: |-
+              IntentStatus is the intent's observed state. Written only by
+              intent-controller's intent reconciler.
+            properties:
+              activeRun:
+                description: |-
+                  ActiveRun points at the IntentRun currently holding the run lease
+                  (the lease itself is the deterministic IntentRun create).
+                properties:
+                  name:
+                    description: Name of the referent.
+                    minLength: 1
+                    type: string
+                  uid:
+                    description: UID of the referent at the time the reference was
+                      written.
+                    type: string
+                required:
+                - name
+                type: object
+              approval:
+                description: |-
+                  Approval is the accepted approval of the current plan; nil until one
+                  is accepted, and cleared by a replan.
+                properties:
+                  at:
+                    description: At is the approving action's created_at, as GitHub
+                      reports it.
+                    format: date-time
+                    type: string
+                  by:
+                    description: |-
+                      By is the approver's login. Only an approver's approval is ever
+                      accepted, and a Bot never is, so the pattern admits no "[bot]".
+                    maxLength: 64
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9][A-Za-z0-9_.-]*$
+                    type: string
+                  eventID:
+                    description: |-
+                      EventID is GitHub's id of the approving action: the labeled issue
+                      event for the approve label, or the comment carrying /patchy approve.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  inputDigest:
+                    description: |-
+                      InputDigest is the digest of the issue snapshot the plan was made
+                      from.
+                    pattern: ^sha256:[0-9a-f]{64}$
+                    type: string
+                  planDigest:
+                    description: PlanDigest is the digest of the plan approved.
+                    pattern: ^sha256:[0-9a-f]{64}$
+                    type: string
+                  planRevision:
+                    description: PlanRevision is the plan revision approved.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                required:
+                - at
+                - by
+                - eventID
+                - inputDigest
+                - planDigest
+                - planRevision
+                type: object
+              branch:
+                description: |-
+                  Branch is the branch every pull request of the intent is opened from:
+                  patchy-intent/<intent>, created once and then only fast-forwarded.
+                maxLength: 255
+                pattern: ^patchy-intent/[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                type: string
+              checkFixes:
+                description: |-
+                  CheckFixes counts check-fix rounds, against the Project's
+                  maxCheckFixes (slice 1b).
+                format: int32
+                minimum: 0
+                type: integer
+              completedAt:
+                description: |-
+                  CompletedAt is set on terminal-phase entry and cleared on revival;
+                  the TTL contract is completedAt + TTL.
+                format: date-time
+                type: string
+              conditions:
+                description: |-
+                  Conditions of the intent: BudgetExhausted, RevisionLimitReached,
+                  ImageRequired, ApprovalRejected and (slice 1b) ChecksFailing.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              input:
+                description: Input is the current issue snapshot.
+                properties:
+                  configMap:
+                    description: |-
+                      ConfigMap names the immutable ConfigMap holding the snapshot
+                      (<intent>-input-r<revision>): the issue title and body, plus, on a
+                      replan, the approvers' comments since the previous plan.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  digest:
+                    description: |-
+                      Digest is the sha256 of the snapshot bytes; an approval is bound to
+                      it, and a changed issue body refuses the approval.
+                    pattern: ^sha256:[0-9a-f]{64}$
+                    type: string
+                  revision:
+                    description: Revision of the snapshot, 1-based; a replan takes
+                      a new one.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                required:
+                - configMap
+                - digest
+                - revision
+                type: object
+              observedGeneration:
+                description: ObservedGeneration is the last spec generation acted
+                  on.
+                format: int64
+                type: integer
+              phase:
+                description: Phase of the lifecycle (see intentTransitions for edges
+                  and writers).
+                enum:
+                - Pending
+                - Planning
+                - AwaitingApproval
+                - Building
+                - InReview
+                - Revising
+                - Blocked
+                - Merged
+                - Closed
+                - Failed
+                type: string
+              phaseTimes:
+                description: |-
+                  PhaseTimes is the phase entry log, newest last, bounded to the most
+                  recent MaxIntentPhaseTimes entries.
+                items:
+                  description: IntentPhaseTime records when the intent entered a phase.
+                  properties:
+                    at:
+                      description: At is the entry time.
+                      format: date-time
+                      type: string
+                    phase:
+                      description: Phase entered.
+                      enum:
+                      - Pending
+                      - Planning
+                      - AwaitingApproval
+                      - Building
+                      - InReview
+                      - Revising
+                      - Blocked
+                      - Merged
+                      - Closed
+                      - Failed
+                      type: string
+                  required:
+                  - at
+                  - phase
+                  type: object
+                maxItems: 64
+                type: array
+              plan:
+                description: Plan is the current plan.
+                properties:
+                  commentDigest:
+                    description: |-
+                      CommentDigest is the sha256 of the comment body as GitHub returned it
+                      when posted. The approval re-fetches the comment and refuses if it no
+                      longer hashes to this, so the builder builds what the approver saw.
+                    pattern: ^sha256:[0-9a-f]{64}$
+                    type: string
+                  commentID:
+                    description: |-
+                      CommentID is GitHub's id of the posted plan comment; zero until
+                      posted.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  configMap:
+                    description: |-
+                      ConfigMap names the immutable ConfigMap holding the raw plan report
+                      (<intent>-plan-r<revision>).
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  digest:
+                    description: |-
+                      Digest is the sha256 of the raw plan report bytes stored in
+                      ConfigMap; the build run re-hashes them at launch and refuses a
+                      mismatch.
+                    pattern: ^sha256:[0-9a-f]{64}$
+                    type: string
+                  postedAt:
+                    description: |-
+                      PostedAt is the comment's created_at as GitHub returned it; only an
+                      approval event strictly after it counts.
+                    format: date-time
+                    type: string
+                  repositories:
+                    description: |-
+                      Repositories are the URLs of the Project repositories the plan
+                      touches (a subset of the Project's; a plan naming any other is
+                      rejected).
+                    items:
+                      maxLength: 256
+                      type: string
+                    maxItems: 8
+                    type: array
+                    x-kubernetes-list-type: set
+                  revision:
+                    description: Revision of the plan, 1-based.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  summary:
+                    description: Summary is the plan's one-line summary from its frontmatter.
+                    maxLength: 200
+                    type: string
+                required:
+                - configMap
+                - digest
+                - revision
+                type: object
+              pullRequests:
+                description: |-
+                  PullRequests are the pull requests patchy opened, one per app
+                  repository.
+                items:
+                  description: |-
+                    IntentPullRequest is one pull request patchy opened for the intent. Pull
+                    requests are correlated only by the (repository, number, nodeID) recorded
+                    here when patchy opened them — never by head ref, and never a fork's.
+                  properties:
+                    headSHA:
+                      description: |-
+                        HeadSHA is the head commit last observed (patchy's push, or a human's
+                        since).
+                      pattern: ^([0-9a-f]{40}|[0-9a-f]{64})$
+                      type: string
+                    mergeCommitSHA:
+                      description: MergeCommitSHA is the commit the merge put on the
+                        base branch.
+                      pattern: ^([0-9a-f]{40}|[0-9a-f]{64})$
+                      type: string
+                    mergedAt:
+                      description: MergedAt is when the pull request merged.
+                      format: date-time
+                      type: string
+                    nodeID:
+                      description: NodeID is GitHub's global node id of the pull request.
+                      maxLength: 128
+                      type: string
+                    number:
+                      description: Number of the pull request.
+                      format: int64
+                      minimum: 1
+                      type: integer
+                    repository:
+                      description: |-
+                        Repository is the https URL of the app repository the pull request
+                        is in (one of the Project's repositories); the list key.
+                      maxLength: 256
+                      minLength: 1
+                      type: string
+                    state:
+                      description: State of the pull request.
+                      enum:
+                      - open
+                      - merged
+                      - closed
+                      type: string
+                    url:
+                      description: URL is the pull request's html URL.
+                      maxLength: 512
+                      type: string
+                  required:
+                  - number
+                  - repository
+                  type: object
+                maxItems: 8
+                type: array
+                x-kubernetes-list-map-keys:
+                - repository
+                x-kubernetes-list-type: map
+              revisions:
+                description: |-
+                  Revisions counts completed review-driven revise rounds, against the
+                  Project's maxRevisions.
+                format: int32
+                minimum: 0
+                type: integer
+              tracking:
+                description: Tracking locates the status comment on the intent issue.
+                properties:
+                  statusCommentID:
+                    description: |-
+                      StatusCommentID is GitHub's id of the status comment, posted exactly
+                      once (marker <!-- patchy:intent <project>/<issue> -->) and edited
+                      thereafter.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  statusDigest:
+                    description: |-
+                      StatusDigest is the sha256 of the body last written to it, so an
+                      unchanged status is never re-written.
+                    pattern: ^sha256:[0-9a-f]{64}$
+                    type: string
+                type: object
+              usage:
+                description: Usage totals the spend of every run.
+                properties:
+                  cacheCreationTokens:
+                    description: CacheCreationTokens written to prompt cache.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  cacheReadTokens:
+                    description: CacheReadTokens read from prompt cache.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  costMicroUSD:
+                    description: |-
+                      CostMicroUSD is the summed harness-reported cost in micro-USD,
+                      checked against the Project's maxCostMicroUSD before every launch.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  inputTokens:
+                    description: InputTokens consumed.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  outputTokens:
+                    description: OutputTokens produced.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}

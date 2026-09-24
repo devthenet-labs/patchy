@@ -21,6 +21,7 @@ import (
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/agentresult"
+	"github.com/bitwise-media-group/patchy/internal/envelope"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/runnerguard"
 )
@@ -37,6 +38,20 @@ func (r *RunReconciler) updateRun(ctx context.Context, run *v1alpha1.IntentRun,
 	}
 	*run = *cur
 	return nil
+}
+
+// podUsage is the usage a run records from its pod's stage report. The
+// envelope is the pod's stdout, and a build runs in the repository's own
+// image, so its counts are untrusted like its outcome (podOutcome): a
+// negative count is recorded as zero. The cost is never negative already
+// (agentresult.FormatCost drops it); an absurd one is summed with saturation
+// (syncUsage).
+func podUsage(st *envelope.Stage) v1alpha1.UsageSummary {
+	u := agentresult.FromStage(st).Usage
+	for _, n := range []*int64{&u.InputTokens, &u.OutputTokens, &u.CacheReadTokens, &u.CacheCreationTokens} {
+		*n = max(*n, 0)
+	}
+	return u
 }
 
 // settle stamps a run's terminal status (Complete, or Failed with the
@@ -59,7 +74,7 @@ func (r *RunReconciler) settle(ctx context.Context, run *v1alpha1.IntentRun, res
 				cur.Status.Transcript = res.transcript
 			}
 			if res.stage != nil {
-				cur.Status.Usage = agentresult.FromStage(res.stage).Usage
+				cur.Status.Usage = podUsage(res.stage)
 			}
 		}
 		cur.Status.FinishedAt = &now

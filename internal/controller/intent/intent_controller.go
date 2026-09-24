@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -339,24 +340,51 @@ func (p *pass) loadRuns(ctx context.Context) error {
 	return nil
 }
 
-// syncUsage sums every run's reported usage onto the Intent.
+// syncUsage sums every run's reported usage onto the Intent. What a run
+// records is what its pod reported, and a build's pod runs the repository's
+// own image, so the sum never trusts it: it saturates rather than overflows
+// and counts nothing negative, since the total's schema refuses a negative
+// value. A write refused for any reason but a newer version is logged and
+// the pass goes on: the tally is bookkeeping, and the poll (a cancel, a
+// human close) and the phase step must never wait on it.
 func (p *pass) syncUsage(ctx context.Context) (bool, error) {
 	var u v1alpha1.IntentUsage
 	for _, run := range p.runs {
 		s := run.Status.Usage
-		u.CostMicroUSD += microUSD(s.CostUSD)
-		u.InputTokens += s.InputTokens
-		u.OutputTokens += s.OutputTokens
-		u.CacheReadTokens += s.CacheReadTokens
-		u.CacheCreationTokens += s.CacheCreationTokens
+		u.CostMicroUSD = addUsage(u.CostMicroUSD, microUSD(s.CostUSD))
+		u.InputTokens = addUsage(u.InputTokens, s.InputTokens)
+		u.OutputTokens = addUsage(u.OutputTokens, s.OutputTokens)
+		u.CacheReadTokens = addUsage(u.CacheReadTokens, s.CacheReadTokens)
+		u.CacheCreationTokens = addUsage(u.CacheCreationTokens, s.CacheCreationTokens)
 	}
 	if u == p.in.Status.Usage {
 		return false, nil
 	}
-	return true, p.update(ctx, func(cur *v1alpha1.Intent) error {
+	err := p.update(ctx, func(cur *v1alpha1.Intent) error {
 		cur.Status.Usage = u
 		return nil
 	})
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, errConflict):
+		return true, err
+	}
+	p.r.log().LogAttrs(ctx, slog.LevelWarn, "record the intent's usage; the pass goes on without it",
+		slog.String("intent", p.in.Name), slog.Any("error", err))
+	return false, nil
+}
+
+// addUsage adds n to sum, saturating at math.MaxInt64 and counting a
+// negative n as nothing, so a total of non-negative sums is never negative.
+func addUsage(sum, n int64) int64 {
+	switch {
+	case n <= 0:
+		return sum
+	case sum > math.MaxInt64-n:
+		return math.MaxInt64
+	}
+	return sum + n
 }
 
 // SetupWithManager registers the intent reconciler: Intents, their runs (a

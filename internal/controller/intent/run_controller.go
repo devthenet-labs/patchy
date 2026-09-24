@@ -690,7 +690,7 @@ func (r *RunReconciler) push(ctx context.Context, run *v1alpha1.IntentRun, ev *e
 		cur.Status.PushedCommit = commit
 		cur.Status.Report = agentresult.TruncateReport(res.report)
 		cur.Status.Transcript = res.transcript
-		cur.Status.Usage = agentresult.FromStage(res.stage).Usage
+		cur.Status.Usage = podUsage(res.stage)
 	}); err != nil {
 		return err
 	}

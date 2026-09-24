@@ -18,8 +18,10 @@ import (
 	"time"
 
 	"github.com/google/go-github/v90/github"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -817,6 +819,28 @@ type env struct {
 	runWrites    int
 	// failRepoDeletes fails the next Repository deletes, one per count.
 	failRepoDeletes int
+	// refuseUsage fails every Intent status write that changes the usage.
+	refuseUsage bool
+}
+
+// intentStatusSchema refuses what the Intent CRD's status schema refuses of
+// the usage: every total has minimum 0.
+func intentStatusSchema(in *v1alpha1.Intent) error {
+	u := in.Status.Usage
+	var errs field.ErrorList
+	path := field.NewPath("status", "usage")
+	for name, v := range map[string]int64{
+		"costMicroUSD": u.CostMicroUSD, "inputTokens": u.InputTokens, "outputTokens": u.OutputTokens,
+		"cacheReadTokens": u.CacheReadTokens, "cacheCreationTokens": u.CacheCreationTokens,
+	} {
+		if v < 0 {
+			errs = append(errs, field.Invalid(path.Child(name), v, "should be greater than or equal to 0"))
+		}
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return kerrors.NewInvalid(v1alpha1.GroupVersion.WithKind("Intent").GroupKind(), in.Name, errs)
 }
 
 func testSettings() Settings {
@@ -861,6 +885,18 @@ func newEnv(t *testing.T, objs ...client.Object) *env {
 			SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object,
 				opts ...client.SubResourceUpdateOption) error {
 				if in, ok := obj.(*v1alpha1.Intent); ok {
+					// The API server holds the status to its schema, which
+					// the fake client does not know.
+					if err := intentStatusSchema(in); err != nil {
+						return err
+					}
+					if e.refuseUsage {
+						var stored v1alpha1.Intent
+						if err := c.Get(ctx, client.ObjectKeyFromObject(in), &stored); err == nil &&
+							stored.Status.Usage != in.Status.Usage {
+							return kerrors.NewInternalError(errors.New("the usage write is refused"))
+						}
+					}
 					if len(e.failStatus) > 0 {
 						err := e.failStatus[0]
 						e.failStatus = e.failStatus[1:]

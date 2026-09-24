@@ -26,7 +26,7 @@ func TestGetAlert(t *testing.T) {
 					"tags":["security","external/cwe/cwe-089"]
 				},
 				"most_recent_instance":{
-					"commit_sha":"abc123",
+					"ref":"refs/heads/main","commit_sha":"abc123",
 					"message":{"text":"user input flows here"},
 					"location":{"path":"db/query.go","start_line":10,"end_line":12}
 				}
@@ -39,6 +39,7 @@ func TestGetAlert(t *testing.T) {
 				HTMLURL: "https://gh/o/r/security/code-scanning/4",
 				Path:    "db/query.go", StartLine: 10, EndLine: 12,
 				Snippet: "user input flows here", MostRecentSHA: "abc123",
+				MostRecentRef: "refs/heads/main",
 			},
 		},
 		{

@@ -108,6 +108,11 @@ type Finding struct {
 	// Ingest uses it to recognize an observation of code older than an
 	// already-merged fix; empty means unknown, and never suppresses.
 	Commit string
+	// Ref is the ref Commit was analyzed on (refs/heads/<branch>), when the
+	// tool reports one. Ingest suppresses a stale observation only while
+	// the fix is still on that branch; empty means unknown, and never
+	// suppresses.
+	Ref string
 }
 
 // Handler is the interface a finding source implements.

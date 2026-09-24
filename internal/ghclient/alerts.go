@@ -69,7 +69,8 @@ func (c *Client) OpenAlert(ctx context.Context, repo Repo, number int) error {
 
 // alertFromGitHub maps a go-github alert onto patchy's Alert: rule
 // metadata and tags, security_severity_level falling back to the rule
-// severity, and the most recent instance's commit, message, and location.
+// severity, and the most recent instance's commit, ref, message, and
+// location.
 func alertFromGitHub(ga *github.Alert) *Alert {
 	a := &Alert{
 		Number:  ga.GetNumber(),
@@ -89,6 +90,7 @@ func alertFromGitHub(ga *github.Alert) *Alert {
 	}
 	if inst := ga.GetMostRecentInstance(); inst != nil {
 		a.MostRecentSHA = inst.GetCommitSHA()
+		a.MostRecentRef = inst.GetRef()
 		a.Snippet = inst.GetMessage().GetText()
 		if loc := inst.GetLocation(); loc != nil {
 			a.Path = loc.GetPath()

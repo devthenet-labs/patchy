@@ -50,7 +50,7 @@ type PRRequest struct {
 
 // Alert is patchy's view of a code-scanning alert: the rule, the severity
 // (security_severity_level falling back to the rule severity), and the most
-// recent instance's location, message snippet, and commit.
+// recent instance's location, message snippet, commit, and ref.
 type Alert struct {
 	Number          int
 	RuleID          string
@@ -66,4 +66,5 @@ type Alert struct {
 	EndLine         int
 	Snippet         string
 	MostRecentSHA   string
+	MostRecentRef   string
 }

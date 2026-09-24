@@ -109,8 +109,10 @@ func (h *Handler) Resolve(ctx context.Context, alerts []source.AlertRef, v sourc
 // delivery is the slice of the code_scanning_alert payload we consume.
 type delivery struct {
 	Action string `json:"action"`
-	// CommitOID is the commit whose analysis produced this event.
+	// CommitOID is the commit whose analysis produced this event, and Ref
+	// the ref it was analyzed on.
 	CommitOID string `json:"commit_oid"`
+	Ref       string `json:"ref"`
 	Alert     struct {
 		Number             int `json:"number"`
 		MostRecentInstance struct {
@@ -159,9 +161,13 @@ func (h *Handler) Findings(ctx context.Context, event string, payload []byte) ([
 
 	f := FindingFromAlert(repo, alert)
 	// The delivery names the analysis that raised this event; the alert
-	// fetched just now may already reflect a later one.
-	if c := cmp.Or(d.CommitOID, d.Alert.MostRecentInstance.CommitSHA); c != "" {
-		f.Commit = c
+	// fetched just now may already reflect a later one. Commit and ref are
+	// taken as a pair, from whichever part of the payload has the commit.
+	switch inst := d.Alert.MostRecentInstance; {
+	case d.CommitOID != "":
+		f.Commit, f.Ref = d.CommitOID, cmp.Or(d.Ref, inst.Ref)
+	case inst.CommitSHA != "":
+		f.Commit, f.Ref = inst.CommitSHA, inst.Ref
 	}
 	return []source.Finding{f}, nil
 }
@@ -214,6 +220,7 @@ func FindingFromAlert(repo ghclient.Repo, alert *ghclient.Alert) source.Finding 
 		Severity:    normalizeSeverity(alert.Severity),
 		HTMLURL:     alert.HTMLURL,
 		Commit:      alert.MostRecentSHA,
+		Ref:         alert.MostRecentRef,
 	}
 	if alert.Path != "" {
 		f.Locations = []source.Location{{

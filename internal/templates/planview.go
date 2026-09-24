@@ -55,7 +55,7 @@ func viewPlan(report string) planView {
 	}
 	blank := 0
 	for _, line := range strings.Split(strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(report), "\n") {
-		if !strings.ContainsFunc(line, visibleRune) {
+		if !strings.ContainsFunc(line, inkRune) {
 			blank++
 			continue
 		}
@@ -121,10 +121,27 @@ func visibleBeyondASCII(r rune) bool {
 	return r > unicode.MaxASCII && visibleRune(r)
 }
 
-// textColumns is the column just past a line's last visible character, as
-// a monospace code block lays the line out: a tab to the next multiple of
-// eight, a wide character two columns (wideRune), a character that renders
-// as nothing or a combining mark none, and any other one.
+// blankGlyph reports a character that is neither whitespace nor one that
+// renders as nothing, yet draws as an empty cell: U+2800 BRAILLE PATTERN
+// BLANK, which GitHub's code fonts take from a braille font, a cell with no
+// dots in it. A line of them looks blank, and text after them far off.
+func blankGlyph(r rune) bool {
+	return r == 0x2800
+}
+
+// inkRune reports a character that draws something an approver can see on
+// the page: visible (visibleRune), and not a blank glyph. Lines and their
+// ends are reckoned by it, so padding made of blank glyphs counts as the
+// whitespace it looks like.
+func inkRune(r rune) bool {
+	return visibleRune(r) && !blankGlyph(r)
+}
+
+// textColumns is the column just past a line's last character that draws
+// something (inkRune), as a monospace code block lays the line out: a tab
+// to the next multiple of eight, a wide character two columns (wideRune), a
+// character that renders as nothing or a combining mark none, and any other
+// one.
 func textColumns(line string) int {
 	col, end := 0, 0
 	for _, r := range line {
@@ -137,7 +154,7 @@ func textColumns(line string) int {
 		default:
 			col++
 		}
-		if visibleRune(r) {
+		if inkRune(r) {
 			end = col
 		}
 	}

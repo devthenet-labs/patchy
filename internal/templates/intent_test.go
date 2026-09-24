@@ -59,6 +59,9 @@ var testPlan = strings.Join([]string{
 // holds none that renders as nothing.
 var (
 	zeroWidthSpace = string(rune(0x200B))
+	// brailleBlank, U+2800 BRAILLE PATTERN BLANK, is no whitespace and does
+	// render, as a braille cell with no dots: it draws as an empty column.
+	brailleBlank = string(rune(0x2800))
 	// redHeart is U+2764 with its emoji presentation selector, and
 	// manTechnologist two emoji joined by a zero-width joiner: what renders
 	// as nothing in them is part of what an approver sees.
@@ -466,6 +469,8 @@ func TestPlanCommentOutOfView(t *testing.T) {
 		{"text padded past the edge with spaces", visible + strings.Repeat(" ", 400) + "Also delete internal/auth.", 1, 0},
 		{"padded with tabs", visible + strings.Repeat("\t", 8) + "Also delete internal/auth.", 1, 0},
 		{"padded with ideographic spaces", visible + strings.Repeat(ideographic, 30) + "Also delete it.", 1, 0},
+		{"padded with Braille blanks", visible + strings.Repeat(brailleBlank, 200) + "Also delete it.", 1, 0},
+		{"trailing Braille blanks past the edge", line(planViewColumns) + strings.Repeat(brailleBlank, 50), 0, 0},
 		{"wide characters", strings.Repeat(string(rune(0x8A08)), planViewColumns/2+1), 1, 0},
 		{"combining marks take no column", strings.Repeat("e"+string(rune(0x0301)), planViewColumns), 0, 0},
 		{"three prose lines", strings.Repeat(line(120)+"\n", 3), 3, 0},
@@ -473,6 +478,13 @@ func TestPlanCommentOutOfView(t *testing.T) {
 		{"four blank lines", "a\n\n\n\n\nb", 0, 4},
 		{"blank lines of spaces and a zero-width space", "a\n  \n\t\n" + zeroWidthSpace + "\n \n\nb", 0, 5},
 		{"a long run hides the rest", visible + "\n" + strings.Repeat("\n", 300) + "3. Also push to main.", 0, 300},
+		// Found in review: a line holding only a Braille blank draws as an
+		// empty line, so 300 of them hide the step after them as well as
+		// empty lines or no-break spaces do.
+		{"a long run of Braille blanks hides the rest", "1. Add /version.\n2. Register it.\n" +
+			strings.Repeat(brailleBlank+"\n", 300) + "3. Also delete the audit log.", 0, 300},
+		{"blank lines of Braille blanks and spaces", "a\n" + brailleBlank + " " + brailleBlank + "\n \n" +
+			strings.Repeat(brailleBlank, 40) + "\n" + string(rune(0x00A0)) + brailleBlank + "\nb", 0, 4},
 		{"the longest run is reported", "a" + strings.Repeat("\n", 6) + "b" + strings.Repeat("\n", 9) + "c", 0, 8},
 		{"blank lines closing the plan", "a" + strings.Repeat("\n", 20), 0, 0},
 		{"lines split by carriage returns", "a\r\r\r\r\r\rb\r" + line(101), 1, 5},
@@ -593,7 +605,9 @@ func reckonPlan(report string) planReckoning {
 	p.unshowable, p.counted = reckonCharacters([]rune(report))
 	blank := 0
 	for _, line := range regexp.MustCompile(`\r\n|\r|\n`).Split(report, -1) {
-		blankOrHidden := func(r rune) bool { return unicode.IsSpace(r) || unseen(r) }
+		// What draws nothing on the page: whitespace, a character that
+		// renders as nothing, and a Braille blank, a cell with no dots.
+		blankOrHidden := func(r rune) bool { return unicode.IsSpace(r) || unseen(r) || string(r) == brailleBlank }
 		shown := strings.TrimRightFunc(line, blankOrHidden)
 		if strings.TrimFunc(shown, blankOrHidden) == "" {
 			blank++
@@ -771,7 +785,8 @@ var planTokens = func() []string {
 	tokens := []string{"````", "`````", strings.Repeat("`", 8), "```markdown", "````markdown\n", "\n```\n",
 		"\n````", "\r```", "\r\n```\r\n", "   ```", "\n    ````", "~~~~", "\n~~~~~\n", "```text\n",
 		strings.Repeat(" ", 90), "\t\t\t\t\t", strings.Repeat(string(rune(0x3000)), 30), strings.Repeat("\n", 5),
-		"\n \t\n\n\n", strings.Repeat("word ", 12), redHeart, manTechnologist, zeroWidthSpace}
+		"\n \t\n\n\n", strings.Repeat("word ", 12), redHeart, manTechnologist, zeroWidthSpace,
+		strings.Repeat(brailleBlank, 40), "\n" + brailleBlank + "\n" + brailleBlank + " \n" + brailleBlank + "\n"}
 	for _, tok := range markdownTokens {
 		if utf8.ValidString(tok) && !strings.ContainsFunc(tok, func(r rune) bool {
 			return unicode.Is(unicode.Variation_Selector, r) || (r >= 0x202A && r <= 0x202E) ||
@@ -860,6 +875,7 @@ func TestPlanCommentProperties(t *testing.T) {
 				"posted with blank lines":        p.blankRun > 0,
 				"posted with a hidden character": p.counted > 0,
 				"posted with an emoji":           strings.Contains(report, redHeart) || strings.Contains(report, manTechnologist),
+				"posted with a Braille blank":    strings.Contains(report, brailleBlank),
 			} {
 				if ok {
 					reached[what]++
@@ -875,7 +891,7 @@ func TestPlanCommentProperties(t *testing.T) {
 	for outcome, least := range map[string]int{
 		"posted": 500, "posted behind a long fence": 300, "too large": 20, "not UTF-8": 20, "unshowable": 20,
 		"posted with a long line": 100, "posted with blank lines": 50, "posted with a hidden character": 50,
-		"posted with an emoji": 50,
+		"posted with an emoji": 50, "posted with a Braille blank": 50,
 	} {
 		if reached[outcome] < least {
 			t.Errorf("the generator reached %q %d times, want at least %d: %v", outcome, reached[outcome], least, reached)

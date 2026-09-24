@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
@@ -587,6 +588,10 @@ func RenderIntentPRBody(b IntentPRBody) (string, error) {
 	})
 }
 
+// MaxPRTitleRunes is the longest pull request title, in characters, that
+// GitHub accepts: it refuses to open a pull request with a longer one.
+const MaxPRTitleRunes = 256
+
 // IntentPRTitle composes the title of a pull request an intent opens:
 //
 //	<project>: <summary>
@@ -594,9 +599,19 @@ func RenderIntentPRBody(b IntentPRBody) (string, error) {
 // GitHub links references and mentions in a title, and uses the title as
 // the subject of a squash commit, plain text on the default branch; so,
 // as in IntentCommitMessage, the summary is put on one line, bounded and
-// defanged, and the title references and mentions nothing.
+// defanged, and the title references and mentions nothing. Defanging
+// lengthens it, and a Project's name may be long, so the finished title is
+// cut to MaxPRTitleRunes, ending in "…": a pull request opened after the
+// build has run must not fail on its title.
 func IntentPRTitle(project, summary string) string {
-	return defang(oneLine(project) + ": " + commitSummary(summary))
+	title := defang(oneLine(project) + ": " + commitSummary(summary))
+	if utf8.RuneCountInString(title) <= MaxPRTitleRunes {
+		return title
+	}
+	// Cutting drops the title's end and adds "…", no letter or digit, so it
+	// completes no reference or mention. Trailing space goes too, such as
+	// the space defang put before a number the cut dropped.
+	return strings.TrimRightFunc(string([]rune(title)[:MaxPRTitleRunes-1]), unicode.IsSpace) + "…"
 }
 
 // IntentCommit is the commit patchy composes for an intent's changeset; the

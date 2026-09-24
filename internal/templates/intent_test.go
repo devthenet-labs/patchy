@@ -1058,28 +1058,71 @@ func TestIntentPRBodyPlainText(t *testing.T) {
 	}
 }
 
-// TestIntentPRTitleProperties: whatever the summary holds, the title is one
-// line, "<project>: " and the summary, and — plain text as a squash commit's
-// subject, linked as a title — references and mentions nothing.
+// TestIntentPRTitleProperties: whatever the project and summary hold, the
+// title is one line, "<project>: " and the summary, within GitHub's limit
+// on a title, and — plain text as a squash commit's subject, linked as a
+// title — references and mentions nothing. A title cut to the limit ends
+// in "…", and what comes before it is the title's head as far as it goes.
 func TestIntentPRTitleProperties(t *testing.T) {
-	var failure string
-	holds := func(summary string) bool {
-		title := IntentPRTitle("target", summary)
+	// Each project, and the head of a title as it shows it. A Project's
+	// name is a Kubernetes name, at most 253 characters, and one can hold a
+	// reference's shape, which the title breaks apart.
+	sixty := strings.Repeat("platform-", 6) + "api-v2"
+	longest := strings.Repeat("gh-1.", 50) + "end"
+	projects := []struct{ project, head string }{
+		{"target", "target: "},
+		{sixty, sixty + ": "},
+		{longest, strings.Repeat("gh- 1.", 50) + "end: "},
+	}
+	checkTitle := func(title, head string) string {
+		shown, cut := strings.CutSuffix(title, "…")
+		headed := strings.HasPrefix(title, head) || (cut && strings.HasPrefix(head, shown))
 		switch {
-		case strings.Contains(title, "\n") || !strings.HasPrefix(title, "target: "):
-			failure = fmt.Sprintf("title is not one line headed by the project: %q", title)
-		case utf8.RuneCountInString(title) > len("target: ")+2*MaxCommitSummaryRunes:
-			failure = fmt.Sprintf("title is not bounded: %d runes", utf8.RuneCountInString(title))
-		default:
-			if failure = checkPlainText(title, -1); failure == "" {
+		case strings.Contains(title, "\n"):
+			return fmt.Sprintf("title is not one line: %q", title)
+		case !headed:
+			return fmt.Sprintf("title is not headed by %q: %q", head, title)
+		case utf8.RuneCountInString(title) > MaxPRTitleRunes:
+			return fmt.Sprintf("title is %d runes, over GitHub's %d", utf8.RuneCountInString(title), MaxPRTitleRunes)
+		}
+		return checkPlainText(title, -1)
+	}
+	for i, p := range projects {
+		var failure string
+		holds := func(summary string) bool {
+			if failure = checkTitle(IntentPRTitle(p.project, summary), p.head); failure == "" {
 				return true
 			}
+			failure += fmt.Sprintf("\nsummary %q", summary)
+			return false
 		}
-		failure += fmt.Sprintf("\nsummary %q", summary)
-		return false
+		if err := quick.Check(holds, markdownConfig(20261001+int64(i))); err != nil {
+			t.Errorf("project %q: %v\n%s", p.project, err, failure)
+		}
 	}
-	if err := quick.Check(holds, markdownConfig(20261001)); err != nil {
-		t.Errorf("%v\n%s", err, failure)
+	// Found in review: the summary alone was bounded, and defanging it or a
+	// long project name ran the title past GitHub's limit. Each is cut, and
+	// says so.
+	for _, tt := range []struct{ project, head, summary string }{
+		{"target", "target: ", strings.Repeat("#1 ", 70)},
+		{sixty, sixty + ": ", strings.Repeat("a", 250)},
+		{longest, projects[2].head, "Add GET /version"},
+	} {
+		title := IntentPRTitle(tt.project, tt.summary)
+		if msg := checkTitle(title, tt.head); msg != "" || !strings.HasSuffix(title, "…") {
+			t.Errorf("IntentPRTitle(%q, %q) = %q (%d runes), want it cut to %d: %s",
+				tt.project, tt.summary, title, utf8.RuneCountInString(title), MaxPRTitleRunes, msg)
+		}
+	}
+	// A title at the limit is not cut; one a character longer is.
+	summary := strings.Repeat("b", MaxCommitSummaryRunes)
+	atLimit := strings.Repeat("p", MaxPRTitleRunes-len(": ")-MaxCommitSummaryRunes)
+	if title := IntentPRTitle(atLimit, summary); title != atLimit+": "+summary {
+		t.Errorf("IntentPRTitle cut a title at the limit: %q", title)
+	}
+	if title := IntentPRTitle(atLimit+"p", summary); title != atLimit+"p: "+summary[:len(summary)-2]+"…" {
+		t.Errorf("IntentPRTitle(%d-character title) = %q (%d runes), want it cut to %d",
+			MaxPRTitleRunes+1, title, utf8.RuneCountInString(title), MaxPRTitleRunes)
 	}
 }
 

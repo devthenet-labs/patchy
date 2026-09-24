@@ -210,8 +210,9 @@ spec:
                     type: string
                   eventID:
                     description: |-
-                      EventID is GitHub's id of the approving action: the labeled issue
-                      event for the approve label, or the comment carrying /patchy approve.
+                      EventID is GitHub's id of the approving action, in Source's id space:
+                      the labeled issue event for the approve label, or the comment
+                      carrying /patchy approve.
                     format: int64
                     minimum: 1
                     type: integer
@@ -233,6 +234,14 @@ spec:
                     maximum: 999
                     minimum: 1
                     type: integer
+                  source:
+                    description: |-
+                      Source of the approving action — the approve label, or a /patchy
+                      approve comment — and so which id space EventID is in.
+                    enum:
+                    - label
+                    - command
+                    type: string
                 required:
                 - at
                 - by
@@ -240,6 +249,7 @@ spec:
                 - inputDigest
                 - planDigest
                 - planRevision
+                - source
                 type: object
               branch:
                 description: |-
@@ -357,6 +367,50 @@ spec:
                 - configMap
                 - digest
                 - revision
+                type: object
+              lastTrigger:
+                description: |-
+                  LastTrigger is the newest trigger action consumed after the one that
+                  created the intent (spec.requestedBy, which is immutable): the
+                  trigger label re-applied, or /patchy replan. It is recorded whether
+                  the action was acted on (a replan from AwaitingApproval, a revival
+                  from Failed) or refused with its one notice (not an approver's). A
+                  later poll considers only trigger actions newer than it (newer than
+                  spec.requestedBy while it is nil), comparing GitHub's own created_at
+                  and never the controller's phaseTimes or completedAt. So a revival
+                  whose plan fails again, posting no plan to anchor on, cannot
+                  re-consume the action that revived it.
+                properties:
+                  at:
+                    description: At is the action's created_at, as GitHub reports
+                      it.
+                    format: date-time
+                    type: string
+                  eventID:
+                    description: EventID is GitHub's id of the action, in Source's
+                      id space.
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  login:
+                    description: |-
+                      Login of the actor. It may be anyone, a Bot ("<name>[bot]")
+                      included: an action refused for its actor is consumed too.
+                    maxLength: 64
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9][A-Za-z0-9_.-]*(\[bot\])?$
+                    type: string
+                  source:
+                    description: Source of the action, and so the id space of EventID.
+                    enum:
+                    - label
+                    - command
+                    type: string
+                required:
+                - at
+                - eventID
+                - login
+                - source
                 type: object
               observedGeneration:
                 description: ObservedGeneration is the last spec generation acted

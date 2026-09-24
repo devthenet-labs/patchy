@@ -57,8 +57,10 @@ func TestIntentKindsDeepCopy(t *testing.T) {
 					Revision: 1, Digest: digest, ConfigMap: "p", PostedAt: now.DeepCopy(), Repositories: []string{"u"},
 				},
 				Approval: &IntentApproval{
-					By: "octocat", EventID: 1, At: now, PlanRevision: 1, PlanDigest: digest, InputDigest: digest,
+					By: "octocat", Source: IntentActionLabel, EventID: 1, At: now, PlanRevision: 1,
+					PlanDigest: digest, InputDigest: digest,
 				},
+				LastTrigger: &IntentAction{Source: IntentActionCommand, EventID: 2, Login: "octocat", At: now},
 				PullRequests: []IntentPullRequest{{
 					Repository: "https://github.com/acme/shop", Number: 7, MergedAt: now.DeepCopy(),
 				}},
@@ -72,6 +74,8 @@ func TestIntentKindsDeepCopy(t *testing.T) {
 			s.Plan.Repositories[0] = "v"
 			s.Plan.PostedAt.Time = later
 			s.Approval.By = "mallory"
+			s.LastTrigger.EventID = 3
+			s.LastTrigger.At.Time = later
 			s.PullRequests[0].Number = 8
 			s.PullRequests[0].MergedAt.Time = later
 			s.Tracking.StatusCommentID = 2

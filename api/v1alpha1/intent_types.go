@@ -232,6 +232,42 @@ type IntentRequest struct {
 	EventID int64 `json:"eventID"`
 }
 
+// IntentActionSource names where a human action on the intent issue came
+// from, and so which GitHub id space its event id is in: a labeled issue
+// event's id and an issue comment's id are separate id spaces, so an id alone
+// cannot say which kind of action it points at.
+// +kubebuilder:validation:Enum=label;command
+type IntentActionSource string
+
+// Human action sources.
+const (
+	// IntentActionLabel: a label applied to the intent issue — the approve
+	// label, or the trigger label re-applied. The id is the labeled issue
+	// event's, from the issue events API.
+	IntentActionLabel IntentActionSource = "label"
+	// IntentActionCommand: an issue comment whose first line is a /patchy
+	// command (approve, replan). The id is the comment's.
+	IntentActionCommand IntentActionSource = "command"
+)
+
+// IntentAction identifies one human action on the intent issue as GitHub's
+// API reports it — never a handler-time stamp.
+type IntentAction struct {
+	// Source of the action, and so the id space of EventID.
+	Source IntentActionSource `json:"source"`
+	// EventID is GitHub's id of the action, in Source's id space.
+	// +kubebuilder:validation:Minimum=1
+	EventID int64 `json:"eventID"`
+	// Login of the actor. It may be anyone, a Bot ("<name>[bot]")
+	// included: an action refused for its actor is consumed too.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9_.-]*(\[bot\])?$`
+	Login string `json:"login"`
+	// At is the action's created_at, as GitHub reports it.
+	At metav1.Time `json:"at"`
+}
+
 // IntentSpec identifies one intent issue. intent-controller writes it once,
 // at creation; it is immutable except spec.suspend, which humans may patch
 // with the native verb (CEL-enforced per field, so a mutation of any other
@@ -342,8 +378,12 @@ type IntentApproval struct {
 	// +kubebuilder:validation:MaxLength=64
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9_.-]*$`
 	By string `json:"by"`
-	// EventID is GitHub's id of the approving action: the labeled issue
-	// event for the approve label, or the comment carrying /patchy approve.
+	// Source of the approving action — the approve label, or a /patchy
+	// approve comment — and so which id space EventID is in.
+	Source IntentActionSource `json:"source"`
+	// EventID is GitHub's id of the approving action, in Source's id space:
+	// the labeled issue event for the approve label, or the comment
+	// carrying /patchy approve.
 	// +kubebuilder:validation:Minimum=1
 	EventID int64 `json:"eventID"`
 	// At is the approving action's created_at, as GitHub reports it.
@@ -473,6 +513,18 @@ type IntentStatus struct {
 	// is accepted, and cleared by a replan.
 	// +optional
 	Approval *IntentApproval `json:"approval,omitempty"`
+	// LastTrigger is the newest trigger action consumed after the one that
+	// created the intent (spec.requestedBy, which is immutable): the
+	// trigger label re-applied, or /patchy replan. It is recorded whether
+	// the action was acted on (a replan from AwaitingApproval, a revival
+	// from Failed) or refused with its one notice (not an approver's). A
+	// later poll considers only trigger actions newer than it (newer than
+	// spec.requestedBy while it is nil), comparing GitHub's own created_at
+	// and never the controller's phaseTimes or completedAt. So a revival
+	// whose plan fails again, posting no plan to anchor on, cannot
+	// re-consume the action that revived it.
+	// +optional
+	LastTrigger *IntentAction `json:"lastTrigger,omitempty"`
 	// Branch is the branch every pull request of the intent is opened from:
 	// patchy-intent/<intent>, created once and then only fast-forwarded.
 	// +optional

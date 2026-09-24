@@ -303,8 +303,11 @@ func fullIntentStatus() patchyv1.IntentStatus {
 			Summary: "Add GET /version", Repositories: []string{"https://github.com/acme/shop"},
 		},
 		Approval: &patchyv1.IntentApproval{
-			By: "octocat", EventID: 43, At: schemaNow, PlanRevision: 1,
+			By: "octocat", Source: patchyv1.IntentActionLabel, EventID: 43, At: schemaNow, PlanRevision: 1,
 			PlanDigest: schemaDigest, InputDigest: schemaDigest,
+		},
+		LastTrigger: &patchyv1.IntentAction{
+			Source: patchyv1.IntentActionCommand, EventID: 44, Login: "octocat", At: schemaNow,
 		},
 		Branch: "patchy-intent/target-1",
 		PullRequests: []patchyv1.IntentPullRequest{{
@@ -465,6 +468,16 @@ func testIntentSchema(ctx context.Context, t *testing.T, c client.Client) {
 		{"a branch outside the intent prefix", func(s *patchyv1.IntentStatus) { s.Branch = "main" }, true},
 		{"a bare-hex digest", func(s *patchyv1.IntentStatus) { s.Input.Digest = strings.Repeat("d", 64) }, true},
 		{"a bot approval", func(s *patchyv1.IntentStatus) { s.Approval.By = "renovate[bot]" }, true},
+		// An event id is meaningless without the id space it is from.
+		{"an approval without its source", func(s *patchyv1.IntentStatus) { s.Approval.Source = "" }, true},
+		{"an approval from an unknown source", func(s *patchyv1.IntentStatus) { s.Approval.Source = "review" }, true},
+		{"an approval by command", func(s *patchyv1.IntentStatus) {
+			s.Approval.Source = patchyv1.IntentActionCommand
+		}, false},
+		{"a trigger without its source", func(s *patchyv1.IntentStatus) { s.LastTrigger.Source = "" }, true},
+		{"a trigger without its event", func(s *patchyv1.IntentStatus) { s.LastTrigger.EventID = 0 }, true},
+		{"a refused bot trigger", func(s *patchyv1.IntentStatus) { s.LastTrigger.Login = "dependabot[bot]" }, false},
+		{"a trigger by a malformed login", func(s *patchyv1.IntentStatus) { s.LastTrigger.Login = "octo cat" }, true},
 		{"a 201-character plan summary", func(s *patchyv1.IntentStatus) { s.Plan.Summary = strings.Repeat("s", 201) }, true},
 		{"nine planned repositories", func(s *patchyv1.IntentStatus) {
 			s.Plan.Repositories = []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}

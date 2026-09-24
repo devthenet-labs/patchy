@@ -35,7 +35,10 @@ const (
 	ReasonDefaultImageRan         = "DefaultImageRan"
 )
 
-// imageReason maps a blocked build run to its ImageRequired reason.
+// imageReason maps a blocked build run to its ImageRequired reason. Only the
+// controller writes what it reads: an image_required run's detail is the
+// controller's own (a pod may not report that outcome: podOutcome), and the
+// SandboxRefused condition is set from the Job's status.
 func imageReason(run *v1alpha1.IntentRun) string {
 	switch {
 	case runnerguard.Refused(run.Status.Conditions):
@@ -71,6 +74,14 @@ func (p *pass) building(ctx context.Context) (bool, error) {
 		return p.openPullRequest(ctx, latest)
 	case v1alpha1.RunFailed:
 		if imageBlocked(latest) {
+			if rs.next() > v1alpha1.MaxIntentRunAttempt {
+				// No attempt is left to try the image again with: a block
+				// could never lift, and resuming from it would only block
+				// again.
+				p.r.log().LogAttrs(ctx, slog.LevelWarn, "the build's attempts are spent on image blocks; the intent fails",
+					slog.String("intent", p.in.Name), slog.String("run", latest.Name))
+				return true, p.fail(ctx)
+			}
 			return true, p.block(ctx, v1alpha1.ConditionImageRequired, imageReason(latest),
 				fmt.Sprintf("the build could not run on an accepted repository image: %s", latest.Status.Detail))
 		}

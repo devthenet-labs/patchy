@@ -147,6 +147,91 @@ func TestBuildNeedsAnAcceptedImage(t *testing.T) {
 	}
 }
 
+// TestBuildOutcomeIsUntrusted: a build's envelope comes from the repository's
+// own image, so an outcome the controller decides by (image_required, which
+// would make the attempt uncounted and block the intent), or one the run's
+// status would refuse, is recorded as runtime_error: each attempt counts,
+// and the intent fails after two, never blocking.
+func TestBuildOutcomeIsUntrusted(t *testing.T) {
+	for _, outcome := range []string{OutcomeImageRequired, OutcomeAborted, "not a reason!", strings.Repeat("x", 100)} {
+		t.Run(outcome[:min(len(outcome), 20)], func(t *testing.T) {
+			e := newEnv(t, testProject())
+			e.jobs.output = func(spec jobs.Spec) jobs.RunOutput {
+				if spec.Phase == "plan" {
+					return defaultOutput(spec)
+				}
+				return jobs.RunOutput{Events: []envelope.Event{{V: envelope.Version, Type: envelope.TypeRemediation,
+					Remediation: &envelope.Remediation{Stage: envelope.Stage{Outcome: envelope.Outcome(outcome),
+						Detail: "repository images are disabled"}}}}}
+			}
+			name := e.awaiting()
+			e.gh.label(1, "patchy:approved", approver)
+			in := e.drive(name, v1alpha1.IntentFailed, repoImage)
+			for _, pt := range in.Status.PhaseTimes {
+				if pt.Phase == v1alpha1.IntentBlocked {
+					t.Error("the intent blocked on an outcome the image reported")
+				}
+			}
+			runs := e.runsOf(name, v1alpha1.IntentStageBuild)
+			if len(runs) != 2 {
+				t.Fatalf("build runs = %d, want the two counted attempts", len(runs))
+			}
+			for _, r := range runs {
+				if r.Status.Phase != v1alpha1.RunFailed || r.Status.Outcome != "runtime_error" ||
+					!strings.Contains(r.Status.Detail, "may not report") {
+					t.Errorf("run %s = %s %s: %s", r.Name, r.Status.Phase, r.Status.Outcome, r.Status.Detail)
+				}
+			}
+		})
+	}
+}
+
+// TestImageBlocksSpendTheAttempts: a build blocked on its image with every
+// attempt ordinal spent fails when the block lifts, instead of resuming into
+// the same block again and again.
+func TestImageBlocksSpendTheAttempts(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	in := e.drive(name, v1alpha1.IntentBlocked, "")
+	first := e.runsOf(name, v1alpha1.IntentStageBuild)[0]
+	ctx := context.Background()
+	for attempt := first.Spec.Attempt + 1; attempt <= v1alpha1.MaxIntentRunAttempt; attempt++ {
+		run := first.DeepCopy()
+		run.ObjectMeta = metav1.ObjectMeta{
+			Name:      v1alpha1.IntentRunName(name, v1alpha1.IntentStageBuild, first.Spec.Round, "app", attempt),
+			Namespace: testNS, Labels: first.Labels,
+		}
+		run.Spec.Attempt = attempt
+		run.Status = v1alpha1.IntentRunStatus{}
+		if err := e.c.Create(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		run.Status.Phase, run.Status.Outcome = v1alpha1.RunFailed, OutcomeImageRequired
+		run.Status.Detail = first.Status.Detail
+		if err := e.c.Status().Update(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The Project changes, so the block is re-evaluated.
+	var proj v1alpha1.Project
+	if err := e.c.Get(ctx, types.NamespacedName{Namespace: testNS, Name: "target"}, &proj); err != nil {
+		t.Fatal(err)
+	}
+	proj.Generation++
+	if err := e.c.Update(ctx, &proj); err != nil {
+		t.Fatal(err)
+	}
+	before := len(in.Status.PhaseTimes)
+	in = e.drive(name, v1alpha1.IntentFailed, "")
+	if n := len(e.runsOf(name, v1alpha1.IntentStageBuild)); n != int(v1alpha1.MaxIntentRunAttempt) {
+		t.Errorf("build runs = %d, want %d and none past it", n, v1alpha1.MaxIntentRunAttempt)
+	}
+	if flips := len(in.Status.PhaseTimes) - before; flips > 2 {
+		t.Errorf("%d phase changes to fail, want Building then Failed", flips)
+	}
+}
+
 // TestBuildOnlyWhereThePlanSaid: a Project changed after the approval to
 // another repository builds nothing there; the intent fails instead.
 func TestBuildOnlyWhereThePlanSaid(t *testing.T) {

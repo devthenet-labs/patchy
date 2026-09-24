@@ -47,8 +47,14 @@ func (p *pass) fail(ctx context.Context) error {
 // blocked re-evaluates a Blocked Intent. Once no block holds it resumes to
 // the phase it was blocked from, launching that round's next attempt first
 // (so the resumed phase never mistakes the failure it was blocked on for a
-// new one), in one status write that clears the conditions.
+// new one), in one status write that clears the conditions. When no attempt
+// is left to launch it resumes all the same, and the resumed phase fails the
+// Intent (Blocked has no edge to Failed). A suspended Project launches
+// nothing, so its blocked intents wait for it to resume.
 func (p *pass) blocked(ctx context.Context) (bool, error) {
+	if p.proj.Spec.Suspend {
+		return false, nil
+	}
 	holds, err := p.blockHolds(ctx)
 	if err != nil || holds {
 		return false, err
@@ -63,7 +69,7 @@ func (p *pass) blocked(ctx context.Context) (bool, error) {
 	case from == v1alpha1.IntentBuilding && p.in.Status.Approval != nil:
 		stage, round = v1alpha1.IntentStageBuild, p.in.Status.Approval.PlanRevision
 	}
-	if stage != "" && !p.proj.Spec.Suspend {
+	if stage != "" {
 		rs := p.round(stage, round)
 		refused := p.planRefused
 		if stage == v1alpha1.IntentStageBuild {

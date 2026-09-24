@@ -91,7 +91,8 @@ func (rs roundRuns) counted(refused func(*v1alpha1.IntentRun) bool) int32 {
 	return n
 }
 
-// uncounted reports a failed run whose agent never ran.
+// uncounted reports a failed run whose agent never ran. Its outcome is the
+// controller's own: a pod may not report image_required (podOutcome).
 func uncounted(run *v1alpha1.IntentRun) bool {
 	return run.Status.Outcome == OutcomeImageRequired || runnerguard.Refused(run.Status.Conditions)
 }

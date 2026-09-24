@@ -416,6 +416,34 @@ func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (c
 	return ctrl.Result{}, r.collectBuild(ctx, run, out.Events, transcript)
 }
 
+// podOutcomes are the outcomes an agent pod may report for a stage that did
+// not succeed. The envelope is the pod's stdout, and a build runs in the
+// repository's own image, so what it reports is untrusted: it may not claim
+// an outcome the controller decides by (image_required makes an attempt
+// uncounted and blocks the Intent; aborted, branch_exists and the rest are
+// the controller's own), nor one the run's status would refuse.
+var podOutcomes = map[envelope.Outcome]bool{
+	envelope.OutcomeRuntimeError:      true,
+	envelope.OutcomeTimeout:           true,
+	envelope.OutcomeBudgetExceeded:    true,
+	envelope.OutcomeReportMissing:     true,
+	envelope.OutcomeReportInvalid:     true,
+	envelope.OutcomeCommitFailed:      true,
+	envelope.OutcomeChangesetTooLarge: true,
+	envelope.OutcomeImageIncompatible: true,
+}
+
+// podOutcome is the outcome and detail a run records for a stage the pod
+// reports as not succeeding: the pod's own when it is one a pod may report,
+// else runtime_error, with what the pod claimed quoted in the detail.
+func podOutcome(o envelope.Outcome, detail string) (string, string) {
+	if podOutcomes[o] {
+		return string(o), detail
+	}
+	return string(envelope.OutcomeRuntimeError),
+		fmt.Sprintf("the agent reported the outcome %.64q, which a pod may not report: %s", string(o), detail)
+}
+
 // result is how a run ended, as the run records it.
 type result struct {
 	outcome        string
@@ -454,7 +482,7 @@ func (r *RunReconciler) collectPlan(ctx context.Context, run *v1alpha1.IntentRun
 	case err != nil:
 		res.outcome, res.detail = string(envelope.OutcomeReportInvalid), err.Error()
 	case ev.Outcome != envelope.OutcomeOK:
-		res.outcome, res.detail = string(ev.Outcome), ev.Detail
+		res.outcome, res.detail = podOutcome(ev.Outcome, ev.Detail)
 	default:
 		if bad := r.outsideProject(ctx, run, plan.Repositories); bad != "" {
 			res.outcome = string(envelope.OutcomeReportInvalid)
@@ -513,7 +541,7 @@ func (r *RunReconciler) collectBuild(ctx context.Context, run *v1alpha1.IntentRu
 	res := result{stage: &ev.Stage, transcript: transcript, report: ev.ReportMarkdown}
 	switch {
 	case ev.Outcome != envelope.OutcomeOK:
-		res.outcome, res.detail = string(ev.Outcome), ev.Detail
+		res.outcome, res.detail = podOutcome(ev.Outcome, ev.Detail)
 		return r.settle(ctx, run, res)
 	case !ev.Success:
 		res.outcome, res.detail = OutcomeNotBuilt, "the build agent reported the plan not built"

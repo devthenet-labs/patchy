@@ -5,6 +5,7 @@ package action
 
 import (
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -436,6 +437,51 @@ func TestAvailableAgreesWithApply(t *testing.T) {
 					t.Errorf("phase %s suspended=%v: Available has %s = %v, Apply says %v",
 						phase, suspended, verb, got, want)
 				}
+			}
+		}
+	}
+}
+
+// TestIntentVerbsStayOffFindings: the intent verbs share the vocabulary but
+// never become Finding actions. A Finding surface that enumerated them — the
+// admission policy's custom verbs, the status server's access reviews, the
+// CLI's action commands — would offer actions Apply cannot perform, and a
+// phase gate here that accepted them would let a GitHub command meant for an
+// intent move a Finding.
+func TestIntentVerbsStayOffFindings(t *testing.T) {
+	intentVerbs := []string{VerbReplan, VerbCancel, VerbRevise}
+	all := []string{
+		VerbApprove, VerbRetry, VerbExpedite, VerbSuspend, VerbResume,
+		VerbBackfill, VerbReplay, VerbReset, VerbReplan, VerbCancel, VerbRevise,
+	}
+	seen := map[string]bool{}
+	for _, verb := range all {
+		if seen[verb] {
+			t.Errorf("verb %q is defined twice: every verb must name one action", verb)
+		}
+		seen[verb] = true
+	}
+	for _, verb := range intentVerbs {
+		for name, list := range map[string][]string{
+			"ActionVerbs": ActionVerbs, "IntegrationVerbs": IntegrationVerbs, "AdminVerbs": AdminVerbs,
+		} {
+			if slices.Contains(list, verb) {
+				t.Errorf("%s lists intent verb %q", name, verb)
+			}
+		}
+		for _, phase := range allPhases {
+			f := failed(v1alpha1.PhaseRemediating)
+			f.Status.Phase = phase
+			before := f.DeepCopy()
+			changed, err := Apply(f, verb, "op@acme.test", "note", testClock)
+			if changed || !errors.Is(err, ErrUnknownVerb) {
+				t.Errorf("Apply(%s) in %s = (%v, %v), want (false, ErrUnknownVerb)", verb, phase, changed, err)
+			}
+			if !reflect.DeepEqual(before, f) {
+				t.Errorf("Apply(%s) in %s mutated the finding", verb, phase)
+			}
+			if slices.Contains(Available(f, testClock), verb) {
+				t.Errorf("Available in %s offers intent verb %q", phase, verb)
 			}
 		}
 	}

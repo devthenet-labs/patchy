@@ -28,8 +28,8 @@ real phase — remediation runs in priority order with bounded concurrency, so f
 
 Terminal entry sets `status.completedAt`, which starts the [finding TTL](configuration/remediation-controller.md)
 (default 14 days — the `FindingRollup` objects retain the statistics after deletion). `Dismissed` and `HandedOff` are
-revivable terminals: reopening the issue moves `Dismissed → HandedOff`, and a `/approve` comment moves
-`HandedOff → Queued`, clearing `completedAt` and cancelling the TTL.
+revivable terminals: reopening the issue moves `Dismissed → HandedOff`, and an approval (`/patchy approve` on the issue,
+or the status page or CLI) moves `HandedOff → Queued`, clearing `completedAt` and cancelling the TTL.
 
 ## Legal transitions
 
@@ -47,7 +47,7 @@ stateDiagram-v2
     Investigating --> Dismissed : verdict ignore
     Investigating --> HandedOff : verdict manual
     Investigating --> Failed : attempts exhausted
-    AwaitingApproval --> Queued : /approve
+    AwaitingApproval --> Queued : approve
     Queued --> Remediating : scheduler grant
     Remediating --> Queued : retry re-queue
     Remediating --> InReview : branch pushed, PR open
@@ -55,7 +55,7 @@ stateDiagram-v2
     InReview --> Remediated : PR merged
     InReview --> Failed : PR closed unmerged
     Dismissed --> HandedOff : issue reopened
-    HandedOff --> Queued : /approve revival
+    HandedOff --> Queued : approve revival
     Remediated --> [*]
     Failed --> [*]
 ```
@@ -70,7 +70,7 @@ closes the tracking issue — a person can always pull a finding out of the mach
 | `Enhanced` → `Investigating`                                                           | investigation-controller | Gate admits (accumulation closed ∧ min age); `Investigation` created |
 | `Investigating` → `Enhanced`                                                           | investigation-controller | Recoverable Job failure with attempts left                           |
 | `Investigating` → `Queued` / `AwaitingApproval` / `Dismissed` / `HandedOff` / `Failed` | investigation-controller | Verdict routing                                                      |
-| `AwaitingApproval` → `Queued`, `HandedOff` → `Queued`                                  | remediation-controller   | Accepted `/approve` (approval / revival)                             |
+| `AwaitingApproval` → `Queued`, `HandedOff` → `Queued`                                  | remediation-controller   | Accepted approval: release / revival                                 |
 | `Queued` → `Remediating`                                                               | remediation-controller   | Priority scheduler grants a slot                                     |
 | `Remediating` → `Queued`                                                               | remediation-controller   | Recoverable failure re-queued                                        |
 | `Remediating` → `InReview` / `Failed`                                                  | remediation-controller   | Push + PR succeeded / attempts exhausted                             |
@@ -103,7 +103,7 @@ Finding **while** enhancement runs, so the window close cannot be a phase.
 | `AccumulationComplete`                                  | Finding                    | The accumulation window closed; the gate may admit                                                          |
 | `ContextEnhanced`                                       | Finding                    | The enhancer chain ran                                                                                      |
 | `Investigated`                                          | Finding                    | Analysis completed; the reason carries the recommendation                                                   |
-| `Approved`                                              | Finding                    | A human `/approve` was accepted                                                                             |
+| `Approved`                                              | Finding                    | A human approval (`/patchy approve`, the status page or the CLI) was accepted                               |
 | `ForgeResolved`                                         | Finding                    | The repository resolved to exactly one Forge (`False` reasons: `NoRepository`, `NoForgeMatch`, `Ambiguous`) |
 | `ReviewClosePending`                                    | Finding                    | A close seen in review awaits the recorded PR's state (`TrackingIssueClosed`, `UnrecordedRepository`)       |
 | `Complete`                                              | Investigation, Remediation | The stage finished; the reason carries the outcome                                                          |

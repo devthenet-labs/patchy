@@ -496,6 +496,17 @@ Sequencing: slice 1a ships the parser, the intent verbs `approve`, `replan` and 
 as its own PR, the Finding migration (`/patchy <verb>`, the `/approve` alias, and the write-permission check). Slice 1b
 adds `revise` with its review alias, and `retry` on intent PRs.
 
+Status: the parser is done, and so is the Finding migration. A Finding's tracking issue takes all five verbs through
+`internal/command`, applied by `action.Apply` exactly as the status page and the CLI apply them. The webhook is
+acknowledged before it is handled and never redelivered, so the handler makes no GitHub call. It only records the
+command on the Finding's status (`status.commands.pending`, at most 8), and the Finding projection settles it with
+backoff. Settling reads the collaborator permission (`ghclient.CanWrite`), writes the spec, adds the `eyes` reaction and
+posts one reply, which the projection's comment markers keep to exactly one. It then records the comment id in
+`status.commands.consumed`, which keeps the last 32, so a redelivery or a replay never applies a command twice.
+`author_association` is no longer read. Each step is recorded as it completes, so a GitHub failure retries without
+deciding again, writing the spec again or replying again. One limit remains: a command arriving while 8 are already
+pending is not recorded, and so is never answered. That is the price of the bound.
+
 ### Why polling rather than webhooks
 
 - **It leaves the internet-facing binary alone.** integration-controller, which the security flow depends on, is
@@ -1004,7 +1015,7 @@ devthenet-dev in a separate Helm upgrade from the release that ships them.
 ## Prerequisite fixes
 
 Items 1-3, 5 and 6 are wave 0. Item 4 moves into wave 1 with the other ghclient work. `/approve` accepting any org
-`MEMBER` is fixed by the command-vocabulary PR in slice 1a.
+`MEMBER` is fixed by the command-vocabulary PR in slice 1a (done: the Finding migration requires write access).
 
 1. **Finding PR-close handler.** Make it check the repository and PR number against `status.pullRequest`, not just the
    head ref (internal/controller/integration/webhooks.go:170-216).
@@ -1075,8 +1086,10 @@ Made on 2026-09-23.
    later revise round could take its image from R0 again (`imageFrom` pins it by UID), so the intent would stay
    `Blocked` on `ImageRequired`, or a run whose Repository vanished mid-launch would fail. The command-vocabulary PR,
    which already edits integration-controller, therefore scopes both copies' Repository delete to Finding Repositories
-   (`client.HasLabels{LabelFinding}`); intent Repositories never carry that label. Until that PR is deployed, demo reset
-   must not be used while any intent is active.
+   (`client.HasLabels{LabelFinding}`); intent Repositories never carry that label. **Done** with the Finding migration:
+   both copies delete only Finding Repositories, never Projects, Intents or IntentRuns, and the only issues reset
+   touches are findings' tracking issues, which patchy opened. Tests pin all of this. Until that release is deployed,
+   demo reset must not be used while any intent is active.
 7. Is a 14-day TTL right, or should intents be kept forever, with GitHub as the durable record?
 
 ## Corrections to the candidate designs (verified)

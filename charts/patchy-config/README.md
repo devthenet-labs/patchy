@@ -42,7 +42,7 @@ integrations:
       github:
         issues:
           enabled: true
-          approveComment: /approve
+          # approveComment: /approve   # the default; a deprecated alias of "/patchy approve"
         codeScanningAlerts:
           enabled: true
 

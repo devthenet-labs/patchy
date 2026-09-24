@@ -36,7 +36,7 @@ spec:
       enabled: true # ingestion, and dismissal on an "ignore" verdict
     issues:
       enabled: true # the tracking projection and the human signals back
-      approveComment: /approve
+      # approveComment: /approve   # the default; a deprecated alias of "/patchy approve"
 ```
 
 Each capability block is independent. An `Integration` with only `codeScanningAlerts` ingests findings and never opens
@@ -91,13 +91,13 @@ the issue is a human surface, not a work tree.
 
 These are the only things on GitHub that move `Finding` state:
 
-| Signal                                   | Effect                      |
-| ---------------------------------------- | --------------------------- |
-| Issue closed                             | → `HandedOff`               |
-| Issue reopened                           | `Dismissed` → `HandedOff`   |
-| `/approve` comment                       | recorded on `spec.approval` |
-| PR on `patchy/<finding>` merged          | `InReview` → `Remediated`   |
-| PR on `patchy/<finding>` closed unmerged | → `Failed`                  |
+| Signal                                   | Effect                                                                        |
+| ---------------------------------------- | ----------------------------------------------------------------------------- |
+| Issue closed                             | → `HandedOff`                                                                 |
+| Issue reopened                           | `Dismissed` → `HandedOff`                                                     |
+| `/patchy <verb>` comment                 | the verb's spec field, as the status page sets it (see [Commands](#commands)) |
+| PR on `patchy/<finding>` merged          | `InReview` → `Remediated`                                                     |
+| PR on `patchy/<finding>` closed unmerged | → `Failed`                                                                    |
 
 A PR close counts only when it is the PR the finding recorded — the same number, in the finding's repository, from a
 branch there, not a fork's — so a stray branch named `patchy/<finding>` moves nothing. The PR body's `Fixes #N` closes
@@ -112,9 +112,45 @@ close out. Until GitHub answers, the close waits on the finding as the `ReviewCl
 an API outage delays it rather than losing it. Suspending the Integration, turning its issues off, or deleting it holds
 the close too: it settles once an issues-enabled Integration is back.
 
-`approveComment` changes the command; it defaults to `/approve`. Who may approve is RBAC on the status page and the CLI,
-but on an issue it is whoever can comment — so treat the comment as a convenience for repositories whose write access
-already matches your approval policy.
+### Commands
+
+A comment on a finding's tracking issue whose first line is `/patchy <verb> [note]` is a command. The verbs are the ones
+the [status page](../../status-ui.md) and the [CLI](../../cli.md) offer, and each means exactly what it means there:
+
+| Command                  | Effect                                                           |
+| ------------------------ | ---------------------------------------------------------------- |
+| `/patchy approve [note]` | releases the hold on a held finding, or revives a handed-off one |
+| `/patchy retry`          | retries a failed finding from the state it failed in             |
+| `/patchy expedite`       | skips the accumulation window, the minimum age and the queue     |
+| `/patchy suspend`        | pauses the finding's progress through the pipeline               |
+| `/patchy resume`         | resumes it                                                       |
+
+Only the first non-blank line counts: a command below other text, quoted (`> /patchy approve`) or inside a code block is
+just text. The prefix is case-insensitive, and the note is everything after the verb, up to 1 KiB, with control and
+text-reordering characters stripped. `/approve` still approves, matched exactly as before, as a deprecated alias of
+`/patchy approve`; `approveComment` replaces it with a different alias.
+
+**Who may command a finding.** The commenter needs write access to the tracking issue's repository — `admin`, `maintain`
+or `write`, read from GitHub's collaborator-permission API when the command is answered. `read` is not enough, since a
+public repository grants it to every GitHub account; neither is organization membership (`author_association` plays no
+part), and an account GitHub does not know is refused. A command from a bot, the App's own `<slug>[bot]` included, is
+ignored without a reply. The status page and the CLI keep their own RBAC checks; a command on the issue is authorised by
+the repository's write access alone.
+
+**The answer.** Every command gets an `eyes` reaction, then exactly one reply from patchy saying what happened: done;
+not available in the finding's current phase, listing the commands that are; not allowed; or, for a verb patchy does not
+know, the list of commands a tracking issue accepts. The phase gate is the status page's own: `approve` means something
+only on a held (`AwaitingApproval`) or handed-off finding, for instance, so an approval written while the finding is
+still being investigated is answered "not available" rather than kept for later. A command writes the spec only; the
+controller that owns the phase edge moves the phase, exactly as for a status-page action.
+
+**Delivery.** GitHub's webhook is answered before it is handled and never redelivered once answered, so the webhook
+handler only records the command on the finding (`status.commands.pending`, at most 8). The finding projection then asks
+GitHub for the commenter's permission, applies the command, reacts and replies, and retries with backoff while GitHub
+fails: a command is never dropped, and never decided without GitHub's answer. Each step is recorded as it completes, so
+a retry resumes where it stopped and never applies a command twice or replies twice. Answered comment ids are kept
+(`status.commands.consumed`), so a duplicate delivery, a redelivery or a demo replay changes nothing. Pending commands
+are answered in the order they were written, whatever order their deliveries arrive in.
 
 ## Credentials
 

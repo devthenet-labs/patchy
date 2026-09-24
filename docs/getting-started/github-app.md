@@ -18,24 +18,24 @@ fill in:
 
 Grant exactly these — nothing more:
 
-| Permission               | Access       | Why                                                                                  |
-| ------------------------ | ------------ | ------------------------------------------------------------------------------------ |
-| **Code scanning alerts** | Read & write | Read alert detail; dismiss false positives                                           |
-| **Issues**               | Read & write | The tracking projection — open, label, comment, close                                |
-| **Contents**             | Read & write | Download the repository archive; push the remediation branch; compare commits (read) |
-| **Pull requests**        | Read & write | Open the pull request a human reviews                                                |
-| **Metadata**             | Read         | Mandatory for every App                                                              |
+| Permission               | Access       | Why                                                                                       |
+| ------------------------ | ------------ | ----------------------------------------------------------------------------------------- |
+| **Code scanning alerts** | Read & write | Read alert detail; dismiss false positives                                                |
+| **Issues**               | Read & write | The tracking projection — open, label, comment, close; reacting to and answering commands |
+| **Contents**             | Read & write | Download the repository archive; push the remediation branch; compare commits (read)      |
+| **Pull requests**        | Read & write | Open the pull request a human reviews                                                     |
+| **Metadata**             | Read         | Mandatory for every App; also reads a commenter's repository permission                   |
 
 ## Webhook events
 
 Subscribe to these four events:
 
-| Event                 | Purpose                                                               |
-| --------------------- | --------------------------------------------------------------------- |
-| `code_scanning_alert` | New findings arrive and accumulate into `Finding` resources           |
-| `issues`              | Human signals on the tracking issue — close hands off, reopen revives |
-| `issue_comment`       | The `/approve` release for held findings                              |
-| `pull_request`        | Close the loop when the remediation PR merges (or closes unmerged)    |
+| Event                 | Purpose                                                                 |
+| --------------------- | ----------------------------------------------------------------------- |
+| `code_scanning_alert` | New findings arrive and accumulate into `Finding` resources             |
+| `issues`              | Human signals on the tracking issue — close hands off, reopen revives   |
+| `issue_comment`       | `/patchy` commands on tracking issues, such as a held finding's approve |
+| `pull_request`        | Close the loop when the remediation PR merges (or closes unmerged)      |
 
 All four are consumed by the **integration-controller** — the only webhook receiver in the system. Pipeline progress
 itself is not webhook-driven: the reconcile loops carry it, and the webhook path is ingestion and human-in-the-loop

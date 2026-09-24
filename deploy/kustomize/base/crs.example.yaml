@@ -29,7 +29,7 @@
 #         # baseURL: https://ghes.example.com/api/v3   # GHES only
 #         issues:
 #             enabled: true          # tracking projection + human signals
-#             approveComment: /approve
+#             # approveComment: /approve   # deprecated alias of /patchy approve
 #         codeScanningAlerts:
 #             enabled: true          # scanner ingestion + alert dismissal
 #

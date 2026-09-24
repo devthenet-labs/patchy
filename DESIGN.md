@@ -40,7 +40,7 @@ resources as the state machine and GitHub issues as a human-facing projection.
      `priority`, `severity`, and a `confidence` value in [0, 1] — for `remediate`, the likelihood of full
      remediation without breaking functionality;
    - backwards-compatible fixes are always favoured; if a better-but-breaking solution exists the report says so
-     and the pipeline holds for a human `/approve`;
+     and the pipeline holds for a human `/patchy approve`;
    - a `remediate` verdict also suggests the model, token budget, and max turns for the remediation stage, which
      the controller clamps to operator-configured ceilings and an allowlist.
 6. The investigation-controller routes each verdict:
@@ -49,7 +49,7 @@ resources as the state machine and GitHub issues as a human-facing projection.
    - `ignore` dismisses the GHAS alerts and closes the issue;
    - `manual` hands the finding to the repository owners for triage;
    - `remediate` below the confidence threshold (default 0.75) — or holding a breaking-change note — waits for a
-     human `/approve` comment;
+     human `/patchy approve` comment;
    - `remediate` at or above the threshold queues the finding for remediation.
 7. Remediation runs in priority order under bounded concurrency: a second `claude -p` stage receives the finding
    markdown, the pinned repository tree, and the investigation report, under the clamped token budget and turn
@@ -70,7 +70,7 @@ logging, tracing, and metrics; structured logging via `log/slog`.
 **The source of truth is the Kubernetes API.** The `patchy.bitwisemedia.uk/v1alpha1` custom resources —
 `Integration`, `Forge`, `Finding`, `Repository`, `Investigation`, `Remediation`, `FindingRollup` — carry all
 pipeline state; etcd is the only state store. GitHub issues are a one-way, human-facing projection: labels and
-comments are rendered from the Finding, and human actions (issue close, `/approve` comments, PR merge) flow back
+comments are rendered from the Finding, and human actions (issue close, `/patchy` command comments, PR merge) flow back
 in as webhook signals, never by re-parsing issue state.
 
 The agent execution harness is adapted from evolve (harness builds argv, runner executes, harness parses stdout), as is
@@ -89,7 +89,7 @@ consistent across the estate.
   validates provider webhooks (per-Integration secrets: GitHub HMAC, Pub/Sub OIDC, Wiz bearer token, generic
   per-integration HMAC) and ingests
   scanner alerts into Findings through the `pkg/source` handler seam (accumulation, duplicate merge). Outbound: projects Findings to tracking issues
-  (body, labels, enrichment and report comments) and applies human signals (close, `/approve`, PR merge/close)
+  (body, labels, enrichment and report comments) and applies human signals (close, `/patchy` commands, PR merge/close)
   back onto Findings.
 - **source-controller** — `Forge` + `Repository` reconcilers. Validates forge credentials, resolves
   each Repository to its covering Forge, pins the head SHA exactly once, downloads the forge's tarball archive at

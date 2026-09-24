@@ -30,6 +30,11 @@ const IntentBranchPrefix = "patchy-intent/"
 // recent entries so the log can never outgrow the schema's MaxItems.
 const MaxIntentPhaseTimes = 64
 
+// MaxIntentRefusedActors bounds status.commands.refusedActors, which keeps
+// the latest accounts sent a refusal on the intent issue. The schema marker
+// repeats it as a literal; keep the two in lockstep.
+const MaxIntentRefusedActors = 32
+
 // IntentPhase is the lifecycle of one intent. It is a local enum, not part of
 // the Finding phase taxonomy in transitions.go, and its edge table
 // (intentTransitions below) is separate from Finding's: intent-controller is
@@ -57,7 +62,8 @@ const (
 	IntentRevising IntentPhase = "Revising"
 	// IntentBlocked: a limit or a precondition stops progress (revision
 	// limit, cost ceiling, missing or rejected repository image, tripped
-	// sandbox breaker, repeated check failure); the conditions say which.
+	// sandbox breaker, an intent branch or pull request that is not patchy's,
+	// repeated check failure); the conditions say which.
 	// Re-evaluated when the Project changes, so raising a limit resumes the
 	// intent in the phase it was blocked from (IntentBlockedFrom).
 	IntentBlocked IntentPhase = "Blocked"
@@ -299,7 +305,10 @@ type IntentSpec struct {
 	RequestedBy IntentRequest `json:"requestedBy"`
 	// Suspend pauses the intent (human-written): no run is launched and
 	// nothing is written to GitHub for it until cleared. Running Jobs
-	// finish.
+	// finish; a build that finishes meanwhile holds its push (commit and
+	// branch) until then, without its slot of the run pool, and loses it if
+	// the suspension outlasts the finished Job's TTL (the run ends
+	// hold_expired, which does not count as an attempt).
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
 }
@@ -493,6 +502,39 @@ type IntentTracking struct {
 	StatusDigest string `json:"statusDigest,omitempty"`
 }
 
+// IntentCommands is how far the poll has read the comments on the intent
+// issue, and whom it has already refused there.
+type IntentCommands struct {
+	// Seen is the newest comment on the intent issue the poll has settled:
+	// every comment up to it was answered, if it carried a command, or
+	// needed nothing. Later polls list only the comments since it and read
+	// only newer ones as commands. So an answered command is never answered
+	// again, even after patchy's reply to it is deleted, and a comment
+	// edited after it was settled is never read as a command.
+	// +optional
+	Seen *IntentCommentRef `json:"seen,omitempty"`
+	// RefusedActors are the GitHub ids of the accounts already sent a reply
+	// refusing a command on this intent because they are not approvers (or
+	// are bots), the latest MaxIntentRefusedActors of them. A later command
+	// from one of them gets no reaction and no reply, so an account
+	// commenting repeatedly cannot make patchy write to GitHub once per
+	// comment. An approver's command is always answered.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=32
+	RefusedActors []int64 `json:"refusedActors,omitempty"`
+}
+
+// IntentCommentRef names one comment on the intent issue.
+type IntentCommentRef struct {
+	// ID is GitHub's id of the comment. GitHub's comment ids grow with
+	// creation.
+	// +kubebuilder:validation:Minimum=1
+	ID int64 `json:"id"`
+	// At is the comment's created_at, as GitHub reports it.
+	At metav1.Time `json:"at"`
+}
+
 // IntentStatus is the intent's observed state. Written only by
 // intent-controller's intent reconciler.
 type IntentStatus struct {
@@ -505,7 +547,8 @@ type IntentStatus struct {
 	// +kubebuilder:validation:MaxItems=64
 	PhaseTimes []IntentPhaseTime `json:"phaseTimes,omitempty"`
 	// Conditions of the intent: BudgetExhausted, RevisionLimitReached,
-	// ImageRequired, ApprovalRejected and (slice 1b) ChecksFailing.
+	// ImageRequired, BranchConflict, ApprovalRejected and (slice 1b)
+	// ChecksFailing.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -538,9 +581,16 @@ type IntentStatus struct {
 	// Building does not revive the intent when the build then fails, a
 	// replan refused while Planning does not replay once the plan is
 	// posted, and a revival whose plan fails again, posting no plan to
-	// anchor on, cannot re-consume the action that revived it.
+	// anchor on, cannot re-consume the action that revived it. A /patchy
+	// replan comment from someone who is not an approver is refused before
+	// its verb is read, and is consumed by commands.seen instead.
 	// +optional
 	LastTrigger *IntentAction `json:"lastTrigger,omitempty"`
+	// Commands records how far the poll has answered the commands on the
+	// intent issue, so none is answered twice or taken from a comment read
+	// before.
+	// +optional
+	Commands *IntentCommands `json:"commands,omitempty"`
 	// Branch is the branch every pull request of the intent is opened from:
 	// patchy-intent/<intent>, created once and then only fast-forwarded.
 	// +optional

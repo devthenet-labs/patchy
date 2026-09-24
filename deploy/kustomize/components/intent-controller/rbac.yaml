@@ -1,0 +1,138 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# intent-controller's grants, verb by verb what internal/controller/intent
+# uses (the chart's templates/intent-controller.yaml renders the same rules).
+# No ClusterRole.
+---
+# ---- patchy: the intent flow's own kinds ------------------------------------
+#   projects        get/list/watch; status update. A Project is operator
+#                   config; this identity never writes its spec.
+#   intents         create (discovery), get/list/watch, delete (the TTL, in
+#                   the foreground); status update. finalizers: its runs and
+#                   ConfigMaps carry a controller owner reference with
+#                   blockOwnerDeletion.
+#   intentruns      create (the create is the lease), get/list/watch, update
+#                   (removing the jobs finalizer); status update; finalizers
+#                   for the Repository and ConfigMap each run owns.
+#   repositories    create/get/list/watch/delete: each run's source tree
+#                   (status stays source-controller's).
+#   forges          get/list/watch: which Forge covers a repository.
+#   configmaps      create/get/list/watch/update: input snapshots, plans and
+#                   transcripts, all owner-referenced (no delete: the TTL
+#                   cascade removes them).
+#   secrets         get, by name only, on the Forge Secrets in this release
+#                   namespace: patch the names when your Forges
+#                   reference other Secrets. Never leave the list empty — an
+#                   empty resourceNames grants every Secret.
+#   leases, events  leader election (patchy-intent-controller-leader).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: patchy-intent-controller
+    namespace: patchy
+    labels:
+        app.kubernetes.io/name: intent-controller
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [projects]
+      verbs: [get, list, watch]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [projects/status]
+      verbs: [update]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [intents]
+      verbs: [create, get, list, watch, delete]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [intents/status, intents/finalizers]
+      verbs: [update]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [intentruns]
+      verbs: [create, get, list, watch, update]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [intentruns/status, intentruns/finalizers]
+      verbs: [update]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [repositories]
+      verbs: [create, get, list, watch, delete]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [forges]
+      verbs: [get, list, watch]
+    - apiGroups: [""]
+      resources: [configmaps]
+      verbs: [create, get, list, watch, update]
+    - apiGroups: [""]
+      resources: [secrets]
+      resourceNames: [patchy-github]
+      verbs: [get]
+    - apiGroups: [coordination.k8s.io]
+      resources: [leases]
+      verbs: [get, create, update]
+    - apiGroups: [""]
+      resources: [events]
+      verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: patchy-intent-controller
+    namespace: patchy
+    labels:
+        app.kubernetes.io/name: intent-controller
+        app.kubernetes.io/part-of: patchy
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: patchy-intent-controller
+subjects:
+    - kind: ServiceAccount
+      name: patchy-intent-controller
+      namespace: patchy
+---
+# ---- patchy-agents: its own copy of the agent-jobs Role ---------------------
+# The same internal/jobs machinery as the job controllers, granted by its own
+# Role (the chart's evaluation precedent) rather than by joining the base's
+# patchy-agent-jobs binding, so removing the component removes the grant.
+# The patchy.bitwisemedia.uk/kind=intent Job label keeps its watches and
+# reapers off the finding and evaluation runs.
+# This Role can get, create, update and delete any Secret in the agents namespace,
+# including model keys, image-pull credentials and other Jobs' handoffs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: patchy-intent-controller-jobs
+    namespace: patchy-agents
+    labels:
+        app.kubernetes.io/name: intent-controller
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [batch]
+      resources: [jobs]
+      verbs: [create, get, list, watch, delete]
+    - apiGroups: [""]
+      resources: [pods]
+      verbs: [get, list, watch]
+    - apiGroups: [""]
+      resources: [pods/log]
+      verbs: [get]
+    - apiGroups: [""]
+      resources: [secrets]
+      verbs: [create, get, update, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: patchy-intent-controller-jobs
+    namespace: patchy-agents
+    labels:
+        app.kubernetes.io/name: intent-controller
+        app.kubernetes.io/part-of: patchy
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: patchy-intent-controller-jobs
+subjects:
+    - kind: ServiceAccount
+      name: patchy-intent-controller
+      namespace: patchy

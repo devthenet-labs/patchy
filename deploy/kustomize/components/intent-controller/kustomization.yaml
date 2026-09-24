@@ -1,0 +1,55 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Optional component: intent-driven development. Enable it from an overlay
+# with
+#
+#     components:
+#         - ../../components/intent-controller
+#
+# It adds intent-controller: it polls each Project's intent repository for
+# issues carrying the Project's trigger label, plans the work in a read-only
+# agent Job, posts the plan for an approver, builds the approved plan in the
+# application repository's own image, pushes it to a branch it creates once
+# and opens the pull request (docs/design/intent-driven-development.md). The
+# base already carries the Project, Intent and IntentRun CRDs; without this
+# component they do nothing.
+#
+# What it adds, and what it relies on from the base:
+#
+#   * the Deployment, which reads the shared patchy-config (the agent
+#     namespace and service account, the claude runner image, the broker URL
+#     and provider) and then its own patchy-intent-controller-config, whose
+#     PATCHY_INTENT_* keys no other binary binds.
+#   * its ServiceAccount and Roles: one in patchy, verb by verb what the
+#     engine uses, with `secrets get` restricted to the Forge Secret names
+#     (patch rbac.yaml's resourceNames when your Forges reference others);
+#     and its own copy of the agent-jobs Role in patchy-agents.
+#   * nothing for the network: the base patchy-controllers NetworkPolicy
+#     selects every pod labelled app.kubernetes.io/component: controller,
+#     which grants exactly what it needs (DNS, the Kubernetes API, GitHub on
+#     443).
+#
+# Intents run on brokered claude only, so the base's egress broker must be
+# running. Builds require an accepted repository-declared image, and the
+# kustomize base does not configure repository images, so until you add
+# those keys (see configmap.yaml) every build blocks on ImageRequired unless
+# its Project sets requireRepositoryImage: false.
+#
+# intent-controller writes no Finding spec, so it is deliberately absent from
+# the admission policy's exempt subjects (internal/action/policy_test.go
+# knows why).
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+    - serviceaccount.yaml
+    - rbac.yaml
+    - configmap.yaml
+    - deployment.yaml
+
+# Overlays pin the tag or digest by patching this entry, as they do the
+# base's images.
+images:
+    - name: ghcr.io/devthenet-labs/patchy/intent-controller
+      newTag: latest

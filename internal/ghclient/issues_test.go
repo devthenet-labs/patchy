@@ -14,6 +14,36 @@ import (
 
 var testRepo = Repo{Owner: "o", Name: "r"}
 
+// TestRemoveLabelEscapesTheName: a label name is one path segment whatever
+// it holds, so RemoveLabel reaches the label's own route. Unescaped, a '/'
+// named another route, whose 404 RemoveLabel reads as "already removed", and
+// a '%' did not parse.
+func TestRemoveLabelEscapesTheName(t *testing.T) {
+	for _, name := range []string{"kind/intent", "100%", "good first issue", "patchy:approved", "a#b?c"} {
+		t.Run(name, func(t *testing.T) {
+			mux, c := newFakeClient(t)
+			hit := false
+			mux.HandleFunc("DELETE /repos/o/r/issues/3/labels/{name}", func(w http.ResponseWriter, r *http.Request) {
+				hit = true
+				if got := r.PathValue("name"); got != name {
+					t.Errorf("label removed = %q, want %q", got, name)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})
+			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				t.Errorf("request reached another route: %s %s", r.Method, r.URL.EscapedPath())
+				http.NotFound(w, r)
+			})
+			if err := c.RemoveLabel(context.Background(), testRepo, 3, name); err != nil {
+				t.Fatalf("RemoveLabel() error = %v", err)
+			}
+			if !hit {
+				t.Error("the label's route was never reached")
+			}
+		})
+	}
+}
+
 func TestRepoString(t *testing.T) {
 	if got := testRepo.String(); got != "o/r" {
 		t.Errorf("Repo.String() = %q, want %q", got, "o/r")

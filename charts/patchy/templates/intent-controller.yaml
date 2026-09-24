@@ -1,0 +1,353 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# The intent controller, in one file (evaluation-controller precedent): an
+# optional component (intentController.enabled, default false) that polls
+# each Project's intent repository, plans the work in a read-only agent Job,
+# posts the plan for an approver, builds the approved plan in the application
+# repository's own image, pushes it to a branch it creates once and opens the
+# pull request. With it off the chart renders exactly as it did without it:
+# the fragments it adds elsewhere (the egress broker and the claude egress
+# policies, through patchy.brokerEnabled and patchy.harnessEnabled) are keyed
+# on the same flag. Mirrors deploy/kustomize/components/intent-controller.
+#
+# It is the second code path that writes to a forge (remediation-controller is
+# the first). In the release namespace `secrets get` is limited to names in
+# intentController.forgeSecrets; its agent-jobs Role can get, create, update
+# and delete any Secret in the agents namespace, including model keys,
+# image-pull credentials and other Jobs' handoffs. GitHub tokens are scoped
+# per operation to one repository and one permission. There is no ClusterRole.
+{{- if .Values.intentController.enabled }}
+{{- $vals := .Values.intentController }}
+{{- $name := "intent-controller" }}
+{{- $c := dict "name" $name "vals" $vals }}
+{{- $sa := include "patchy.serviceAccountName" (dict "root" . "name" $name "vals" $vals) }}
+{{/*
+An empty resourceNames list is not "no Secrets" to RBAC but every Secret in
+the namespace, so an empty forgeSecrets fails the render rather than quietly
+granting the widest read in the chart.
+*/}}
+{{- if not $vals.forgeSecrets }}
+{{- fail "intentController.enabled requires intentController.forgeSecrets: the names of the Secrets your Forges reference (spec.secretRef), e.g. [patchy-github]. This restricts Secret reads in the release namespace; an empty list would grant every Secret there" }}
+{{- end }}
+{{- if $vals.serviceAccount.create }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" . "extra" $vals.serviceAccount.annotations) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+{{- end }}
+{{- include "patchy.controllerConfigMap" (dict "root" . "c" $c) }}
+---
+# Verb by verb what internal/controller/intent uses, and nothing more:
+#
+#   projects        get/list/watch; status update (Ready, IntentNameConflict,
+#                   activeIntents, lastPolledAt). A Project is operator
+#                   config written through patchy-config; this identity
+#                   never writes its spec.
+#   intents         create (discovery), get/list/watch, delete (the TTL, in
+#                   the foreground); status update. The finalizers
+#                   subresource is what lets its runs and ConfigMaps carry a
+#                   controller owner reference with blockOwnerDeletion.
+#   intentruns      create (the create is the lease), get/list/watch, update
+#                   (removing the jobs finalizer); status update; finalizers
+#                   for the Repository and ConfigMap each run owns.
+#   repositories    create/get/list/watch/delete: each run's source tree;
+#                   plan Repositories are deleted once collected. Status stays
+#                   source-controller's.
+#   forges          get/list/watch: which Forge covers a repository.
+#   configmaps      create/get/list/watch/update: the input snapshots, the
+#                   plans and the transcripts, all owner-referenced (the TTL
+#                   cascade removes them, so no delete). list/watch because
+#                   the run scheduler watches them.
+#   secrets         get, by name only, on the Forge Secrets.
+#   leases, events  leader election.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: {{ include "patchy.fullname" . }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" .) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [projects]
+      verbs: [get, list, watch]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [projects/status]
+      verbs: [update]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [intents]
+      verbs: [create, get, list, watch, delete]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [intents/status, intents/finalizers]
+      verbs: [update]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [intentruns]
+      verbs: [create, get, list, watch, update]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [intentruns/status, intentruns/finalizers]
+      verbs: [update]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [repositories]
+      verbs: [create, get, list, watch, delete]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [forges]
+      verbs: [get, list, watch]
+    - apiGroups: [""]
+      resources: [configmaps]
+      verbs: [create, get, list, watch, update]
+    - apiGroups: [""]
+      resources: [secrets]
+      resourceNames:
+          {{- range $vals.forgeSecrets }}
+          - {{ . | quote }}
+          {{- end }}
+      verbs: [get]
+    - apiGroups: [coordination.k8s.io]
+      resources: [leases]
+      verbs: [get, create, update]
+    - apiGroups: [""]
+      resources: [events]
+      verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: {{ include "patchy.fullname" . }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" .) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: {{ include "patchy.fullname" . }}-{{ $name }}
+subjects:
+    - kind: ServiceAccount
+      name: {{ $sa }}
+      namespace: {{ .Release.Namespace }}
+---
+# The agents-namespace grant: its own copy of the agent-jobs Role (the
+# evaluation precedent), for the same internal/jobs machinery. The
+# patchy.bitwisemedia.uk/kind=intent Job label keeps its watches and reapers
+# off the finding and evaluation runs — RBAC cannot express that split.
+# This Role can get, create, update and delete any Secret in the agents namespace,
+# including model keys, image-pull credentials and other Jobs' handoffs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: {{ include "patchy.fullname" . }}-{{ $name }}-jobs
+    namespace: {{ .Values.agent.namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" .) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+rules:
+    - apiGroups: [batch]
+      resources: [jobs]
+      verbs: [create, get, list, watch, delete]
+    - apiGroups: [""]
+      resources: [pods]
+      verbs: [get, list, watch]
+    - apiGroups: [""]
+      resources: [pods/log]
+      verbs: [get]
+    - apiGroups: [""]
+      resources: [secrets]
+      verbs: [create, get, update, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: {{ include "patchy.fullname" . }}-{{ $name }}-jobs
+    namespace: {{ .Values.agent.namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" .) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: {{ include "patchy.fullname" . }}-{{ $name }}-jobs
+subjects:
+    - kind: ServiceAccount
+      name: {{ $sa }}
+      namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: {{ include "patchy.fullname" . }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name "component" "controller") | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" .) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+spec:
+    replicas: 1
+    strategy:
+        type: Recreate
+    selector:
+        matchLabels:
+            {{- include "patchy.selectorLabels" (dict "root" . "name" $name) | nindent 12 }}
+    template:
+        metadata:
+            labels:
+                {{- include "patchy.labels" (dict "root" . "name" $name "component" "controller") | nindent 16 }}
+                {{- with $vals.podLabels }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+            {{- /* checksum/config hashes the ConfigMap above, so a helm
+                   upgrade that changes it rolls the pod — envFrom is read
+                   once, at container start. */}}
+            {{- $checksums := dict "checksum/config" (include "patchy.controllerConfigMap" (dict "root" . "c" $c) | sha256sum) }}
+            {{- with include "patchy.annotations" (dict "root" . "extra" (merge $checksums ($vals.podAnnotations | default dict))) }}
+            annotations:
+                {{- . | nindent 16 }}
+            {{- end }}
+        spec:
+            serviceAccountName: {{ $sa }}
+            {{- with .Values.image.pullSecrets }}
+            imagePullSecrets:
+                {{- toYaml . | nindent 16 }}
+            {{- end }}
+            securityContext:
+                runAsNonRoot: true
+                runAsUser: 65532
+                runAsGroup: 65532
+                fsGroup: 65532
+                fsGroupChangePolicy: Always
+                seccompProfile:
+                    type: RuntimeDefault
+            containers:
+                - name: controller
+                  image: {{ include "patchy.image" (dict "root" . "binary" $name "image" $vals.image) }}
+                  imagePullPolicy: {{ .Values.image.pullPolicy }}
+                  args: ["serve"]
+                  envFrom:
+                      - configMapRef:
+                            name: {{ include "patchy.configMapName" (dict "root" . "name" $name) }}
+                  env:
+                      - name: POD_NAMESPACE
+                        valueFrom:
+                            fieldRef:
+                                fieldPath: metadata.namespace
+                  ports:
+                      - name: health
+                        containerPort: 8081
+                        protocol: TCP
+                  livenessProbe:
+                      httpGet:
+                          path: /healthz
+                          port: health
+                      initialDelaySeconds: 5
+                      periodSeconds: 20
+                  readinessProbe:
+                      httpGet:
+                          path: /readyz
+                          port: health
+                      initialDelaySeconds: 2
+                      periodSeconds: 10
+                  {{- with $vals.resources }}
+                  resources:
+                      {{- toYaml . | nindent 22 }}
+                  {{- end }}
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                          drop: ["ALL"]
+                      seccompProfile:
+                          type: RuntimeDefault
+                  volumeMounts:
+                      - name: tmp
+                        mountPath: /tmp
+            {{- with $vals.nodeSelector }}
+            nodeSelector:
+                {{- toYaml . | nindent 16 }}
+            {{- end }}
+            {{- with $vals.tolerations }}
+            tolerations:
+                {{- toYaml . | nindent 16 }}
+            {{- end }}
+            {{- with $vals.affinity }}
+            affinity:
+                {{- toYaml . | nindent 16 }}
+            {{- end }}
+            volumes:
+                # The root filesystem is read-only; every binary wants a
+                # writable /tmp.
+                - name: tmp
+                  emptyDir: {}
+{{- if $vals.networkPolicy.create }}
+---
+# Ingress: 8081 probes only — it serves nothing else. Egress: DNS, then TCP
+# 443/6443 — the Kubernetes API server and GitHub (plus an OTLP collector),
+# the same as the finding job controllers. It never dials the artifact
+# server (agent pods fetch their tarballs themselves) nor the agent pods (it
+# reads their logs through the API server). Its startup probe of the egress
+# broker's /readyz is advisory, and like the job controllers' it is not
+# granted. extraEgress covers a Forge's egress proxy on a port other than 443.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: {{ include "patchy.fullname" . }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" .) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+spec:
+    podSelector:
+        matchLabels:
+            {{- include "patchy.selectorLabels" (dict "root" . "name" $name) | nindent 12 }}
+    policyTypes: [Ingress, Egress]
+    ingress:
+        - ports:
+              - protocol: TCP
+                port: 8081
+    egress:
+        - to:
+              - namespaceSelector:
+                    matchLabels:
+                        kubernetes.io/metadata.name: kube-system
+          ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+        - ports:
+              - protocol: TCP
+                port: 443
+              - protocol: TCP
+                port: 6443
+        {{- with $vals.networkPolicy.extraEgress }}
+        # Operator-supplied additions (intentController.networkPolicy.extraEgress),
+        # rendered verbatim.
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}
+{{- end }}

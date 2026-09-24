@@ -18,9 +18,14 @@
 # it twice.
 #
 # agent.repositoryImages, when enabled, adds the repository-image keys to the
-# source-, investigation- and remediation-controller data, plus the cosign
-# public key ConfigMap source-controller mounts (last in this file). Its
-# render-time guards run here, because this file always renders.
+# source-, investigation- and remediation-controller data (and to
+# intent-controller's, when that is deployed), plus the cosign public key
+# ConfigMap source-controller mounts (last in this file). Its render-time
+# guards run here, because this file always renders.
+#
+# The optional intent-controller renders its ConfigMap from the same define
+# below, but from its own template (intent-controller.yaml), so the whole
+# component stays behind intentController.enabled.
 {{- include "patchy.repositoryImagesGuard" . }}
 {{- range $c := list
     (dict "name" "integration-controller" "vals" .Values.integrationController)
@@ -177,6 +182,46 @@ cap is remediation's alone.
 {{- if eq $c.name "remediation-controller" }}
 {{- $_ := set $data "PATCHY_CHANGESET_MAX_ENTRIES" $ri.changesetMaxEntries }}
 {{- end }}
+{{- end }}
+{{- else if eq $c.name "intent-controller" }}
+{{/*
+intent-controller runs its agent Jobs on brokered claude and nothing else
+(no other harness honours the plan stage's read-only sandbox), so only the
+claude runner is stamped, whatever agent.runners enables for findings. Its
+own settings carry an intent- prefix (PATCHY_INTENT_*), and its Job deadline
+is its own: a build stage alone may take an hour.
+*/}}
+{{- $_ := set $data "PATCHY_AGENT_NAMESPACE" $root.Values.agent.namespace }}
+{{- $_ := set $data "PATCHY_AGENT_SERVICE_ACCOUNT" $root.Values.agent.serviceAccount }}
+{{- $_ := set $data "PATCHY_JOB_TTL" $root.Values.agent.jobTTL }}
+{{- $_ := set $data "PATCHY_CLAUDE_AGENT_IMAGE" (include "patchy.image" (dict "root" $root "binary" "claude-agent-runner" "image" $root.Values.agent.runners.claude.image)) }}
+{{- $_ := include "patchy.claudeProviderData" (dict "root" $root "data" $data) }}
+{{- $_ := set $data "PATCHY_HARNESSES" "claude" }}
+{{- $_ := set $data "PATCHY_INTENT_POLL_INTERVAL" $own.pollInterval }}
+{{- $_ := set $data "PATCHY_INTENT_APPROVAL_POLL_INTERVAL" $own.approvalPollInterval }}
+{{- $_ := set $data "PATCHY_INTENT_PR_POLL_INTERVAL" $own.prPollInterval }}
+{{- $_ := set $data "PATCHY_INTENT_MAX_CONCURRENT_RUNS" $own.maxConcurrentRuns }}
+{{- $_ := set $data "PATCHY_INTENT_RATE_LIMIT_FLOOR" $own.rateLimitFloor }}
+{{- $_ := set $data "PATCHY_INTENT_TTL" $own.intentTTL }}
+{{- $_ := set $data "PATCHY_INTENT_JOB_DEADLINE" $own.jobDeadline }}
+{{- range $stage := list "plan" "build" }}
+{{- $s := index $own $stage }}
+{{- $prefix := printf "PATCHY_INTENT_%s_" (upper $stage) }}
+{{- $_ := set $data (print $prefix "MODEL") $s.model }}
+{{- $_ := set $data (print $prefix "MAX_TURNS") $s.maxTurns }}
+{{- $_ := set $data (print $prefix "TOKEN_BUDGET") $s.tokenBudget }}
+{{- $_ := set $data (print $prefix "TIMEOUT") $s.timeout }}
+{{- end }}
+{{- $ri := $root.Values.agent.repositoryImages | default dict }}
+{{- if $ri.enabled }}
+{{/*
+A build runs only on an accepted repository image (a Project may opt out
+with requireRepositoryImage: false), so without these keys every build
+blocks on ImageRequired. The changeset entry cap is remediation's value.
+*/}}
+{{- $_ := set $data "PATCHY_REPOSITORY_IMAGES" "true" }}
+{{- $_ := set $data "PATCHY_AGENT_EPHEMERAL_STORAGE" $ri.ephemeralStorage }}
+{{- $_ := set $data "PATCHY_CHANGESET_MAX_ENTRIES" $ri.changesetMaxEntries }}
 {{- end }}
 {{- end }}
 {{/*

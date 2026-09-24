@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -116,9 +117,12 @@ func (c *Client) AddLabels(ctx context.Context, repo Repo, number int, add []str
 }
 
 // RemoveLabel removes one label from the issue. A 404 — the label is
-// already absent — is not an error, so removals are idempotent.
+// already absent — is not an error, so removals are idempotent. The name is
+// one path segment, escaped here: go-github formats it into the path as it
+// is, so a name holding '/' would name another route (whose 404 would read
+// as "already removed") and one holding '%' would not parse at all.
 func (c *Client) RemoveLabel(ctx context.Context, repo Repo, number int, name string) error {
-	resp, err := c.gh.Issues.RemoveLabelForIssue(ctx, repo.Owner, repo.Name, number, name)
+	resp, err := c.gh.Issues.RemoveLabelForIssue(ctx, repo.Owner, repo.Name, number, url.PathEscape(name))
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusNotFound {
 			return nil
@@ -187,8 +191,8 @@ func issueFromGitHub(is *github.Issue) *Issue {
 
 // repoFromURL recovers owner/name from an API repository URL
 // (".../repos/{owner}/{name}"); a URL of any other shape yields a zero Repo.
-func repoFromURL(url string) Repo {
-	parts := strings.Split(url, "/")
+func repoFromURL(raw string) Repo {
+	parts := strings.Split(raw, "/")
 	for i, p := range parts {
 		if p == "repos" && i+2 < len(parts) {
 			return Repo{Owner: parts[i+1], Name: parts[i+2]}

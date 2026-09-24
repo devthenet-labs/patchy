@@ -139,9 +139,10 @@ within:
 
 **Credentials and RBAC.**
 
-- _Secret access._ intent-controller reads the covering Forge's Secret through the uncached API reader. Its
-  `secrets get` is restricted by `resourceNames` to the Forge secret names given in values, which is tighter than any
-  existing controller.
+- _Secret access._ intent-controller reads the covering Forge's Secret through the uncached API reader. In the release
+  namespace, `secrets get` is restricted by `resourceNames` to the Forge secret names given in values. Its agent-jobs
+  Role can get, create, update and delete any Secret in the agents namespace, including model keys, image-pull
+  credentials and other Jobs' handoffs.
 - _Tokens._ `ghclient.TokenPerms` gains `Issues` and `PullRequests`. `forge.Store.TokenWith` mints a token per
   operation, scoped to one repository and one permission set, and caches it per (repo, perms) until shortly before it
   expires. The unscoped installation client is never used.
@@ -243,7 +244,8 @@ names, and a seeded property test checks that they are label-safe and unique wit
   - `preview` (slice 2)
   - `suspend`
 - **Status:**
-  - the `Ready` condition, with reasons `ForgeUnresolved`, `AppNotInstalled` and `AmbiguousIntentRepository`
+  - the `Ready` condition, with reasons `ForgeUnresolved`, `AppNotInstalled`, `AmbiguousIntentRepository` and
+    `ForgeSecretUnreadable` (the covering Forge's Secret is missing or outside intent-controller's `resourceNames`)
   - the `IntentNameConflict` condition: an issue whose Intent name is held by another repository's issue
   - `activeIntents`
   - `lastPolledAt`
@@ -269,6 +271,8 @@ names, and a seeded property test checks that they are label-safe and unique wit
     refused while `Building` does not revive the intent when the build then fails, and one refused while `Planning` does
     not replay once the plan is posted. A revival whose plan fails again, posting no plan to anchor on, cannot
     re-consume the action that revived it.
+  - `commands{seen{id, at}, refusedActors[]}`: the newest comment on the issue the poll has settled, and the accounts
+    already sent a refusal (see "Human commands: one vocabulary").
   - `branch`
   - `pullRequests[]` (at most 8, keyed by repository):
     `{repository, number, url, nodeID, headSHA, state, mergedAt, mergeCommitSHA}`
@@ -416,7 +420,10 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
      2. Persist `pushedCommit`.
      3. `CreateRef patchy-intent/<intent>`. This is create-only. A 422 is adopted only when the ref already points at
         `pushedCommit`; otherwise the outcome is `branch_exists`. Nothing is ever forced.
-   - Open the PR against the default branch with a controller-rendered body.
+   - Open the PR against the default branch with a controller-rendered body. An open PR already found from the branch
+     into the default branch (one a failed pass opened) is adopted only when patchy's bot opened it from the repository
+     itself: anyone can open a PR from an existing branch of a public repository, with any body. Any other blocks the
+     Intent with `BranchConflict` until it is closed, since GitHub keeps one open PR per head and base.
    - Record the PR's `{repository, number, url, nodeID, headSHA}`, move to `InReview`, and link the PR from the status
      comment.
 9. **Review.** While in `InReview`, poll the PR's reviews and its state every 60 s. A new `CHANGES_REQUESTED` review
@@ -473,6 +480,13 @@ TTL deletes it along with the Intent. A new Intent could also meet the objects o
   its `intentRef` UID, which the schema requires, and a ConfigMap or Repository by the UID of its controller owner
   reference (this Intent, or one of this Intent's runs). Anything else is left alone, and the create is retried after a
   backoff.
+- **The branch outlives its Intent.** Nothing deletes `patchy-intent/<intent>` when an intent ends (GitHub keeps a
+  merged or closed pull request's head branch unless the repository deletes it on merge), and the branch is named after
+  the Intent alone, so a name taken again meets its first holder's branch. Before a build launches, intent-controller
+  reads the branch: when it exists at a commit none of this Intent's runs pushed (a namesake's, or someone else's), the
+  Intent goes to `Blocked` with `BranchConflict` before any agent runs, since the build would spend its grant and then
+  fail `branch_exists`. The block lifts once a human deletes the branch; it is never forced or adopted. A branch that
+  appears while the build runs still fails that build `branch_exists`, and the next attempt blocks instead of building.
 - **A name held by another repository's issue is reported, never skipped silently.** On AlreadyExists, discovery reads
   the existing Intent. If its `spec.issue.repository` is the Project's intent repository (compared as forges compare
   URLs: case-insensitively, with any `.git` suffix dropped), the issue already has its Intent. If it is not, the name is
@@ -520,7 +534,23 @@ there is one grammar, and everything else is an alias for it.
   Commands and events from the App's own bot login are ignored. That login is `<slug>[bot]`, with the slug from
   `GET /app`, and the actor type is `Bot`. Label events carry `performed_via_github_app: null` even when the App applied
   the label, so the actor is the only way to recognise them. An answered action is consumed whatever the outcome, so it
-  never takes effect later; for `replan` and its trigger-label alias the record is `lastTrigger`.
+  never takes effect later; for `replan` and its trigger-label alias the record is `lastTrigger`. On an intent issue
+  every comment is also consumed by `status.commands.seen`, the newest comment the poll has settled: no later poll reads
+  a comment at or before it, so a command is never answered twice even after patchy's reply is deleted, and each poll
+  lists the thread only from there.
+- **Edited comments are not commands.** GitHub lets anyone with write access edit anyone's comment, and the comment
+  still names its original author. So a comment whose `updated_at` is later than its `created_at` is never taken as a
+  command: it gets one reply saying so, and its author can post the command again. An edited approver comment is also
+  left out of a replan's snapshot. For the same reason a plan comment edited in place is refused for approval even when
+  its text was restored, since GitHub moves `updated_at` on every edit. Both timestamps are to the second, so an edit
+  made in the second a comment was posted leaves them equal: before an approver's `approve`, `replan` or `cancel` is
+  acted on, and when the plan comment is re-read at approval, patchy also asks GitHub's GraphQL API for the comment's
+  `lastEditedAt`, which is null only for a comment never edited (one query by the comment's `node_id`, with an
+  `issues: read` token). A comment gone by then counts as edited.
+- **Refusals are bounded per account.** On an intent issue, a command from an account that is not an approver (or is a
+  bot) is refused whatever it says, an unknown verb or an edited comment included. Its author gets the reaction and the
+  refusal once per intent (`status.commands.refusedActors`, the latest 32 accounts), and nothing after that: no
+  reaction, no reply. An approver's commands are always answered.
 - **One parser.** A pure package, `internal/command`, parses the grammar. integration-controller uses it on the webhook
   path for Findings, and intent-controller uses it on the poll path for intents. It has seeded property tests: parsing
   never panics, text that does not start with the command prefix never parses as a command, and the note never contains
@@ -718,7 +748,7 @@ closes the intent issue itself.
     | build  | 150   | 800k   | 60m  |
     | revise | 80    | 400k   | 45m  |
 
-  - a Job deadline of 90 m (the broker caller token lasts 105 m);
+  - a Job deadline of 90 m (the broker caller token is minted for the deadline plus 15 m, so 105 m here);
   - two attempts per stage;
   - one `head_moved` retry per round.
 - **The cost ceiling is advisory for build and revise runs.** Those runs use the repository-declared image, and the
@@ -821,6 +851,10 @@ Slice 1 enforces one repository per Project.
   applies `patchy:<project>`. That label both triggers the work and names the project; the issue body is never parsed
   for routing. A project may instead name its own intent repo. When two Projects share a repo, their labels must differ;
   otherwise the Project reports `AmbiguousIntentRepository`.
+- **One Project per issue.** An issue with two Project trigger labels waits for one to be removed; neither Project
+  creates an Intent from it. If an issue already has an Intent, a later Project's trigger is removed and the conflict is
+  reported. An approval label or `/patchy approve` is refused if two Intents somehow exist for the issue. This makes the
+  approval refer to one posted plan even though Projects share an intent repository.
 - **Registration.** One Project CR per project, delivered through patchy-config values. `hack/codegen.sh` is extended to
   emit the Project schema; today it covers only Integration and Forge.
 - **Namespace.** Everything runs in namespace `patchy`, because the controllers are single-namespace.
@@ -902,8 +936,10 @@ A deploy triggered by `pull_request` cannot be gated by an Environment branch ru
    - integration-controller's `Creds.Client` returns the unscoped installation client (creds.go:80-98);
    - all five controllers hold unscoped `secrets get`.
 
-   intent-controller becomes a second code path that writes to forges, with the tightest posture of any controller:
-   - `secrets get` restricted by `resourceNames`;
+   intent-controller becomes a second code path that writes to forges:
+   - `secrets get` restricted by `resourceNames` in the release namespace; its agent-jobs Role can get, create, update
+     and delete any Secret in the agents namespace, including model keys, image-pull credentials and other Jobs'
+     handoffs;
    - a token per operation, scoped to one repository and one permission;
    - writes only to repos listed in a Project, plus issue operations on the intent repo;
    - branches only under `patchy-intent/`, created once and then only fast-forwarded;
@@ -1132,6 +1168,9 @@ devthenet-dev in a separate Helm upgrade from the release that ships them.
   - 304 responses are free for installation tokens (open question 2);
   - still unverified: whether the actor on a label applied by an issue form is the issue author (open question 1).
     Verify it before wave 3 goes live.
+  - still unverified: that GraphQL answers an issue comment's `lastEditedAt` (and `includesCreatedEdit`) to an
+    `issues: read` installation token. The edit check before a command is acted on depends on it; a refusal there leaves
+    the command unanswered and retried, never accepted.
 
 - **Shared code still ships in the same images as the Finding flow:** the split `ghclient` push, `stageEnvNames`,
   `NameFor`, the exported validator and runnerguard. Every change is additive and guarded by goldens and property tests,

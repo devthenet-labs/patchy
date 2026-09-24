@@ -17,7 +17,7 @@ hour, get context-enhanced, then a sandboxed `claude -p` run investigates each o
 remediated in priority order into pull requests, everything else routes to humans. Completed findings expire on a
 TTL; `FindingRollup` resources keep the all-time statistics.
 
-Ten binaries, one module. "Not monolithic" means separate binaries/deployments with shared `internal/` code:
+Eleven binaries, one module. "Not monolithic" means separate binaries/deployments with shared `internal/` code:
 
 - `cmd/integration-controller` — the single internet-facing entry point, driven by `Integration` CRs: validates
   provider webhooks (`/github/webhooks` HMAC, `/google-cloud/webhooks` Pub/Sub OIDC, `/wiz/webhooks` bearer
@@ -42,7 +42,8 @@ Ten binaries, one module. "Not monolithic" means separate binaries/deployments w
   immutable `Investigation` per attempt) plus the analysis scheduler (bounded concurrency, launches agent Jobs,
   routes verdicts onto the Finding).
 - `cmd/remediation-controller` — queue admission (approvals/revivals), the priority scheduler, remediation agent
-  Jobs, changeset push + PR via the forge write seam (the only write credential), and hosts the rollup/TTL loop.
+  Jobs, changeset push + PR via the forge write seam (the finding flow's only write credential), and hosts the
+  rollup/TTL loop.
 - `cmd/agent-runner` — the in-pod coding-agent runtime: one stage per Job (`investigate` or `remediate`) via
   `claude -p`, results emitted as a `PATCHY-EVENT:` JSONL stream on stdout. Never talks to GitHub or the
   Kubernetes API; a claude pod holds no credential at all (model traffic goes through the egress broker,
@@ -61,6 +62,18 @@ Ten binaries, one module. "Not monolithic" means separate binaries/deployments w
   children), unit scheduler (bounded concurrency over the same sandboxed agent-Job machinery; pods run
   `evolve exec-unit` and emit `EVOLVE-EVENT:` JSONL), and the TTL loop. Patchy never learns eval semantics —
   bounded summaries land on unit status, the opaque results entry in a per-unit ConfigMap.
+- `cmd/intent-controller` — OPTIONAL (default-off in the chart, an opt-in kustomize component): intent-driven
+  development (docs/design/intent-driven-development.md, slice 1a). Polls GitHub instead of taking webhooks: each
+  `Project`'s intent repository (ETag listing) for issues carrying its trigger label, and each `Intent`'s issue for the
+  facts its phase waits on. It plans in a read-only agent Job on the default image, posts the plan verbatim for an
+  approver, builds only the approved plan in the repository's accepted image (`runnerguard.PinFor`), pushes it
+  two-phase to `patchy-intent/<intent>` (create-only, never forced) and opens the PR. It closes the issue on merge.
+  The second forge-writing code path: in the release namespace, `secrets get` is restricted by `resourceNames` to the
+  Forge Secrets. Its agent-jobs Role can get, create, update and delete any Secret in the agents namespace, including
+  model keys, image-pull credentials and other Jobs' handoffs. It uses a GitHub token per operation
+  (`forge.Store.TokenWith`), has no ClusterRole and no inbound surface. Only
+  writer of Project status, Intent and IntentRun. Its own flags carry an `intent-` prefix (`PATCHY_INTENT_*`); it runs
+  on brokered claude only (or the fake harness in dev).
 - `cmd/status-server` — the human-facing status page (NOT a controller: no reconcilers, no leases): the embedded
   SPA + JSON projection of Findings/FindingRollups, SSE refetch signal, OIDC sign-in, the access-review-gated
   approve/retry/expedite/suspend/resume actions, and the user-menu demo tooling (replay → Integration
@@ -107,7 +120,10 @@ charts/             Helm rendering of the same stack, pushed to ghcr OCI on rele
                     stamps both Chart.yaml versions. Lint/render with `mise run helm-lint`.
 e2e/                SEPARATE Go module: envtest carries the CRDs, the real binaries run against it,
                     fakegithub (in-memory API) stands in at the network edge, recorded webhook
-                    fixtures + the replay tool drive it (`make e2e`).
+                    fixtures + the replay tool drive it (`make e2e`). envtest has no kubelet, so
+                    Finding Jobs never run there; the intent tests register a fake kubelet
+                    (kubelet_test.go) that runs hack/fake-agent for run-kind=intent Jobs, beside an
+                    in-memory OCI registry (registry_test.go) serving the repository runner image.
 docs/ overrides/    Zensical docs site (zensical.toml at the root; patchy-branded theme in
                     docs/stylesheets/extra.css + overrides/). `mise run serve` to preview,
                     `mise run docs-build` to build; the reusable release workflow publishes it
@@ -135,18 +151,25 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   analysis scheduler), `controller/remediation` (spawner + priority scheduler + push/PR), `controller/rollup`
   (all-time stats + finding TTL; hosted by the remediation binary), `controller/evaluation` (Evaluation gate +
   unit scheduler + evaluation TTL; single writer for both evaluation kinds — their phases are local enums,
-  never part of the Finding transition table).
+  never part of the Finding transition table), `controller/intent` (Project validation + discovery, the Intent
+  phase machine and its GitHub writes, the IntentRun scheduler with launch/collect/push, the Intent TTL; one
+  writer reconciler per status and its own phase table, `v1alpha1.SetIntentPhase`, beside Finding's; `doc.go` holds
+  the single-writer table and the durable-settle rules).
 - `kube` — the controller-runtime manager wrapper: scheme, kubeconfig/in-cluster config, leader election,
-  multi-namespace cache, health probes, logr↔slog bridge. Secrets are never cached.
+  multi-namespace cache, health probes, logr↔slog bridge. Secrets are never cached; a controller that needs only
+  its own ConfigMaps confines their informer by label (`ConfigMapSelector`; intent-controller does, so the Finding
+  transcripts beside them are never in its memory).
 - `forge` — the shared forge seam: resolve a repository URL to its covering `Forge` CR (host → orgs → repo
   regexes; most-constrained wins) and mint scoped read/write tokens. Consumers: source (read), remediation
-  (write). `ghclient`, `ghpush`, `ghsecret` sit beneath it.
+  (write), intent (a token per operation, one repository and one permission each: `TokenWith`). `ghclient`,
+  `ghpush`, `ghsecret` sit beneath it.
 - `schedule`, `priority`, `stats` — pure logic: slot picking with anti-starvation aging, the 0–100 scheduling
   score, rollup delta arithmetic + OTel taps.
 - `labels` — the trimmed human-facing label vocabulary the issue projection renders (one-way; never parsed back
   into state).
 - `templates` — the finding handoff/issue body, the stage prompts (investigate, remediate, and the intent plan and
-  build), and the PR body, rendered from embedded templates with golden tests. Also the intent side (not wired in yet):
+  build), and the PR body, rendered from embedded templates with golden tests. Also the intent side, which
+  intent-controller renders:
   the plan comment, which shows the plan report VERBATIM (its exact bytes) in a ```markdown block whose fence no line of
   it can close, only patchy's header outside it, and refuses (`ErrPlanRefused`, with a notice to post instead) a plan
   over GitHub's comment limit, not UTF-8, or holding characters no block can show (tag characters, bidi controls, stray
@@ -175,7 +198,7 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   are the caller's. Consumed by integration-controller for Finding tracking issues (Signals records a command on
   `status.commands.pending`, slots shared by account; the projection's `settleCommands` authorises it by
   `ghclient.CanWrite`, applies it via `action.Apply`, reacts and replies at most once without listing the thread,
-  then consumes it); intent-controller will consume it too.
+  then consumes it), and by intent-controller on its poll path (Surface `IntentIssue`: approve, replan, cancel).
 - `web` (+ `web/auth`, `web/authz`) — the status-server backend: wire types mirroring the SPA's
   `ui/src/types.ts` (keep the two in lockstep), the action handlers, SSE broker + cache-informer watcher, and
   the embedded UI (`internal/web/ui`, Vite/Preact, single-file build embedded behind the `withui` tag; `mise run
@@ -219,7 +242,8 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   workspace upload proxy, submission validation, snapshot, SSE monitor (replay + change re-emit + explicit
   `end`). `evalresults` is the per-unit results ConfigMap store (transcriptstore's sibling).
 - `ghpush` — replays the agent's changeset through the GitHub Git Data API (blob → tree → commit → ref); the
-  only place a write credential is exercised. No git binary anywhere controller-side.
+  finding flow's only place a write credential is exercised. intent-controller pushes through `ghclient` directly
+  (`CreateCommit`, then `CreateBranchRef`, create-only and never forced). No git binary anywhere controller-side.
 - `changeset` — the pure changeset validator run before any forge call (`Validate`: pinned base, path shape,
   upsert modes/content; on a repository-declared image also the entry cap, control characters, CI
   definitions), shared so the controllers that push never import each other: remediation holds a Finding's
@@ -231,8 +255,8 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   `Resolver` seam and `Rejection`); `resolve` is the go-containerregistry implementation source-controller
   wires in (one HEAD then digest-only calls, index enumeration, host-selected keychain, in-process cosign
   verification in bundle and legacy forms, a digest-keyed verdict cache). No Kubernetes types in either.
-- `runnerguard` — the job controllers' side of repository-declared images, shared by investigation and
-  remediation: whether a launch may run the Repository's pin (kill switch, not revived by a human, sandbox
+- `runnerguard` — the job controllers' side of repository-declared images, shared by investigation,
+  remediation and intent: whether a launch may run the Repository's pin (kill switch, not revived by a human, sandbox
   breaker), the pull fail-fast gated on the Job's `runner-image-source` annotation (never on config), and the
   in-memory sandbox breaker a prepare exit 78 trips until restart (`patchy.sandbox.breaker` gauge). `PinFor`
   (beside the untouched `Pin`) is the same decision for a launch that requires the image (intent build and

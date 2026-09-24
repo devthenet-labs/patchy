@@ -395,6 +395,10 @@ func fullIntentStatus() patchyv1.IntentStatus {
 		LastTrigger: &patchyv1.IntentAction{
 			Source: patchyv1.IntentActionCommand, EventID: 44, Login: "octocat", At: schemaNow,
 		},
+		Commands: &patchyv1.IntentCommands{
+			Seen:          &patchyv1.IntentCommentRef{ID: 45, At: schemaNow},
+			RefusedActors: []int64{583231, 7},
+		},
 		Branch: "patchy-intent/target-1",
 		PullRequests: []patchyv1.IntentPullRequest{{
 			Repository: "https://github.com/acme/shop", Number: 7,
@@ -531,6 +535,13 @@ func testIntentSchema(ctx context.Context, t *testing.T, c client.Client) {
 		}
 		return out
 	}
+	actors := func(n int) []int64 {
+		out := make([]int64, n)
+		for k := range out {
+			out[k] = int64(k + 1)
+		}
+		return out
+	}
 	for _, tt := range []struct {
 		name    string
 		mutate  func(*patchyv1.IntentStatus)
@@ -582,6 +593,14 @@ func testIntentSchema(ctx context.Context, t *testing.T, c client.Client) {
 		{"an approved revision past the bound", func(s *patchyv1.IntentStatus) {
 			s.Approval.PlanRevision = patchyv1.MaxIntentRound + 1
 		}, true},
+		{"refused actors at the bound", func(s *patchyv1.IntentStatus) {
+			s.Commands.RefusedActors = actors(patchyv1.MaxIntentRefusedActors)
+		}, false},
+		{"refused actors past the bound", func(s *patchyv1.IntentStatus) {
+			s.Commands.RefusedActors = actors(patchyv1.MaxIntentRefusedActors + 1)
+		}, true},
+		{"a refused actor twice", func(s *patchyv1.IntentStatus) { s.Commands.RefusedActors = []int64{7, 7} }, true},
+		{"a seen comment without its id", func(s *patchyv1.IntentStatus) { s.Commands.Seen.ID = 0 }, true},
 	} {
 		t.Run("status with "+tt.name, func(t *testing.T) {
 			i := fresh(t)

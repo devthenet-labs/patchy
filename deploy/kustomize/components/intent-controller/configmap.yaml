@@ -1,0 +1,72 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# intent-controller's own settings, read after the shared patchy-config (the
+# Deployment lists this ConfigMap second, so a key here wins). Every key but
+# PATCHY_HARNESSES carries an intent- prefix no other binary binds, so the
+# shared ConfigMap cannot set one by accident and this one cannot change
+# another controller. The values are the binary's defaults
+# (cmd/intent-controller/serve_test.go keeps the two in step).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: patchy-intent-controller-config
+    namespace: patchy
+    labels:
+        app.kubernetes.io/name: intent-controller
+        app.kubernetes.io/part-of: patchy
+data:
+    # Intents run on brokered claude only (no other harness honours the plan
+    # stage's read-only sandbox), whatever the shared list enables for
+    # findings. A dev overlay running the fake harness patches this to fake.
+    PATCHY_HARNESSES: claude
+
+    # ---- polling ------------------------------------------------------------
+    # Each Project's intent repository and each active intent's issue. An
+    # unchanged listing costs nothing (conditional requests).
+    PATCHY_INTENT_POLL_INTERVAL: 60s
+    # An intent awaiting approval polls its issue's events this often.
+    PATCHY_INTENT_APPROVAL_POLL_INTERVAL: 30s
+    # An intent in review polls its pull request this often.
+    PATCHY_INTENT_PR_POLL_INTERVAL: 60s
+    # Pause intent polling while the GitHub installation has fewer core
+    # requests left than this, so intents never starve the security flow's
+    # share of the rate limit. "0" disables the floor.
+    PATCHY_INTENT_RATE_LIMIT_FLOOR: "1000"
+
+    # ---- runs ---------------------------------------------------------------
+    # Intent agent Jobs running at once: a pool of its own, separate from
+    # remediation's.
+    PATCHY_INTENT_MAX_CONCURRENT_RUNS: "1"
+    # activeDeadlineSeconds on every intent Job: at least both stage
+    # timeouts (the controller refuses to start otherwise). The broker
+    # caller token each Job gets is minted for this deadline plus 15m (at
+    # least 1h), so it outlives any deadline set here. The shared
+    # PATCHY_JOB_DEADLINE is the finding stages' and does not apply here.
+    PATCHY_INTENT_JOB_DEADLINE: 90m
+    # Ended intents are deleted this long after completion, with everything
+    # they own; "0" keeps them forever.
+    PATCHY_INTENT_TTL: 336h
+
+    # ---- the stages ---------------------------------------------------------
+    # Ceilings a Project's limits may lower, never raise. Both models must
+    # resolve to the claude harness.
+    PATCHY_INTENT_PLAN_MODEL: anthropic/claude-sonnet-5
+    PATCHY_INTENT_PLAN_MAX_TURNS: "40"
+    PATCHY_INTENT_PLAN_TOKEN_BUDGET: "200000"
+    PATCHY_INTENT_PLAN_TIMEOUT: 20m
+    PATCHY_INTENT_BUILD_MODEL: anthropic/claude-sonnet-5
+    PATCHY_INTENT_BUILD_MAX_TURNS: "150"
+    PATCHY_INTENT_BUILD_TOKEN_BUDGET: "800000"
+    PATCHY_INTENT_BUILD_TIMEOUT: 60m
+
+    # ---- repository-declared images -----------------------------------------
+    # A build runs only on an accepted repository-declared image. The base
+    # does not configure repository images for source-controller; once your
+    # overlay does (PATCHY_REPOSITORY_IMAGE_* there, see
+    # docs/configuration/source-controller.md), switch them on here too:
+    #
+    # PATCHY_REPOSITORY_IMAGES: "true"
+    # PATCHY_AGENT_EPHEMERAL_STORAGE: 8Gi
+    # PATCHY_CHANGESET_MAX_ENTRIES: "500"

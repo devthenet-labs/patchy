@@ -68,8 +68,9 @@ Go, one module, separate binaries per concern (not monolithic), all hosted in Ku
 logging, tracing, and metrics; structured logging via `log/slog`.
 
 **The source of truth is the Kubernetes API.** The `patchy.bitwisemedia.uk/v1alpha1` custom resources —
-`Integration`, `Forge`, `Finding`, `Repository`, `Investigation`, `Remediation`, `FindingRollup` — carry all
-pipeline state; etcd is the only state store. GitHub issues are a one-way, human-facing projection: labels and
+`Integration`, `Forge`, `Finding`, `Repository`, `Investigation`, `Remediation`, `FindingRollup`, and for the
+optional flows `Evaluation`/`EvaluationUnit` and `Project`/`Intent`/`IntentRun` — carry all pipeline state; etcd is
+the only state store. GitHub issues are a one-way, human-facing projection: labels and
 comments are rendered from the Finding, and human actions (issue close, `/patchy` command comments, PR merge) flow back
 in as webhook signals, never by re-parsing issue state.
 
@@ -107,11 +108,15 @@ consistent across the estate.
   immutable `Investigation` per attempt) and the analysis scheduler (bounded concurrency, severity order,
   verdict routing).
 - **remediation-controller** — queue admission (approvals, revivals), the priority scheduler (bounded
-  concurrency, aging against starvation), agent Job execution, changeset push + pull request (the only holder of
-  a forge write credential), and the rollup/TTL loop.
-- **agent-runner** — the in-pod coding-agent runtime: one stage per Job (`investigate` or `remediate`), reports
-  as `PATCHY-EVENT:` JSONL on stdout. Never talks to GitHub or the Kubernetes API; a claude pod holds no
-  credential at all (model traffic authenticates at the egress broker), a codex/copilot pod only its model key.
+  concurrency, aging against starvation), agent Job execution, changeset push + pull request (the finding flow's
+  only forge-writing code path), and the rollup/TTL loop.
+- **intent-controller** (optional, off by default) — intent-driven development: polls each `Project`'s intent
+  repository, plans each labelled issue in a read-only agent Job, and builds the approved plan into a pull request (see
+  "Intent-driven development" below). The second code path that writes to a forge.
+- **agent-runner** — the in-pod coding-agent runtime: one stage per Job (`investigate` or `remediate`, and the
+  intent stages `plan` and `build`), reports as `PATCHY-EVENT:` JSONL on stdout. Never talks to GitHub or the
+  Kubernetes API; a claude pod holds no credential at all (model traffic authenticates at the egress broker), a
+  codex/copilot pod only its model key.
 - **egress-broker** — the egress credential broker: the reverse proxy all claude model traffic goes through
   (Anthropic, Amazon Bedrock, GCP Vertex AI, Microsoft Foundry). Validates each agent pod's audience-bound
   projected ServiceAccount token via TokenReview, then injects or signs the model credential outbound — the one
@@ -163,6 +168,49 @@ egress broker; the non-brokered runners carry only their model key), the workspa
 arrives as a digest-verified tarball, and the per-harness egress policies apply to evaluation Jobs exactly as
 to finding runs. Submitters authenticate with OIDC bearer tokens (`evolve login`, PKCE, no client secret) and
 are authorized by RBAC alone — native create/get/delete on the `evaluations` resource.
+
+### Intent-driven development (optional)
+
+The same machinery optionally carries **general development work driven by a human-written intent**, in a separate,
+default-off binary, **intent-controller**, so the binaries the security flow depends on are untouched. The full design
+is `docs/design/intent-driven-development.md`. The first slice is: plan, approve, build, pull request, merge; replan and
+cancel; one application repository per project.
+
+- **The work.** A human opens an issue in an intent repository and applies a project's trigger label. The controller
+  snapshots the request and plans it in a read-only agent Job on the default runner image. It posts the plan's exact
+  bytes to the issue in a code block. An approver approves by label or `/patchy approve`. The build agent receives only
+  that approved plan, re-hashed at launch, never the issue. It runs workspace-write in the application repository's
+  accepted repository-declared image, never the default image. The controller validates the changeset (`.github/`,
+  `.patchy/` and `.devcontainer/` are always refused). It creates the commit, records it, creates the branch
+  `patchy-intent/<intent>` once without forcing, and opens the pull request. When the pull request merges, it closes
+  the issue itself.
+- **State.** Three kinds, with local phase enums outside the Finding transition table:
+  - `Project`: operator configuration, written through patchy-config and admin-only in RBAC.
+  - `Intent`: one per issue.
+  - `IntentRun`: one immutable attempt of one stage, whose create is the lease.
+
+  intent-controller is their only writer. Humans write `spec.suspend` only. Every edge has one writer reconciler inside
+  it.
+- **Authority from GitHub's API.** The controller polls; it takes no webhooks. So every decision is a function of what
+  GitHub's API reports and what the custom resources hold. A trigger, approval, replan or cancel counts only when the
+  actor of the label event, or the comment's author, meets three conditions:
+  - is in the Project's approvers;
+  - has write access to the intent repository;
+  - is not a bot.
+
+  An approval binds the plan and input digests. It is refused if the plan comment or the issue has changed since the
+  plan was posted.
+- **Isolation, tightened.** Agent pods are unchanged: brokered claude only, no credential of any kind. The controller:
+  - has `secrets get` restricted by `resourceNames` to the Forge Secrets in the release namespace, but its agent-jobs
+    Role can get, create, update and delete any Secret in the agents namespace, including model keys, image-pull
+    credentials and other Jobs' handoffs;
+  - a GitHub token per operation, scoped to one repository and one permission;
+  - writes only to the repositories a Project lists, plus the intent issues;
+  - no ClusterRole;
+  - no inbound surface.
+
+  Its own slot pool, per-stage limits, a rate-limit floor that pauses polling before it can starve the security flow's
+  share of the installation, and a TTL on ended intents bound what it spends.
 
 ## Projected labels
 

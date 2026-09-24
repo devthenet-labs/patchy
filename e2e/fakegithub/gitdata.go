@@ -26,12 +26,63 @@ type gitData struct {
 	commits map[string]commitRec
 	refs    map[string]string // "heads/<branch>" -> commit sha
 	next    int
+	// writes are every ref create and update asked for, refused ones
+	// included, in order.
+	writes []RefWrite
 }
 
 type commitRec struct {
 	Message string
 	Tree    string
 	Parents []string
+}
+
+// RefWrite is one request to create or move a ref, as the fake answered it:
+// Op is "create" (POST git/refs) or "update" (PATCH git/refs, with Force as
+// asked), Ref is "heads/<branch>", and Status the HTTP status answered.
+type RefWrite struct {
+	Op     string
+	Ref    string
+	SHA    string
+	Force  bool
+	Status int
+}
+
+// RefWrites returns every ref create and update asked for so far, refused
+// ones included, in order: what a test reads to prove a branch was never
+// forced.
+func (s *Server) RefWrites() []RefWrite {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]RefWrite(nil), s.git.writes...)
+}
+
+// Commit is a snapshot of one pushed commit: its message, its parents, and
+// the files its tree carries (a deleted path maps to nil).
+type Commit struct {
+	Message string
+	Parents []string
+	Files   map[string][]byte
+}
+
+// CommitOf returns the pushed commit sha, or false when the fake never
+// received it.
+func (s *Server) CommitOf(sha string) (Commit, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.git.commits[sha]
+	if !ok {
+		return Commit{}, false
+	}
+	c := Commit{Message: rec.Message, Parents: append([]string(nil), rec.Parents...), Files: map[string][]byte{}}
+	for path, blob := range s.git.trees[rec.Tree] {
+		if blob == "" {
+			c.Files[path] = nil
+			continue
+		}
+		c.Files[path] = s.git.blobs[blob]
+	}
+	return c, true
 }
 
 func newGitData() gitData {
@@ -98,11 +149,15 @@ func (s *Server) getRef(w http.ResponseWriter, r *http.Request) {
 	sha, ok := s.git.refs[ref]
 	s.mu.Unlock()
 	if !ok {
-		if !strings.HasPrefix(ref, "heads/") {
+		// Every un-pushed branch sits at the fixed base, except an intent
+		// branch, which (as on GitHub) exists only once it is created:
+		// intent-controller reads it before a build to find one an earlier
+		// intent left behind.
+		if !strings.HasPrefix(ref, "heads/") || strings.HasPrefix(ref, "heads/patchy-intent/") {
 			http.NotFound(w, r)
 			return
 		}
-		sha = BaseSHA // every un-pushed branch sits at the fixed base
+		sha = BaseSHA
 	}
 	writeJSON(w, map[string]any{
 		"ref":    "refs/" + ref,
@@ -198,6 +253,8 @@ func (s *Server) createRef(w http.ResponseWriter, r *http.Request) {
 	ref := strings.TrimPrefix(body.Ref, "refs/")
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	write := RefWrite{Op: "create", Ref: ref, SHA: body.SHA, Status: http.StatusUnprocessableEntity}
+	defer func() { s.git.writes = append(s.git.writes, write) }()
 	if _, exists := s.git.refs[ref]; exists {
 		unprocessable(w, msgRefExists)
 		return
@@ -207,6 +264,7 @@ func (s *Server) createRef(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.git.refs[ref] = body.SHA
+	write.Status = http.StatusCreated
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, map[string]any{"ref": body.Ref, "object": map[string]any{"type": "commit", "sha": body.SHA}})
 }
@@ -228,6 +286,8 @@ func (s *Server) updateRef(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	write := RefWrite{Op: "update", Ref: ref, SHA: body.SHA, Force: body.Force, Status: http.StatusUnprocessableEntity}
+	defer func() { s.git.writes = append(s.git.writes, write) }()
 	current, exists := s.git.refs[ref]
 	switch {
 	case !exists:
@@ -241,6 +301,7 @@ func (s *Server) updateRef(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.git.refs[ref] = body.SHA
+	write.Status = http.StatusOK
 	writeJSON(w, map[string]any{"ref": "refs/" + ref, "object": map[string]any{"type": "commit", "sha": body.SHA}})
 }
 

@@ -1,7 +1,8 @@
 # Copyright 2026 Bitwise Media Group Ltd.
 # SPDX-License-Identifier: MIT
 
-# Controller image. One Dockerfile, four images — built by GoReleaser
+# Controller image. One Dockerfile, one image per controller binary (the
+# optional evaluation- and intent-controller included) — built by GoReleaser
 # (`dockers_v2` in .goreleaser.yaml), which compiles the binaries first and
 # hands this file a build context containing ONLY those binaries, laid out as
 # $TARGETPLATFORM/<binary> (e.g. linux/amd64/source-controller). There is no
@@ -9,10 +10,10 @@
 # internal/version by GoReleaser's ldflags, and the same buildx invocation
 # produces the linux/amd64 + linux/arm64 manifest.
 #
-# All four controllers share the same distroless-static runtime: pure Go,
-# CGO off, no external process is ever executed. The remediation-controller
-# pushes agent changesets through the GitHub API (internal/ghpush), so no git
-# binary is needed anywhere.
+# Every controller shares the same distroless-static runtime: pure Go, CGO
+# off, no external process is ever executed. The remediation- and
+# intent-controller push agent changesets through the GitHub API
+# (internal/ghpush, internal/ghclient), so no git binary is needed anywhere.
 #
 # TARGET (the binary to copy) is supplied by the per-image `build_args` in
 # .goreleaser.yaml. Build locally (no publish) with `make snapshot` — needs

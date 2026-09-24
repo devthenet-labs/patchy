@@ -293,8 +293,11 @@ type IntentRunStatus struct {
 	// +kubebuilder:validation:Pattern=`^([0-9a-f]{40}|[0-9a-f]{64})$`
 	PushedCommit string `json:"pushedCommit,omitempty"`
 	// Outcome is the envelope outcome vocabulary, plus the controller's
-	// own: changeset_rejected, branch_exists, head_moved, and aborted for a
-	// run killed with no envelope.
+	// own: changeset_rejected, branch_exists, head_moved, aborted for a run
+	// killed with no envelope, push_refused and launch_refused for a push or
+	// a Job create refused for itself (GitHub's or the API server's 4xx), and
+	// hold_expired for a build whose Job expired while its push waited on a
+	// suspension (not counted as an attempt).
 	// +optional
 	// +kubebuilder:validation:MaxLength=64
 	Outcome string `json:"outcome,omitempty"`
@@ -321,7 +324,7 @@ type IntentRunStatus struct {
 	// FinishedAt is when the run was collected.
 	// +optional
 	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
-	// Conditions of the run (Complete, SandboxRefused).
+	// Conditions of the run (Complete, SandboxRefused, PushHeld).
 	// +optional
 	// +listType=map
 	// +listMapKey=type

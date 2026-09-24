@@ -158,7 +158,10 @@ spec:
                 description: |-
                   Suspend pauses the intent (human-written): no run is launched and
                   nothing is written to GitHub for it until cleared. Running Jobs
-                  finish.
+                  finish; a build that finishes meanwhile holds its push (commit and
+                  branch) until then, without its slot of the run pool, and loses it if
+                  the suspension outlasts the finished Job's TTL (the run ends
+                  hold_expired, which does not count as an attempt).
                 type: boolean
             required:
             - issue
@@ -262,6 +265,52 @@ spec:
                 maximum: 999
                 minimum: 0
                 type: integer
+              commands:
+                description: |-
+                  Commands records how far the poll has answered the commands on the
+                  intent issue, so none is answered twice or taken from a comment read
+                  before.
+                properties:
+                  refusedActors:
+                    description: |-
+                      RefusedActors are the GitHub ids of the accounts already sent a reply
+                      refusing a command on this intent because they are not approvers (or
+                      are bots), the latest MaxIntentRefusedActors of them. A later command
+                      from one of them gets no reaction and no reply, so an account
+                      commenting repeatedly cannot make patchy write to GitHub once per
+                      comment. An approver's command is always answered.
+                    items:
+                      format: int64
+                      type: integer
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-type: set
+                  seen:
+                    description: |-
+                      Seen is the newest comment on the intent issue the poll has settled:
+                      every comment up to it was answered, if it carried a command, or
+                      needed nothing. Later polls list only the comments since it and read
+                      only newer ones as commands. So an answered command is never answered
+                      again, even after patchy's reply to it is deleted, and a comment
+                      edited after it was settled is never read as a command.
+                    properties:
+                      at:
+                        description: At is the comment's created_at, as GitHub reports
+                          it.
+                        format: date-time
+                        type: string
+                      id:
+                        description: |-
+                          ID is GitHub's id of the comment. GitHub's comment ids grow with
+                          creation.
+                        format: int64
+                        minimum: 1
+                        type: integer
+                    required:
+                    - at
+                    - id
+                    type: object
+                type: object
               completedAt:
                 description: |-
                   CompletedAt is set on terminal-phase entry and cleared on revival;
@@ -271,7 +320,8 @@ spec:
               conditions:
                 description: |-
                   Conditions of the intent: BudgetExhausted, RevisionLimitReached,
-                  ImageRequired, ApprovalRejected and (slice 1b) ChecksFailing.
+                  ImageRequired, BranchConflict, ApprovalRejected and (slice 1b)
+                  ChecksFailing.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -380,7 +430,9 @@ spec:
                   Building does not revive the intent when the build then fails, a
                   replan refused while Planning does not replay once the plan is
                   posted, and a revival whose plan fails again, posting no plan to
-                  anchor on, cannot re-consume the action that revived it.
+                  anchor on, cannot re-consume the action that revived it. A /patchy
+                  replan comment from someone who is not an approver is refused before
+                  its verb is read, and is consumed by commands.seen instead.
                 properties:
                   at:
                     description: At is the action's created_at, as GitHub reports

@@ -87,7 +87,8 @@ needs to outrun ~100/s: the design answer is sharded scopes, not a faster retry 
 ## What the load tests cannot see
 
 envtest has no kubelet: agent Jobs are created but never run, so pipeline progression past ingest is fabricated via
-status writes, exactly like the rest of the e2e suite. Agent throughput is bounded by the schedulers' explicit
-concurrency caps (`--max-concurrent-investigations`, `--max-concurrent-remediations`), not by data-structure scale, so
-it is out of scope here. Informer sync time at 100k adds 5–15s to every controller's cold start — the load tests report
-it separately from steady-state numbers.
+status writes, exactly like the rest of the e2e suite's Finding tests (only the intent tests run their Jobs, on a fake
+kubelet that runs `hack/fake-agent`). Agent throughput is bounded by the schedulers' explicit concurrency caps
+(`--max-concurrent-investigations`, `--max-concurrent-remediations`), not by data-structure scale, so it is out of scope
+here. Informer sync time at 100k adds 5–15s to every controller's cold start — the load tests report it separately from
+steady-state numbers.

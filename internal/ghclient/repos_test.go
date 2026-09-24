@@ -88,6 +88,43 @@ func TestIsForbidden(t *testing.T) {
 	}
 }
 
+// TestIsRefused: a 4xx GitHub answers to the request itself is a refusal a
+// repeat cannot change; throttling, a credential to re-mint, a timeout, a
+// server error and a failure that never reached GitHub are not.
+func TestIsRefused(t *testing.T) {
+	refusal := func(status int) error {
+		return fmt.Errorf("create the branch: %w",
+			&github.ErrorResponse{Response: &http.Response{StatusCode: status}, Message: "no"})
+	}
+	for _, tt := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "a ruleset refusing the ref", err: refusal(http.StatusUnprocessableEntity), want: true},
+		{name: "a missing permission", err: refusal(http.StatusForbidden), want: true},
+		{name: "a repository gone", err: refusal(http.StatusNotFound), want: true},
+		{name: "an empty repository", err: refusal(http.StatusConflict), want: true},
+		{name: "a bad request", err: refusal(http.StatusBadRequest), want: true},
+		{name: "a credential to re-mint", err: refusal(http.StatusUnauthorized)},
+		{name: "a timeout", err: refusal(http.StatusRequestTimeout)},
+		{name: "throttled", err: refusal(http.StatusTooManyRequests)},
+		{name: "a server error", err: refusal(http.StatusBadGateway)},
+		{name: "the rate limit", err: fmt.Errorf("x: %w",
+			&github.RateLimitError{Response: &http.Response{StatusCode: http.StatusForbidden}})},
+		{name: "the secondary rate limit", err: fmt.Errorf("x: %w",
+			&github.AbuseRateLimitError{Response: &http.Response{StatusCode: http.StatusForbidden}})},
+		{name: "never reached GitHub", err: fmt.Errorf("dial tcp: connection refused")},
+		{name: "no error"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsRefused(tt.err); got != tt.want {
+				t.Errorf("IsRefused(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCreatePR(t *testing.T) {
 	mux, c := newFakeClient(t)
 	mux.HandleFunc("POST /repos/o/r/pulls", func(w http.ResponseWriter, r *http.Request) {

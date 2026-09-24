@@ -26,6 +26,12 @@ func TestLookup(t *testing.T) {
 		{"repo", "repository"},
 		{"repositories", "repository"},
 		{"forges", "forge"},
+		{"intents", "intent"},
+		{"Intent", "intent"},
+		{"irun", "intentrun"},
+		{"intentruns", "intentrun"},
+		{"proj", "project"},
+		{"projects", "project"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -120,6 +126,9 @@ func TestRun(t *testing.T) {
 		{"remediation", true},
 		{"finding", false},
 		{"repository", false},
+		// An IntentRun is an agent run too, but not a finding's: review's
+		// --finding and attempt naming do not apply to it.
+		{"intentrun", false},
 	} {
 		k, err := Lookup(tc.noun)
 		if err != nil {

@@ -38,7 +38,10 @@ func (a Actor) IsBot() bool { return a.Type == "Bot" }
 
 // Comment is one issue comment.
 type Comment struct {
-	ID                int64
+	ID int64
+	// NodeID is the comment's GraphQL node id, which CommentEdited looks it
+	// up by.
+	NodeID            string
 	Body              string
 	UserLogin         string
 	AuthorAssociation string
@@ -62,10 +65,21 @@ func (c *Comment) Author() Actor {
 	return Actor{Login: c.UserLogin, ID: c.UserID, Type: c.UserType}
 }
 
-// PR is a freshly created pull request.
+// PR is a freshly created pull request, or one found open.
 type PR struct {
 	Number  int
 	HTMLURL string
+	// NodeID is GitHub's global node id of the pull request, and HeadSHA
+	// its head commit, where the response carried them.
+	NodeID  string
+	HeadSHA string
+	// Author is the login that opened the pull request, Base the branch it
+	// merges into, and HeadRepo the "owner/name" repository its head branch
+	// lives in (a fork's for a pull request from a fork), where the response
+	// carried them.
+	Author   string
+	Base     string
+	HeadRepo string
 }
 
 // PullRequest is a pull request's current state, as GetPullRequest reads
@@ -78,6 +92,10 @@ type PullRequest struct {
 	Merged         bool
 	MergedAt       time.Time
 	MergeCommitSHA string
+	// NodeID is GitHub's global node id, which no other pull request ever
+	// has, and HeadSHA the head commit now; empty when not reported.
+	NodeID  string
+	HeadSHA string
 }
 
 // IssueRequest is the payload for creating an issue.

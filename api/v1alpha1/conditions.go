@@ -60,9 +60,9 @@ const (
 	// deleted), the close waits. Removed as the finding leaves review.
 	ConditionReviewClosePending = "ReviewClosePending"
 
-	// Intent conditions, all set by intent-controller. The first three
-	// explain a Blocked intent; raising the limit or fixing the image
-	// clears them and resumes it.
+	// Intent conditions, all set by intent-controller. The first three, and
+	// BranchConflict, explain a Blocked intent; raising the limit, fixing the
+	// image or clearing the branch clears them and resumes it.
 
 	// ConditionBudgetExhausted marks an Intent whose spend reached its
 	// Project's maxCostMicroUSD ceiling.
@@ -82,6 +82,21 @@ const (
 	// ConditionChecksFailing marks an Intent whose named check failed again
 	// after a check-fix round with the same failure signature (slice 1b).
 	ConditionChecksFailing = "ChecksFailing"
+	// ConditionBranchConflict marks a Blocked Intent whose branch
+	// patchy-intent/<intent> is not patchy's to use: it exists at a commit
+	// none of the Intent's runs pushed (left by an earlier Intent under the
+	// same name, or made by someone else; reason BranchExists), or an open
+	// pull request patchy did not open already holds it (reason
+	// ForeignPullRequest). Nothing is forced and nothing foreign adopted: the
+	// block lifts once the branch, or that pull request, is gone.
+	ConditionBranchConflict = "BranchConflict"
+
+	// ConditionPushHeld marks a Running build IntentRun whose Job has
+	// finished while its Intent is suspended: the push waits for the
+	// suspension to be lifted. Its agent no longer runs, so it holds no slot
+	// of the run pool, and while it waits its Job is not read again. Set by
+	// intent-controller's run reconciler, and False once the run settles.
+	ConditionPushHeld = "PushHeld"
 
 	// ConditionIntentNameConflict marks a Project, True while one of its
 	// trigger-labelled issues cannot become an Intent because the name

@@ -1040,6 +1040,169 @@
                 }
             }
         },
+        "intentController": {
+            "type": "object",
+            "description": "Intent-driven development: polls each Project's intent repository, plans in a read-only agent Job, builds the approved plan and opens the pull request. Optional, off by default; runs on brokered claude only.",
+            "additionalProperties": false,
+            "required": [
+                "enabled",
+                "config",
+                "forgeSecrets",
+                "serviceAccount",
+                "networkPolicy"
+            ],
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "image": {
+                    "$ref": "#/definitions/imageOverride"
+                },
+                "config": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                        "pollInterval",
+                        "approvalPollInterval",
+                        "prPollInterval",
+                        "maxConcurrentRuns",
+                        "rateLimitFloor",
+                        "intentTTL",
+                        "jobDeadline",
+                        "plan",
+                        "build"
+                    ],
+                    "properties": {
+                        "pollInterval": {
+                            "$ref": "#/definitions/duration"
+                        },
+                        "approvalPollInterval": {
+                            "$ref": "#/definitions/duration"
+                        },
+                        "prPollInterval": {
+                            "$ref": "#/definitions/duration"
+                        },
+                        "maxConcurrentRuns": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "rateLimitFloor": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Pause polling below this many remaining core requests; 0 disables"
+                        },
+                        "intentTTL": {
+                            "$ref": "#/definitions/duration"
+                        },
+                        "jobDeadline": {
+                            "$ref": "#/definitions/duration"
+                        },
+                        "plan": {
+                            "type": "object",
+                            "description": "The plan stage's ceilings: read-only, on the default runner image",
+                            "additionalProperties": false,
+                            "required": [
+                                "model",
+                                "maxTurns",
+                                "tokenBudget",
+                                "timeout"
+                            ],
+                            "properties": {
+                                "model": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Canonical model id; must resolve to the claude harness"
+                                },
+                                "maxTurns": {
+                                    "type": "integer",
+                                    "minimum": 1
+                                },
+                                "tokenBudget": {
+                                    "type": "integer",
+                                    "minimum": 1
+                                },
+                                "timeout": {
+                                    "$ref": "#/definitions/duration"
+                                }
+                            }
+                        },
+                        "build": {
+                            "type": "object",
+                            "description": "The build stage's ceilings: workspace-write, on the repository's accepted image",
+                            "additionalProperties": false,
+                            "required": [
+                                "model",
+                                "maxTurns",
+                                "tokenBudget",
+                                "timeout"
+                            ],
+                            "properties": {
+                                "model": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "description": "Canonical model id; must resolve to the claude harness"
+                                },
+                                "maxTurns": {
+                                    "type": "integer",
+                                    "minimum": 1
+                                },
+                                "tokenBudget": {
+                                    "type": "integer",
+                                    "minimum": 1
+                                },
+                                "timeout": {
+                                    "$ref": "#/definitions/duration"
+                                }
+                            }
+                        },
+                        "logLevel": {
+                            "$ref": "#/definitions/logLevel"
+                        },
+                        "extra": {
+                            "$ref": "#/definitions/extraEnv"
+                        }
+                    }
+                },
+                "forgeSecrets": {
+                    "type": "array",
+                    "description": "The Secrets the Forges reference; intent-controller's secrets get is restricted to these names (an empty list would grant every Secret, so it is refused)",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+                        "maxLength": 253
+                    }
+                },
+                "resources": {
+                    "type": "object"
+                },
+                "podAnnotations": {
+                    "type": "object"
+                },
+                "podLabels": {
+                    "type": "object"
+                },
+                "nodeSelector": {
+                    "type": "object"
+                },
+                "tolerations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object"
+                    }
+                },
+                "affinity": {
+                    "type": "object"
+                },
+                "serviceAccount": {
+                    "$ref": "#/definitions/serviceAccount"
+                },
+                "networkPolicy": {
+                    "$ref": "#/definitions/controllerNetworkPolicy"
+                }
+            }
+        },
         "statusServer": {
             "type": "object",
             "description": "The human-facing status page: public rollup statistics, authenticated findings review, RBAC-gated approve/suspend/resume",

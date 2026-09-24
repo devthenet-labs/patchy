@@ -1,0 +1,3 @@
+<!-- patchy:notice patchy/target-1 event-4421 -->
+
+I can't apply this approval: this issue also has Intent `other-1`. An issue can belong to only one Project. Open a separate issue for the other Project. Remove and reapply the approval label or post a new `/patchy approve` after the conflict is resolved.

@@ -1,0 +1,7 @@
+{{- /* The reply to a command the intent issue does not offer. What it does
+offer is command.Help's list, so this reply and the parser cannot disagree.
+*/ -}}
+{{ .Marker }}
+{{ if .Command }}{{ .Command }} is not a command patchy knows on an intent issue.{{ else }}That is not a command patchy knows.{{ end }}
+
+{{ .Help }}

@@ -1,0 +1,6 @@
+{{- /* The reply to a command whose comment was edited after it was posted.
+GitHub lets anyone with write access edit anyone's comment and still shows the
+original author, so an edited comment is never taken as its author's command.
+No actor is named: whoever edited it may not be the author. */ -}}
+{{ .Marker }}
+{{ if .Command }}{{ .Command }} was not applied{{ else }}This command was not applied{{ end }}: its comment was edited after it was posted, and patchy takes a command only from a comment as it was first written. To give the command, post it again in a new comment.

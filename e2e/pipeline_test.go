@@ -7,11 +7,14 @@
 // pipeline. It is the check that the pieces fit together as shipped — no
 // test doubles inside the binaries, only at the edges.
 //
-// What it deliberately does not cover: the agent Jobs never RUN (envtest has
-// no kubelet), so the collect/apply leg — pod-log envelope events in,
-// push + PR out — stays with the controller unit suites and the colima smoke
-// test. Here the Jobs and their Secrets are asserted as created, shaped, and
-// credential-less.
+// envtest has no kubelet, so a Finding's agent Jobs never RUN: its
+// collect/apply leg (pod-log envelope events in, push and PR out) stays with
+// the controller unit suites and the colima smoke test, and here its Jobs
+// and their Secrets are asserted as created, shaped, and credential-less.
+// Intent Jobs do run, on a fake kubelet (kubelet_test.go) that stands in at
+// the kubelet's edge: the real API server proxies pods/log to it, and it
+// runs hack/fake-agent as each Job's agent container, so an intent is driven
+// from the issue to the merge.
 //
 // Skipped without KUBEBUILDER_ASSETS (mise run e2e provisions it).
 package e2e
@@ -40,8 +43,8 @@ import (
 	"testing"
 	"time"
 
-	batchv1 "k8s.io/api/batch/v1"
 	"github.com/go-logr/logr"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -65,7 +68,8 @@ const (
 // runnerArgs configures both per-harness runner images on a job controller.
 // The codex credential Secret created in newCluster enables that harness; the
 // claude runner is brokered — enabled by configuration, requiring only the
-// broker URL (nothing dials it here: no Job ever runs under envtest).
+// broker URL (nothing dials it here: no Job ever runs a real agent under
+// envtest).
 var runnerArgs = []string{
 	"--claude-agent-image", "patchy/claude-agent-runner:e2e",
 	"--codex-agent-image", "patchy/codex-agent-runner:e2e",
@@ -377,11 +381,25 @@ func eventually(t *testing.T, why string, cond func() bool) {
 // credential-less agent Job — then a human close signal hands the finding
 // off.
 func TestPipeline(t *testing.T) {
+	startFindingPipeline(t).run(t)
+}
+
+// findingPipeline is the Finding flow's front half as TestPipeline runs it:
+// its cluster, the fake GitHub, and the webhook receiver.
+type findingPipeline struct {
+	cl         *cluster
+	gh         *fakegithub.Server
+	webhookURL string
+}
+
+// startFindingPipeline starts the controllers the front half needs against
+// a fresh cluster and fake GitHub.
+func startFindingPipeline(t *testing.T) *findingPipeline {
+	t.Helper()
 	cl := startCluster(t)
 	gh := fakegithub.New()
 	t.Cleanup(gh.Close)
 	cl.githubCredentials(t, gh.URL)
-	ctx := context.Background()
 
 	contextFile := filepath.Join(t.TempDir(), "context.yaml")
 	if err := os.WriteFile(contextFile, []byte(
@@ -401,8 +419,26 @@ func TestPipeline(t *testing.T) {
 	cl.controller(t, "context-controller", "--static-context-file", contextFile)
 	cl.controller(t, "investigation-controller",
 		append([]string{"--finding-min-age", "1s"}, runnerArgs...)...)
+	return &findingPipeline{cl: cl, gh: gh, webhookURL: "http://" + listen + "/github/webhooks"}
+}
 
-	webhookURL := "http://" + listen + "/github/webhooks"
+// trackingIssues are the issues in the Finding's repository, acme/shop:
+// where its tracking issue is projected.
+func (p *findingPipeline) trackingIssues() []fakegithub.Issue {
+	var out []fakegithub.Issue
+	for _, is := range p.gh.Issues() {
+		if strings.HasSuffix(is.RepositoryURL, "/acme/shop") {
+			out = append(out, is)
+		}
+	}
+	return out
+}
+
+// run drives one CodeQL alert through the front half, asserting each step.
+func (p *findingPipeline) run(t *testing.T) {
+	t.Helper()
+	cl, gh, webhookURL := p.cl, p.gh, p.webhookURL
+	ctx := context.Background()
 
 	// 1. The first CodeQL alert creates the Finding.
 	deliver(t, webhookURL, "code_scanning_alert", fixture(t, "code_scanning_alert.created.json"))
@@ -460,9 +496,9 @@ func TestPipeline(t *testing.T) {
 	// 4. The projection: one tracking issue in the fake GitHub, carrying the
 	//    trimmed human-facing label vocabulary.
 	eventually(t, "the tracking issue to be projected", func() bool {
-		return len(gh.Issues()) == 1
+		return len(p.trackingIssues()) == 1
 	})
-	issue := gh.Issues()[0]
+	issue := p.trackingIssues()[0]
 	if want := "[ghas] CWE-79: Reflected cross-site scripting"; issue.Title != want {
 		t.Errorf("issue title = %q, want %q", issue.Title, want)
 	}
@@ -521,7 +557,9 @@ func TestPipeline(t *testing.T) {
 	var job batchv1.Job
 	eventually(t, "the investigation job to be created", func() bool {
 		var jobsList batchv1.JobList
-		if err := cl.client.List(ctx, &jobsList, client.InNamespace(agentsNS)); err != nil || len(jobsList.Items) != 1 {
+		if err := cl.client.List(ctx, &jobsList, client.InNamespace(agentsNS),
+			client.MatchingLabels{v1alpha1.LabelRunKind: string(v1alpha1.RunKindInvestigation)}); err != nil ||
+			len(jobsList.Items) != 1 {
 			return false
 		}
 		job = jobsList.Items[0]

@@ -77,12 +77,19 @@ mean the same thing.
 | `remediation`   | `remediations`, `rem`                       |
 | `findingrollup` | `findingrollups`, `fr`, `rollup`, `rollups` |
 | `repository`    | `repositories`, `repo`, `repos`             |
+| `intent`        | `intents`                                   |
+| `intentrun`     | `intentruns`, `irun`                        |
 | `integration`   | `integrations`                              |
 | `forge`         | `forges`                                    |
+| `project`       | `projects`, `proj`                          |
 
 `get` takes one more: `all`, meaning every kind in the table above. It is the CLI's spelling of `kubectl get patchy`
 (every CRD declares the `patchy` category), and no other verb accepts it — there is nothing sensible to describe, review
 or approve collectively.
+
+The intent nouns (`intent`, `intentrun`, `project`) are for reading only: intents are driven from their GitHub issue
+(labels and `/patchy` commands, see [intent-controller](configuration/intent-controller.md)), and no CLI verb acts on
+them.
 
 ## Global flags
 

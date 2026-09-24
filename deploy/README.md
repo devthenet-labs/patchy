@@ -24,6 +24,7 @@ deploy/
 │   ├── components/cilium/           # optional: FQDN egress policy for the agent sandbox (Cilium CNI)
 │   ├── components/gke-fqdn/         # optional: the same allowlist as an FQDNNetworkPolicy (GKE Dataplane V2)
 │   ├── components/istio/            # optional: the same allowlist as a Sidecar + ServiceEntry (Istio mesh)
+│   ├── components/intent-controller/ # optional: intent-driven development (Deployment, RBAC, its ConfigMap)
 │   └── overlays/{dev,prod}/
 └── README.md
 ```
@@ -37,10 +38,10 @@ the image of the harness resolved for its model.
 
 Two namespaces, and the split between them is the security boundary.
 
-| Namespace       | Workload                                                                                                                                                                                                                                                                                                                                                       | Credentials it holds                                                                                                                        |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `patchy`        | `integration-controller` (the only internet-facing workload), `source-controller`, `context-controller`, `investigation-controller`, `remediation-controller`, `evaluation-controller` (optional; the evolve-facing evaluation API — front its Service with your ingress when used), `egress-broker` (the reverse proxy all claude model traffic goes through) | reads the GitHub Secret referenced by your Integration/Forge CRs; the broker holds the claude model credential (or cloud workload identity) |
-| `patchy-agents` | ephemeral agent `Job`s, created at runtime by the three job-launching controllers                                                                                                                                                                                                                                                                              | nothing for claude Jobs (an identity token only); a non-brokered codex/copilot Job carries its one model key                                |
+| Namespace       | Workload                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Credentials it holds                                                                                                                        |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `patchy`        | `integration-controller` (the only internet-facing workload), `source-controller`, `context-controller`, `investigation-controller`, `remediation-controller`, `evaluation-controller` (optional; the evolve-facing evaluation API — front its Service with your ingress when used), `intent-controller` (optional; intent-driven development, polling GitHub — no inbound surface), `egress-broker` (the reverse proxy all claude model traffic goes through) | reads the GitHub Secret referenced by your Integration/Forge CRs; the broker holds the claude model credential (or cloud workload identity) |
+| `patchy-agents` | ephemeral agent `Job`s, created at runtime by the job-launching controllers                                                                                                                                                                                                                                                                                                                                                                                    | nothing for claude Jobs (an identity token only); a non-brokered codex/copilot Job carries its one model key                                |
 
 The **evaluation controller** is optional: it executes remote skill evaluations submitted by
 [evolve](https://github.com/bitwise-media-group/evolve) through the same agent-Job machinery (see
@@ -50,6 +51,17 @@ submitters (`rbac.users.example.yaml`, `patchy-evaluations-submitter`), and sour
 (`PATCHY_ARTIFACT_INTERNAL_ADDR: ":9791"`, NetworkPolicy-gated to the evaluation controller). Remove the Deployment (and
 that ConfigMap key) to run without it; in the Helm chart the whole feature sits behind
 `evaluationController.enabled: false`.
+
+The **intent controller** is optional too, and is not in the base: add `components/intent-controller` to an overlay to
+run intent-driven development (see `docs/configuration/intent-controller.md`). It polls each `Project`'s intent
+repository, plans each labelled issue in a read-only agent Job, and builds the approved plan into a pull request. It
+reads the shared ConfigMap plus its own (`PATCHY_INTENT_*`), runs on brokered claude only, and its `secrets get` is
+restricted by `resourceNames` to the Forge Secret in the release namespace (`patchy-github`; patch `rbac.yaml` in the
+component for others). Its agent-jobs Role can get, create, update and delete any Secret in the agents namespace,
+including model keys, image-pull credentials and other Jobs' handoffs. Builds need an accepted repository-declared
+image, so set the repository-image keys the component's `configmap.yaml` lists, or give each Project
+`requireRepositoryImage: false`. In the Helm chart it sits behind `intentController.enabled: false`, and Projects come
+from the patchy-config chart's `projects` values.
 
 The custom resources in `patchy` — `Finding`, `Repository`, `Investigation`, `Remediation`, `FindingRollup`, plus the
 `Integration`/`Forge` configuration kinds — **are** the state machine; etcd is the only state store. The CRDs render

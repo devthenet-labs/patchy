@@ -51,12 +51,16 @@ func forbidden(what string) error {
 
 // newReview is Signals and the projection over one fake client holding the
 // finding and the tracking Integration; the projection reads pull requests
-// through the returned tracker, whose pulls answer by number.
+// and the tracking issue (#7, open) through the returned tracker, whose
+// pulls answer by number.
 func newReview(t *testing.T, fnd *v1alpha1.Finding) (*Signals, *FindingReconciler, *fakeTracker, client.Client) {
 	t.Helper()
 	s, c := newSignals(t, fnd, testIntegration())
 	tracker := newFakeTracker()
 	tracker.pulls = map[int]*ghclient.PullRequest{}
+	tracker.issues[7] = &ghclient.Issue{
+		Repo: ghclient.Repo{Owner: "acme", Name: "orders"}, Number: 7, State: "open", Author: botLogin,
+	}
 	r := &FindingReconciler{
 		Client:    c,
 		Namespace: "patchy",
@@ -76,6 +80,21 @@ func handle(t *testing.T, s *Signals, typ, payload string) {
 	}
 }
 
+// closeIssue closes the tracking issue on GitHub, as a human or a merge's
+// "Fixes #N" does, and delivers its close.
+func closeIssue(t *testing.T, s *Signals, tracker *fakeTracker) {
+	t.Helper()
+	tracker.issues[7].State = "closed"
+	handle(t, s, "issues", issueClosed)
+}
+
+// reopenIssue reopens the tracking issue on GitHub and delivers its reopen.
+func reopenIssue(t *testing.T, s *Signals, tracker *fakeTracker) {
+	t.Helper()
+	tracker.issues[7].State = "open"
+	handle(t, s, "issues", issueReopened)
+}
+
 // pendingReason is the reason of the finding's pending review close, ""
 // when none is pending.
 func pendingReason(f *v1alpha1.Finding) string {
@@ -92,7 +111,8 @@ func pendingReason(f *v1alpha1.Finding) string {
 // nothing itself: it keeps the close pending, and the projection reads the
 // PR. Merged settles as the merge does, closed unmerged as that close does;
 // a PR still open means a human closed the issue on purpose, and so does
-// one GitHub will never show (gone, or beyond the credential).
+// one GitHub will never show (gone, or beyond the credential) — each with
+// the issue still closed as GitHub reports it.
 func TestReviewIssueClosed(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -121,7 +141,7 @@ func TestReviewIssueClosed(t *testing.T) {
 				tracker.pullErrs = []error{tc.err}
 			}
 
-			handle(t, s, "issues", issueClosed)
+			closeIssue(t, s, tracker)
 			f := get(t, c, "finding-aa-1")
 			if f.Status.Phase != v1alpha1.PhaseInReview || pendingReason(f) != v1alpha1.ReasonTrackingIssueClosed {
 				t.Fatalf("after the delivery: phase %q, pending %q; want InReview with the issue close pending",
@@ -169,7 +189,7 @@ func TestReviewIssueClosedLookupFails(t *testing.T) {
 	tracker.pulls[11] = openPR()
 	tracker.pullErrs = []error{badGateway("get PR acme/orders#11"), badGateway("get PR acme/orders#11")}
 
-	handle(t, s, "issues", issueClosed)
+	closeIssue(t, s, tracker)
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "patchy", Name: "finding-aa-1"}}
 	for i := range 2 {
 		if _, err := r.Reconcile(t.Context(), req); err == nil {
@@ -218,7 +238,7 @@ func TestReviewMergeEitherOrder(t *testing.T) {
 			for _, step := range tc.steps {
 				switch step {
 				case "issue":
-					handle(t, s, "issues", issueClosed)
+					closeIssue(t, s, tracker)
 				case "pr":
 					handle(t, s, "pull_request", prClosed("acme/orders", 11, "acme/orders", true))
 				case "reconcile":
@@ -256,8 +276,8 @@ func TestReviewMergeEitherOrder(t *testing.T) {
 func TestReviewIssueReopenedBeforeSettled(t *testing.T) {
 	s, r, tracker, c := newReview(t, inReview())
 	tracker.pulls[11] = openPR()
-	handle(t, s, "issues", issueClosed)
-	handle(t, s, "issues", issueReopened)
+	closeIssue(t, s, tracker)
+	reopenIssue(t, s, tracker)
 	reconcileFinding(t, r)
 
 	f := get(t, c, "finding-aa-1")
@@ -269,6 +289,201 @@ func TestReviewIssueReopenedBeforeSettled(t *testing.T) {
 	}
 	if got := pendingReason(f); got != "" {
 		t.Errorf("pending close %q left once the PR was read", got)
+	}
+}
+
+// TestReviewIssueReopenDeliveredFirst: a human closes the issue by mistake
+// and reopens it at once, and the two deliveries are handled reopen first —
+// GitHub orders neither. The finding's tracking state then says closed while
+// the issue is open, so the projection reads the issue as GitHub reports it
+// now: the finding stays in review, its tracking state corrected.
+func TestReviewIssueReopenDeliveredFirst(t *testing.T) {
+	s, r, tracker, c := newReview(t, inReview())
+	tracker.pulls[11] = openPR()
+	tracker.issues[7].State = "open" // closed, then reopened, on GitHub
+	handle(t, s, "issues", issueReopened)
+	handle(t, s, "issues", issueClosed)
+	if f := get(t, c, "finding-aa-1"); f.Status.Tracking.State != "closed" ||
+		pendingReason(f) != v1alpha1.ReasonTrackingIssueClosed {
+		t.Fatalf("after the deliveries: tracking %q, pending %q; want closed with the issue close pending",
+			f.Status.Tracking.State, pendingReason(f))
+	}
+
+	reconcileFinding(t, r)
+	f := get(t, c, "finding-aa-1")
+	if f.Status.Phase != v1alpha1.PhaseInReview {
+		t.Errorf("phase = %q, want InReview: the issue is open on GitHub", f.Status.Phase)
+	}
+	if f.Status.Tracking.State != "open" {
+		t.Errorf("tracking state = %q, want open as GitHub reports it", f.Status.Tracking.State)
+	}
+	if got := pendingReason(f); got != "" {
+		t.Errorf("pending close %q left once the issue was read", got)
+	}
+}
+
+// TestReviewIssueChangesWhileRead: the issue is reopened, then closed again
+// while the projection reads it, and both deliveries are applied before it
+// writes. The answer it read (open) is stale by then: the finding it was
+// read for has changed, so nothing is settled over it, and the next
+// reconcile reads the issue closed and hands the finding off.
+func TestReviewIssueChangesWhileRead(t *testing.T) {
+	s, r, tracker, c := newReview(t, inReview())
+	tracker.pulls[11] = openPR()
+	closeIssue(t, s, tracker)
+	tracker.issues[7].State = "open" // reopened on GitHub; its delivery not yet handled
+	tracker.onIssueRead = func() {
+		handle(t, s, "issues", issueReopened)
+		closeIssue(t, s, tracker)
+	}
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "patchy", Name: "finding-aa-1"}}
+	res, err := r.Reconcile(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	f := get(t, c, "finding-aa-1")
+	if f.Status.Phase != v1alpha1.PhaseInReview || pendingReason(f) != v1alpha1.ReasonTrackingIssueClosed {
+		t.Fatalf("phase %q, pending %q; want InReview with the close still pending, not settled on a stale read",
+			f.Status.Phase, pendingReason(f))
+	}
+	if res.RequeueAfter == 0 {
+		t.Errorf("RequeueAfter = 0, want a requeue to read the changed finding again")
+	}
+
+	reconcileFinding(t, r)
+	f = get(t, c, "finding-aa-1")
+	if f.Status.Phase != v1alpha1.PhaseHandedOff || f.Status.Tracking.State != "closed" {
+		t.Errorf("phase %q, tracking %q; want HandedOff with the issue closed", f.Status.Phase, f.Status.Tracking.State)
+	}
+}
+
+// TestReviewCloseWaitsForIntegration: GitHub is down, so a merge's issue
+// close is pending, and the operator suspends the Integration to stop the
+// retries — or turns its issues off, or deletes it to recreate it. Nothing
+// can read the PR then, and the close is not settled without it: it waits,
+// the finding in review, re-checked on its own clock since nothing watches
+// Integrations, and settles as the merge once the Integration is back.
+func TestReviewCloseWaitsForIntegration(t *testing.T) {
+	cases := []struct {
+		name string
+		take func(*v1alpha1.Integration) // nil deletes it
+	}{
+		{"suspended", func(i *v1alpha1.Integration) { i.Spec.Suspend = true }},
+		{"issues turned off", func(i *v1alpha1.Integration) { i.Spec.GitHub.Issues.Enabled = false }},
+		{"deleted", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, r, tracker, c := newReview(t, inReview())
+			tracker.pulls[11] = mergedPR()
+			closeIssue(t, s, tracker)
+
+			var integ v1alpha1.Integration
+			key := types.NamespacedName{Namespace: "patchy", Name: "gh"}
+			if err := c.Get(t.Context(), key, &integ); err != nil {
+				t.Fatal(err)
+			}
+			if tc.take == nil {
+				if err := c.Delete(t.Context(), &integ); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				tc.take(&integ)
+				if err := c.Update(t.Context(), &integ); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "patchy", Name: "finding-aa-1"}}
+			res, err := r.Reconcile(t.Context(), req)
+			if err != nil {
+				t.Fatalf("Reconcile: %v", err)
+			}
+			f := get(t, c, "finding-aa-1")
+			if f.Status.Phase != v1alpha1.PhaseInReview || pendingReason(f) != v1alpha1.ReasonTrackingIssueClosed {
+				t.Fatalf("phase %q, pending %q; want InReview with the close still pending",
+					f.Status.Phase, pendingReason(f))
+			}
+			if res.RequeueAfter != reviewCloseRecheck {
+				t.Errorf("RequeueAfter = %v, want %v", res.RequeueAfter, reviewCloseRecheck)
+			}
+			if len(tracker.pullReads) != 0 {
+				t.Errorf("read %v with no Integration to read through", tracker.pullReads)
+			}
+
+			if tc.take == nil {
+				if err := c.Create(t.Context(), testIntegration()); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := c.Get(t.Context(), key, &integ); err != nil {
+					t.Fatal(err)
+				}
+				integ.Spec = testIntegration().Spec
+				if err := c.Update(t.Context(), &integ); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reconcileFinding(t, r)
+			f = get(t, c, "finding-aa-1")
+			if f.Status.Phase != v1alpha1.PhaseRemediated || f.Status.PullRequest.MergeCommitSHA != mergeSHA {
+				t.Errorf("phase %q, merge commit %q; want Remediated at %s once the Integration is back",
+					f.Status.Phase, f.Status.PullRequest.MergeCommitSHA, mergeSHA)
+			}
+		})
+	}
+}
+
+// TestReviewClientUnreadable: the client to read the recorded PR with
+// cannot be built, because resolving the App's installation on the
+// repository answers 404 (uninstalled, or the repository taken out of its
+// selection since the close was recorded) or 403. No retry changes that,
+// so the close settles on what its deliveries said, exactly as a PR read
+// answering so does; a transient failure is retried instead.
+func TestReviewClientUnreadable(t *testing.T) {
+	cases := []struct {
+		name        string
+		err         error
+		delivery    string // the close's delivery: "issue" or "pr" (an unrecorded repository's)
+		wantErr     bool
+		wantPhase   v1alpha1.Phase
+		wantPending string
+	}{
+		{name: "not installed: the issue close hands off", err: notFound("resolve installation for acme/orders"),
+			delivery: "issue", wantPhase: v1alpha1.PhaseHandedOff},
+		{name: "forbidden: the issue close hands off", err: forbidden("resolve installation for acme/orders"),
+			delivery: "issue", wantPhase: v1alpha1.PhaseHandedOff},
+		{name: "not installed: another repository's close moves nothing",
+			err: notFound("resolve installation for acme/orders"), delivery: "pr", wantPhase: v1alpha1.PhaseInReview},
+		{name: "transient: retried", err: badGateway("resolve installation for acme/orders"), delivery: "issue",
+			wantErr: true, wantPhase: v1alpha1.PhaseInReview, wantPending: v1alpha1.ReasonTrackingIssueClosed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, r, tracker, c := newReview(t, inReview())
+			tracker.pulls[11] = openPR()
+			r.ClientFor = func(context.Context, *v1alpha1.Integration, ghclient.Repo) (trackerClient, error) {
+				return nil, tc.err
+			}
+			if tc.delivery == "issue" {
+				closeIssue(t, s, tracker)
+			} else {
+				handle(t, s, "pull_request", prClosed("acme/storefront", 11, "acme/storefront", true))
+			}
+
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "patchy", Name: "finding-aa-1"}}
+			if _, err := r.Reconcile(t.Context(), req); (err != nil) != tc.wantErr {
+				t.Fatalf("Reconcile error = %v, want error %v", err, tc.wantErr)
+			}
+			f := get(t, c, "finding-aa-1")
+			if f.Status.Phase != tc.wantPhase {
+				t.Errorf("phase = %q, want %q", f.Status.Phase, tc.wantPhase)
+			}
+			if got := pendingReason(f); got != tc.wantPending {
+				t.Errorf("pending close = %q, want %q", got, tc.wantPending)
+			}
+		})
 	}
 }
 
@@ -344,7 +559,7 @@ func TestReviewUnrecordedRepository(t *testing.T) {
 func TestReviewUnrecordedRepositoryKeepsIssueClose(t *testing.T) {
 	s, r, tracker, c := newReview(t, inReview())
 	tracker.pulls[11] = openPR()
-	handle(t, s, "issues", issueClosed)
+	closeIssue(t, s, tracker)
 	handle(t, s, "pull_request", prClosed("acme/billing", 11, "acme/billing", false))
 	if got := pendingReason(get(t, c, "finding-aa-1")); got != v1alpha1.ReasonTrackingIssueClosed {
 		t.Fatalf("pending close = %q, want %s kept", got, v1alpha1.ReasonTrackingIssueClosed)
@@ -360,7 +575,7 @@ func TestReviewUnrecordedRepositoryKeepsIssueClose(t *testing.T) {
 func TestReviewIssueClosedOutsideReview(t *testing.T) {
 	s, r, tracker, c := newReview(t, trackedFinding(v1alpha1.PhaseQueued))
 	tracker.pulls[11] = mergedPR()
-	handle(t, s, "issues", issueClosed)
+	closeIssue(t, s, tracker)
 	f := get(t, c, "finding-aa-1")
 	if f.Status.Phase != v1alpha1.PhaseHandedOff || pendingReason(f) != "" {
 		t.Errorf("phase %q, pending %q; want HandedOff with nothing pending", f.Status.Phase, pendingReason(f))

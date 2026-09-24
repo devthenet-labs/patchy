@@ -38,7 +38,8 @@ const (
 //   - integration-controller: ""→Opened (ingest), InReview→Remediated/Failed
 //     (the recorded PR merged/closed), Dismissed→HandedOff (issue reopened),
 //     and every non-terminal→HandedOff (human closed the tracking issue; in
-//     review, only while the recorded PR is open).
+//     review, only when the recorded PR is open or cannot be read — 404/403,
+//     or none recorded — and GitHub still reports the issue closed).
 //   - context-controller: Opened→Enhanced.
 //   - investigation-controller: Enhanced→Investigating (child create is the
 //     lease), Investigating→Enhanced (retry revert), and the verdict routing

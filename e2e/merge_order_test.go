@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -74,14 +75,23 @@ func (f *reviewFlow) get(t *testing.T) v1alpha1.Finding {
 	return cur
 }
 
-// closeIssue delivers the tracking issue's issues.closed.
+// closeIssue closes the tracking issue on the fake, as a human or a merge's
+// "Fixes #N" does, and delivers its issues.closed.
 func (f *reviewFlow) closeIssue(t *testing.T) {
 	t.Helper()
+	f.gh.SetIssueState(int(f.fnd.Status.Tracking.IssueNumber), "closed")
+	f.deliverIssue(t, "closed", "closed")
+}
+
+// deliverIssue delivers an issues event for the tracking issue: action,
+// with the issue in state.
+func (f *reviewFlow) deliverIssue(t *testing.T, action, state string) {
+	t.Helper()
 	payload, err := json.Marshal(map[string]any{
-		"action": "closed",
+		"action": action,
 		"issue": map[string]any{
 			"number":   f.fnd.Status.Tracking.IssueNumber,
-			"state":    "closed",
+			"state":    state,
 			"html_url": f.fnd.Status.Tracking.URL,
 		},
 		"repository": map[string]any{"name": "shop", "full_name": "acme/shop"},
@@ -144,6 +154,34 @@ func TestHumanCloseDuringReviewLookupFails(t *testing.T) {
 		cur := f.get(t)
 		return cur.Status.Phase == v1alpha1.PhaseHandedOff &&
 			cur.Status.Tracking != nil && cur.Status.Tracking.State == "closed"
+	})
+}
+
+// TestIssueReopenDeliveredFirst: a human closes the tracking issue by
+// mistake during review and reopens it at once, and the controller handles
+// the two deliveries in either order — the close may land last, leaving the
+// finding saying closed. It reads the issue as GitHub reports it, open, and
+// keeps the finding in review instead of handing it off. The first PR reads
+// fail so the pending close can be seen before it settles.
+func TestIssueReopenDeliveredFirst(t *testing.T) {
+	f := startReview(t)
+	f.gh.OpenPull(901, "patchy/"+f.fnd.Name)
+	f.gh.FailPullReads(8)
+
+	// Closed, then reopened, on GitHub: the fake's issue stays open.
+	f.deliverIssue(t, "reopened", "open")
+	f.deliverIssue(t, "closed", "closed")
+	eventually(t, "the close to be kept pending", func() bool {
+		return meta.IsStatusConditionTrue(f.get(t).Status.Conditions, v1alpha1.ConditionReviewClosePending)
+	})
+	eventually(t, "the close to be settled against the open issue", func() bool {
+		cur := f.get(t)
+		if cur.Status.Phase == v1alpha1.PhaseHandedOff {
+			t.Fatal("a close the issue's reopen had undone handed the finding off")
+		}
+		return cur.Status.Phase == v1alpha1.PhaseInReview && cur.Status.Tracking != nil &&
+			cur.Status.Tracking.State == "open" &&
+			!meta.IsStatusConditionTrue(cur.Status.Conditions, v1alpha1.ConditionReviewClosePending)
 	})
 }
 

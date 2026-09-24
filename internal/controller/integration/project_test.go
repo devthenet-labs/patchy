@@ -55,6 +55,10 @@ type fakeTracker struct {
 	pulls     map[int]*ghclient.PullRequest
 	pullErrs  []error
 	pullReads []string
+
+	// onIssueRead, when set, is called once, after the next GetIssue has
+	// read its answer and before it returns it: what changes meanwhile.
+	onIssueRead func()
 }
 
 func newFakeTracker() *fakeTracker {
@@ -97,6 +101,12 @@ func (f *fakeTracker) GetIssue(_ context.Context, _ ghclient.Repo, number int) (
 	is, ok := f.issues[number]
 	if !ok {
 		return nil, notFound(fmt.Sprintf("get issue #%d", number))
+	}
+	if hook := f.onIssueRead; hook != nil {
+		f.onIssueRead = nil
+		read := *is
+		hook()
+		return &read, nil
 	}
 	return is, nil
 }

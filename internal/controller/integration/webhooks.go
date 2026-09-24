@@ -80,8 +80,9 @@ type issueRef struct {
 // remediation PR's body says "Fixes #N", so its merge closes the issue too,
 // and deliveries are handled unordered — the issue's close can land before
 // the PR's. The close is kept pending instead, and the PR's own state
-// decides (settleReview): merged or closed, the PR's outcome; still open, a
-// human took the finding over.
+// decides (settleReview): merged or closed, the PR's outcome; still open or
+// unreadable, a human took the finding over — if the issue is still closed
+// when read, since a quick reopen's delivery can land before this one.
 func (s *Signals) issues(ctx context.Context, payload []byte) error {
 	var ev struct {
 		Action string   `json:"action"`

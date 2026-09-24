@@ -147,10 +147,15 @@ func (r *FindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Ahead of the projection: a settled finding is re-queued by its own
-	// status write and projects its new phase then, and one whose PR cannot
-	// be read yet retries on the reconcile's backoff.
-	if settled, err := r.settleReview(ctx, &fnd); err != nil || settled {
-		return ctrl.Result{}, err
+	// status write and projects its new phase then, one whose PR cannot be
+	// read yet retries on the reconcile's backoff, and one with no
+	// Integration to read it through waits (projecting as it does).
+	settled, wait, err := r.settleReview(ctx, &fnd)
+	if err != nil || settled {
+		return ctrl.Result{RequeueAfter: wait}, err
+	}
+	if wait > 0 && (requeue == 0 || wait < requeue) {
+		requeue = wait
 	}
 
 	// Ahead of the projection, so a finding whose tracking issue keeps

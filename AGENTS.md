@@ -142,8 +142,8 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   score, rollup delta arithmetic + OTel taps.
 - `labels` — the trimmed human-facing label vocabulary the issue projection renders (one-way; never parsed back
   into state).
-- `templates` — the finding handoff/issue body, both stage prompts, and the PR body, rendered from embedded
-  templates with golden tests. Also the intent side (not wired in yet): the plan comment, which shows the
+- `templates` — the finding handoff/issue body, the stage prompts (investigate, remediate, and the intent plan
+  and build), and the PR body, rendered from embedded templates with golden tests. Also the intent side (not wired in yet): the plan comment, which shows the
   plan report VERBATIM (its exact bytes) in a ```markdown block whose fence no line of it can close, only
   patchy's header outside it, and refuses (`ErrPlanRefused`, with a notice to post instead) a plan over
   GitHub's comment limit, not UTF-8, or holding characters no block can show (tag characters, bidi controls,
@@ -184,8 +184,11 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   `enhancers.DynamicGeneric`/`MultiEnhancer` (internal seam; `pkg/enhance` stays one-plugin-one-identity).
 - `harness`, `runner` — adapted from evolve: harness builds argv, runner executes (observe-and-collect with a
   token-budget kill switch), harness parses stdout. Keep that separation.
-- `agentrun` — the in-pod stage flow (`investigate` | `remediate`); `report`/`envelope` are its contracts
-  (frontmatter schemas in, JSONL events out); `agentresult` converts envelope results onto CR status.
+- `agentrun` — the in-pod stage flow (`investigate` | `remediate`, and the intent stages `plan` | `build`, which
+  reuse investigate's and remediate's configuration and helpers and run on brokered claude only);
+  `report`/`envelope` are its contracts (frontmatter schemas in, JSONL events out — a `plan` event beside the
+  others at v4); `agentresult` converts envelope results onto CR status (`FromPlan` re-derives a plan from its
+  report).
 - `jobs` — the Kubernetes Job the agent runs in. The isolation model lives here, and it STRENGTHENED with the
   broker: a brokered (claude) pod holds no credential of any kind — its projected SA token (audience-bound,
   agent container only, never the init) is an identity document, not a capability; its fixed, non-secret

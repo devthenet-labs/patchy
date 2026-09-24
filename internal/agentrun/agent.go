@@ -78,6 +78,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.emit(envelope.Event{Type: envelope.TypeInvestigation, Investigation: ev})
 		return nil
 	}
+	if a.cfg.Phase == PhasePlan || a.cfg.Phase == PhaseBuild {
+		return a.runIntent(ctx)
+	}
 
 	// The controller supplies the analysis this run executes; thresholds and
 	// holds were already applied controller-side.

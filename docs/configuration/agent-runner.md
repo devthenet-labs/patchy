@@ -20,8 +20,24 @@ matters when debugging a Job spec or running the runtime standalone.
 | `PATCHY_REPO`      | — (**required**) | `owner/name` of the repository under analysis                                                     |
 | `PATCHY_FINDING`   | — (**required**) | Name of the owning Finding resource — echoed in every event, and the branch is `patchy/<finding>` |
 | `PATCHY_BASE_SHA`  | —                | The remote commit the workspace tree corresponds to (the changeset's push base)                   |
-| `PATCHY_PHASE`     | `investigate`    | `investigate` or `remediate`                                                                      |
+| `PATCHY_PHASE`     | `investigate`    | `investigate` or `remediate`; `plan` or `build` for an intent run (below)                         |
 | `PATCHY_WORKSPACE` | `/workspace`     | Pod workspace root (`repo/`, `input/`, `reports/`)                                                |
+
+### Intent phases
+
+An intent run (the intent-driven development work kind) uses two more phases, over the same Job seams: `PATCHY_FINDING`
+carries the IntentRun's name, `input/issue.md` the intent snapshot, and `input/investigation.md` the approved plan.
+
+- **`plan`** reads the request and the tree read-only and writes `reports/plan.md`, emitted as a `plan` event. It runs
+  on the investigate stage's configuration — `PATCHY_INVESTIGATE_HARNESS`/`_MODEL`/`_TIMEOUT`, and
+  `PATCHY_INVESTIGATE_MAX_TURNS`/`_TOKEN_BUDGET` as its ceiling, which a per-Job grant may lower but never raise.
+- **`build`** builds the approved plan with the workspace writable — the first build and every revise round — writes
+  `reports/build.md` and `commit.sh`, and emits a `remediation` event with the changeset. It runs on the remediate
+  stage's configuration and grant clamp.
+
+Both run on **brokered claude only**: any other harness, or claude without `PATCHY_BROKER_TOKEN_FILE`, is refused with a
+fatal event before a model is called, because codex and copilot do not honour the sandbox postures. No configuration key
+exists for the intent phases alone.
 
 ## Stage configuration
 
@@ -107,6 +123,8 @@ disabled for exactly this reason.
 ## The event stream
 
 Progress and results are emitted as one JSON object per line, prefixed `PATCHY-EVENT:`, on stdout; the owning controller
-tails the pod log and applies them. Stage outcomes are `ok`, `runtime_error`, `timeout`, `budget_exceeded`,
-`report_missing`, `report_invalid`, `commit_failed`, and `changeset_too_large` — only `ok` carries a trusted report. A
-fatal error also exits 2 so the Job is marked failed for the controller's orphan handling.
+tails the pod log and applies them. The event types are `investigation`, `remediation` (a fix or an intent build),
+`plan` (an intent plan, carrying the report byte-exact beside its parsed frontmatter) and `fatal`, all at envelope
+version 4. Stage outcomes are `ok`, `runtime_error`, `timeout`, `budget_exceeded`, `report_missing`, `report_invalid`,
+`commit_failed`, and `changeset_too_large` — only `ok` carries a trusted report. A fatal error also exits 2 so the Job
+is marked failed for the controller's orphan handling.

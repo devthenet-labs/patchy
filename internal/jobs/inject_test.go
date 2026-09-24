@@ -438,7 +438,8 @@ func TestReservedEnvNames(t *testing.T) {
 		t.Errorf("ReservedEnvNames() = %v, want sorted", names)
 	}
 	for _, want := range slices.Concat(
-		[]string{"GITHUB_TOKEN", "ANTHROPIC_API_KEY", "PATCHY_REPO", "HOME"},
+		[]string{"GITHUB_TOKEN", "ANTHROPIC_API_KEY", "PATCHY_REPO", "HOME",
+			"PATCHY_CALIBRATION", "PATCHY_PREVIOUS_ATTEMPT"},
 		provider.GatewayEnvNames, proxyEnv,
 	) {
 		if !slices.Contains(names, want) {

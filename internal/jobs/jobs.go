@@ -726,6 +726,7 @@ var reservedEnv = map[string]bool{
 	"PATCHY_GRANTED_MAX_TURNS":    true,
 	"PATCHY_GRANTED_TOKEN_BUDGET": true,
 	"PATCHY_CALIBRATION":          true,
+	"PATCHY_PREVIOUS_ATTEMPT":     true,
 	agentrun.BinDirEnv:            true,
 	"ANTHROPIC_API_KEY":           true,
 	"CLAUDE_CODE_OAUTH_TOKEN":     true,

@@ -5,7 +5,9 @@ package jobs
 
 import (
 	"context"
+	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -369,6 +371,60 @@ func TestCreateAgentEnvPreviousAttempt(t *testing.T) {
 				t.Errorf("PATCHY_PREVIOUS_ATTEMPT = %+v, want %q", got, tt.previous)
 			}
 		})
+	}
+}
+
+// TestConfigEnvCannotShadowPerJobHandoff: the per-Job handoff variables are
+// the controller's to set from the Spec, so an operator's Config.Env entry
+// of the same name must never reach the pod. Not on a Job that sets the
+// name (a second, conflicting entry whose winner Kubernetes leaves
+// undefined), not on one that leaves it unset (a first attempt told it is a
+// retry), and not on a repository-image Job, where it would stand in for
+// the blank that keeps an image's ENV from reaching agent-runner.
+func TestConfigEnvCannotShadowPerJobHandoff(t *testing.T) {
+	const operator = `{"attempt":9,"outcome":"unknown","detail":"from Config.Env"}`
+	handoff := []struct {
+		env string
+		set func(*Spec, string)
+	}{
+		{"PATCHY_CALIBRATION", func(s *Spec, v string) { s.Calibration = v }},
+		{"PATCHY_PREVIOUS_ATTEMPT", func(s *Spec, v string) { s.PreviousAttempt = v }},
+	}
+	shapes := []struct {
+		name string
+		cfg  func() Config
+		spec func() Spec
+		// blank is whether a Job that leaves the name unset still lists it,
+		// with an explicit empty value.
+		blank bool
+	}{
+		{"default", testConfig, testSpec, false},
+		{"repository image", injectedConfig, injectedSpec, true},
+	}
+	for _, h := range handoff {
+		for _, shape := range shapes {
+			for _, jobValue := range []string{`{"attempt":1}`, ""} {
+				t.Run(fmt.Sprintf("%s/%s/job sets %q", h.env, shape.name, jobValue), func(t *testing.T) {
+					cfg := shape.cfg()
+					cfg.Env[h.env] = operator
+					spec := shape.spec()
+					h.set(&spec, jobValue)
+					var got []corev1.EnvVar
+					for _, e := range buildJobForTest(t, cfg, spec).Spec.Template.Spec.Containers[0].Env {
+						if e.Name == h.env {
+							got = append(got, e)
+						}
+					}
+					want := []corev1.EnvVar{{Name: h.env, Value: jobValue}}
+					if jobValue == "" && !shape.blank {
+						want = nil
+					}
+					if !slices.Equal(got, want) {
+						t.Errorf("%s entries = %+v, want %+v", h.env, got, want)
+					}
+				})
+			}
+		}
 	}
 }
 

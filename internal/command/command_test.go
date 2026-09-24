@@ -206,3 +206,33 @@ func TestParseAliasOnlyOnFindingIssue(t *testing.T) {
 		t.Errorf("FindingIssue Parse(/approve) = %+v, %v; want the legacy alias", c, ok)
 	}
 }
+
+// TestNote: the exported note rule is the one Parse applies, so an event
+// alias that passes its text through Note gets exactly the note a comment
+// would. A review body is all note, even when it opens with blank lines or
+// something that looks like a command.
+func TestNote(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"empty", "", ""},
+		{"trimmed", "  \n ship it \n\n", "ship it"},
+		{"a review that opens with a command line is all note",
+			"\n\n/patchy approve\nPlease rename the handler.", "/patchy approve\nPlease rename the handler."},
+		{"line breaks normalised", "one\r\ntwo\rthree", "one\ntwo\nthree"},
+		{"control characters dropped", "fix\x00 the\x1b[31m bug", "fix the[31m bug"},
+		{"invalid UTF-8 replaced", "bad \xff byte", "bad � byte"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := command.Note(tc.in); got != tc.want {
+				t.Errorf("Note(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+	// Parse's note is Note of the text after the verb.
+	body := "/patchy revise  fix\x00 it\r\nthanks  "
+	if c, _ := command.Parse(body); c.Note != command.Note("fix\x00 it\r\nthanks") {
+		t.Errorf("Parse(%q).Note = %q, want Note of the text after the verb", body, c.Note)
+	}
+}

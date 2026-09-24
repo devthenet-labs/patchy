@@ -476,3 +476,20 @@ func TestParseLegacyMatchesTodayProperty(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// TestNoteProperty: the note rule is idempotent — an event alias's caller or
+// a later reader can apply it again without changing a note — and whatever
+// it is given, it returns a well-formed note.
+func TestNoteProperty(t *testing.T) {
+	idempotent := func(s string) bool {
+		n := command.Note(s)
+		return command.Note(n) == n && wellFormedNote(n)
+	}
+	if err := quick.Check(idempotent, quickConfig(20261006, genHostile)); err != nil {
+		t.Error(err)
+	}
+	cfg := &quick.Config{MaxCount: 3000, Rand: rand.New(rand.NewSource(20261007))}
+	if err := quick.Check(idempotent, cfg); err != nil {
+		t.Error(err)
+	}
+}

@@ -24,10 +24,12 @@
 // (a tab counting to the next multiple of four), which GitHub renders as an
 // indented code block, are all text, and text never parses.
 //
-// A note has invalid UTF-8 replaced, every line break normalised to "\n",
-// control and format characters other than "\n" and "\t" removed,
-// surrounding whitespace trimmed, and is cut to at most MaxNoteBytes on a
-// rune boundary.
+// # Notes
+//
+// Every note, however its command arrived, is made by one exported rule,
+// Note: invalid UTF-8 replaced, every line break normalised to "\n", control
+// and format characters other than "\n" and "\t" removed, surrounding
+// whitespace trimmed, and cut to at most MaxNoteBytes on a rune boundary.
 //
 // # Aliases
 //
@@ -44,14 +46,18 @@
 // space; the match is case-sensitive; and the note is the rest of the
 // comment, trailing lines included. Unlike the grammar, it therefore still
 // matches an indented comment, as it always has. The one deliberate
-// difference is in the note, which is sanitised as above where the handler
-// kept it verbatim apart from the 1 KiB cut. The /patchy grammar is tried
-// first: where a comment parses as the grammar, a configured alias that also
+// difference is in the note, which follows Note where the handler kept it
+// verbatim apart from the 1 KiB cut. The /patchy grammar is tried first:
+// where a comment parses as the grammar, a configured alias that also
 // matches it is ignored.
 //
 // The other aliases the design names (the approve label, re-applying the
 // trigger label, a "Request changes" review) are GitHub events rather than
-// comment text; their callers map them onto the same verbs.
+// comment text. Their callers map them onto the same verbs by building the
+// Command themselves, with any text the event carries passed through Note
+// rather than dressed up as a comment for Parse: a review is
+// Command{Verb: action.VerbRevise, Note: Note(review.Body)}, so a review body
+// that itself opens with a command line or blank lines is still all note.
 //
 // # What the caller decides
 //

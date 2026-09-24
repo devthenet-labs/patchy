@@ -30,7 +30,7 @@ type Command struct {
 	// checked against any vocabulary: an unknown verb still parses, so the
 	// caller can reply with what is available.
 	Verb string
-	// Note is the sanitised free text after the verb, possibly empty.
+	// Note is the free text after the verb, as Note makes it; possibly empty.
 	Note string
 	// Alias is the legacy form the comment used, such as "/approve", or ""
 	// for the /patchy grammar.
@@ -94,7 +94,7 @@ func parseGrammar(body string) (Command, bool) {
 		return Command{}, false
 	}
 	word, after := cutWord(strings.TrimLeftFunc(rest, unicode.IsSpace))
-	return Command{Verb: verb(word), Note: sanitize(after + "\n" + below)}, true
+	return Command{Verb: verb(word), Note: Note(after + "\n" + below)}, true
 }
 
 // parseAlias matches the legacy approve comment exactly as the Finding
@@ -112,7 +112,7 @@ func (p Parser) parseAlias(body string) (Command, bool) {
 	}
 	return Command{
 		Verb:  action.VerbApprove,
-		Note:  sanitize(strings.TrimPrefix(trimmed, alias)),
+		Note:  Note(strings.TrimPrefix(trimmed, alias)),
 		Alias: alias,
 	}, true
 }
@@ -172,10 +172,14 @@ func verb(word string) string {
 	return strings.ToLower(word)
 }
 
-// sanitize makes s a note: valid UTF-8, line breaks normalised to "\n",
-// control and format characters other than "\n" and "\t" removed, trimmed,
-// and at most MaxNoteBytes, cut on a rune boundary.
-func sanitize(s string) string {
+// Note makes s a command's note, by the one rule every note follows however
+// the command arrived: the text after a comment's verb, after the legacy
+// approve alias, or the body of an event alias such as a "Request changes"
+// review. The result is valid UTF-8 with every line break normalised to
+// "\n", control and format characters other than "\n" and "\t" removed,
+// trimmed, and at most MaxNoteBytes, cut on a rune boundary. Note is
+// idempotent.
+func Note(s string) string {
 	s = lineBreaks.Replace(strings.ToValidUTF8(s, string(utf8.RuneError)))
 	s = strings.Map(func(r rune) rune {
 		switch {

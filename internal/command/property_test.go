@@ -96,15 +96,32 @@ func genAlias(r *rand.Rand) string {
 // breaks), written out here independently of the parser.
 var lineBreak = regexp.MustCompile("\r\n|[\n\r\v\f\u0085\u2028\u2029]")
 
-// firstNonBlank is the body's first non-blank line, trimmed — computed here
-// independently of the parser.
+// firstNonBlank is the body's first non-blank line, untrimmed — computed
+// here independently of the parser.
 func firstNonBlank(body string) string {
 	for _, line := range lineBreak.Split(body, -1) {
-		if t := strings.TrimSpace(line); t != "" {
-			return t
+		if strings.TrimSpace(line) != "" {
+			return line
 		}
 	}
 	return ""
+}
+
+// indentColumns is how many columns of spaces and tabs open line, a tab
+// advancing to the next multiple of four as CommonMark counts it.
+func indentColumns(line string) int {
+	col := 0
+	for _, r := range line {
+		switch r {
+		case ' ':
+			col++
+		case '\t':
+			col = (col/4 + 1) * 4
+		default:
+			return col
+		}
+	}
+	return col
 }
 
 // wellFormedNote reports what every note must be: valid UTF-8, within the
@@ -155,10 +172,10 @@ func TestParseNeverPanicsProperty(t *testing.T) {
 }
 
 // TestParseRequiresPrefixProperty: a body parses only when its first
-// non-blank line starts with the prefix or, on a Finding issue and nowhere
-// else, the whole trimmed body is the legacy alias form — and text whose
-// first non-blank line starts with anything else never parses, whatever
-// follows it.
+// non-blank line is not indented as code and starts with the prefix or, on a
+// Finding issue and nowhere else, the whole trimmed body is the legacy alias
+// form — and text whose first non-blank line starts with anything else, or
+// is indented as code, never parses as the grammar, whatever follows it.
 func TestParseRequiresPrefixProperty(t *testing.T) {
 	onlyWithPrefix := func(surface, body string) bool {
 		c, ok := command.Parser{Surface: command.Surface(surface)}.Parse(body)
@@ -170,8 +187,10 @@ func TestParseRequiresPrefixProperty(t *testing.T) {
 			return command.Surface(surface) == command.FindingIssue &&
 				(trimmed == command.LegacyApprove || strings.HasPrefix(trimmed, command.LegacyApprove+" "))
 		}
-		line := firstNonBlank(body)
-		return len(line) >= len(command.Prefix) && strings.EqualFold(line[:len(command.Prefix)], command.Prefix)
+		raw := firstNonBlank(body)
+		line := strings.TrimSpace(raw)
+		return indentColumns(raw) < 4 &&
+			len(line) >= len(command.Prefix) && strings.EqualFold(line[:len(command.Prefix)], command.Prefix)
 	}
 	if err := quick.Check(onlyWithPrefix, quickConfig(20260925, genSurface, genHostile)); err != nil {
 		t.Error(err)
@@ -187,6 +206,44 @@ func TestParseRequiresPrefixProperty(t *testing.T) {
 	if err := quick.Check(text, quickConfig(20260926, genBlankLines, genTextStart, genHostile)); err != nil {
 		t.Error(err)
 	}
+
+	// Nor does a command indented as a code block, however it is spelled.
+	indented := func(blank, indent, head, rest string) bool {
+		_, ok := command.Parse(blank + indent + head + rest)
+		return !ok
+	}
+	cfg := quickConfig(20261005, genBlankLines, genCodeIndent, genCommandLine, genHostile)
+	if err := quick.Check(indented, cfg); err != nil {
+		t.Error(err)
+	}
+}
+
+// genCodeIndent is spaces and tabs reaching at least the four columns that
+// make an indented code block.
+func genCodeIndent(r *rand.Rand) string {
+	var b strings.Builder
+	for indentColumns(b.String()) < 4 || r.Intn(3) == 0 {
+		b.WriteString([]string{" ", "\t"}[r.Intn(2)])
+	}
+	return b.String()
+}
+
+// genCommandLine is the prefix in random ASCII case, inline whitespace and a
+// verb.
+func genCommandLine(r *rand.Rand) string {
+	return anyCasePrefix(r) + inline[r.Intn(len(inline))] + genVerb(r)
+}
+
+// anyCasePrefix is the prefix in random ASCII case.
+func anyCasePrefix(r *rand.Rand) string {
+	var b strings.Builder
+	for _, c := range command.Prefix {
+		if r.Intn(2) == 0 {
+			c = unicode.ToUpper(c)
+		}
+		b.WriteRune(c)
+	}
+	return b.String()
 }
 
 // genBlankLines is up to three blank lines.
@@ -217,13 +274,8 @@ func noteText(r *rand.Rand) string {
 func spelling(r *rand.Rand) string {
 	var b strings.Builder
 	b.WriteString(genBlankLines(r))
-	b.WriteString(strings.Repeat(" ", r.Intn(3)))
-	for _, c := range command.Prefix {
-		if r.Intn(2) == 0 {
-			c = unicode.ToUpper(c)
-		}
-		b.WriteRune(c)
-	}
+	b.WriteString(strings.Repeat(" ", r.Intn(4)))
+	b.WriteString(anyCasePrefix(r))
 	for range 1 + r.Intn(3) {
 		b.WriteString(inline[r.Intn(len(inline))])
 	}

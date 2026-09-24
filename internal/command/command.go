@@ -81,6 +81,9 @@ var lineBreaks = strings.NewReplacer(
 // parseGrammar reads "/patchy <verb> [note]" from the first non-blank line.
 func parseGrammar(body string) (Command, bool) {
 	line, below := firstLine(lineBreaks.Replace(body))
+	if indentedCode(line) {
+		return Command{}, false
+	}
 	line = strings.TrimLeftFunc(line, unicode.IsSpace)
 	if len(line) < len(Prefix) || !strings.EqualFold(line[:len(Prefix)], Prefix) {
 		return Command{}, false
@@ -125,6 +128,26 @@ func firstLine(body string) (line, below string) {
 		}
 	}
 	return "", ""
+}
+
+// indentedCode reports whether line opens with four or more columns of
+// spaces and tabs, which GitHub renders as an indented code block when, as
+// here, no paragraph comes before it. A tab advances to the next multiple of
+// four columns, as CommonMark counts it; any other character ends the
+// indentation.
+func indentedCode(line string) bool {
+	col := 0
+	for i := 0; i < len(line) && col < 4; i++ {
+		switch line[i] {
+		case ' ':
+			col++
+		case '\t':
+			col += 4 - col%4
+		default:
+			return false
+		}
+	}
+	return col >= 4
 }
 
 // cutWord splits s at its first whitespace.

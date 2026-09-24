@@ -41,7 +41,9 @@ func TestParseGrammar(t *testing.T) {
 		{"bare verb", "/patchy approve", approve(""), true},
 		{"verb and note", "/patchy approve ship it", approve("ship it"), true},
 		{"leading blank lines and surrounding whitespace",
-			"  \n\n\t /patchy approve   ship it  \n\n", approve("ship it"), true},
+			"  \n\t\n   /patchy approve   ship it  \n\n", approve("ship it"), true},
+		{"three columns of indentation are not code", "   /patchy approve", approve(""), true},
+		{"a no-break space ends the indentation", "\u00a0    /patchy approve", approve(""), true},
 		{"the note continues onto the lines below",
 			"/patchy approve ship it\nafter the review\n\nthanks", approve("ship it\nafter the review\n\nthanks"), true},
 		{"a note that starts on the next line",
@@ -105,6 +107,13 @@ func TestParseGrammar(t *testing.T) {
 		{"a quoted command", "> /patchy approve\n\nI disagree", command.Command{}, false},
 		{"a command in a code span", "`/patchy approve`", command.Command{}, false},
 		{"a command in a code block", "```\n/patchy approve\n```", command.Command{}, false},
+		// GitHub renders a first line indented by four columns as code.
+		{"four spaces make an indented code block", "    /patchy approve", command.Command{}, false},
+		{"a tab makes an indented code block", "\t/patchy approve", command.Command{}, false},
+		{"spaces and a tab reach four columns", "  \t/patchy approve", command.Command{}, false},
+		{"three spaces and a tab reach four columns", "   \t/patchy approve", command.Command{}, false},
+		{"an indented command after blank lines", "\n \t\n    /patchy approve", command.Command{}, false},
+		{"an indented command after a lone-CR blank line", "\r        /patchy approve", command.Command{}, false},
 		{"a zero-width space before the prefix", "\u200b/patchy approve", command.Command{}, false},
 	})
 }
@@ -127,6 +136,7 @@ func TestParseLegacyApprove(t *testing.T) {
 		{"the whole comment is trimmed", "\n\n  /approve  \n", legacy(""), true},
 		{"the note keeps the lines below", "/approve ship it\nafter the review\n", legacy("ship it\nafter the review"), true},
 		{"extra spaces before the note", "/approve   ship it", legacy("ship it"), true},
+		{"an indented comment still approves, as today", "    /approve ship it", legacy("ship it"), true},
 		{"CRLF in the note is normalised", "/approve ship it\r\nthanks", legacy("ship it\nthanks"), true},
 		{"every line break in the note is normalised", "/approve ship\u0085it\u2028now", legacy("ship\nit\nnow"), true},
 		// Today's rule needs an ASCII space after the command, so these have

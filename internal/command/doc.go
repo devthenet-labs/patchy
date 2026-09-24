@@ -19,8 +19,10 @@
 // with the verbs it offers and can echo a non-empty verb without escaping it.
 // The note is everything after the verb: the rest of that line and every line
 // below it. Only the first non-blank line is ever a command. A later line
-// that looks like one, a quoted command ("> /patchy approve") or one inside a
-// code span is text, and text never parses.
+// that looks like one, a quoted command ("> /patchy approve"), one inside a
+// code span or fenced code block, and one indented by four or more columns
+// (a tab counting to the next multiple of four), which GitHub renders as an
+// indented code block, are all text, and text never parses.
 //
 // A note has invalid UTF-8 replaced, every line break normalised to "\n",
 // control and format characters other than "\n" and "\t" removed,
@@ -40,10 +42,12 @@
 // onto this package cannot change which comments approve a Finding: the
 // whole comment, trimmed, must equal the alias or start with the alias and a
 // space; the match is case-sensitive; and the note is the rest of the
-// comment, trailing lines included. The one deliberate difference is in the
-// note, which is sanitised as above where the handler kept it verbatim apart
-// from the 1 KiB cut. The /patchy grammar is tried first: where a comment
-// parses as the grammar, a configured alias that also matches it is ignored.
+// comment, trailing lines included. Unlike the grammar, it therefore still
+// matches an indented comment, as it always has. The one deliberate
+// difference is in the note, which is sanitised as above where the handler
+// kept it verbatim apart from the 1 KiB cut. The /patchy grammar is tried
+// first: where a comment parses as the grammar, a configured alias that also
+// matches it is ignored.
 //
 // The other aliases the design names (the approve label, re-applying the
 // trigger label, a "Request changes" review) are GitHub events rather than

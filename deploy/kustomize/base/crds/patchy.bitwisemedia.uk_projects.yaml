@@ -1,0 +1,481 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: projects.patchy.bitwisemedia.uk
+spec:
+  group: patchy.bitwisemedia.uk
+  names:
+    categories:
+    - patchy
+    kind: Project
+    listKind: ProjectList
+    plural: projects
+    shortNames:
+    - proj
+    singular: project
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: The intent repository
+      jsonPath: .spec.intentRepository
+      name: IntentRepo
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - description: Non-terminal intents
+      jsonPath: .status.activeIntents
+      name: Active
+      type: integer
+    - jsonPath: .spec.suspend
+      name: Suspend
+      priority: 1
+      type: boolean
+    - jsonPath: .status.lastPolledAt
+      name: Polled
+      priority: 1
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Project is operator configuration for intent-driven development: an intent
+          repository whose trigger-labelled issues become Intents, the approvers
+          whose actions count, the application repositories the work is built in,
+          and the limits on what it may spend. Its name is at most 25 characters
+          (MaxProjectNameLength): it prefixes every Intent's and IntentRun's name,
+          which are written into 63-character label values (see the name budget),
+          and Intent.spec.project holds it.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ProjectSpec is operator configuration: where intents are filed, who may
+              authorise them, which repositories they build in, and what they may spend.
+              The operator writes it (through the patchy-config chart); intent-controller
+              only reads it. Writing projects is admin-only in RBAC, because a Project is
+              the power to point agents at repositories.
+            properties:
+              approvers:
+                description: Approvers is the allowlist whose actions count.
+                properties:
+                  logins:
+                    description: |-
+                      Logins are the GitHub logins whose trigger, approval, commands and
+                      review feedback count; everyone else's are ignored (a trigger from
+                      anyone else closes the intent with one notice). Compared
+                      case-insensitively. A Bot never counts, so the pattern admits no
+                      "[bot]" suffix. The operator owns this list; it is never derived from
+                      author_association.
+                    items:
+                      maxLength: 64
+                      pattern: ^[A-Za-z0-9][A-Za-z0-9_.-]*$
+                      type: string
+                    maxItems: 20
+                    minItems: 1
+                    type: array
+                    x-kubernetes-list-type: set
+                required:
+                - logins
+                type: object
+              checks:
+                default: {}
+                description: Checks configures automatic check-fix rounds (slice 1b).
+                properties:
+                  fix:
+                    description: |-
+                      Fix names the checks (check-run names or commit-status contexts, e.g.
+                      "test", "lint") whose failure on patchy's own head starts a fix round
+                      without a human; the round records the failed check runs and commit
+                      statuses it consumed, each by its own id (IntentRunInputs.CheckRunIDs
+                      and StatusIDs). Empty means patchy never auto-fixes: a failing check is
+                      reported on the intent issue and an approver can run /patchy revise.
+                      The list is explicit so a flaky or unrelated check cannot burn
+                      budget.
+                    items:
+                      maxLength: 128
+                      minLength: 1
+                      type: string
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-type: set
+                  timeout:
+                    default: 30m
+                    description: |-
+                      Timeout is how long after a push the controller waits for the named
+                      checks to settle before it stops watching them, between 1m and 6h. A
+                      pointer so that an unset value is omitted and the schema default
+                      applies (a zero metav1.Duration would serialize as "0s").
+                    type: string
+                    x-kubernetes-validations:
+                    - message: checks.timeout must be between 1m and 6h
+                      rule: duration(self) >= duration('1m') && duration(self) <=
+                        duration('6h')
+                type: object
+              intentRepository:
+                description: |-
+                  IntentRepository is the https URL of the repository whose issues are
+                  this Project's intents (e.g. https://github.com/acme/intents). Several
+                  Projects may share one, told apart by their trigger labels. The App
+                  must be installed on it and it must resolve to exactly one Forge. It
+                  is immutable (CEL-enforced): an Intent is named <project>-<issue>,
+                  which leaves the repository out, so a Project moved to another intent
+                  repository would find its new issues' names held by the old
+                  repository's Intents. To move a project, create a new Project, under a
+                  new name, on the new repository.
+                maxLength: 256
+                minLength: 1
+                pattern: ^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$
+                type: string
+                x-kubernetes-validations:
+                - message: 'spec.intentRepository is immutable: Intent names leave
+                    the repository out, so create a new Project to use another intent
+                    repository'
+                  rule: self == oldSelf
+              labels:
+                default: {}
+                description: Labels names the trigger and approve labels.
+                properties:
+                  approve:
+                    default: patchy:approved
+                    description: |-
+                      Approve is the label an approver adds to approve the plan posted on
+                      the intent issue — the alias of `/patchy approve`. The approval is
+                      accepted only from an approver, after the plan was posted, and while
+                      both the plan comment and the issue body still hash to what was
+                      planned.
+                    maxLength: 50
+                    minLength: 1
+                    type: string
+                  trigger:
+                    description: |-
+                      Trigger is the label that both starts an intent and names this
+                      Project: an issue carrying it becomes the Intent <project>-<issue>,
+                      and an approver re-applying it asks for a replan. Empty means
+                      "patchy:<project name>" (ProjectTriggerLabel), which intent-controller
+                      derives because a schema default cannot see the object's name. The
+                      name budget keeps it within GitHub's label limit. A root-level rule
+                      refuses a derived trigger that equals the approve label, so a Project
+                      named "approved" must set this, or a different approve label. Two
+                      Projects sharing an intent repository must use different triggers.
+                      50 characters is GitHub's own label-name limit.
+                    maxLength: 50
+                    minLength: 1
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: labels.trigger and labels.approve must differ
+                  rule: '!has(self.trigger) || !has(self.approve) || self.trigger.lowerAscii()
+                    != self.approve.lowerAscii()'
+              limits:
+                default: {}
+                description: Limits bound each intent's spend.
+                properties:
+                  build:
+                    description: Build bounds each initial build run.
+                    properties:
+                      maxTurns:
+                        description: MaxTurns the agent may take in one run of the
+                          stage.
+                        format: int32
+                        maximum: 1000
+                        minimum: 0
+                        type: integer
+                      tokenBudget:
+                        description: |-
+                          TokenBudget is the output-token budget of one run of the stage (the
+                          runner's kill switch).
+                        format: int64
+                        maximum: 100000000
+                        minimum: 0
+                        type: integer
+                    type: object
+                  maxActiveIntents:
+                    default: 2
+                    description: |-
+                      MaxActiveIntents is how many of this Project's intents may be
+                      non-terminal at once; a newly triggered issue past it waits.
+                    format: int32
+                    maximum: 20
+                    minimum: 1
+                    type: integer
+                  maxCheckFixes:
+                    default: 2
+                    description: |-
+                      MaxCheckFixes is how many automatic check-fix rounds one intent may
+                      run, counted separately from MaxRevisions but under the same cost
+                      ceiling (slice 1b). Zero is meaningful (no check-fix rounds), so the
+                      field is a pointer: nil means the default.
+                    format: int32
+                    maximum: 20
+                    minimum: 0
+                    type: integer
+                  maxCostMicroUSD:
+                    default: 10000000
+                    description: |-
+                      MaxCostMicroUSD is the per-intent spend ceiling in micro-USD (10000000
+                      = $10), checked before every launch; past it the Intent goes Blocked
+                      with BudgetExhausted. Advisory for build and revise runs, whose
+                      reported usage comes from a repository-declared image and is
+                      untrusted — the per-run limits, the Job deadline and MaxRevisions are
+                      what is actually enforced there. The ceiling is capped at $1000.
+                    format: int64
+                    maximum: 1000000000
+                    minimum: 1
+                    type: integer
+                  maxRevisions:
+                    default: 3
+                    description: |-
+                      MaxRevisions is how many review-driven revise rounds one intent may
+                      run; the next is refused and the Intent goes Blocked with
+                      RevisionLimitReached until the limit is raised. A head_moved re-run
+                      does not count. Zero is meaningful (no revise rounds), so the field
+                      is a pointer: nil means the default.
+                    format: int32
+                    maximum: 20
+                    minimum: 0
+                    type: integer
+                  plan:
+                    description: Plan bounds each planning run (read-only, default
+                      runner image).
+                    properties:
+                      maxTurns:
+                        description: MaxTurns the agent may take in one run of the
+                          stage.
+                        format: int32
+                        maximum: 1000
+                        minimum: 0
+                        type: integer
+                      tokenBudget:
+                        description: |-
+                          TokenBudget is the output-token budget of one run of the stage (the
+                          runner's kill switch).
+                        format: int64
+                        maximum: 100000000
+                        minimum: 0
+                        type: integer
+                    type: object
+                  revise:
+                    description: Revise bounds each revise or check-fix run.
+                    properties:
+                      maxTurns:
+                        description: MaxTurns the agent may take in one run of the
+                          stage.
+                        format: int32
+                        maximum: 1000
+                        minimum: 0
+                        type: integer
+                      tokenBudget:
+                        description: |-
+                          TokenBudget is the output-token budget of one run of the stage (the
+                          runner's kill switch).
+                        format: int64
+                        maximum: 100000000
+                        minimum: 0
+                        type: integer
+                    type: object
+                type: object
+              repositories:
+                description: |-
+                  Repositories are the application repositories intents build in; the
+                  first entry is also the planning repository. The schema admits up to
+                  8 — the multi-repo shape — but slice 1 builds in exactly one:
+                  intent-controller reports a Project with more as not Ready rather
+                  than the schema refusing it, so the CRD does not change when
+                  multi-repo intents land. Each entry names a different repository:
+                  the Intent records its pull requests by repository URL, and every
+                  repository's branch is the same patchy-intent/<intent>, so two
+                  entries for one repository would fan two builds into one branch. URLs
+                  are compared the way forges compare them — case-insensitively, with
+                  any .git suffix dropped.
+                items:
+                  description: |-
+                    ProjectRepository is one application repository the Project's intents may
+                    build in.
+                  properties:
+                    name:
+                      description: |-
+                        Name is the repository's short key within the Project, used in the
+                        names of the IntentRuns and Repositories created for it
+                        (<intent>-bld-r<round>-<name>-a<n>), hence a DNS label of at most 16
+                        characters (MaxRepositoryKeyLength; see the name budget).
+                      maxLength: 16
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    url:
+                      description: |-
+                        URL is the repository's https URL (https://github.com/<owner>/<name>).
+                        It must resolve to exactly one Forge, and the App must be installed on
+                        it, or the Project is not Ready. No credentials in the URL.
+                      maxLength: 256
+                      minLength: 1
+                      pattern: ^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$
+                      type: string
+                  required:
+                  - name
+                  - url
+                  type: object
+                maxItems: 8
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+                x-kubernetes-validations:
+                - message: two repositories have the same URL (compared case-insensitively,
+                    ignoring a .git suffix)
+                  rule: 'self.all(r, self.exists_one(s, (s.url.endsWith(''.git'')
+                    ? s.url.substring(0, size(s.url) - 4) : s.url).lowerAscii() ==
+                    (r.url.endsWith(''.git'') ? r.url.substring(0, size(r.url) - 4)
+                    : r.url).lowerAscii()))'
+              requireRepositoryImage:
+                default: true
+                description: |-
+                  RequireRepositoryImage, true by default, launches build and revise
+                  runs only on an accepted repository-declared runner image (the
+                  Repository's pinned, not-rejected image) and blocks the Intent with
+                  ImageRequired otherwise. False lets them fall back to the default
+                  runner image, which carries no toolchain.
+                type: boolean
+              suspend:
+                description: |-
+                  Suspend stops the Project: no new intents are discovered and no run
+                  of its intents is launched. Running Jobs finish.
+                type: boolean
+            required:
+            - approvers
+            - intentRepository
+            - repositories
+            type: object
+          status:
+            description: |-
+              ProjectStatus is the Project's observed state. Written only by
+              intent-controller's project reconciler.
+            properties:
+              activeIntents:
+                description: |-
+                  ActiveIntents counts this Project's non-terminal Intents, against
+                  spec.limits.maxActiveIntents.
+                format: int32
+                minimum: 0
+                type: integer
+              conditions:
+                description: |-
+                  Conditions of the Project. Ready is True when every repository
+                  resolves to exactly one Forge, the App is installed on the intent
+                  repository and every app repository, and the labels exist; False
+                  reasons include ForgeUnresolved, AppNotInstalled and
+                  AmbiguousIntentRepository. IntentNameConflict is True while a
+                  trigger-labelled issue cannot become an Intent because its name is
+                  held by an Intent for an issue of another repository.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                maxItems: 16
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastPolledAt:
+                description: |-
+                  LastPolledAt is when the intent repository's trigger-labelled issues
+                  were last listed.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the last spec generation acted
+                  on.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: Project names are at most 25 characters, so every Intent and IntentRun
+            name derived from them fits in a label value
+          rule: size(self.metadata.name) <= 25
+        - message: the derived trigger label patchy:<name> equals labels.approve;
+            set labels.trigger or a different labels.approve
+          rule: '!has(self.spec.labels) || has(self.spec.labels.trigger) || !has(self.spec.labels.approve)
+            || ''patchy:'' + self.metadata.name != self.spec.labels.approve.lowerAscii()'
+    served: true
+    storage: true
+    subresources:
+      status: {}

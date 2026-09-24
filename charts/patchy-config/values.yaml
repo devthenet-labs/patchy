@@ -222,3 +222,42 @@ forges: []
 #       # orgs: [acme]              # optional org allowlist
 #       # repositories: ["^acme/payments-.*$"]           # optional regexes
 #       interval: 10m
+
+# Intent-driven development: one Project per project. A Project names the
+# intent repository whose issues (carrying its trigger label) become Intents,
+# the approvers whose trigger, approval and review feedback count, the app
+# repositories the work is built in, and the spend limits. Optional — the
+# CRs do nothing unless the patchy release runs intent-controller
+# (intentController.enabled). Every repository must resolve to exactly one
+# Forge above and the App must be installed on it, or the Project reports
+# Ready=False. Writing projects is admin-only in RBAC: a Project is the power
+# to point agents at repositories. See docs/design/intent-driven-development.md.
+projects: []
+# - name: target                    # at most 25 characters; Intents are <name>-<issue>
+#   spec:
+#       intentRepository: https://github.com/acme/intents
+#       # labels:
+#       #     trigger: patchy:target  # default patchy:<name>; must differ per
+#       #                             # Project sharing an intent repository
+#       #     approve: patchy:approved                  # the default
+#       approvers:
+#           logins: [octocat]       # the only logins whose actions count
+#       repositories:               # up to 8; slice 1 builds in exactly one
+#           - name: target          # key used in run names (DNS label, at most 16)
+#             url: https://github.com/acme/target
+#       # limits:                   # the schema defaults
+#       #     maxActiveIntents: 2
+#       #     maxRevisions: 3
+#       #     maxCheckFixes: 2
+#       #     maxCostMicroUSD: 10000000                 # $10 per intent
+#       #     # Per-stage limits default to intent-controller's per-stage
+#       #     # flags and are clamped by them: a Project can lower spend,
+#       #     # never raise it past the controller's ceiling.
+#       #     plan:   { maxTurns: 40, tokenBudget: 200000 }
+#       #     build:  { maxTurns: 150, tokenBudget: 800000 }
+#       #     revise: { maxTurns: 80, tokenBudget: 400000 }
+#       # checks:
+#       #     fix: [test, lint]     # checks whose failure starts a fix round
+#       #     timeout: 30m
+#       # requireRepositoryImage: true                  # the default
+#       # suspend: false

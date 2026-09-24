@@ -28,17 +28,18 @@ const (
 	// to exactly one Forge (False reasons: NoRepository, NoForgeMatch,
 	// Ambiguous). Parked findings are re-queued when Forges change.
 	ConditionForgeResolved = "ForgeResolved"
-	// ConditionComplete marks a finished Investigation/Remediation (reason:
-	// the stage outcome), a settled EvaluationUnit (reason: Complete or the
-	// unit failure reason), or a settled Evaluation (reason: Complete/Failed).
+	// ConditionComplete marks a finished Investigation/Remediation/IntentRun
+	// (reason: the stage outcome), a settled EvaluationUnit (reason: Complete
+	// or the unit failure reason), or a settled Evaluation (reason:
+	// Complete/Failed).
 	ConditionComplete = "Complete"
 	// ConditionUnitsCreated marks an Evaluation whose child EvaluationUnits
 	// all exist.
 	ConditionUnitsCreated = "UnitsCreated"
-	// ConditionSandboxRefused marks a failed Investigation/Remediation whose
-	// repository-image Job the sandbox probe refused (its prepare init
-	// exited 78): the agent never ran, so the attempt does not count toward
-	// MaxAttempts. The collector sets it from the init's exit code alone,
+	// ConditionSandboxRefused marks a failed Investigation/Remediation/
+	// IntentRun whose repository-image Job the sandbox probe refused (its
+	// prepare init exited 78): the agent never ran, so the attempt does not
+	// count toward MaxAttempts. The collector sets it from the init's exit code alone,
 	// never from anything the pod printed, so a run cannot claim it.
 	ConditionSandboxRefused = "SandboxRefused"
 	// ConditionCommitAncestry reports, on a github Integration, whether its
@@ -58,6 +59,39 @@ const (
 	// issues-enabled Integration can read it (suspended, issues turned off,
 	// deleted), the close waits. Removed as the finding leaves review.
 	ConditionReviewClosePending = "ReviewClosePending"
+
+	// Intent conditions, all set by intent-controller. The first three
+	// explain a Blocked intent; raising the limit or fixing the image
+	// clears them and resumes it.
+
+	// ConditionBudgetExhausted marks an Intent whose spend reached its
+	// Project's maxCostMicroUSD ceiling.
+	ConditionBudgetExhausted = "BudgetExhausted"
+	// ConditionRevisionLimitReached marks an Intent whose revise rounds
+	// reached its Project's maxRevisions.
+	ConditionRevisionLimitReached = "RevisionLimitReached"
+	// ConditionImageRequired marks an Intent whose build or revise run
+	// could not launch on an accepted repository-declared runner image (none
+	// declared, rejected, or refused by runnerguard) while the Project
+	// requires one.
+	ConditionImageRequired = "ImageRequired"
+	// ConditionApprovalRejected marks an Intent whose approval was refused
+	// because the plan comment or the issue body changed after the plan was
+	// posted; a replan is requested.
+	ConditionApprovalRejected = "ApprovalRejected"
+	// ConditionChecksFailing marks an Intent whose named check failed again
+	// after a check-fix round with the same failure signature (slice 1b).
+	ConditionChecksFailing = "ChecksFailing"
+
+	// ConditionIntentNameConflict marks a Project, True while one of its
+	// trigger-labelled issues cannot become an Intent because the name
+	// <project>-<issue> is held by an Intent for an issue of another
+	// repository: a Project deleted and recreated, under the same name, on a
+	// different intent repository (spec.intentRepository is immutable, so
+	// only a recreate can do it). The message names the issue and the Intent;
+	// the issue is skipped, never silently, until that Intent is deleted or
+	// expires. Set by intent-controller's project reconciler.
+	ConditionIntentNameConflict = "IntentNameConflict"
 
 	// Per-scope rollup markers. A scope's finalizer is removed only when its
 	// condition is True and deletion is underway — remaining finalizers show
@@ -126,4 +160,17 @@ const (
 	// hit a transient error (registry unreachable). Ready=False and the
 	// reconcile backs off and retries, without re-downloading the artifact.
 	ReasonRunnerImageResolveFailed = "RunnerImageResolveFailed"
+
+	// Project Ready=False reasons, all set by intent-controller.
+
+	// ReasonForgeUnresolved: the intent repository or an app repository
+	// resolves to no Forge, or to more than one.
+	ReasonForgeUnresolved = "ForgeUnresolved"
+	// ReasonAppNotInstalled: the GitHub App is not installed on the intent
+	// repository or on an app repository.
+	ReasonAppNotInstalled = "AppNotInstalled"
+	// ReasonAmbiguousIntentRepository: another Project shares this intent
+	// repository with the same trigger label, so an issue could not be told
+	// apart between them.
+	ReasonAmbiguousIntentRepository = "AmbiguousIntentRepository"
 )

@@ -23,6 +23,13 @@
 //     one-per-unit immutable child recording each sandboxed run. Both expire
 //     on a TTL; their phases are local enums, not part of the Finding state
 //     machine.
+//   - Intent-driven development: Project is operator configuration (an
+//     intent repository, its approvers, the app repositories and the spend
+//     limits); Intent is one per intent issue, its own state machine with a
+//     local phase enum and edge table (intent_types.go, separate from
+//     transitions.go); IntentRun is its one-per-attempt immutable child
+//     recording each plan, build or revise run. intent-controller is the
+//     single writer of Intent and IntentRun, and of Project status.
 //
 // Structural-schema rules shape the types: no floats (confidence and cost are
 // validated decimal strings; rollup sums are int64 micro-USD; durations are

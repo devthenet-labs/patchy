@@ -32,6 +32,21 @@
                 }
             }
         },
+        "project": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "spec"],
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 25
+                },
+                "spec": {
+                    "$ref": "#/definitions/projectSpec"
+                }
+            }
+        },
         "integrationSpec": {
             "description": "IntegrationSpec configures one external system. Exactly the provider block\nmatching spec.provider must be set (CEL-enforced) — integrations are\nstrongly typed; the generic provider is the deliberate escape hatch, typed\naround patchy's own HTTP contract rather than a vendor's.",
             "properties": {
@@ -622,6 +637,228 @@
             "required": ["provider", "secretRef"],
             "type": "object",
             "additionalProperties": false
+        },
+        "projectSpec": {
+            "description": "ProjectSpec is operator configuration: where intents are filed, who may\nauthorise them, which repositories they build in, and what they may spend.\nThe operator writes it (through the patchy-config chart); intent-controller\nonly reads it. Writing projects is admin-only in RBAC, because a Project is\nthe power to point agents at repositories.",
+            "properties": {
+                "approvers": {
+                    "description": "Approvers is the allowlist whose actions count.",
+                    "properties": {
+                        "logins": {
+                            "description": "Logins are the GitHub logins whose trigger, approval, commands and\nreview feedback count; everyone else's are ignored (a trigger from\nanyone else closes the intent with one notice). Compared\ncase-insensitively. A Bot never counts, so the pattern admits no\n\"[bot]\" suffix. The operator owns this list; it is never derived from\nauthor_association.",
+                            "items": {
+                                "maxLength": 64,
+                                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+                                "type": "string"
+                            },
+                            "maxItems": 20,
+                            "minItems": 1,
+                            "type": "array",
+                            "x-kubernetes-list-type": "set"
+                        }
+                    },
+                    "required": ["logins"],
+                    "type": "object",
+                    "additionalProperties": false
+                },
+                "checks": {
+                    "default": {},
+                    "description": "Checks configures automatic check-fix rounds (slice 1b).",
+                    "properties": {
+                        "fix": {
+                            "description": "Fix names the checks (check-run names or commit-status contexts, e.g.\n\"test\", \"lint\") whose failure on patchy's own head starts a fix round\nwithout a human; the round records the failed check runs and commit\nstatuses it consumed, each by its own id (IntentRunInputs.CheckRunIDs\nand StatusIDs). Empty means patchy never auto-fixes: a failing check is\nreported on the intent issue and an approver can run /patchy revise.\nThe list is explicit so a flaky or unrelated check cannot burn\nbudget.",
+                            "items": {
+                                "maxLength": 128,
+                                "minLength": 1,
+                                "type": "string"
+                            },
+                            "maxItems": 32,
+                            "type": "array",
+                            "x-kubernetes-list-type": "set"
+                        },
+                        "timeout": {
+                            "default": "30m",
+                            "description": "Timeout is how long after a push the controller waits for the named\nchecks to settle before it stops watching them, between 1m and 6h. A\npointer so that an unset value is omitted and the schema default\napplies (a zero metav1.Duration would serialize as \"0s\").",
+                            "type": "string"
+                        }
+                    },
+                    "type": "object",
+                    "additionalProperties": false
+                },
+                "intentRepository": {
+                    "description": "IntentRepository is the https URL of the repository whose issues are\nthis Project's intents (e.g. https://github.com/acme/intents). Several\nProjects may share one, told apart by their trigger labels. The App\nmust be installed on it and it must resolve to exactly one Forge. It\nis immutable (CEL-enforced): an Intent is named <project>-<issue>,\nwhich leaves the repository out, so a Project moved to another intent\nrepository would find its new issues' names held by the old\nrepository's Intents. To move a project, create a new Project, under a\nnew name, on the new repository.",
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "pattern": "^https://[^/\\s@?#]+/[^/\\s?#]+/[^/\\s?#]+$",
+                    "type": "string"
+                },
+                "labels": {
+                    "default": {},
+                    "description": "Labels names the trigger and approve labels.",
+                    "properties": {
+                        "approve": {
+                            "default": "patchy:approved",
+                            "description": "Approve is the label an approver adds to approve the plan posted on\nthe intent issue — the alias of `/patchy approve`. The approval is\naccepted only from an approver, after the plan was posted, and while\nboth the plan comment and the issue body still hash to what was\nplanned.",
+                            "maxLength": 50,
+                            "minLength": 1,
+                            "type": "string"
+                        },
+                        "trigger": {
+                            "description": "Trigger is the label that both starts an intent and names this\nProject: an issue carrying it becomes the Intent <project>-<issue>,\nand an approver re-applying it asks for a replan. Empty means\n\"patchy:<project name>\" (ProjectTriggerLabel), which intent-controller\nderives because a schema default cannot see the object's name. The\nname budget keeps it within GitHub's label limit. A root-level rule\nrefuses a derived trigger that equals the approve label, so a Project\nnamed \"approved\" must set this, or a different approve label. Two\nProjects sharing an intent repository must use different triggers.\n50 characters is GitHub's own label-name limit.",
+                            "maxLength": 50,
+                            "minLength": 1,
+                            "type": "string"
+                        }
+                    },
+                    "type": "object",
+                    "additionalProperties": false
+                },
+                "limits": {
+                    "default": {},
+                    "description": "Limits bound each intent's spend.",
+                    "properties": {
+                        "build": {
+                            "description": "Build bounds each initial build run.",
+                            "properties": {
+                                "maxTurns": {
+                                    "description": "MaxTurns the agent may take in one run of the stage.",
+                                    "format": "int32",
+                                    "maximum": 1000,
+                                    "minimum": 0,
+                                    "type": "integer"
+                                },
+                                "tokenBudget": {
+                                    "description": "TokenBudget is the output-token budget of one run of the stage (the\nrunner's kill switch).",
+                                    "format": "int64",
+                                    "maximum": 100000000,
+                                    "minimum": 0,
+                                    "type": "integer"
+                                }
+                            },
+                            "type": "object",
+                            "additionalProperties": false
+                        },
+                        "maxActiveIntents": {
+                            "default": 2,
+                            "description": "MaxActiveIntents is how many of this Project's intents may be\nnon-terminal at once; a newly triggered issue past it waits.",
+                            "format": "int32",
+                            "maximum": 20,
+                            "minimum": 1,
+                            "type": "integer"
+                        },
+                        "maxCheckFixes": {
+                            "default": 2,
+                            "description": "MaxCheckFixes is how many automatic check-fix rounds one intent may\nrun, counted separately from MaxRevisions but under the same cost\nceiling (slice 1b). Zero is meaningful (no check-fix rounds), so the\nfield is a pointer: nil means the default.",
+                            "format": "int32",
+                            "maximum": 20,
+                            "minimum": 0,
+                            "type": "integer"
+                        },
+                        "maxCostMicroUSD": {
+                            "default": 10000000,
+                            "description": "MaxCostMicroUSD is the per-intent spend ceiling in micro-USD (10000000\n= $10), checked before every launch; past it the Intent goes Blocked\nwith BudgetExhausted. Advisory for build and revise runs, whose\nreported usage comes from a repository-declared image and is\nuntrusted — the per-run limits, the Job deadline and MaxRevisions are\nwhat is actually enforced there. The ceiling is capped at $1000.",
+                            "format": "int64",
+                            "maximum": 1000000000,
+                            "minimum": 1,
+                            "type": "integer"
+                        },
+                        "maxRevisions": {
+                            "default": 3,
+                            "description": "MaxRevisions is how many review-driven revise rounds one intent may\nrun; the next is refused and the Intent goes Blocked with\nRevisionLimitReached until the limit is raised. A head_moved re-run\ndoes not count. Zero is meaningful (no revise rounds), so the field\nis a pointer: nil means the default.",
+                            "format": "int32",
+                            "maximum": 20,
+                            "minimum": 0,
+                            "type": "integer"
+                        },
+                        "plan": {
+                            "description": "Plan bounds each planning run (read-only, default runner image).",
+                            "properties": {
+                                "maxTurns": {
+                                    "description": "MaxTurns the agent may take in one run of the stage.",
+                                    "format": "int32",
+                                    "maximum": 1000,
+                                    "minimum": 0,
+                                    "type": "integer"
+                                },
+                                "tokenBudget": {
+                                    "description": "TokenBudget is the output-token budget of one run of the stage (the\nrunner's kill switch).",
+                                    "format": "int64",
+                                    "maximum": 100000000,
+                                    "minimum": 0,
+                                    "type": "integer"
+                                }
+                            },
+                            "type": "object",
+                            "additionalProperties": false
+                        },
+                        "revise": {
+                            "description": "Revise bounds each revise or check-fix run.",
+                            "properties": {
+                                "maxTurns": {
+                                    "description": "MaxTurns the agent may take in one run of the stage.",
+                                    "format": "int32",
+                                    "maximum": 1000,
+                                    "minimum": 0,
+                                    "type": "integer"
+                                },
+                                "tokenBudget": {
+                                    "description": "TokenBudget is the output-token budget of one run of the stage (the\nrunner's kill switch).",
+                                    "format": "int64",
+                                    "maximum": 100000000,
+                                    "minimum": 0,
+                                    "type": "integer"
+                                }
+                            },
+                            "type": "object",
+                            "additionalProperties": false
+                        }
+                    },
+                    "type": "object",
+                    "additionalProperties": false
+                },
+                "repositories": {
+                    "description": "Repositories are the application repositories intents build in; the\nfirst entry is also the planning repository. The schema admits up to\n8 — the multi-repo shape — but slice 1 builds in exactly one:\nintent-controller reports a Project with more as not Ready rather\nthan the schema refusing it, so the CRD does not change when\nmulti-repo intents land. Each entry names a different repository:\nthe Intent records its pull requests by repository URL, and every\nrepository's branch is the same patchy-intent/<intent>, so two\nentries for one repository would fan two builds into one branch. URLs\nare compared the way forges compare them — case-insensitively, with\nany .git suffix dropped.",
+                    "items": {
+                        "description": "ProjectRepository is one application repository the Project's intents may\nbuild in.",
+                        "properties": {
+                            "name": {
+                                "description": "Name is the repository's short key within the Project, used in the\nnames of the IntentRuns and Repositories created for it\n(<intent>-bld-r<round>-<name>-a<n>), hence a DNS label of at most 16\ncharacters (MaxRepositoryKeyLength; see the name budget).",
+                                "maxLength": 16,
+                                "minLength": 1,
+                                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                                "type": "string"
+                            },
+                            "url": {
+                                "description": "URL is the repository's https URL (https://github.com/<owner>/<name>).\nIt must resolve to exactly one Forge, and the App must be installed on\nit, or the Project is not Ready. No credentials in the URL.",
+                                "maxLength": 256,
+                                "minLength": 1,
+                                "pattern": "^https://[^/\\s@?#]+/[^/\\s?#]+/[^/\\s?#]+$",
+                                "type": "string"
+                            }
+                        },
+                        "required": ["name", "url"],
+                        "type": "object",
+                        "additionalProperties": false
+                    },
+                    "maxItems": 8,
+                    "minItems": 1,
+                    "type": "array",
+                    "x-kubernetes-list-map-keys": ["name"],
+                    "x-kubernetes-list-type": "map"
+                },
+                "requireRepositoryImage": {
+                    "default": true,
+                    "description": "RequireRepositoryImage, true by default, launches build and revise\nruns only on an accepted repository-declared runner image (the\nRepository's pinned, not-rejected image) and blocks the Intent with\nImageRequired otherwise. False lets them fall back to the default\nrunner image, which carries no toolchain.",
+                    "type": "boolean"
+                },
+                "suspend": {
+                    "description": "Suspend stops the Project: no new intents are discovered and no run\nof its intents is launched. Running Jobs finish.",
+                    "type": "boolean"
+                }
+            },
+            "required": ["approvers", "intentRepository", "repositories"],
+            "type": "object",
+            "additionalProperties": false
         }
     },
     "properties": {
@@ -652,6 +889,13 @@
             "description": "Forge custom resources rendered into the release namespace",
             "items": {
                 "$ref": "#/definitions/forge"
+            }
+        },
+        "projects": {
+            "type": "array",
+            "description": "Project custom resources (intent-driven development) rendered into the release namespace",
+            "items": {
+                "$ref": "#/definitions/project"
             }
         }
     }

@@ -1,0 +1,367 @@
+// Copyright 2026 Bitwise Media Group Ltd.
+// SPDX-License-Identifier: MIT
+
+package v1alpha1
+
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// The intent name budget. Intent and IntentRun names are written into label
+// values — LabelIntent and LabelIntentRun on the Repositories
+// intent-controller creates, and the jobs package's LabelOwner and
+// LabelFinding on each agent Job and transcript — which Kubernetes caps at 63
+// characters, and a Job is mapped back to its run by that exact value. So
+// every derived name must fit in 63 characters untruncated. The longest is a
+// build run's (IntentRunName):
+//
+//	<project>-<issue>-bld-r<round>-<repository key>-a<attempt>
+//	   25    +1+ 7  + 6  +  3   +1+      16        +2+   2    = 63
+//
+// Each part is bounded where it is written: the Project's name and its
+// repositories' keys by the Project schema, the issue number by the Intent
+// schema, the round and attempt by the IntentRun schema, which also refuses
+// any IntentRun name over 63 as a backstop. The Intent name itself
+// (<project>-<issue>, CEL-enforced) is at most 33 characters, and the derived
+// trigger label patchy:<project> at most 32, inside GitHub's 50.
+const (
+	// MaxProjectNameLength bounds a Project's name.
+	MaxProjectNameLength = 25
+	// MaxRepositoryKeyLength bounds a Project repository's key.
+	MaxRepositoryKeyLength = 16
+	// MaxIntentIssueNumber bounds an intent issue's number (seven digits).
+	MaxIntentIssueNumber = 9999999
+	// MaxIntentRound bounds an IntentRun's round, and the Intent revisions
+	// and counters it is taken from (three digits).
+	MaxIntentRound = 999
+	// MaxIntentRunAttempt bounds an IntentRun's attempt (two digits).
+	MaxIntentRunAttempt = 16
+)
+
+// DefaultTriggerLabelPrefix prefixes the trigger label a Project derives from
+// its name when spec.labels.trigger is unset: patchy:<project name>.
+const DefaultTriggerLabelPrefix = "patchy:"
+
+// ProjectTriggerLabel returns the label that starts an intent for the Project
+// (and names it): spec.labels.trigger when set, else patchy:<project name>,
+// which the name budget keeps inside GitHub's 50-character label limit. The
+// schema refuses a Project whose derived trigger equals its approve label.
+func ProjectTriggerLabel(p *Project) string {
+	if p.Spec.Labels.Trigger != "" {
+		return p.Spec.Labels.Trigger
+	}
+	return DefaultTriggerLabelPrefix + p.Name
+}
+
+// Project defaults. The schema applies each one server-side (the
+// +kubebuilder:default markers below carry the same literals, and the schema
+// envtest pins the two together); they are exported for code that reads a
+// Project the API server never defaulted, such as a fake client's.
+const (
+	// DefaultApproveLabel is the label an approver adds to an intent issue
+	// to approve its current plan, when a Project names none.
+	DefaultApproveLabel = "patchy:approved"
+	// DefaultMaxActiveIntents is limits.maxActiveIntents when unset.
+	DefaultMaxActiveIntents int32 = 2
+	// DefaultMaxRevisions is limits.maxRevisions when unset.
+	DefaultMaxRevisions int32 = 3
+	// DefaultMaxCheckFixes is limits.maxCheckFixes when unset.
+	DefaultMaxCheckFixes int32 = 2
+	// DefaultMaxCostMicroUSD is limits.maxCostMicroUSD when unset ($10).
+	DefaultMaxCostMicroUSD int64 = 10000000
+)
+
+// ProjectLabels names the GitHub labels a Project reacts to on its intent
+// repository. GitHub compares label names case-insensitively, and so does
+// every check below.
+// +kubebuilder:validation:XValidation:rule="!has(self.trigger) || !has(self.approve) || self.trigger.lowerAscii() != self.approve.lowerAscii()",message="labels.trigger and labels.approve must differ"
+type ProjectLabels struct {
+	// Trigger is the label that both starts an intent and names this
+	// Project: an issue carrying it becomes the Intent <project>-<issue>,
+	// and an approver re-applying it asks for a replan. Empty means
+	// "patchy:<project name>" (ProjectTriggerLabel), which intent-controller
+	// derives because a schema default cannot see the object's name. The
+	// name budget keeps it within GitHub's label limit. A root-level rule
+	// refuses a derived trigger that equals the approve label, so a Project
+	// named "approved" must set this, or a different approve label. Two
+	// Projects sharing an intent repository must use different triggers.
+	// 50 characters is GitHub's own label-name limit.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=50
+	Trigger string `json:"trigger,omitempty"`
+	// Approve is the label an approver adds to approve the plan posted on
+	// the intent issue — the alias of `/patchy approve`. The approval is
+	// accepted only from an approver, after the plan was posted, and while
+	// both the plan comment and the issue body still hash to what was
+	// planned.
+	// +optional
+	// +kubebuilder:default="patchy:approved"
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=50
+	Approve string `json:"approve,omitempty"`
+}
+
+// ProjectApprovers is the allowlist of humans whose actions on this Project's
+// intents carry authority.
+type ProjectApprovers struct {
+	// Logins are the GitHub logins whose trigger, approval, commands and
+	// review feedback count; everyone else's are ignored (a trigger from
+	// anyone else closes the intent with one notice). Compared
+	// case-insensitively. A Bot never counts, so the pattern admits no
+	// "[bot]" suffix. The operator owns this list; it is never derived from
+	// author_association.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=set
+	// +kubebuilder:validation:items:MaxLength=64
+	// +kubebuilder:validation:items:Pattern=`^[A-Za-z0-9][A-Za-z0-9_.-]*$`
+	Logins []string `json:"logins"`
+}
+
+// ProjectRepository is one application repository the Project's intents may
+// build in.
+type ProjectRepository struct {
+	// Name is the repository's short key within the Project, used in the
+	// names of the IntentRuns and Repositories created for it
+	// (<intent>-bld-r<round>-<name>-a<n>), hence a DNS label of at most 16
+	// characters (MaxRepositoryKeyLength; see the name budget).
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=16
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+	// URL is the repository's https URL (https://github.com/<owner>/<name>).
+	// It must resolve to exactly one Forge, and the App must be installed on
+	// it, or the Project is not Ready. No credentials in the URL.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:Pattern=`^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$`
+	URL string `json:"url"`
+}
+
+// StageLimits bound one agent stage of an intent. Zero (or omitted) means the
+// controller's per-stage default; a value above the controller's per-stage
+// ceiling (its flags) is clamped to it, so a Project can lower spend but never
+// raise it past what the operator runs the controller with.
+type StageLimits struct {
+	// MaxTurns the agent may take in one run of the stage.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1000
+	MaxTurns int32 `json:"maxTurns,omitempty"`
+	// TokenBudget is the output-token budget of one run of the stage (the
+	// runner's kill switch).
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100000000
+	TokenBudget int64 `json:"tokenBudget,omitempty"`
+}
+
+// ProjectLimits bound the spend of a Project's intents before it starts.
+// The global bound is intent-controller's --max-concurrent-runs slot pool.
+type ProjectLimits struct {
+	// MaxActiveIntents is how many of this Project's intents may be
+	// non-terminal at once; a newly triggered issue past it waits.
+	// +optional
+	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=20
+	MaxActiveIntents int32 `json:"maxActiveIntents,omitempty"`
+	// MaxRevisions is how many review-driven revise rounds one intent may
+	// run; the next is refused and the Intent goes Blocked with
+	// RevisionLimitReached until the limit is raised. A head_moved re-run
+	// does not count. Zero is meaningful (no revise rounds), so the field
+	// is a pointer: nil means the default.
+	// +optional
+	// +kubebuilder:default=3
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=20
+	MaxRevisions *int32 `json:"maxRevisions,omitempty"`
+	// MaxCheckFixes is how many automatic check-fix rounds one intent may
+	// run, counted separately from MaxRevisions but under the same cost
+	// ceiling (slice 1b). Zero is meaningful (no check-fix rounds), so the
+	// field is a pointer: nil means the default.
+	// +optional
+	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=20
+	MaxCheckFixes *int32 `json:"maxCheckFixes,omitempty"`
+	// MaxCostMicroUSD is the per-intent spend ceiling in micro-USD (10000000
+	// = $10), checked before every launch; past it the Intent goes Blocked
+	// with BudgetExhausted. Advisory for build and revise runs, whose
+	// reported usage comes from a repository-declared image and is
+	// untrusted — the per-run limits, the Job deadline and MaxRevisions are
+	// what is actually enforced there. The ceiling is capped at $1000.
+	// +optional
+	// +kubebuilder:default=10000000
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1000000000
+	MaxCostMicroUSD int64 `json:"maxCostMicroUSD,omitempty"`
+	// Plan bounds each planning run (read-only, default runner image).
+	// +optional
+	Plan StageLimits `json:"plan,omitempty"`
+	// Build bounds each initial build run.
+	// +optional
+	Build StageLimits `json:"build,omitempty"`
+	// Revise bounds each revise or check-fix run.
+	// +optional
+	Revise StageLimits `json:"revise,omitempty"`
+}
+
+// ProjectChecks configures automatic fix rounds on failed CI checks of the
+// pull requests patchy opened (slice 1b).
+type ProjectChecks struct {
+	// Fix names the checks (check-run names or commit-status contexts, e.g.
+	// "test", "lint") whose failure on patchy's own head starts a fix round
+	// without a human; the round records the failed check runs and commit
+	// statuses it consumed, each by its own id (IntentRunInputs.CheckRunIDs
+	// and StatusIDs). Empty means patchy never auto-fixes: a failing check is
+	// reported on the intent issue and an approver can run /patchy revise.
+	// The list is explicit so a flaky or unrelated check cannot burn
+	// budget.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=set
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=128
+	Fix []string `json:"fix,omitempty"`
+	// Timeout is how long after a push the controller waits for the named
+	// checks to settle before it stops watching them, between 1m and 6h. A
+	// pointer so that an unset value is omitted and the schema default
+	// applies (a zero metav1.Duration would serialize as "0s").
+	// +optional
+	// +kubebuilder:default="30m"
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1m') && duration(self) <= duration('6h')",message="checks.timeout must be between 1m and 6h"
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+}
+
+// ProjectSpec is operator configuration: where intents are filed, who may
+// authorise them, which repositories they build in, and what they may spend.
+// The operator writes it (through the patchy-config chart); intent-controller
+// only reads it. Writing projects is admin-only in RBAC, because a Project is
+// the power to point agents at repositories.
+type ProjectSpec struct {
+	// IntentRepository is the https URL of the repository whose issues are
+	// this Project's intents (e.g. https://github.com/acme/intents). Several
+	// Projects may share one, told apart by their trigger labels. The App
+	// must be installed on it and it must resolve to exactly one Forge. It
+	// is immutable (CEL-enforced): an Intent is named <project>-<issue>,
+	// which leaves the repository out, so a Project moved to another intent
+	// repository would find its new issues' names held by the old
+	// repository's Intents. To move a project, create a new Project, under a
+	// new name, on the new repository.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:Pattern=`^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.intentRepository is immutable: Intent names leave the repository out, so create a new Project to use another intent repository"
+	IntentRepository string `json:"intentRepository"`
+	// Labels names the trigger and approve labels.
+	// +optional
+	// +kubebuilder:default={}
+	Labels ProjectLabels `json:"labels,omitempty"`
+	// Approvers is the allowlist whose actions count.
+	Approvers ProjectApprovers `json:"approvers"`
+	// Repositories are the application repositories intents build in; the
+	// first entry is also the planning repository. The schema admits up to
+	// 8 — the multi-repo shape — but slice 1 builds in exactly one:
+	// intent-controller reports a Project with more as not Ready rather
+	// than the schema refusing it, so the CRD does not change when
+	// multi-repo intents land. Each entry names a different repository:
+	// the Intent records its pull requests by repository URL, and every
+	// repository's branch is the same patchy-intent/<intent>, so two
+	// entries for one repository would fan two builds into one branch. URLs
+	// are compared the way forges compare them — case-insensitively, with
+	// any .git suffix dropped.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=8
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:XValidation:rule="self.all(r, self.exists_one(s, (s.url.endsWith('.git') ? s.url.substring(0, size(s.url) - 4) : s.url).lowerAscii() == (r.url.endsWith('.git') ? r.url.substring(0, size(r.url) - 4) : r.url).lowerAscii()))",message="two repositories have the same URL (compared case-insensitively, ignoring a .git suffix)"
+	Repositories []ProjectRepository `json:"repositories"`
+	// Limits bound each intent's spend.
+	// +optional
+	// +kubebuilder:default={}
+	Limits ProjectLimits `json:"limits,omitempty"`
+	// Checks configures automatic check-fix rounds (slice 1b).
+	// +optional
+	// +kubebuilder:default={}
+	Checks ProjectChecks `json:"checks,omitempty"`
+	// RequireRepositoryImage, true by default, launches build and revise
+	// runs only on an accepted repository-declared runner image (the
+	// Repository's pinned, not-rejected image) and blocks the Intent with
+	// ImageRequired otherwise. False lets them fall back to the default
+	// runner image, which carries no toolchain.
+	// +optional
+	// +kubebuilder:default=true
+	RequireRepositoryImage *bool `json:"requireRepositoryImage,omitempty"`
+	// Suspend stops the Project: no new intents are discovered and no run
+	// of its intents is launched. Running Jobs finish.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
+}
+
+// ProjectStatus is the Project's observed state. Written only by
+// intent-controller's project reconciler.
+type ProjectStatus struct {
+	// Conditions of the Project. Ready is True when every repository
+	// resolves to exactly one Forge, the App is installed on the intent
+	// repository and every app repository, and the labels exist; False
+	// reasons include ForgeUnresolved, AppNotInstalled and
+	// AmbiguousIntentRepository. IntentNameConflict is True while a
+	// trigger-labelled issue cannot become an Intent because its name is
+	// held by an Intent for an issue of another repository.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	// +kubebuilder:validation:MaxItems=16
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	// ObservedGeneration is the last spec generation acted on.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// ActiveIntents counts this Project's non-terminal Intents, against
+	// spec.limits.maxActiveIntents.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	ActiveIntents int32 `json:"activeIntents,omitempty"`
+	// LastPolledAt is when the intent repository's trigger-labelled issues
+	// were last listed.
+	// +optional
+	LastPolledAt *metav1.Time `json:"lastPolledAt,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=proj,categories=patchy
+// +kubebuilder:printcolumn:name="IntentRepo",type=string,JSONPath=`.spec.intentRepository`,description="The intent repository"
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Active",type=integer,JSONPath=`.status.activeIntents`,description="Non-terminal intents"
+// +kubebuilder:printcolumn:name="Suspend",type=boolean,JSONPath=`.spec.suspend`,priority=1
+// +kubebuilder:printcolumn:name="Polled",type=date,JSONPath=`.status.lastPolledAt`,priority=1
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// Project is operator configuration for intent-driven development: an intent
+// repository whose trigger-labelled issues become Intents, the approvers
+// whose actions count, the application repositories the work is built in,
+// and the limits on what it may spend. Its name is at most 25 characters
+// (MaxProjectNameLength): it prefixes every Intent's and IntentRun's name,
+// which are written into 63-character label values (see the name budget),
+// and Intent.spec.project holds it.
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 25",message="Project names are at most 25 characters, so every Intent and IntentRun name derived from them fits in a label value"
+// +kubebuilder:validation:XValidation:rule="!has(self.spec.labels) || has(self.spec.labels.trigger) || !has(self.spec.labels.approve) || 'patchy:' + self.metadata.name != self.spec.labels.approve.lowerAscii()",message="the derived trigger label patchy:<name> equals labels.approve; set labels.trigger or a different labels.approve"
+type Project struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec ProjectSpec `json:"spec"`
+	// +optional
+	Status ProjectStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// ProjectList contains a list of Project.
+type ProjectList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []Project `json:"items"`
+}

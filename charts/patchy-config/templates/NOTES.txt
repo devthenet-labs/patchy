@@ -1,8 +1,14 @@
-patchy-config {{ .Chart.Version }} — {{ len .Values.integrations }} Integration(s), {{ len .Values.forges }} Forge(s) rendered into {{ .Release.Namespace }}.
+patchy-config {{ .Chart.Version }} — {{ len .Values.integrations }} Integration(s), {{ len .Values.forges }} Forge(s), {{ len .Values.projects }} Project(s) rendered into {{ .Release.Namespace }}.
 {{- if and (not .Values.integrations) (not .Values.forges) }}
 
-Nothing was rendered: both `integrations` and `forges` are empty. The patchy
+{{ if .Values.projects }}No Integration or Forge was rendered{{ else }}Nothing was rendered{{ end }}: both `integrations` and `forges` are empty. The patchy
 controllers idle until at least one of each exists.
+{{- end }}
+{{- if .Values.projects }}
+
+Projects take effect only when the patchy release runs intent-controller
+(intentController.enabled), and each one's repositories must resolve to
+exactly one Forge.
 {{- end }}
 
 The CRs reference Secrets you create out of band (spec.secretRef — appID +

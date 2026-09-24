@@ -1,0 +1,31 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# The Project custom resources rendered from the `projects` values array — the
+# intent-driven development registration, one Project per project: its intent
+# repository, trigger/approve labels, approvers, app repositories and spend
+# limits. Unlike integrations and forges, projects are optional: they do
+# nothing unless the patchy release runs intent-controller
+# (intentController.enabled). Each entry's `spec` is rendered verbatim —
+# values.schema.json embeds the CRD spec schema, so it is validated
+# client-side at install and again server-side by the CRD (including the CEL
+# rules the values schema cannot express).
+#
+# A Project is the power to point agents at repositories, so writing projects
+# is admin-only in RBAC; this chart is how the operator writes them.
+{{- range .Values.projects }}
+---
+apiVersion: patchy.bitwisemedia.uk/v1alpha1
+kind: Project
+metadata:
+    name: {{ required "projects[].name is required" .name }}
+    namespace: {{ $.Release.Namespace }}
+    labels:
+        {{- include "patchy-config.labels" (dict "root" $ "name" "intent-controller") | nindent 8 }}
+    {{- with include "patchy-config.annotations" (dict "root" $) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+spec:
+    {{- required (printf "projects[%s].spec is required" .name) .spec | toYaml | nindent 4 }}
+{{- end }}

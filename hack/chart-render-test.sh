@@ -6,7 +6,9 @@
 # cannot see. Which PATCHY_* keys land in which controller's ConfigMap, which
 # Deployment mounts what, that each render-time guard fails with its message
 # and passes once its value is fixed, and that the feature-off render carries
-# none of it. Fixtures live in hack/testdata/chart-render/; yq (pinned in
+# none of it. A final section does the same for charts/patchy-config's
+# Project CRs and their values schema. Fixtures live in
+# hack/testdata/chart-render/; yq (pinned in
 # mise.toml) reads the rendered documents. Runs as part of `mise run
 # helm-lint`. Every assertion runs; the exit status is the failure count.
 set -eu
@@ -462,6 +464,92 @@ if [ "$(get default 'select(.kind == "Deployment" and .metadata.name == "patchy-
   "$(get limits 'select(.kind == "Deployment" and .metadata.name == "patchy-egress-broker") | .spec.template.metadata.annotations["checksum/config"]')" ]; then
   fail "limits: the broker's checksum/config did not change, so an upgrade would not roll it"
 fi
+
+# ---- charts/patchy-config: Projects ------------------------------------------
+# The CR chart renders .Values.projects into Project CRs verbatim; its values
+# schema embeds the CRD's spec schema (hack/codegen.sh), so a malformed entry
+# fails the render client-side rather than at the API server.
+cfgchart=charts/patchy-config
+
+# render_cfg NAME [helm args...]: render the CR chart into $out/NAME.yaml.
+render_cfg() {
+  name=$1
+  shift
+  if ! helm template patchy-config "$cfgchart" --namespace patchy "$@" >"$out/$name.yaml" 2>"$out/$name.err"; then
+    fail "$name: render failed: $(cat "$out/$name.err")"
+    : >"$out/$name.yaml"
+  fi
+}
+
+# expect_fail_cfg DESC NEEDLE [helm args...]: the CR chart's render fails and
+# its error contains NEEDLE verbatim.
+expect_fail_cfg() {
+  desc=$1
+  needle=$2
+  shift 2
+  if helm template patchy-config "$cfgchart" --namespace patchy "$@" >/dev/null 2>"$out/guard.err"; then
+    fail "config guard $desc: render succeeded, want a failure containing: $needle"
+  elif ! grep -qF -- "$needle" "$out/guard.err"; then
+    fail "config guard $desc: error lacks '$needle': $(cat "$out/guard.err")"
+  fi
+}
+
+render_cfg cfg-default
+expect cfg-default 'select(.kind == "Project") | .metadata.name' ""
+cf=$fixtures/config-projects.yaml
+render_cfg cfg-projects -f "$cf"
+expect cfg-projects 'select(.kind == "Project") | .metadata.namespace + "/" + .metadata.name' "patchy/target
+patchy/docs"
+expect cfg-projects 'select(.kind == "Project") | .apiVersion' "patchy.bitwisemedia.uk/v1alpha1
+patchy.bitwisemedia.uk/v1alpha1"
+expect cfg-projects 'select(.kind == "Project") | .metadata.labels["app.kubernetes.io/name"]' "intent-controller
+intent-controller"
+# spec is rendered verbatim: the minimal entry gains nothing client-side (the
+# CRD defaults it server-side), the full one keeps every value it set.
+expect cfg-projects 'select(.kind == "Project" and .metadata.name == "target") | .spec | keys | join(",")' \
+  "approvers,intentRepository,repositories"
+# (helm's toYaml sorts map keys, so both sides are compared key-sorted.)
+for path in intentRepository labels.trigger labels.approve approvers.logins limits checks requireRepositoryImage suspend \
+  repositories; do
+  want=$(yq eval -o=json -I=0 ".projects[1].spec.$path | sort_keys(..)" "$cf")
+  expect cfg-projects \
+    "select(.kind == \"Project\" and .metadata.name == \"docs\") | .spec.$path | sort_keys(..) | to_json(0)" "$want"
+done
+render_cfg cfg-common -f "$cf" --set-json 'commonLabels={"team":"platform"}' \
+  --set-json 'commonAnnotations={"owner":"ops"}'
+expect cfg-common 'select(.kind == "Project" and .metadata.name == "docs") | .metadata.labels.team + " " + .metadata.annotations.owner' \
+  "platform ops"
+
+# The guards: one valid project, then that project with one field broken.
+# Each case passes the whole projects list (helm replaces a list wholesale
+# rather than merging --set indices into a -f list), and the base renders, so
+# every failure below is the broken field's.
+base='{"name":"t","spec":{"intentRepository":"https://github.com/acme/intents","approvers":{"logins":["octocat"]},"repositories":[{"name":"t","url":"https://github.com/acme/t"}]}}'
+# project JQ: the base project with a yq expression applied, as compact JSON.
+project() {
+  printf '%s' "$base" | yq eval -p=json -o=json -I=0 "$1" -
+}
+render_cfg cfg-guard-base --set-json "projects=[$base]"
+expect cfg-guard-base 'select(.kind == "Project") | .metadata.name' "t"
+expect_fail_cfg "project without a name" "projects/0" \
+  --set-json "projects=[$(project 'del(.name)')]"
+render_cfg cfg-guard-name --set-json "projects=[$(project '.name = "ppppppppppppppppppppppppp"')]"
+expect cfg-guard-name 'select(.kind == "Project") | .metadata.name | length' "25"
+expect_fail_cfg "project name over 25 characters" "projects/0/name" \
+  --set-json "projects=[$(project '.name = "pppppppppppppppppppppppppp"')]"
+expect_fail_cfg "repository key over 16 characters" "projects/0/spec/repositories/0/name" \
+  --set-json "projects=[$(project '.spec.repositories[0].name = "kkkkkkkkkkkkkkkkk"')]"
+expect_fail_cfg "unknown spec field" "projects/0/spec" \
+  --set-json "projects=[$(project '.spec.bogus = true')]"
+nine=$(for i in 0 1 2 3 4 5 6 7 8; do printf '{"name": "a%s", "url": "https://github.com/acme/a%s"},' "$i" "$i"; done)
+expect_fail_cfg "nine repositories" "projects/0/spec/repositories" \
+  --set-json "projects=[$(project ".spec.repositories = [${nine%,}]")]"
+expect_fail_cfg "no approvers" "projects/0/spec/approvers/logins" \
+  --set-json "projects=[$(project '.spec.approvers.logins = []')]"
+expect_fail_cfg "credentials in a repository url" "projects/0/spec/repositories/0/url" \
+  --set-json "projects=[$(project '.spec.repositories[0].url = "https://x:token@github.com/acme/t"')]"
+expect_fail_cfg "cost ceiling past its cap" "projects/0/spec/limits/maxCostMicroUSD" \
+  --set-json "projects=[$(project '.spec.limits.maxCostMicroUSD = 1000000001')]"
 
 if [ "$failures" -gt 0 ]; then
   echo "chart-render-test: $failures assertion(s) failed" >&2

@@ -67,6 +67,27 @@ The referenced Secrets are created out of band and never owned by either chart �
 (or `token`), plus `webhookSecret` for Integrations. One GitHub Secret may serve both CRs, or you can split read and
 write identities across two GitHub Apps.
 
+### Projects (intent-driven development)
+
+The optional `projects` array renders one `Project` per project for
+[intent-driven development](../../docs/design/intent-driven-development.md): the intent repository whose
+trigger-labelled issues become Intents, the approvers whose actions count, the app repositories the work is built in,
+and the spend limits. Projects do nothing unless the patchy release runs intent-controller. Every repository must
+resolve to exactly one of the Forges above, and a Project is the power to point agents at repositories — writing
+projects is admin-only.
+
+```yaml
+projects:
+  - name: target
+    spec:
+      intentRepository: https://github.com/acme/intents
+      approvers:
+        logins: [octocat]
+      repositories:
+        - name: target
+          url: https://github.com/acme/target
+```
+
 Prefer applying the CRs yourself? Skip this chart and `kubectl apply` the same objects — the chart is a convenience, not
 a requirement.
 

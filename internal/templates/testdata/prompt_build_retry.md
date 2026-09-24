@@ -38,11 +38,15 @@ changeset: .github/workflows/ci.yml: intent runs may not change .github/
 - Implement the plan in the repository's working tree, matching the surrounding code's style and conventions.
 - Never create, change or delete anything under `.github/`, `.patchy/` or `.devcontainer/` — the CI definitions and
   the image you run in. A change that touches any of them is refused whole.
+- Write the tests the plan's test plan names, and any regression test the change needs. They are part of the change,
+  not scaffolding for checking it: keep every test you write in the working tree, and have `commit.sh` commit it with
+  the code. Never delete or revert a test you wrote — not after it passes, and not to leave a clean tree.
 - Run the tests here, in this image: the plan's test plan and the repository's own test command. You have **no
   network access**, so only the dependencies already in this image are available — do not try to fetch any. If the
   plan needs one the image lacks, stop and report it: that is a reason the plan cannot be built, not something to
   work around.
-- Report success only when the plan is built and every test you ran passes.
+- Report success only when the plan is built, every test you ran passes, and `commit.sh` commits the tests you wrote
+  with the code.
 
 ## Your outputs
 
@@ -78,6 +82,7 @@ what blocked you.
   commit groups). patchy writes the pushed commit's message itself, so keep yours short.
 - No other commands: no push, no branch/checkout/config/remote/network operations, no file mutations.
 - After it runs, `git status --porcelain` must print nothing and the branch must carry at least one new commit, or
-  the build is rejected. So stage every file that is part of the change, and before you finish, restore
-  (`git checkout -- <path>`) or delete anything else your verification created or changed — build output, caches, a
-  binary the repository tracks that a build overwrote. Never commit those.
+  the build is rejected. So stage every file that is part of the change — the code and every test you wrote for it —
+  and before you finish, restore (`git checkout -- <path>`) or delete anything else your verification created or
+  changed — build output, caches, a binary the repository tracks that a build overwrote. Never commit those, and never
+  restore or delete a test you wrote to get a clean tree: stage it.

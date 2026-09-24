@@ -289,7 +289,8 @@ func TestPreviousAttemptHints(t *testing.T) {
 		{plan, "budget_exceeded", "ran out of turns, tokens or time"},
 		{plan, "timeout", "ran out of turns, tokens or time"},
 		{plan, "runtime_error", ""},
-		{build, "commit_failed", "add it to `commit.sh` with\n`git add <path>`"},
+		{build, "commit_failed", "a test you wrote, a lockfile or checksum it updated, code it regenerated — add it to\n" +
+			"`commit.sh` with `git add <path>`"},
 		{build, "changeset_rejected", "it touched `.github/`, `.patchy/` or `.devcontainer/`"},
 		{build, "report_missing", "Write the report to `/workspace/reports/build.md`"},
 		{build, "report_invalid", "Write the report to `/workspace/reports/build.md`"},

@@ -175,6 +175,18 @@ func (s *Server) createCommit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"sha": sha})
 }
 
+// The Git refs endpoints' 422 messages, verified live (2026-09-24): every
+// refusal is a 422, told apart only by the message.
+const (
+	msgRefExists      = "Reference already exists"
+	msgRefMissing     = "Reference does not exist"
+	msgObjectMissing  = "Object does not exist"
+	msgNotFastForward = "Update is not a fast forward"
+)
+
+// createRef answers POST /repos/{o}/{r}/git/refs as GitHub does: 201, or 422
+// "Reference already exists" for an existing ref and "Object does not
+// exist" for a commit the fake has never seen.
 func (s *Server) createRef(w http.ResponseWriter, r *http.Request) {
 	var body struct{ Ref, SHA string }
 	if err := decodeJSON(r, &body); err != nil {
@@ -183,18 +195,25 @@ func (s *Server) createRef(w http.ResponseWriter, r *http.Request) {
 	}
 	ref := strings.TrimPrefix(body.Ref, "refs/")
 	s.mu.Lock()
-	_, exists := s.git.refs[ref]
-	if !exists {
-		s.git.refs[ref] = body.SHA
-	}
-	s.mu.Unlock()
-	if exists {
-		http.Error(w, `{"message":"Reference already exists"}`, http.StatusUnprocessableEntity)
+	defer s.mu.Unlock()
+	if _, exists := s.git.refs[ref]; exists {
+		unprocessable(w, msgRefExists)
 		return
 	}
+	if !s.knownCommit(body.SHA) {
+		unprocessable(w, msgObjectMissing)
+		return
+	}
+	s.git.refs[ref] = body.SHA
+	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, map[string]any{"ref": body.Ref, "object": map[string]any{"type": "commit", "sha": body.SHA}})
 }
 
+// updateRef answers PATCH /repos/{o}/{r}/git/refs/{ref} as GitHub does. A
+// forced update moves the ref anywhere known. Without force: the same SHA
+// is a no-op 200, a descendant a fast-forward 200, and anything else 422
+// "Update is not a fast forward". A missing ref is 422 "Reference does not
+// exist" and an unknown SHA 422 "Object does not exist".
 func (s *Server) updateRef(w http.ResponseWriter, r *http.Request) {
 	ref := r.PathValue("ref")
 	var body struct {
@@ -206,14 +225,71 @@ func (s *Server) updateRef(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	_, exists := s.git.refs[ref]
-	if exists {
-		s.git.refs[ref] = body.SHA
-	}
-	s.mu.Unlock()
-	if !exists {
-		http.NotFound(w, r)
+	defer s.mu.Unlock()
+	current, exists := s.git.refs[ref]
+	switch {
+	case !exists:
+		unprocessable(w, msgRefMissing)
+		return
+	case !s.knownCommit(body.SHA):
+		unprocessable(w, msgObjectMissing)
+		return
+	case !body.Force && body.SHA != current && !s.descends(body.SHA, current):
+		unprocessable(w, msgNotFastForward)
 		return
 	}
+	s.git.refs[ref] = body.SHA
 	writeJSON(w, map[string]any{"ref": "refs/" + ref, "object": map[string]any{"type": "commit", "sha": body.SHA}})
+}
+
+// knownCommit reports whether sha names a commit the fake knows: the fixed
+// base, a pushed commit, a ref's target, or one named in SetParents.
+// Callers hold s.mu.
+func (s *Server) knownCommit(sha string) bool {
+	if sha == BaseSHA {
+		return true
+	}
+	if _, ok := s.git.commits[sha]; ok {
+		return true
+	}
+	if _, ok := s.parents[sha]; ok {
+		return true
+	}
+	for _, target := range s.git.refs {
+		if target == sha {
+			return true
+		}
+	}
+	for _, parent := range s.parents {
+		if parent == sha {
+			return true
+		}
+	}
+	return false
+}
+
+// descends reports whether ancestor is in descendant's history, following
+// pushed commits' parents and the SetParents ancestry. Callers hold s.mu.
+func (s *Server) descends(descendant, ancestor string) bool {
+	seen := map[string]bool{}
+	queue := []string{descendant}
+	for len(queue) > 0 {
+		c := queue[0]
+		queue = queue[1:]
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		parents := append([]string{}, s.git.commits[c].Parents...)
+		if p, ok := s.parents[c]; ok {
+			parents = append(parents, p)
+		}
+		for _, p := range parents {
+			if p == ancestor {
+				return true
+			}
+			queue = append(queue, p)
+		}
+	}
+	return false
 }

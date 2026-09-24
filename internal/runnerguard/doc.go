@@ -11,9 +11,10 @@
 // only an image source-controller actually pinned — a rejected declaration
 // carries no image, so its finding runs the default one. Guard.PinFor makes
 // the same decision for a launch that requires the image (an intent's build
-// or revise run), where no image to copy is a refusal, not a fallback, and
-// where an intent revived from Failed — a new plan and a new approval — is
-// not revived work in Pin's sense (its caller passes revived false). While a
+// or revise run), where no image to copy is a refusal, not a fallback; its
+// revived is the Finding approval-revival notion, and intent callers pass
+// false (an intent revived by its trigger label is a new approved build, not
+// a Finding revival). While a
 // repository-image Job has not finished, whether its pod is still within the
 // pull grace, stuck on a deterministic pull failure, or worth another look
 // (Pending): a pod in ImagePullBackOff never mutates its Job, so the Job watch

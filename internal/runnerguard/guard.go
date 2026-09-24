@@ -80,14 +80,16 @@ const (
 // SkipRevivedWork, checked in Pin's order) and leaves spec untouched, so the
 // caller blocks instead of launching.
 //
-// revived is the caller's own record that a human brought the work back
-// from a terminal state on the understanding that the repository's image
-// may be what failed it — what Revived reads off a Finding, whose revival
-// moves it to the default image. A launch that requires the image has
-// nowhere to move, so revived refuses it with SkipRevivedWork, and nothing
-// the caller can re-evaluate clears that: the refusal holds until the
-// record does. An intent revived from Failed is therefore not revived here,
-// and intent-controller passes false for it: re-applying the trigger label
+// revived is the Finding approval-revival notion, exactly what Revived
+// reads off a Finding: a human brought it back from HandedOff (approve) or
+// Failed (retry) on the understanding that the repository's image may be
+// what sent it there, so from then on it runs on the default image. A
+// launch that requires the image has no default to move to, so revived
+// refuses it with SkipRevivedWork, and nothing the caller can re-evaluate
+// clears that: the refusal holds until the record does.
+//
+// Intent callers pass false, always. An intent revived by its trigger label
+// is not a Finding revival but a new approved build: re-applying the label
 // takes a new input snapshot, a new plan and a new approval — a fresh human
 // decision, whose build runs in whatever image the Repository then pins,
 // fixed or not — and SkipRevivedWork is not among the design's Blocked

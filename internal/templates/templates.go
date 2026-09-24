@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"text/template"
+	"unicode"
+	"unicode/utf8"
 )
 
 //go:embed *.md.tmpl
@@ -16,8 +18,12 @@ var files embed.FS
 // tmpl parses every embedded template once; a parse failure is a programmer
 // error caught by the package's golden tests, so panicking at init is right.
 var tmpl = template.Must(template.New("").
-	Funcs(template.FuncMap{"join": strings.Join, "code": code, "fence": fence}).
+	Funcs(template.FuncMap{"join": strings.Join, "code": code, "fence": fence, "chomp": chomp}).
 	ParseFS(files, "*.md.tmpl"))
+
+// chomp drops trailing line breaks, so a block ending in one (fence) can sit
+// flush against the template text that follows it.
+func chomp(s string) string { return strings.TrimRight(s, "\r\n") }
 
 func render(name string, data any) (string, error) {
 	var b strings.Builder
@@ -53,6 +59,9 @@ type InvestigatePrompt struct {
 	// Calibration is how earlier estimates compared to reality; nil omits the
 	// section (a cold start has nothing honest to say).
 	Calibration *Calibration
+	// PreviousAttempt is the failed investigation this one retries; nil
+	// omits the section.
+	PreviousAttempt *PreviousAttempt
 }
 
 // Calibration reports how previous remediations compared to what the
@@ -94,8 +103,89 @@ func skewPercent(predicted, actual int64) int64 {
 	return (actual - predicted) * 100 / predicted
 }
 
+// PreviousAttempt is the failed run a retry follows, rendered into the stage
+// prompt so the agent is told what went wrong rather than handed the inputs
+// that already failed once. It is copied from the retry's own immutable spec
+// and carried to the pod as JSON, like Calibration — the runner has no
+// Kubernetes access.
+//
+// Outcome and Detail are UNTRUSTED: a run's detail can quote output from the
+// repository or the image it ran on (a git status listing, a stderr tail).
+// The prompt renders them bounded (PreviousOutcomeMaxBytes,
+// PreviousDetailMaxBytes), stripped of control characters, with the detail in
+// a fence no line of it can close, under a statement that it is data, not
+// instructions.
+type PreviousAttempt struct {
+	// Attempt is the failed run's ordinal.
+	Attempt int32 `json:"attempt"`
+	// Outcome is its stage outcome (commit_failed, timeout, ...), or
+	// pull_request_closed when its pull request was closed unmerged.
+	Outcome string `json:"outcome"`
+	// Detail explains the outcome.
+	Detail string `json:"detail,omitempty"`
+}
+
+// Bounds on what a prompt quotes from a previous attempt, in bytes. A detail
+// cut short is marked with previousDetailCut after the bound.
+const (
+	PreviousOutcomeMaxBytes = 64
+	PreviousDetailMaxBytes  = 4096
+	previousDetailCut       = "\n[truncated]"
+)
+
+// quotable returns p as a prompt may quote it: the outcome on one line and
+// the detail with its line breaks normalized, both free of control and
+// format characters, valid UTF-8, and cut to their byte bounds on a rune
+// boundary. Nil stays nil.
+func (p *PreviousAttempt) quotable() *PreviousAttempt {
+	if p == nil {
+		return nil
+	}
+	detail := plainText(p.Detail)
+	if len(detail) > PreviousDetailMaxBytes {
+		detail = cutRunes(detail, PreviousDetailMaxBytes) + previousDetailCut
+	}
+	return &PreviousAttempt{
+		Attempt: p.Attempt,
+		Outcome: cutRunes(strings.Join(strings.Fields(plainText(p.Outcome)), " "), PreviousOutcomeMaxBytes),
+		Detail:  strings.TrimRight(detail, "\n"),
+	}
+}
+
+// plainText makes untrusted text safe to quote in a prompt: invalid UTF-8
+// replaced, CRLF and lone CR turned into LF, and every other control or
+// format character dropped except tab — a NUL cannot even be passed as a
+// command-line argument, and terminal escapes or bidi overrides have no
+// business in a prompt.
+func plainText(s string) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	s = strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(s)
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return r
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r):
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// cutRunes caps valid UTF-8 s at limit bytes without splitting a rune.
+func cutRunes(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
 // RenderInvestigatePrompt renders the investigation prompt.
 func RenderInvestigatePrompt(p InvestigatePrompt) (string, error) {
+	p.PreviousAttempt = p.PreviousAttempt.quotable()
 	return render("prompt_investigate.md.tmpl", p)
 }
 
@@ -105,9 +195,13 @@ type RemediatePrompt struct {
 	InvestigationPath string
 	ReportPath        string
 	CommitScriptPath  string
+	// PreviousAttempt is the failed remediation this one retries; nil omits
+	// the section.
+	PreviousAttempt *PreviousAttempt
 }
 
 // RenderRemediatePrompt renders the remediation prompt.
 func RenderRemediatePrompt(p RemediatePrompt) (string, error) {
+	p.PreviousAttempt = p.PreviousAttempt.quotable()
 	return render("prompt_remediate.md.tmpl", p)
 }

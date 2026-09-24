@@ -203,6 +203,36 @@ func TestGoldens(t *testing.T) {
 				CommitScriptPath:  "/workspace/commit.sh",
 			})
 		}},
+		// A retry after the live failure that motivated the section: the
+		// first attempt's go build overwrote a binary the repository tracks,
+		// so commit.sh left the tree dirty.
+		{"prompt_remediate_retry.md", func() (string, error) {
+			return RenderRemediatePrompt(RemediatePrompt{
+				IssuePath:         "/workspace/input/issue.md",
+				InvestigationPath: "/workspace/input/investigation.md",
+				ReportPath:        "/workspace/reports/remediation.md",
+				CommitScriptPath:  "/workspace/commit.sh",
+				PreviousAttempt: &PreviousAttempt{
+					Attempt: 1, Outcome: "commit_failed",
+					Detail: "working tree not clean after commit.sh:\nM patchy-target",
+				},
+			})
+		}},
+		{"prompt_investigate_retry.md", func() (string, error) {
+			return RenderInvestigatePrompt(InvestigatePrompt{
+				IssuePath:         "/workspace/input/issue.md",
+				ReportPath:        "/workspace/reports/investigation.md",
+				AllowedModels:     []string{"claude-sonnet-5", "claude-opus-5"},
+				AutoMaxTurns:      80,
+				AutoTokenBudget:   400000,
+				ManualMaxTurns:    240,
+				ManualTokenBudget: 1200000,
+				PreviousAttempt: &PreviousAttempt{
+					Attempt: 1, Outcome: "report_invalid",
+					Detail: "frontmatter: yaml: line 3: mapping values are not allowed in this context",
+				},
+			})
+		}},
 		// A cloud finding's description, carrying every optional block, so the
 		// goldens pin the whole shape rather than the happy subset.
 		{"finding_gcp_scc.md", func() (string, error) { return RenderSCCDescription(testSCCFinding()) }},

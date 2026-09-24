@@ -26,7 +26,10 @@ matters when debugging a Job spec or running the runtime standalone.
 ### Intent phases
 
 An intent run (the intent-driven development work kind) uses two more phases, over the same Job seams: `PATCHY_FINDING`
-carries the IntentRun's name, `input/issue.md` the intent snapshot, and `input/investigation.md` the approved plan.
+carries the IntentRun's name, `input/issue.md` the intent snapshot for a plan, and `input/investigation.md` the approved
+plan for a build. A build's `input/issue.md` must be empty, and a build handed a request is refused with a fatal event
+before any agent runs: the approved plan, which the approver read verbatim, is the build's whole contract, while the
+request was seen only as GitHub rendered it.
 
 - **`plan`** reads the request and the tree read-only and writes `reports/plan.md`, emitted as a `plan` event. It runs
   on the investigate stage's configuration — `PATCHY_INVESTIGATE_HARNESS`/`_MODEL`/`_TIMEOUT`, and
@@ -53,6 +56,13 @@ control character other than tab, line feed or a CRLF's carriage return, U+2028/
 invisibly or reorders text (a format character such as a zero-width space or a bidi control, a tag character, a
 variation selector, or another default-ignorable code point). The detail names the first one's code point, line and
 column. A human approves the plan by reading every byte of it, so nothing in it may be hidden.
+
+The two reports are also held to a layout rule, since a plan is read in a code block that does not wrap and a build
+report becomes a pull-request description: no gap of more than 16 columns of spaces and tabs before more text on a line
+(a tab counts as 8), no indentation past 64 columns, and no more than 4 combining marks in a row; the detail names where
+the run starts. A report is at most 56 KiB, its frontmatter is plain YAML (one document, no explicit tag), and a plan
+holds no run of more than 16 backticks and no new dependency over 200 bytes, so that every plan accepted here fits in
+the GitHub comment that shows it for approval. The build input is held to the visible-text rule only.
 
 ## Stage configuration
 

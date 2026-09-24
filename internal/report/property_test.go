@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/rand"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -35,6 +36,23 @@ var textAlphabet = []string{
 	"*", "&", "!", "%", "é", "漢", "🙂", "---", "~", "?", "\u00a0", "\u3000",
 }
 
+// padRune reports a rune checkLayout counts in a gap: a tab or a space
+// separator.
+func padRune(r rune) bool { return r == '\t' || unicode.Is(unicode.Zs, r) }
+
+// writeElem appends e to b, first putting an "x" between them when b ends
+// and e starts with whitespace, or both with a backtick: a valid report
+// keeps gaps and backtick runs short (checkLayout, PlanMaxBacktickRun), so
+// the generators never join one longer than a single element's.
+func writeElem(b *strings.Builder, e string) {
+	last, _ := utf8.DecodeLastRuneInString(b.String())
+	first, _ := utf8.DecodeRuneInString(e)
+	if b.Len() > 0 && (padRune(last) && padRune(first) || last == '`' && first == '`') {
+		b.WriteString("x")
+	}
+	b.WriteString(e)
+}
+
 // genLine builds a valid one-line value of at most maxChars characters:
 // trimmed, non-empty, free of control and format characters.
 func genLine(r *rand.Rand, maxChars int) string {
@@ -44,10 +62,24 @@ func genLine(r *rand.Rand, maxChars int) string {
 	}
 	var b strings.Builder
 	for range n {
-		b.WriteString(textAlphabet[r.Intn(len(textAlphabet))])
+		writeElem(&b, textAlphabet[r.Intn(len(textAlphabet))])
 	}
 	s := strings.TrimSpace(b.String())
 	for utf8.RuneCountInString(s) > maxChars {
+		_, size := utf8.DecodeLastRuneInString(s)
+		s = strings.TrimSpace(s[:len(s)-size])
+	}
+	if s == "" {
+		s = "x"
+	}
+	return s
+}
+
+// genDependency builds a valid new dependency: a one-line value of at most
+// ItemMaxChars characters cut, on a rune boundary, to DependencyMaxBytes.
+func genDependency(r *rand.Rand) string {
+	s := genLine(r, ItemMaxChars)
+	for len(s) > DependencyMaxBytes {
 		_, size := utf8.DecodeLastRuneInString(s)
 		s = strings.TrimSpace(s[:len(s)-size])
 	}
@@ -68,23 +100,26 @@ func genBody(r *rand.Rand) string {
 	}
 	var b strings.Builder
 	for range n {
-		b.WriteString(alphabet[r.Intn(len(alphabet))])
+		writeElem(&b, alphabet[r.Intn(len(alphabet))])
 	}
 	return strings.TrimLeft(b.String(), "\r\n")
 }
 
-// genList builds up to max valid one-line items.
-func genList(r *rand.Rand, max int) []string {
+// genList builds up to max valid items, each built by item.
+func genList(r *rand.Rand, max int, item func(*rand.Rand) string) []string {
 	n := r.Intn(max + 1)
 	if n == 0 && r.Intn(2) == 0 {
 		return nil
 	}
 	out := make([]string, n)
 	for i := range out {
-		out[i] = genLine(r, ItemMaxChars)
+		out[i] = item(r)
 	}
 	return out
 }
+
+// genItem builds a valid one-line list item.
+func genItem(r *rand.Rand) string { return genLine(r, ItemMaxChars) }
 
 // genPlan builds a random valid plan.
 func genPlan(r *rand.Rand) *Plan {
@@ -96,8 +131,8 @@ func genPlan(r *rand.Rand) *Plan {
 	return &Plan{
 		Summary:              genLine(r, SummaryMaxChars),
 		Repositories:         repos,
-		NewDependencies:      genList(r, PlanMaxNewDependencies),
-		Questions:            genList(r, PlanMaxQuestions),
+		NewDependencies:      genList(r, PlanMaxNewDependencies, genDependency),
+		Questions:            genList(r, PlanMaxQuestions, genItem),
 		Confidence:           &confidence,
 		EstimatedMaxTurns:    1 + r.Intn(1000),
 		EstimatedTokenBudget: 1 + r.Intn(10_000_000),
@@ -114,7 +149,7 @@ func genBuild(r *rand.Rand) *Build {
 		Success: &success,
 		Summary: genLine(r, SummaryMaxChars),
 		Tests:   &BuildTests{Ran: &ran, Passed: &passed},
-		Notes:   genList(r, BuildMaxNotes),
+		Notes:   genList(r, BuildMaxNotes, genItem),
 		Body:    genBody(r),
 	}
 	if ran || r.Intn(2) == 0 {
@@ -142,7 +177,12 @@ func render(t *testing.T, frontmatter any, body string) []byte {
 // carriage return no report may hold. The document it fits keeps 8 bytes to
 // spare, room for any one character a property inserts.
 func fitBody(frontmatterBytes int, body string) string {
-	room := ReportMaxBytes - frontmatterBytes - len("---\n---\n")
+	return fitBodySpare(frontmatterBytes, len("---\n---\n"), body)
+}
+
+// fitBodySpare is fitBody keeping spare bytes to spare.
+func fitBodySpare(frontmatterBytes, spare int, body string) string {
+	room := ReportMaxBytes - frontmatterBytes - spare
 	if len(body) <= room {
 		return body
 	}
@@ -375,20 +415,18 @@ func planFrontmatterWithinBounds(p *Plan) bool {
 			return false
 		}
 	}
-	ok := func(s string, maxChars int) bool {
-		return s != "" && s == strings.TrimSpace(s) && utf8.RuneCountInString(s) <= maxChars &&
-			!strings.ContainsFunc(s, forbiddenInLine)
-	}
+	ok := func(s string, maxChars int) bool { return s != "" && boundedLine(s, maxChars) }
 	all := func(items []string, maxItems, maxChars int) bool {
 		return len(items) <= maxItems && !slices.ContainsFunc(items, func(s string) bool { return !ok(s, maxChars) })
 	}
 	return ok(p.Summary, SummaryMaxChars) &&
 		len(p.Repositories) >= 1 && len(p.Repositories) <= PlanMaxRepositories &&
 		!slices.ContainsFunc(p.Repositories, func(u string) bool {
-			return len(u) > RepositoryURLMaxBytes || !repositoryURL.MatchString(u) ||
+			return len(u) > RepositoryURLMaxBytes || !utf8.ValidString(u) || !repositoryURL.MatchString(u) ||
 				strings.ContainsFunc(u, forbiddenInLine)
 		}) &&
 		all(p.NewDependencies, PlanMaxNewDependencies, ItemMaxChars) && all(p.Questions, PlanMaxQuestions, ItemMaxChars) &&
+		!slices.ContainsFunc(p.NewDependencies, func(d string) bool { return len(d) > DependencyMaxBytes }) &&
 		p.Confidence != nil && *p.Confidence >= 0 && *p.Confidence <= 1 &&
 		p.EstimatedMaxTurns >= 1 && p.EstimatedTokenBudget >= 1
 }
@@ -423,9 +461,9 @@ func damagedPlan(r *rand.Rand) []byte {
 }
 
 // TestPlanParseBoundedProperty: however a plan is damaged, parsing it never
-// panics, never accepts a document past the size bound or holding a byte a
-// reader cannot see, and whatever it does accept honours every bound of the
-// contract.
+// panics, never accepts a document past the size bound, holding a byte a
+// reader cannot see or laying text out of view, and whatever it does
+// accept honours every bound of the contract.
 func TestPlanParseBoundedProperty(t *testing.T) {
 	cfg := quickConfig(propertySeed+3, func(args []reflect.Value, r *rand.Rand) {
 		args[0] = reflect.ValueOf(mutate(r, damagedPlan(r)))
@@ -435,7 +473,10 @@ func TestPlanParseBoundedProperty(t *testing.T) {
 		if err != nil {
 			return true
 		}
-		return len(doc) <= ReportMaxBytes && utf8.Valid(doc) && visibleDocument(doc) && planWithinBounds(p)
+		_, _, _, outOfView := firstOutOfView(doc)
+		_, _, _, longRun := firstLongBacktickRun(doc)
+		return len(doc) <= ReportMaxBytes && utf8.Valid(doc) && visibleDocument(doc) && !outOfView && !longRun &&
+			planWithinBounds(p)
 	}
 	if err := quick.Check(bounded, cfg); err != nil {
 		t.Error(err)
@@ -478,17 +519,21 @@ func TestBuildParseBoundedProperty(t *testing.T) {
 		if err != nil {
 			return true
 		}
-		return len(doc) <= ReportMaxBytes && utf8.Valid(doc) && visibleDocument(doc) && buildWithinBounds(b)
+		_, _, _, outOfView := firstOutOfView(doc)
+		return len(doc) <= ReportMaxBytes && utf8.Valid(doc) && visibleDocument(doc) && !outOfView &&
+			buildWithinBounds(b)
 	}
 	if err := quick.Check(bounded, cfg); err != nil {
 		t.Error(err)
 	}
 }
 
-// boundedLine reports whether s is a trimmed line of at most maxChars
-// characters with no rune forbiddenInLine; empty passes.
+// boundedLine reports whether s is a trimmed line of valid UTF-8, of at
+// most maxChars characters, with no rune forbiddenInLine; empty passes. The
+// UTF-8 check is its own: ranged over, an invalid byte reads as U+FFFD,
+// which forbiddenInLine does not name.
 func boundedLine(s string, maxChars int) bool {
-	return s == strings.TrimSpace(s) && utf8.RuneCountInString(s) <= maxChars &&
+	return utf8.ValidString(s) && s == strings.TrimSpace(s) && utf8.RuneCountInString(s) <= maxChars &&
 		!strings.ContainsFunc(s, forbiddenInLine)
 }
 
@@ -588,25 +633,31 @@ func insertHidden(r *rand.Rand, doc []byte, s string, lone bool) []byte {
 
 // planDocument renders a random valid plan as the plan stage writes one,
 // within the document bound with room to spare.
-func planDocument(r *rand.Rand) []byte {
+func planDocument(r *rand.Rand) []byte { return planDocumentSpare(r, len("---\n---\n")) }
+
+// planDocumentSpare is planDocument keeping spare bytes to spare.
+func planDocumentSpare(r *rand.Rand, spare int) []byte {
 	p := genPlan(r)
 	raw, err := yaml.Marshal(p)
 	if err != nil {
 		panic(err)
 	}
 	head := "---\n" + string(raw) + "---\n"
-	return []byte(head + fitBody(len(head), p.Body))
+	return []byte(head + fitBodySpare(len(head), spare, p.Body))
 }
 
 // buildDocument is planDocument for a build report.
-func buildDocument(r *rand.Rand) []byte {
+func buildDocument(r *rand.Rand) []byte { return buildDocumentSpare(r, len("---\n---\n")) }
+
+// buildDocumentSpare is planDocumentSpare for a build report.
+func buildDocumentSpare(r *rand.Rand, spare int) []byte {
 	b := genBuild(r)
 	raw, err := yaml.Marshal(b)
 	if err != nil {
 		panic(err)
 	}
 	head := "---\n" + string(raw) + "---\n"
-	return []byte(head + fitBody(len(head), b.Body))
+	return []byte(head + fitBodySpare(len(head), spare, b.Body))
 }
 
 // TestHiddenCharacterRefusedProperty: whatever a document every parser
@@ -662,6 +713,225 @@ func TestHiddenCharacterRefusedProperty(t *testing.T) {
 			if err := quick.Check(refused, cfg); err != nil {
 				t.Error(err)
 			}
+		})
+	}
+}
+
+// gapRun, markRun and tickRun match, in one line, a run of spaces and
+// tabs, of combining marks and of backticks: the properties' own statement
+// of the runs the layout rules bound, by regular expression where the
+// parsers scan rune by rune.
+var (
+	gapRun  = regexp.MustCompile(`[\t\p{Zs}]+`)
+	markRun = regexp.MustCompile(`[\p{Mn}\p{Me}]+`)
+	tickRun = regexp.MustCompile("`+")
+)
+
+// gapColumns is the width the layout rule gives a run of spaces and tabs:
+// a space one column, a tab TabColumns, any other space separator two.
+func gapColumns(run string) int {
+	n := 0
+	for _, r := range run {
+		switch r {
+		case ' ':
+			n++
+		case '\t':
+			n += TabColumns
+		default:
+			n += 2
+		}
+	}
+	return n
+}
+
+// firstOutOfView is the properties' own scan of a document for the first
+// run the layout rule refuses: a gap of spaces and tabs with more text
+// after it on its line, wider than PadMaxColumns, or than IndentMaxColumns
+// when it indents the line; or more than CombiningMaxMarks combining marks
+// in a row. It returns where the run starts (its line, and its column in
+// characters, both 1-based) and whether it is a gap.
+func firstOutOfView(doc []byte) (line, column int, gap, found bool) {
+	for i, l := range strings.Split(string(doc), "\n") {
+		l = strings.TrimSuffix(l, "\r")
+		at := -1
+		for _, m := range gapRun.FindAllStringIndex(l, -1) {
+			limit := PadMaxColumns
+			if m[0] == 0 {
+				limit = IndentMaxColumns
+			}
+			if m[1] < len(l) && gapColumns(l[m[0]:m[1]]) > limit {
+				at, gap = m[0], true
+				break
+			}
+		}
+		for _, m := range markRun.FindAllStringIndex(l, -1) {
+			if utf8.RuneCountInString(l[m[0]:m[1]]) > CombiningMaxMarks && (at < 0 || m[0] < at) {
+				at, gap = m[0], false
+				break
+			}
+		}
+		if at >= 0 {
+			return i + 1, utf8.RuneCountInString(l[:at]) + 1, gap, true
+		}
+	}
+	return 0, 0, false, false
+}
+
+// firstLongBacktickRun finds a document's first run of more than
+// PlanMaxBacktickRun backticks: its line, column and length.
+func firstLongBacktickRun(doc []byte) (line, column, run int, found bool) {
+	for i, l := range strings.Split(string(doc), "\n") {
+		for _, m := range tickRun.FindAllStringIndex(l, -1) {
+			if m[1]-m[0] > PlanMaxBacktickRun {
+				return i + 1, utf8.RuneCountInString(l[:m[0]]) + 1, m[1] - m[0], true
+			}
+		}
+	}
+	return 0, 0, 0, false
+}
+
+// genOutOfView builds a run for the layout property to insert, as often
+// within its bound as past it: a gap of spaces and tabs (and other space
+// separators) with a visible "x" after it, which indents the line when it
+// lands at a line's start; a stack of combining marks; and, when backticks
+// is set, a run of backticks. Built from code points, so that no editor
+// renders one away.
+func genOutOfView(r *rand.Rand, backticks bool) string {
+	kind := r.Intn(3)
+	if backticks {
+		kind = r.Intn(4)
+	}
+	switch kind {
+	case 1:
+		marks := []rune{0x0300, 0x0301, 0x0308, 0x0336, 0x0489, 0x05b0, 0x20dd, 0x20e3}
+		out := make([]rune, 1+r.Intn(3*CombiningMaxMarks))
+		for i := range out {
+			out[i] = marks[r.Intn(len(marks))]
+		}
+		return string(out)
+	case 3:
+		return strings.Repeat("`", 1+r.Intn(3*PlanMaxBacktickRun))
+	}
+	pads := []string{" ", " ", " ", "\t", string(rune(0x00a0)), string(rune(0x2003)), string(rune(0x3000))}
+	width := 1 + r.Intn(2*IndentMaxColumns+PadMaxColumns)
+	var b strings.Builder
+	for w := 0; w < width; {
+		p := pads[r.Intn(len(pads))]
+		b.WriteString(p)
+		w += gapColumns(p)
+	}
+	return b.String() + "x"
+}
+
+// insertVisible puts s into doc at a random rune boundary that does not
+// split a CRLF.
+func insertVisible(r *rand.Rand, doc []byte, s string) []byte {
+	var at []int
+	for i := 0; i <= len(doc); i++ {
+		if i < len(doc) && !utf8.RuneStart(doc[i]) || i > 0 && doc[i-1] == '\r' {
+			continue
+		}
+		at = append(at, i)
+	}
+	i := at[r.Intn(len(at))]
+	return slices.Concat(doc[:i], []byte(s), doc[i:])
+}
+
+// layoutRefusal reports an error as one the layout rules gave.
+func layoutRefusal(err error) bool {
+	return strings.Contains(err.Error(), "out of the reader's view") ||
+		strings.Contains(err.Error(), "combining marks in a row") || strings.Contains(err.Error(), "backticks, over")
+}
+
+// TestLayoutRefusedProperty: whatever a document the parser accepts holds,
+// inserting a run the layout rule bounds — a gap of whitespace before more
+// text, an indentation, a stack of combining marks, and in a plan a run of
+// backticks — anywhere, is refused exactly when the properties' own scan
+// finds a run past its bound, naming where that run starts; within every
+// bound, the layout rule refuses nothing. A build report may hold a run of
+// backticks of any length: only the plan is fenced for its approver.
+func TestLayoutRefusedProperty(t *testing.T) {
+	const spare = 1 << 10 // room for any run genOutOfView builds
+	parsers := []struct {
+		name      string
+		seed      int64
+		gen       func(*rand.Rand, int) []byte
+		parse     func([]byte) error
+		backticks bool
+	}{
+		{"ParsePlan", propertySeed + 9, planDocumentSpare,
+			func(doc []byte) error { _, err := ParsePlan(doc); return err }, true},
+		{"ParseBuild", propertySeed + 10, buildDocumentSpare,
+			func(doc []byte) error { _, err := ParseBuild(doc); return err }, false},
+	}
+	for _, p := range parsers {
+		t.Run(p.name, func(t *testing.T) {
+			cfg := quickConfig(p.seed, func(args []reflect.Value, r *rand.Rand) {
+				doc := p.gen(r, spare)
+				args[0] = reflect.ValueOf(doc)
+				args[1] = reflect.ValueOf(insertVisible(r, doc, genOutOfView(r, r.Intn(2) == 0)))
+			})
+			// seen counts the refusals the property checked, by what they
+			// name, so that a generator drifting off the bounds cannot leave
+			// it checking nothing.
+			seen := map[string]int{}
+			refused := func(doc, damaged []byte) bool {
+				if err := p.parse(doc); err != nil {
+					t.Logf("%s(valid) error = %v", p.name, err)
+					return false
+				}
+				err := p.parse(damaged)
+				if line, column, gap, found := firstOutOfView(damaged); found {
+					want, what := fmt.Sprintf("line %d, column %d: ", line, column), "combining marks in a row"
+					if gap {
+						what = fmt.Sprintf("(a tab counts as %d)", TabColumns)
+					}
+					if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), what) {
+						t.Logf("%s(damaged) error = %v, want it to name %q and %q", p.name, err, want, what)
+						return false
+					}
+					switch {
+					case !gap:
+						seen["marks"]++
+					case strings.Contains(err.Error(), "is indented"):
+						seen["indent"]++
+					default:
+						seen["gap"]++
+					}
+					return true
+				}
+				if line, column, run, found := firstLongBacktickRun(damaged); found && p.backticks {
+					want := fmt.Sprintf("line %d, column %d: a run of %d backticks, over %d", line, column, run,
+						PlanMaxBacktickRun)
+					if err == nil || !strings.Contains(err.Error(), want) {
+						t.Logf("%s(damaged) error = %v, want it to name %q", p.name, err, want)
+						return false
+					}
+					seen["backticks"]++
+					return true
+				}
+				// Nothing past a bound: the insertion may have broken the
+				// frontmatter's YAML, but the layout rule refuses nothing.
+				if err != nil && layoutRefusal(err) {
+					t.Logf("%s(damaged) error = %v, want no layout refusal", p.name, err)
+					return false
+				}
+				seen["within bounds"]++
+				return true
+			}
+			if err := quick.Check(refused, cfg); err != nil {
+				t.Error(err)
+			}
+			want := []string{"gap", "indent", "marks", "within bounds"}
+			if p.backticks {
+				want = append(want, "backticks")
+			}
+			for _, k := range want {
+				if seen[k] == 0 {
+					t.Errorf("no case of %q among %v: the generator no longer reaches it", k, seen)
+				}
+			}
+			t.Logf("cases: %v", seen)
 		})
 	}
 }

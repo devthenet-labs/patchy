@@ -60,8 +60,14 @@ func RenderPlanPrompt(p PlanPrompt) (string, error) {
 
 // BuildPrompt is the data for an intent's build-stage prompt, which builds
 // the approved plan — first as a build, then for each revise round.
+//
+// It names no request. The approved plan is the build's whole contract:
+// the approver read the plan byte for byte, but the request only as GitHub
+// rendered it, which hides HTML comments, <details> blocks and characters
+// that render as nothing; a request handed to the build could steer it
+// past what was approved. agent-runner refuses a build whose request file
+// is not empty.
 type BuildPrompt struct {
-	IssuePath string
 	// PlanPath is the approved plan (input/investigation.md — the Job's
 	// analysis handoff, reused). On a revise round the controller follows
 	// the plan with that round's feedback and compare patch, which the

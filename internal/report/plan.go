@@ -9,6 +9,7 @@ import (
 	"math"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // Plan report bounds, beyond the ones every intent report shares
@@ -22,8 +23,21 @@ const (
 	RepositoryURLMaxBytes = 256
 	// PlanMaxNewDependencies is the most new dependencies a plan may list.
 	PlanMaxNewDependencies = 16
+	// DependencyMaxBytes bounds one new dependency, in bytes: a name and a
+	// version need far less. The approval comment repeats every dependency
+	// above the plan, so their size counts twice against the comment's cap
+	// (see ReportMaxBytes), and a bound in characters could not keep them
+	// small: four bytes each is a character too.
+	DependencyMaxBytes = 200
 	// PlanMaxQuestions is the most questions a plan may put to its approver.
 	PlanMaxQuestions = 10
+	// PlanMaxBacktickRun bounds a run of backticks anywhere in a plan. The
+	// approval comment shows the plan in a code block whose fence is one
+	// backtick longer than the plan's longest run, and each dependency in
+	// a code span delimited the same way, so a longer run would lengthen
+	// them past the room ReportMaxBytes leaves; a markdown fence needs three
+	// or four.
+	PlanMaxBacktickRun = 16
 )
 
 // repositoryURL is the shape of a repository URL a plan may name: https,
@@ -58,11 +72,15 @@ var repositoryURL = regexp.MustCompile(`^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$
 // followed by the plan itself in markdown — approach, per-repository steps,
 // test plan and risks — of at most BodyMaxBytes, in a document of at most
 // ReportMaxBytes. Every list item is one line of at most ItemMaxChars
-// characters; free-text values are trimmed, and none may carry a line
-// break or a character that renders invisibly. The document as a whole,
-// frontmatter and body, holds only visible characters, tabs and line breaks
-// (checkVisible): the approver reads it verbatim, and the digest the
-// approval binds the build to covers every byte of it.
+// characters, and a new dependency of at most DependencyMaxBytes bytes;
+// free-text values are trimmed, and none may carry a line break or a
+// character that renders invisibly. Every value is plain YAML, written in
+// one document with no explicit tag (decodeFrontmatter), so it is the text
+// the document shows. The document as a whole, frontmatter and body, holds
+// only visible characters, tabs and line breaks (checkVisible), laid out so
+// that none of its text sits out of view (checkLayout), with no run of more
+// than PlanMaxBacktickRun backticks: the approver reads it verbatim, and the
+// digest the approval binds the build to covers every byte of it.
 type Plan struct {
 	// Summary is the change in one line.
 	Summary string `yaml:"summary"`
@@ -92,12 +110,16 @@ type Plan struct {
 var planFreeText = map[string]bool{"summary": true}
 
 // ParsePlan parses and validates a plan report as the plan stage wrote it:
-// the document bound, that every byte of it is visible, the frontmatter,
-// and the body bound. A document holding a character that renders
-// invisibly or reorders text is refused with the first one's code point,
-// line and column.
+// the document bound, that every byte of it is visible and in view, its
+// backtick runs, the frontmatter, and the body bound. A document holding a
+// character that renders invisibly or reorders text is refused with the
+// first one's code point, line and column; one laying text out of view,
+// with where that starts.
 func ParsePlan(data []byte) (*Plan, error) {
 	if err := checkDocument("plan", data); err != nil {
+		return nil, err
+	}
+	if err := checkBacktickRuns(data); err != nil {
 		return nil, err
 	}
 	p, err := parsePlanFrontmatter(data)
@@ -122,6 +144,13 @@ func ParsePlan(data []byte) (*Plan, error) {
 // feedback. The controller therefore renders a round with no character
 // checkVisible refuses — a compare patch of source that holds one shows it
 // as a visible escape.
+//
+// The layout rule (checkLayout) and the backtick bound are not applied
+// here. The plan the input begins with was held to both by ParsePlan when
+// it was written, and the approval's digest binds those bytes; the round
+// after it is reviewers' feedback, which GitHub showed them as they wrote
+// it, and a compare patch of source, whose indentation and aligned columns
+// routinely pass either bound and which no approval shows in a code block.
 func ParsePlanInput(data []byte) (*Plan, error) {
 	if err := checkVisible("plan", data); err != nil {
 		return nil, err
@@ -160,6 +189,11 @@ func (p *Plan) validate() error {
 	}
 	errs = append(errs, validRepositories(p.Repositories))
 	errs = append(errs, lines("new_dependencies", p.NewDependencies, PlanMaxNewDependencies, ItemMaxChars))
+	for i, d := range p.NewDependencies {
+		if len(d) > DependencyMaxBytes {
+			errs = append(errs, fmt.Errorf("new_dependencies[%d] is %d bytes, over %d", i, len(d), DependencyMaxBytes))
+		}
+	}
 	errs = append(errs, lines("questions", p.Questions, PlanMaxQuestions, ItemMaxChars))
 	switch {
 	case p.Confidence == nil:
@@ -197,7 +231,7 @@ func validRepositories(urls []string) error {
 		case len(u) > RepositoryURLMaxBytes:
 			errs = append(errs, fmt.Errorf("repositories[%d] is %d bytes, over %d", i, len(u), RepositoryURLMaxBytes))
 			continue
-		case strings.ContainsFunc(u, invisible) || !repositoryURL.MatchString(u):
+		case !utf8.ValidString(u) || strings.ContainsFunc(u, invisible) || !repositoryURL.MatchString(u):
 			errs = append(errs, fmt.Errorf("repositories[%d] %q is not an https://<host>/<owner>/<name> URL", i, u))
 			continue
 		}
@@ -209,4 +243,30 @@ func validRepositories(urls []string) error {
 		seen[key] = true
 	}
 	return errors.Join(errs...)
+}
+
+// checkBacktickRuns refuses a plan holding a run of more than
+// PlanMaxBacktickRun backticks, with where the first one starts: line and
+// column as checkVisible counts them.
+func checkBacktickRuns(data []byte) error {
+	for i, line := range strings.Split(string(data), "\n") {
+		column, run, start := 0, 0, 0
+		for _, r := range line + "\n" {
+			column++
+			if r == '`' {
+				if run == 0 {
+					start = column
+				}
+				run++
+				continue
+			}
+			if run > PlanMaxBacktickRun {
+				return fmt.Errorf("report: plan: line %d, column %d: a run of %d backticks, over %d: the "+
+					"approval comment fences the plan one backtick longer than its longest run", i+1, start,
+					run, PlanMaxBacktickRun)
+			}
+			run = 0
+		}
+	}
+	return nil
 }

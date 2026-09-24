@@ -5,6 +5,7 @@ package report
 
 import (
 	"fmt"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -121,4 +122,139 @@ func checkVisible(kind string, data []byte) error {
 		column++
 	}
 	return nil
+}
+
+// Layout bounds every intent report shares (checkLayout).
+const (
+	// PadMaxColumns bounds a gap of spaces and tabs between two characters
+	// of one line, in columns (TabColumns).
+	PadMaxColumns = 16
+	// IndentMaxColumns bounds a line's indentation before its first
+	// character, in columns.
+	IndentMaxColumns = 64
+	// TabColumns is the width a tab counts as: GitHub's default tab size,
+	// and a terminal's. Any other space but U+0020 counts as two columns,
+	// the widest of them (an ideographic space, an em quad).
+	TabColumns = 8
+	// CombiningMaxMarks bounds the combining marks in a row, nonspacing or
+	// enclosing, stacked on one character.
+	CombiningMaxMarks = 4
+)
+
+// layoutError refuses an intent report for text a reader would not see
+// though every character of it is visible: text pushed out of view by
+// whitespace, or a stack of combining marks drawn over the text around it.
+type layoutError struct {
+	// kind is the report: "plan" or "build".
+	kind string
+	// line and column place the start of the offending run, as hiddenError
+	// places a character.
+	line, column int
+	// width is a gap's width in columns, and indent reports the gap is the
+	// line's indentation; marks is a stack's height.
+	width  int
+	indent bool
+	marks  int
+}
+
+func (e *layoutError) Error() string {
+	at := fmt.Sprintf("report: %s: line %d, column %d: ", e.kind, e.line, e.column)
+	switch {
+	case e.marks > 0:
+		return at + fmt.Sprintf("%d combining marks in a row, over %d: stacked that high they draw over "+
+			"the text around them", e.marks, CombiningMaxMarks)
+	case e.indent:
+		return at + fmt.Sprintf("the line is indented %d columns, over %d (a tab counts as %d): a code "+
+			"block does not wrap, so text indented that far sits out of the reader's view",
+			e.width, IndentMaxColumns, TabColumns)
+	}
+	return at + fmt.Sprintf("a gap of %d columns of spaces and tabs before more text, over %d (a tab "+
+		"counts as %d): a code block does not wrap, so text past a gap that wide sits out of the reader's view",
+		e.width, PadMaxColumns, TabColumns)
+}
+
+// checkLayout refuses a document that lays visible text out where its
+// reader would not see it. The approver reads a plan verbatim, in a code
+// block, and GitHub renders a code block unwrapped, scrolling sideways —
+// often with no scroll bar shown — so text after a wide gap of spaces or
+// tabs sits past the block's right edge while the line before it looks
+// complete; and a tall stack of combining marks draws over the lines around
+// it. A build report becomes a pull request's description, whose code
+// blocks render the same way. So:
+//
+//   - a gap of spaces and tabs before more text on its line is at most
+//     PadMaxColumns wide, or IndentMaxColumns when it is the line's
+//     indentation — a tab counting as TabColumns, any other space but
+//     U+0020 as two; whitespace that ends a line hides nothing, and is not
+//     bounded;
+//   - at most CombiningMaxMarks combining marks (Mn, Me) stand in a row.
+//
+// checkVisible has run first, so data is valid UTF-8 and every carriage
+// return in it ends a CRLF.
+func checkLayout(kind string, data []byte) error {
+	for i, line := range strings.Split(string(data), "\n") {
+		if err := lineLayout(strings.TrimSuffix(line, "\r")); err != nil {
+			err.kind, err.line = kind, i+1
+			return err
+		}
+	}
+	return nil
+}
+
+// lineLayout finds the first run in one line that checkLayout refuses, in
+// the order the runs start.
+func lineLayout(line string) *layoutError {
+	column := 0
+	gap, gapStart := 0, 0
+	marks, marksStart := 0, 0
+	for _, r := range line {
+		column++
+		switch {
+		case r == '\t' || unicode.Is(unicode.Zs, r):
+			if gap == 0 {
+				gapStart = column
+			}
+			gap += padColumns(r)
+		case gap > 0:
+			if gap > padLimit(gapStart) {
+				return &layoutError{column: gapStart, width: gap, indent: gapStart == 1}
+			}
+			gap = 0
+		}
+		if unicode.In(r, unicode.Mn, unicode.Me) {
+			if marks == 0 {
+				marksStart = column
+			}
+			marks++
+			continue
+		}
+		if marks > CombiningMaxMarks {
+			return &layoutError{column: marksStart, marks: marks}
+		}
+		marks = 0
+	}
+	if marks > CombiningMaxMarks {
+		return &layoutError{column: marksStart, marks: marks}
+	}
+	return nil
+}
+
+// padColumns is the width a space or a tab counts as.
+func padColumns(r rune) int {
+	switch r {
+	case ' ':
+		return 1
+	case '\t':
+		return TabColumns
+	}
+	return 2
+}
+
+// padLimit is the widest a gap starting at column may be: the indentation
+// bound at the start of a line, the gap bound after its first character.
+func padLimit(column int) int {
+	if column == 1 {
+		return IndentMaxColumns
+	}
+	return PadMaxColumns
 }

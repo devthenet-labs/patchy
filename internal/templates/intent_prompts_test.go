@@ -36,7 +36,6 @@ func renderTestPlanPrompt(intent string, prev *PreviousAttempt) (string, error) 
 
 func renderTestBuildPrompt(prev *PreviousAttempt) (string, error) {
 	return RenderBuildPrompt(BuildPrompt{
-		IssuePath:        "/workspace/input/issue.md",
 		PlanPath:         "/workspace/input/investigation.md",
 		ReportPath:       "/workspace/reports/build.md",
 		CommitScriptPath: "/workspace/commit.sh",
@@ -108,6 +107,9 @@ func TestBuildPromptStatesTheRules(t *testing.T) {
 			"Never delete or revert a test you wrote",
 			"the code and every test you wrote for it",
 			"Write the whole report in plain, visible text",
+			"at most 56 KiB",
+			"no gap of more\nthan 16 spaces",
+			"It is all you are given of the request",
 		} {
 			if !strings.Contains(got, want) {
 				t.Errorf("previous attempt %+v: build prompt lacks %q", prev, want)
@@ -116,6 +118,36 @@ func TestBuildPromptStatesTheRules(t *testing.T) {
 		if want := "a test you wrote, a lockfile"; prev != nil && prev.Outcome == "commit_failed" &&
 			!strings.Contains(got, want) {
 			t.Errorf("commit_failed retry: build prompt lacks %q", want)
+		}
+		// The approved plan is the build's whole contract: the prompt points
+		// at no request, whose raw text the approver never saw.
+		if strings.Contains(got, "issue.md") {
+			t.Errorf("previous attempt %+v: build prompt names the request file:\n%s", prev, got)
+		}
+	}
+}
+
+// TestPlanPromptStatesTheRules: the plan prompt states the bounds report.ParsePlan
+// enforces that a planner could not guess — the dependency's byte bound, the
+// whole report's, and the layout rule — and that the build reads the plan
+// alone, so the plan must carry what the build needs of the request.
+func TestPlanPromptStatesTheRules(t *testing.T) {
+	got, err := renderTestPlanPrompt(testPlanRequest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"The build agent is given your plan and nothing of the request",
+		"each new dependency at most 200 bytes",
+		"a YAML-tagged value",
+		"the whole report, frontmatter included, is at most 56 KiB",
+		"no gap of more than 16 spaces",
+		"no line indented\nmore than 64 columns",
+		"no more than 4 combining marks in a row",
+		"no run of more than 16 backticks",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("plan prompt lacks %q", want)
 		}
 	}
 }

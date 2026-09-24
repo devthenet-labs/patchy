@@ -175,7 +175,7 @@ func TestParseBuildErrors(t *testing.T) {
 			`reason: "`+strings.Repeat("r", ReasonMaxChars+1)+`"`+"\nnotes:", 1), "over 1000"},
 		{"body over 48 KiB", strings.Replace(validBuild, "## What changed\n\nA handler and its test.\n",
 			strings.Repeat("b", BodyMaxBytes+1), 1), "body is"},
-		{"document over 64 KiB", validBuild + strings.Repeat("b", ReportMaxBytes), "over the 65536-byte bound"},
+		{"document over 56 KiB", validBuild + strings.Repeat("b", ReportMaxBytes), "over the 57344-byte bound"},
 		{"invalid UTF-8", strings.Replace(validBuild, "A handler", "A \xfe handler", 1), "UTF-8"},
 	}
 	for _, tt := range tests {

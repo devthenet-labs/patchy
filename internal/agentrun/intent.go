@@ -23,9 +23,10 @@ const (
 
 // runIntent runs an intent stage, PhasePlan or PhaseBuild. Like Run it
 // returns an error only for a fatal, before-the-stage failure — a harness
-// intents may not run on, or a build handed no parseable approved plan —
-// which it has already emitted as a fatal event. Stage outcomes, failed ones
-// included, are events with a nil return.
+// intents may not run on, or a build handed no parseable approved plan or
+// a request beside it (buildInput) — which it has already emitted as a
+// fatal event. Stage outcomes, failed ones included, are events with a nil
+// return.
 func (a *Agent) runIntent(ctx context.Context) error {
 	fatal := func(err error) error {
 		a.emit(envelope.Event{Type: envelope.TypeFatal, Error: err.Error()})
@@ -113,12 +114,30 @@ func (a *Agent) lowered(name string, grant, ceiling, fallback int) int {
 	return grant
 }
 
-// buildInput validates the approved plan the controller handed the build —
-// the Job's analysis handoff, input/investigation.md — and resolves what
-// the run may spend (buildLimits). Only the plan's frontmatter is checked
-// (report.ParsePlanInput): a revise round follows the plan with that
-// round's feedback, past the plan's own bounds.
+// buildInput validates what the controller handed the build and resolves
+// what the run may spend (buildLimits).
+//
+// The approved plan — the Job's analysis handoff, input/investigation.md —
+// is checked by report.ParsePlanInput: its frontmatter, and that every byte
+// is visible, a revise round's feedback after it included, past the plan's
+// own bounds.
+//
+// The request — the Job's issue handoff, input/issue.md — must be empty.
+// The plan is the build's whole contract: the approver read it verbatim,
+// byte for byte, but read the request only as GitHub rendered it, which
+// hides HTML comments, <details> blocks and characters that render as
+// nothing. A request in the pod would sit where the build agent, which may
+// read the whole workspace, could act on text no approver saw, so a build
+// handed one is refused before any agent runs.
 func (a *Agent) buildInput() (remediationParams, error) {
+	request, err := os.ReadFile(a.cfg.issuePath())
+	if err != nil {
+		return remediationParams{}, fmt.Errorf("input request: %w", err)
+	}
+	if len(request) > 0 {
+		return remediationParams{}, fmt.Errorf("input request: %s holds %d bytes; an intent build is handed "+
+			"the approved plan alone, and its request file must be empty", a.cfg.issuePath(), len(request))
+	}
 	raw, err := os.ReadFile(a.cfg.inputInvestigation())
 	if err != nil {
 		return remediationParams{}, fmt.Errorf("input plan: %w", err)
@@ -300,7 +319,6 @@ func (a *Agent) build(ctx context.Context, params remediationParams) *envelope.R
 	}
 
 	prompt, err := templates.RenderBuildPrompt(templates.BuildPrompt{
-		IssuePath:        a.cfg.issuePath(),
 		PlanPath:         a.cfg.inputInvestigation(),
 		ReportPath:       a.cfg.buildPath(),
 		CommitScriptPath: a.cfg.commitScript(),

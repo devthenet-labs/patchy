@@ -181,6 +181,8 @@ func TestParsePlanBounds(t *testing.T) {
 		{"eight repositories", planWith(repos, items("repositories", PlanMaxRepositories, repoURL))},
 		{"sixteen new dependencies", planWith(deps, items("new_dependencies", PlanMaxNewDependencies,
 			func(i int) string { return fmt.Sprintf("example.com/dep%d v1.0.0", i) }))},
+		{"a dependency of exactly 200 bytes", planWith(deps, items("new_dependencies", 1,
+			func(int) string { return strings.Repeat("d", DependencyMaxBytes) }))},
 		{"ten questions", planWith(questions, items("questions", PlanMaxQuestions,
 			func(i int) string { return fmt.Sprintf("question %d?", i) }))},
 		{"an item of exactly 500 characters", planWith(questions, items("questions", 1,
@@ -275,7 +277,15 @@ func TestParsePlanErrors(t *testing.T) {
 			"estimated_max_turns"},
 		{"body over 48 KiB", strings.Replace(validPlan, "## Approach\n\nAdd a handler.\n",
 			strings.Repeat("b", BodyMaxBytes+1), 1), "body is"},
-		{"document over 64 KiB", validPlan + strings.Repeat("b", ReportMaxBytes), "over the 65536-byte bound"},
+		{"document over 56 KiB", validPlan + strings.Repeat("b", ReportMaxBytes), "over the 57344-byte bound"},
+		{"a dependency over 200 bytes", planWith(deps, items("new_dependencies", 1,
+			func(int) string { return strings.Repeat("d", DependencyMaxBytes+1) })),
+			"new_dependencies[0] is 201 bytes, over 200"},
+		// Within the character bound every list item shares, and past the
+		// byte bound a dependency has: four bytes a character.
+		{"a dependency of 51 four-byte characters", planWith(deps, items("new_dependencies", 1,
+			func(int) string { return strings.Repeat(string(rune(0x1f642)), 51) })),
+			"new_dependencies[0] is 204 bytes, over 200"},
 		{"invalid UTF-8", strings.Replace(validPlan, "Add a handler.", "Add a \xff handler.", 1), "UTF-8"},
 	}
 	for _, tt := range tests {

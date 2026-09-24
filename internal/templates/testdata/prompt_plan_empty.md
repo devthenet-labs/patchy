@@ -19,7 +19,8 @@ conventions it follows. Do **not** modify any repository file, and do not try to
 is the report described below.
 
 Write a plan a reviewer can judge without reading the repository, and a build agent can follow step by step without
-guessing:
+guessing. The build agent is given your plan and nothing of the request, so the plan must carry everything the build
+needs from it:
 
 - **Approach** — what you will change and why this way, and the alternatives you rejected.
 - **Steps** — for each repository, the files to add or change and what changes in each, in order.
@@ -55,14 +56,19 @@ estimated_token_budget: <integer>   # ESTIMATED output tokens the build needs
 ```
 
 The summary and every list item must be a double-quoted YAML string on a single line (escape embedded double quotes
-as `\"`), and each list item at most 500 characters — unquoted prose containing a colon is invalid YAML and fails the
-entire run. `repositories` names at least one repository and at most 8. `confidence` is the probability that a build
-following this plan exactly delivers the request with its tests passing. The two estimates are what you expect the
-build to spend, not a request for budget: they never change what it is granted.
+as `\"`), and each list item at most 500 characters, each new dependency at most 200 bytes — unquoted prose
+containing a colon is invalid YAML and fails the entire run, and so does a YAML-tagged value (`!!binary`, `!!str`).
+`repositories` names at least one repository and at most 8. `confidence` is the probability that a build following
+this plan exactly delivers the request with its tests passing. The two estimates are what you expect the build to
+spend, not a request for budget: they never change what it is granted.
 
 After the frontmatter, write the plan in markdown under the headings Approach, Steps, Test plan and Risks, in at most
-48 KiB. It is posted to the request for a human to approve, and the build follows it exactly — write it for both.
+48 KiB; the whole report, frontmatter included, is at most 56 KiB. It is posted to the request for a human to
+approve, and the build follows it exactly — write it for both.
 
 Write the whole report in plain, visible text: no emoji, and none of the characters that render as nothing or reorder
 text — zero-width spaces and joiners, bidi controls, variation selectors, tag characters, or any control character but
-tab and line break. The approver reads every byte of the plan, so a report holding one is refused whole.
+tab and line break. The approver reads every byte of the plan, in a code block that does not wrap, so lay it out
+plainly too: no gap of more than 16 spaces between two characters of a line (a tab counts as 8), no line indented
+more than 64 columns, no more than 4 combining marks in a row, and no run of more than 16 backticks. A report
+breaking any of these rules is refused whole.

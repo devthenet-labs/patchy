@@ -4,11 +4,15 @@
 package report
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // Bounds shared by the intent reports (plan and build).
@@ -23,22 +27,38 @@ const (
 	// BodyMaxBytes bounds the markdown after an intent report's frontmatter:
 	// it is posted to GitHub as an issue comment or a pull-request body.
 	BodyMaxBytes = 48 << 10
-	// ReportMaxBytes bounds a whole intent report, frontmatter included — the
-	// run status field that records it holds at most 64 KiB.
-	ReportMaxBytes = 64 << 10
+	// ReportMaxBytes bounds a whole intent report, frontmatter included. It
+	// is sized to what a plan's approval comment can carry, so that a plan
+	// this package accepts is never one GitHub cannot show its approver:
+	// the comment holds the report verbatim, in a code block, beneath
+	// patchy's header, and GitHub refuses a comment over 65,536 characters.
+	// The 8 KiB this bound leaves is the header's worst case with room to
+	// spare: its own text (under 2 KiB with the longest names and labels),
+	// the summary it repeats (at most 800 bytes), the new dependencies it
+	// repeats (PlanMaxNewDependencies of at most DependencyMaxBytes, each
+	// fenced as code) and the code block's fences — the reason a plan holds
+	// no run of more than PlanMaxBacktickRun backticks, which would lengthen
+	// every fence past it. The run status field that records a report holds
+	// 64 KiB.
+	ReportMaxBytes = 56 << 10
 )
 
 // checkDocument applies the bounds every intent report shares before any of
 // it is parsed: the whole document's size, then what it may hold
-// (checkVisible). Invalid UTF-8 and invisible characters are refused rather
-// than repaired, because the report's exact bytes are what the plan's
-// approval digest is taken over — a repair would change what was approved,
-// and JSON would silently rewrite invalid UTF-8 on the way out of the pod.
+// (checkVisible) and how it may lay its text out (checkLayout). Invalid
+// UTF-8, invisible characters and text pushed out of view are refused
+// rather than repaired, because the report's exact bytes are what the
+// plan's approval digest is taken over — a repair would change what was
+// approved, and JSON would silently rewrite invalid UTF-8 on the way out of
+// the pod.
 func checkDocument(kind string, data []byte) error {
 	if len(data) > ReportMaxBytes {
 		return fmt.Errorf("report: %s: %d bytes, over the %d-byte bound", kind, len(data), ReportMaxBytes)
 	}
-	return checkVisible(kind, data)
+	if err := checkVisible(kind, data); err != nil {
+		return err
+	}
+	return checkLayout(kind, data)
 }
 
 // checkBody applies the body bound.
@@ -56,7 +76,11 @@ func checkBody(kind, body string) error {
 // text (a bidi override, a zero-width space, a variation selector, a tag
 // character). checkVisible has already refused such a rune written into
 // the document; this catches one a YAML escape spells ("\u200b"), which
-// the document shows as visible text but the decoded value holds. These
+// the document shows as visible text but the decoded value holds. And s
+// must be valid UTF-8: an invalid byte decodes to U+FFFD, which no rune
+// check flags. decodeFrontmatter already refuses the explicit tag that can
+// decode to such bytes (!!binary), but a value that is not text would be
+// rewritten on its way to JSON, so each field holds the rule itself. These
 // values reach GitHub and later prompts, and a summary becomes a commit
 // subject, so they carry nothing a reader cannot see and break nowhere.
 func oneLine(field, s string, maxChars int) (string, error) {
@@ -64,6 +88,8 @@ func oneLine(field, s string, maxChars int) (string, error) {
 	switch {
 	case s == "":
 		return s, fmt.Errorf("%s is required", field)
+	case !utf8.ValidString(s):
+		return s, fmt.Errorf("%s is not valid UTF-8", field)
 	case utf8.RuneCountInString(s) > maxChars:
 		return s, fmt.Errorf("%s is %d characters, over %d", field, utf8.RuneCountInString(s), maxChars)
 	}
@@ -159,11 +185,12 @@ func yamlNull(val string) bool {
 	return false
 }
 
-// decodeRepairing decodes a frontmatter block strictly into out, retrying
-// once over repairFreeText's quoting when the strict decode fails. reset
-// zeroes out before the retry. The original error is the one reported.
+// decodeRepairing decodes an intent report's frontmatter block into out
+// (decodeFrontmatter), retrying once over repairFreeText's quoting when the
+// decode fails. reset zeroes out before the retry. The original error is
+// the one reported.
 func decodeRepairing(block []byte, out any, keys map[string]bool, reset func()) error {
-	err := decodeStrict(block, out)
+	err := decodeFrontmatter(block, out)
 	if err == nil {
 		return nil
 	}
@@ -172,8 +199,53 @@ func decodeRepairing(block []byte, out any, keys map[string]bool, reset func()) 
 		return err
 	}
 	reset()
-	if rerr := decodeStrict(repaired, out); rerr != nil {
+	if rerr := decodeFrontmatter(repaired, out); rerr != nil {
 		return err
+	}
+	return nil
+}
+
+// decodeFrontmatter decodes an intent report's frontmatter block strictly
+// (decodeStrict), once it is held to what its reader sees: each value is
+// the text the document shows. So the block is one YAML document — after a
+// document end marker ("...") text may follow that no field holds and no
+// bound covers, which a strict decode of the first document never reads —
+// and no node carries an explicit tag. A tag makes a value something other
+// than its text: !!binary decodes base64 into whatever bytes it encodes,
+// invalid UTF-8 included, so the approver would read base64 in the plan
+// while the controller recorded the decoded value. No field of these
+// schemas needs one. The non-specific tag "!" is not refused: it keeps a
+// value the string it is written as.
+//
+// The Finding flow's reports keep decodeStrict alone.
+func decodeFrontmatter(block []byte, out any) error {
+	dec := yaml.NewDecoder(bytes.NewReader(block))
+	var doc yaml.Node
+	if err := dec.Decode(&doc); err != nil {
+		return fmt.Errorf("report: frontmatter: %w", err)
+	}
+	if err := dec.Decode(new(yaml.Node)); !errors.Is(err, io.EOF) {
+		return errors.New("report: frontmatter: more follows the end of its YAML document; " +
+			"the frontmatter is one document, ended only by the closing --- fence")
+	}
+	if n := taggedNode(&doc); n != nil {
+		return fmt.Errorf("report: frontmatter: line %d: a value tagged %s; "+
+			"write every value as plain YAML, with no explicit tag", n.Line, n.Tag)
+	}
+	return decodeStrict(block, out)
+}
+
+// taggedNode returns the first node of the tree under n written with an
+// explicit tag, or nil. It walks Content alone: an alias's target is a node
+// of the tree, visited where it stands.
+func taggedNode(n *yaml.Node) *yaml.Node {
+	if n.Style&yaml.TaggedStyle != 0 {
+		return n
+	}
+	for _, c := range n.Content {
+		if t := taggedNode(c); t != nil {
+			return t
+		}
 	}
 	return nil
 }

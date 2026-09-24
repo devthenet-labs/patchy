@@ -34,8 +34,9 @@ var fileModes = []string{"100644", "100755", "120000"}
 // secrets on any branch pushed to it, before a human has reviewed anything.
 var ciDirs = []string{".github/workflows", ".github/actions"}
 
-// changesetRules is what one remediation's changeset is validated against.
-type changesetRules struct {
+// ChangesetRules is what one changeset is validated against. The zero Deny
+// is a Finding remediation's rules; IntentChangesetRules are an intent's.
+type ChangesetRules struct {
 	// Base is the Repository's pinned commit (status.resolvedSHA): the one
 	// base a legitimate run reports, since the pod was handed it. Empty
 	// when it cannot be read, which no changeset matches.
@@ -46,11 +47,45 @@ type changesetRules struct {
 	// Investigation whose report and parameters it acts on, ran a
 	// repository-declared image.
 	RepositoryImage bool
+	// Deny lists repository-root directories no path may be in or replace,
+	// matched without regard to case, whichever image the run used.
+	Deny []string
 }
 
-// validateChangeset checks a remediation changeset before the controller
-// makes any forge call with it, returning an error naming the limit or the
-// path it breaks.
+// intentDeny is what an intent run may never change: CI definitions
+// (.github), the agent-image declaration and recipe (.patchy, including the
+// .patchy/Dockerfile main's CI builds into the allowlisted registry prefix),
+// and the devcontainer declaration. source-controller reads the image
+// declaration from whatever tree it pins, and a revise round pins the pull
+// request's head, so without this an agent could choose its own next
+// sandbox.
+var intentDeny = []string{".github", ".patchy", ".devcontainer"}
+
+// IntentChangesetRules are the rules an intent build or revise changeset is
+// held to: based on base (the Repository's pinned commit — for a revise
+// round, the pull request head it pinned), the repository-image rules
+// whichever image ran (intent runs require one, and its process wrote the
+// changeset), capped at maxEntries (<= 0 means
+// DefaultChangesetMaxEntries), and nothing under .github, .patchy or
+// .devcontainer.
+func IntentChangesetRules(base string, maxEntries int) ChangesetRules {
+	if maxEntries <= 0 {
+		maxEntries = DefaultChangesetMaxEntries
+	}
+	return ChangesetRules{
+		Base:            base,
+		MaxEntries:      maxEntries,
+		RepositoryImage: true,
+		Deny:            slices.Clone(intentDeny),
+	}
+}
+
+// ValidateChangeset checks a changeset before the controller makes any
+// forge call with it, returning an error naming the limit or the path it
+// breaks. It is exported for intent-controller, which holds intent
+// changesets to IntentChangesetRules; a Finding remediation's rules carry no
+// Deny, and with none its verdicts are exactly what they were before the
+// option existed.
 //
 // Every changeset is held to what a legitimate run always produces, since
 // the pod builds the changeset from a git diff of the tree it was handed:
@@ -79,7 +114,9 @@ type changesetRules struct {
 // dependency bump rewrites hundreds of files, git allows a tab in a file
 // name, and leaving workflows alone also spares them the forge's refusal
 // when the App lacks the workflows permission.
-func validateChangeset(cs *envelope.Changeset, rules changesetRules) error {
+//
+// A path in or replacing a Deny directory is refused on any run.
+func ValidateChangeset(cs *envelope.Changeset, rules ChangesetRules) error {
 	switch {
 	case rules.Base == "":
 		return fmt.Errorf("the repository's pinned commit is unknown, so the changeset's base cannot be checked")
@@ -92,6 +129,9 @@ func validateChangeset(cs *envelope.Changeset, rules changesetRules) error {
 	check := func(p string) error {
 		if err := checkChangesetPath(p); err != nil {
 			return err
+		}
+		if dir := deniedDir(p, rules.Deny); dir != "" {
+			return fmt.Errorf("changeset path %q is under %s, which this run may not change", p, dir)
 		}
 		if !rules.RepositoryImage {
 			return nil
@@ -162,6 +202,19 @@ func checkChangesetUpsert(up envelope.FileChange) error {
 		return fmt.Errorf("changeset path %q content is not base64: %w", up.Path, err)
 	}
 	return nil
+}
+
+// deniedDir returns the deny directory p is in or would replace, or "".
+// Matched without regard to case, like ciPath.
+func deniedDir(p string, deny []string) string {
+	lower := strings.ToLower(p)
+	for _, dir := range deny {
+		d := strings.ToLower(dir)
+		if lower == d || strings.HasPrefix(lower, d+"/") {
+			return dir
+		}
+	}
+	return ""
 }
 
 // ciPath reports whether p is a CI definition or would replace the

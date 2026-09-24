@@ -17,7 +17,9 @@
 // (integration-controller) completes the finding. Every changeset is
 // validated before the first forge call (entry cap, path shape, and on a
 // repository-declared image no CI definitions); a refusal fails the attempt
-// changeset_rejected.
+// changeset_rejected. The validator is exported (ValidateChangeset) for
+// intent-controller, whose changesets are held to IntentChangesetRules:
+// the same checks plus a deny list a Finding's rules never carry.
 //
 // The binary also hosts internal/controller/rollup — the all-time
 // statistics aggregation and the finding TTL.

@@ -66,15 +66,15 @@ func TestValidateChangeset(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateChangeset(tt.cs, changesetRules{Base: "abc123", MaxEntries: 3, RepositoryImage: tt.repoImg})
+			err := ValidateChangeset(tt.cs, ChangesetRules{Base: "abc123", MaxEntries: 3, RepositoryImage: tt.repoImg})
 			if tt.wantPass {
 				if err != nil {
-					t.Errorf("validateChangeset = %v, want nil", err)
+					t.Errorf("ValidateChangeset = %v, want nil", err)
 				}
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("validateChangeset = %v, want an error containing %q", err, tt.wantErr)
+				t.Errorf("ValidateChangeset = %v, want an error containing %q", err, tt.wantErr)
 			}
 		})
 	}
@@ -102,15 +102,15 @@ func TestValidateChangesetBase(t *testing.T) {
 			t.Run(tt.name+"/"+image, func(t *testing.T) {
 				cs := changesetOf("a.go")
 				cs.BaseSHA = tt.base
-				err := validateChangeset(cs, changesetRules{Base: tt.pinned, MaxEntries: 3, RepositoryImage: repoImg})
+				err := ValidateChangeset(cs, ChangesetRules{Base: tt.pinned, MaxEntries: 3, RepositoryImage: repoImg})
 				if tt.wantErr == "" {
 					if err != nil {
-						t.Errorf("validateChangeset = %v, want nil", err)
+						t.Errorf("ValidateChangeset = %v, want nil", err)
 					}
 					return
 				}
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("validateChangeset = %v, want an error containing %q", err, tt.wantErr)
+					t.Errorf("ValidateChangeset = %v, want an error containing %q", err, tt.wantErr)
 				}
 			})
 		}
@@ -143,15 +143,15 @@ func TestValidateChangesetUpserts(t *testing.T) {
 		for image, repoImg := range map[string]bool{"default": false, "repository": true} {
 			t.Run(tt.name+"/"+image, func(t *testing.T) {
 				cs := &envelope.Changeset{BaseSHA: "abc123", Upserts: []envelope.FileChange{tt.fc}}
-				err := validateChangeset(cs, changesetRules{Base: "abc123", MaxEntries: 3, RepositoryImage: repoImg})
+				err := ValidateChangeset(cs, ChangesetRules{Base: "abc123", MaxEntries: 3, RepositoryImage: repoImg})
 				if tt.wantErr == "" {
 					if err != nil {
-						t.Errorf("validateChangeset = %v, want nil", err)
+						t.Errorf("ValidateChangeset = %v, want nil", err)
 					}
 					return
 				}
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("validateChangeset = %v, want an error containing %q", err, tt.wantErr)
+					t.Errorf("ValidateChangeset = %v, want an error containing %q", err, tt.wantErr)
 				}
 			})
 		}
@@ -198,7 +198,7 @@ func pathConfig(seed int64) *quick.Config {
 // control character.
 func TestValidateChangesetProperties(t *testing.T) {
 	accepted := func(p string, repoImg bool) bool {
-		return validateChangeset(changesetOf(p), changesetRules{
+		return ValidateChangeset(changesetOf(p), ChangesetRules{
 			Base: "abc123", MaxEntries: DefaultChangesetMaxEntries, RepositoryImage: repoImg,
 		}) == nil
 	}
@@ -255,7 +255,7 @@ func TestValidateChangesetEntryCapProperty(t *testing.T) {
 		for range deletes {
 			cs.Deletes = append(cs.Deletes, "old/file")
 		}
-		err := validateChangeset(cs, changesetRules{Base: "abc123", MaxEntries: maxEntries, RepositoryImage: repoImg})
+		err := ValidateChangeset(cs, ChangesetRules{Base: "abc123", MaxEntries: maxEntries, RepositoryImage: repoImg})
 		return (err == nil) == (!repoImg || upserts+deletes <= maxEntries)
 	}
 	if err := quick.Check(capped, cfg); err != nil {

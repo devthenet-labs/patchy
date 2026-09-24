@@ -170,8 +170,9 @@ func (s *Store) Resolve(ctx context.Context, namespace, repoURL string) (*Resolv
 
 // Token mints a short-lived token for the resolved repository at the given
 // scope. With App auth the token is installation-scoped to the single
-// repository; with a PAT the static token is returned as-is (the PAT cannot
-// be narrowed — dev only).
+// repository and contents at scope, which must be ScopeRead or ScopeWrite —
+// any other is refused, never widened; with a PAT the static token is
+// returned as-is (the PAT cannot be narrowed — dev only).
 func (s *Store) Token(ctx context.Context, res *Resolved, scope Scope) (string, time.Time, error) {
 	secret, err := s.secret(ctx, res.Forge)
 	if err != nil {

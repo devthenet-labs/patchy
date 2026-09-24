@@ -192,11 +192,8 @@ func (p TokenPerms) Validate() error {
 }
 
 // installationPermissions renders p for the access-token request: only the
-// permissions requested, nil when none are (the installation's full set).
+// permissions requested. Callers validate p first, so at least one is.
 func (p TokenPerms) installationPermissions() *github.InstallationPermissions {
-	if p == (TokenPerms{}) {
-		return nil
-	}
 	out := &github.InstallationPermissions{}
 	if p.Contents != "" {
 		out.Contents = new(p.Contents)
@@ -212,8 +209,12 @@ func (p TokenPerms) installationPermissions() *github.InstallationPermissions {
 
 // ScopedToken mints a short-lived installation token restricted to the
 // single repository and permissions given, returning the token and its
-// expiry.
+// expiry. perms must pass Validate, checked before any request: an empty set
+// would have GitHub grant every permission the installation holds.
 func (a *App) ScopedToken(ctx context.Context, repo Repo, perms TokenPerms) (string, time.Time, error) {
+	if err := perms.Validate(); err != nil {
+		return "", time.Time{}, err
+	}
 	id, err := a.installationID(ctx, repo)
 	if err != nil {
 		return "", time.Time{}, err

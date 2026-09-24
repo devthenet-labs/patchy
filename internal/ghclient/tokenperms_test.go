@@ -11,13 +11,14 @@ import (
 )
 
 // TestScopedTokenPermissionSets: the access-token request carries exactly
-// the permissions asked for and no others, and no permissions key at all for
-// an empty set (the behaviour contents-only callers always had).
+// the permissions asked for and no others, and a set Validate refuses (an
+// empty one would be the installation's full set) never reaches GitHub.
 func TestScopedTokenPermissionSets(t *testing.T) {
 	tests := []struct {
-		name  string
-		perms TokenPerms
-		want  map[string]any // nil: no "permissions" key at all
+		name    string
+		perms   TokenPerms
+		want    map[string]any
+		wantErr bool // refused before any request
 	}{
 		{
 			name:  "contents only, as the Finding flow asks",
@@ -39,34 +40,41 @@ func TestScopedTokenPermissionSets(t *testing.T) {
 			perms: TokenPerms{Contents: PermWrite, Issues: PermRead, PullRequests: PermRead},
 			want:  map[string]any{"contents": "write", "issues": "read", "pull_requests": "read"},
 		},
-		{name: "none requested", perms: TokenPerms{}},
+		// Minting with no permissions key would grant everything the
+		// installation holds — the widening the design rules out.
+		{name: "none requested", perms: TokenPerms{}, wantErr: true},
+		{name: "unknown level", perms: TokenPerms{Issues: "admin"}, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mux, app := newFakeApp(t)
+			var requests int
 			mux.HandleFunc("GET /repos/o/r/installation", func(w http.ResponseWriter, _ *http.Request) {
+				requests++
 				writeJSON(t, w, `{"id": 9}`)
 			})
 			var body map[string]any
 			mux.HandleFunc("POST /app/installations/9/access_tokens", func(w http.ResponseWriter, r *http.Request) {
+				requests++
 				body = decodeBody[map[string]any](t, r)
 				writeJSON(t, w, `{"token":"scoped-tok","expires_at":"2026-07-13T12:00:00Z"}`)
 			})
 
-			if _, _, err := app.ScopedToken(context.Background(), testRepo, tt.perms); err != nil {
+			tok, _, err := app.ScopedToken(context.Background(), testRepo, tt.perms)
+			if tt.wantErr {
+				if err == nil || tok != "" || requests != 0 {
+					t.Errorf("ScopedToken() = %q, %v after %d requests, want a refusal before any request",
+						tok, err, requests)
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("ScopedToken() error = %v", err)
 			}
 			if !reflect.DeepEqual(body["repositories"], []any{"r"}) {
 				t.Errorf("repositories = %v, want [r]", body["repositories"])
 			}
-			perms, present := body["permissions"]
-			if tt.want == nil {
-				if present {
-					t.Errorf("permissions = %v, want the key absent", perms)
-				}
-				return
-			}
-			if !reflect.DeepEqual(perms, tt.want) {
+			if perms := body["permissions"]; !reflect.DeepEqual(perms, tt.want) {
 				t.Errorf("permissions = %v, want exactly %v", perms, tt.want)
 			}
 		})

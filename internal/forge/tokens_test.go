@@ -235,6 +235,30 @@ func TestTokenWithRefusesUnscopedPermissions(t *testing.T) {
 	}
 }
 
+// TestTokenRefusesUnknownScope: Token's contents scope reaches GitHub only as
+// read or write — a zero or unknown Scope is refused before minting, never
+// widened to the installation's full permission set.
+func TestTokenRefusesUnknownScope(t *testing.T) {
+	app, base := newAppServer(t)
+	s, _ := tokenStore(t, appSecretData(t))
+	ctx := context.Background()
+	for _, scope := range []Scope{"", "admin"} {
+		if tok, _, err := s.Token(ctx, resolvedAt(base, "r"), scope); err == nil {
+			t.Errorf("Token(%q) = %q, want a refusal", scope, tok)
+		}
+	}
+	if got := len(app.minted()); got != 0 {
+		t.Errorf("minted %d tokens, want none", got)
+	}
+	if _, _, err := s.Token(ctx, resolvedAt(base, "r"), ScopeWrite); err != nil {
+		t.Fatalf("Token(write) error = %v", err)
+	}
+	want := []mint{{Repositories: []string{"r"}, Permissions: map[string]string{"contents": "write"}}}
+	if got := app.minted(); !reflect.DeepEqual(got, want) {
+		t.Errorf("minted %+v, want %+v", got, want)
+	}
+}
+
 // TestTokenWithPAT: a PAT cannot be narrowed; it is returned as-is with no
 // expiry and nothing is minted or cached.
 func TestTokenWithPAT(t *testing.T) {

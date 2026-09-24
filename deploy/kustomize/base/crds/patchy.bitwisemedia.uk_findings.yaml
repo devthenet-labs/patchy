@@ -534,8 +534,9 @@ spec:
                           type: string
                         quiet:
                           description: |-
-                            Quiet marks a refusal answered by the reaction alone: its author was
-                            already sent a refusal on this finding (FindingCommands.RefusedActors).
+                            Quiet marks a NotAllowed refusal answered by the reaction alone: its
+                            author was already sent a refusal on this finding
+                            (FindingCommands.RefusedActors).
                           type: boolean
                         receivedAt:
                           description: ReceivedAt is when the delivery carrying the
@@ -562,10 +563,12 @@ spec:
                   refusedActors:
                     description: |-
                       RefusedActors are the GitHub ids of the accounts already sent a reply
-                      refusing a command on this finding (NotAllowed or UnknownVerb), the
-                      latest MaxRefusedActors of them. A later refusal to one of them is
-                      answered by the reaction alone (FindingCommand.Quiet), so an account
-                      commenting repeatedly cannot make patchy post a reply per comment.
+                      refusing a command on this finding because they lack write access
+                      (NotAllowed, whatever the verb), the latest MaxRefusedActors of them. A
+                      later refusal to one of them is answered by the reaction alone
+                      (FindingCommand.Quiet), so an account commenting repeatedly cannot make
+                      patchy post a reply per comment. An account with write access is never
+                      added: every answer to it, an unknown verb's included, is given in full.
                     items:
                       format: int64
                       type: integer

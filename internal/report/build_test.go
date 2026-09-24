@@ -197,11 +197,7 @@ func TestParseBuildErrors(t *testing.T) {
 // invisibly or reorders text, anywhere — refused with the code point, line
 // and column.
 func TestParseBuildRefusesHiddenCharacters(t *testing.T) {
-	sites := []struct {
-		name         string
-		insert       func(string) string
-		line, column int
-	}{
+	refusesHiddenAt(t, "build", func(doc []byte) error { _, err := ParseBuild(doc); return err }, []hiddenSite{
 		{"in the summary", func(s string) string {
 			return buildWith(`summary: "Add GET`, `summary: "Add`+s+` GET`)
 		}, 3, 14},
@@ -214,29 +210,7 @@ func TestParseBuildRefusesHiddenCharacters(t *testing.T) {
 		{"in the body", func(s string) string {
 			return strings.Replace(validBuild, "A handler", "A"+s+" handler", 1)
 		}, 14, 2},
-	}
-	for _, site := range sites {
-		for _, h := range hiddenRunes {
-			t.Run(fmt.Sprintf("%s U+%04X", site.name, h.r), func(t *testing.T) {
-				_, err := ParseBuild([]byte(site.insert(string(h.r))))
-				want := fmt.Sprintf("report: build: line %d, column %d: U+%04X is %s", site.line, site.column, h.r,
-					h.class)
-				if err == nil || !strings.Contains(err.Error(), want) {
-					t.Errorf("ParseBuild() error = %v, want it to name %q", err, want)
-				}
-			})
-		}
-		for _, bad := range invalidUTF8 {
-			t.Run(fmt.Sprintf("%s %q", site.name, bad.seq), func(t *testing.T) {
-				_, err := ParseBuild([]byte(site.insert(bad.seq)))
-				want := fmt.Sprintf("line %d, column %d: byte 0x%02X is not valid UTF-8", site.line, site.column,
-					bad.first)
-				if err == nil || !strings.Contains(err.Error(), want) {
-					t.Errorf("ParseBuild() error = %v, want it to name %q", err, want)
-				}
-			})
-		}
-	}
+	})
 	lone := strings.Replace(validBuild, "A handler", "A\r handler", 1)
 	if _, err := ParseBuild([]byte(lone)); err == nil || !strings.Contains(err.Error(),
 		"line 14, column 2: U+000D is a carriage return outside a CRLF line ending") {

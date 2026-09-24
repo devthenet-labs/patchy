@@ -369,11 +369,7 @@ var invalidUTF8 = []struct {
 func TestParsePlanRefusesHiddenCharacters(t *testing.T) {
 	// The summary's value starts at column 11; the body's "Add a" ends at
 	// column 5 of line 15.
-	sites := []struct {
-		name         string
-		insert       func(string) string
-		line, column int
-	}{
+	refusesHiddenAt(t, "plan", func(doc []byte) error { _, err := ParsePlan(doc); return err }, []hiddenSite{
 		{"in the summary", func(s string) string {
 			return planWith(`summary: "Add GET`, `summary: "Add`+s+` GET`)
 		}, 2, 14},
@@ -388,25 +384,38 @@ func TestParsePlanRefusesHiddenCharacters(t *testing.T) {
 		}, 15, 6},
 		{"leading the document", func(s string) string { return s + validPlan }, 1, 1},
 		{"ending the document", func(s string) string { return validPlan + s }, 16, 1},
+	})
+}
+
+// hiddenSite is a place in a valid report to insert a hidden character,
+// with the line and column its refusal must name.
+type hiddenSite struct {
+	name         string
+	insert       func(string) string
+	line, column int
+}
+
+// refusesHiddenAt checks that parse refuses a report of the given kind
+// with any of hiddenRunes, or any of invalidUTF8, inserted at each site,
+// naming the report, the line, the column and the code point or byte.
+func refusesHiddenAt(t *testing.T, kind string, parse func([]byte) error, sites []hiddenSite) {
+	t.Helper()
+	check := func(t *testing.T, doc, want string) {
+		t.Helper()
+		if err := parse([]byte(doc)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("parsing the %s: error = %v, want it to name %q", kind, err, want)
+		}
 	}
 	for _, site := range sites {
+		at := fmt.Sprintf("report: %s: line %d, column %d: ", kind, site.line, site.column)
 		for _, h := range hiddenRunes {
 			t.Run(fmt.Sprintf("%s U+%04X", site.name, h.r), func(t *testing.T) {
-				_, err := ParsePlan([]byte(site.insert(string(h.r))))
-				want := fmt.Sprintf("line %d, column %d: U+%04X is %s", site.line, site.column, h.r, h.class)
-				if err == nil || !strings.Contains(err.Error(), want) {
-					t.Errorf("ParsePlan() error = %v, want it to name %q", err, want)
-				}
+				check(t, site.insert(string(h.r)), fmt.Sprintf("%sU+%04X is %s", at, h.r, h.class))
 			})
 		}
 		for _, bad := range invalidUTF8 {
 			t.Run(fmt.Sprintf("%s %q", site.name, bad.seq), func(t *testing.T) {
-				_, err := ParsePlan([]byte(site.insert(bad.seq)))
-				want := fmt.Sprintf("line %d, column %d: byte 0x%02X is not valid UTF-8", site.line, site.column,
-					bad.first)
-				if err == nil || !strings.Contains(err.Error(), want) {
-					t.Errorf("ParsePlan() error = %v, want it to name %q", err, want)
-				}
+				check(t, site.insert(bad.seq), fmt.Sprintf("%sbyte 0x%02X is not valid UTF-8", at, bad.first))
 			})
 		}
 	}

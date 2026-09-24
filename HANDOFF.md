@@ -322,12 +322,18 @@ already-pushed commits (or nothing) and can be removed once #51 is merged.
 
 ## Known follow-ups (not started)
 
+- Extend slice 1b's bounded check-fix rounds to Finding PRs: during the 0.12.1 live gate, patchy's `go/request-forgery`
+  remediation passed its Go tests but its PR still failed CodeQL with a new critical alert, so it needed a separate
+  manual correction. This is the second such miss after the earlier path-traversal case. A failing CodeQL check on a
+  Finding PR should trigger a capped fix round rather than leave an apparently successful remediation in review with an
+  unfixed alert.
 - The security remediation prompt should require committing the tests the agent writes (seen: a test written, run, then
   deleted). The intent build prompt already requires it.
 - `finding-1678e4a376-5` (reflected XSS, suspended) absorbed real alert 15 in `shout.go`; resume it to get it fixed.
 - Findings flow still uses the unscoped installation client for pins and PR creation (intents never do).
 - Command replies cost ~2 GitHub calls per comment from anyone on public repos; a per-actor rate limit may be needed.
-- `/patchy approve` and the legacy `/approve` on a held Finding have not been exercised live (no hold occurred).
+- `/patchy approve` was exercised live on held Finding `finding-7b91e0ec7e-1` during the 0.12.1 gate; the legacy
+  `/approve` alias on a held Finding has not been exercised live.
 - Go clients send `"0s"` for non-pointer `metav1.Duration` fields with schema defaults (Forge/Integration intervals).
 - Cosign-sign app images, then set `allowUnsigned: false`; `patchy describe repository` says "Source: not recorded yet"
   for accepted images; investigations cannot run tests; fallback-image runs can open untested PRs.

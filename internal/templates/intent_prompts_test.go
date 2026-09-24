@@ -81,11 +81,11 @@ func TestIntentPromptGoldens(t *testing.T) {
 
 // TestBuildPromptStatesTheRules: every build prompt — a first attempt's and
 // every retry's — carries the rules the controller enforces after the run:
-// the denied directories, offline tests, and commit.sh's post-condition;
-// and that the tests the agent writes are part of the change it commits. A
-// live run that was told only to leave a clean tree wrote a regression
-// test, ran it, and deleted it; a commit_failed retry is told a test it
-// wrote belongs in commit.sh.
+// the denied directories, offline tests, commit.sh's post-condition and a
+// report in visible text only; and that the tests the agent writes are
+// part of the change it commits. A live run that was told only to leave a
+// clean tree wrote a regression test, ran it, and deleted it; a
+// commit_failed retry is told a test it wrote belongs in commit.sh.
 func TestBuildPromptStatesTheRules(t *testing.T) {
 	for _, prev := range []*PreviousAttempt{
 		nil,
@@ -107,6 +107,7 @@ func TestBuildPromptStatesTheRules(t *testing.T) {
 			"keep every test you write in the working tree",
 			"Never delete or revert a test you wrote",
 			"the code and every test you wrote for it",
+			"Write the whole report in plain, visible text",
 		} {
 			if !strings.Contains(got, want) {
 				t.Errorf("previous attempt %+v: build prompt lacks %q", prev, want)

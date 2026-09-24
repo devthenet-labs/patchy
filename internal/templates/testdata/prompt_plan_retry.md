@@ -85,3 +85,7 @@ build to spend, not a request for budget: they never change what it is granted.
 
 After the frontmatter, write the plan in markdown under the headings Approach, Steps, Test plan and Risks, in at most
 48 KiB. It is posted to the request for a human to approve, and the build follows it exactly — write it for both.
+
+Write the whole report in plain, visible text: no emoji, and none of the characters that render as nothing or reorder
+text — zero-width spaces and joiners, bidi controls, variation selectors, tag characters, or any control character but
+tab and line break. The approver reads every byte of the plan, so a report holding one is refused whole.

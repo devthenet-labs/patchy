@@ -87,7 +87,9 @@ reason: "<only when success is false: why the plan could not be built>"
 strings on a single line (escape embedded double quotes as `\"`), each note at most 500 characters. After the
 frontmatter, describe in markdown, in at most 48 KiB, what you changed and why, how you verified it, and anything
 reviewers should scrutinize — it becomes the pull request's description. On failure, describe what you tried and
-what blocked you.
+what blocked you. Write the whole report in plain, visible text: no emoji, and none of the characters that render as
+nothing or reorder text — zero-width spaces and joiners, bidi controls, variation selectors, tag characters, or any
+control character but tab and line break. A report holding one is refused whole.
 
 2. `{{.CommitScriptPath}}` — only when success is true: a POSIX sh script that commits your change. The contract:
 

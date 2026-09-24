@@ -74,6 +74,8 @@ Escaped the sink.
 type fakeExec struct {
 	steps []step
 	specs []runner.CommandSpec
+	// timeouts records the timeout each call was given, beside specs.
+	timeouts []time.Duration
 }
 
 type step struct {
@@ -92,9 +94,10 @@ type step struct {
 	err error
 }
 
-func (f *fakeExec) Run(_ context.Context, spec runner.CommandSpec, _ time.Duration,
+func (f *fakeExec) Run(_ context.Context, spec runner.CommandSpec, timeout time.Duration,
 	onLine func([]byte) (bool, string)) (runner.Result, error) {
 	f.specs = append(f.specs, spec)
+	f.timeouts = append(f.timeouts, timeout)
 	if len(f.steps) == 0 {
 		return runner.Result{}, fmt.Errorf("fakeExec: no step scripted for call %d", len(f.specs))
 	}

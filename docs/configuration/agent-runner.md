@@ -20,8 +20,52 @@ matters when debugging a Job spec or running the runtime standalone.
 | `PATCHY_REPO`      | — (**required**) | `owner/name` of the repository under analysis                                                     |
 | `PATCHY_FINDING`   | — (**required**) | Name of the owning Finding resource — echoed in every event, and the branch is `patchy/<finding>` |
 | `PATCHY_BASE_SHA`  | —                | The remote commit the workspace tree corresponds to (the changeset's push base)                   |
-| `PATCHY_PHASE`     | `investigate`    | `investigate` or `remediate`                                                                      |
+| `PATCHY_PHASE`     | `investigate`    | `investigate` or `remediate`; `plan` or `build` for an intent run (below)                         |
 | `PATCHY_WORKSPACE` | `/workspace`     | Pod workspace root (`repo/`, `input/`, `reports/`)                                                |
+
+### Intent phases
+
+An intent run (the intent-driven development work kind) uses two more phases, over the same Job seams: `PATCHY_FINDING`
+carries the IntentRun's name, `input/issue.md` the intent snapshot for a plan, and `input/investigation.md` the approved
+plan for a build. A build's `input/issue.md` must be empty, and a build handed a request is refused with a fatal event
+before any agent runs: the approved plan, which the approver read verbatim, is the build's whole contract, while the
+request was seen only as GitHub rendered it.
+
+- **`plan`** reads the request and the tree read-only and writes `reports/plan.md`, emitted as a `plan` event. It runs
+  on the investigate stage's configuration — `PATCHY_INVESTIGATE_HARNESS`/`_MODEL`/`_TIMEOUT`, and
+  `PATCHY_INVESTIGATE_MAX_TURNS`/`_TOKEN_BUDGET` as its ceiling, which a per-Job grant may lower but never raise.
+- **`build`** builds the approved plan with the workspace writable — the first build and every revise round — writes
+  `reports/build.md` and `commit.sh`, and emits a `remediation` event with the changeset. It runs on the remediate
+  stage's configuration, with `PATCHY_REMEDIATE_MANUAL_MAX_TURNS`/`_TOKEN_BUDGET` as its ceiling, which a per-Job grant
+  may lower but never raise. Unlike a remediation's, a build's grant has no floor: one below
+  `PATCHY_REMEDIATE_AUTO_MAX_TURNS`/`_TOKEN_BUDGET` is honoured, and those apply only to a build Job with no grant.
+
+No per-Job timeout reaches the pod, so a stage's wall clock is `PATCHY_INVESTIGATE_TIMEOUT` (plan) or
+`PATCHY_REMEDIATE_TIMEOUT` (build, and every revise round): the intent controller launches each stage with its own time
+limit there. The plan prompt tells the planner the most a build can be granted, read from the plan Job's
+`PATCHY_REMEDIATE_MANUAL_MAX_TURNS`/`_TOKEN_BUDGET` (the build stage's ceiling), which the intent controller sets to the
+grant the Project's build will receive.
+
+Both run on **brokered claude only**: any other harness, or claude without `PATCHY_BROKER_TOKEN_FILE`, is refused with a
+fatal event before a model is called, because codex and copilot do not honour the sandbox postures. No configuration key
+exists for the intent phases alone.
+
+The plan and build reports, and the build's `input/investigation.md` with any revise round after the plan, must be
+visible text throughout: a report is `report_invalid`, and a build input a fatal event, if it holds invalid UTF-8, a
+control character other than tab, line feed or a CRLF's carriage return, U+2028/U+2029, or a character that renders
+invisibly or reorders text (a format character such as a zero-width space or a bidi control, a tag character, a
+variation selector, or another default-ignorable code point). The detail names the first one's code point, line and
+column. A human approves the plan by reading every byte of it, so nothing in it may be hidden.
+
+The plan is also held to a layout rule, since it is read in a code block that does not wrap: no gap of more than 16
+columns of blank characters before more text on a line (a tab counts as 8, and any blank character but a space as 2;
+blank characters are tabs, space separators, U+2800 BRAILLE PATTERN BLANK, U+1D159 MUSICAL SYMBOL NULL NOTEHEAD and the
+private-use characters), no indentation past 64 columns, and no more than 4 combining marks in a row; the detail names
+where the run starts. A report is at most 56 KiB, its frontmatter is plain YAML (one document, no explicit tag), and a
+plan holds no run of more than 16 backticks and no new dependency over 200 bytes, so that every plan accepted here fits
+in the GitHub comment that shows it for approval. The build report and the build input are held to the visible-text rule
+only: the build report is recorded on its run, patchy renders the pull request's description from the approved plan, and
+the tool output a build quotes routinely aligns its columns past the plan's bounds.
 
 ## Stage configuration
 
@@ -107,6 +151,8 @@ disabled for exactly this reason.
 ## The event stream
 
 Progress and results are emitted as one JSON object per line, prefixed `PATCHY-EVENT:`, on stdout; the owning controller
-tails the pod log and applies them. Stage outcomes are `ok`, `runtime_error`, `timeout`, `budget_exceeded`,
-`report_missing`, `report_invalid`, `commit_failed`, and `changeset_too_large` — only `ok` carries a trusted report. A
-fatal error also exits 2 so the Job is marked failed for the controller's orphan handling.
+tails the pod log and applies them. The event types are `investigation`, `remediation` (a fix or an intent build),
+`plan` (an intent plan, carrying the report byte-exact beside its parsed frontmatter) and `fatal`, all at envelope
+version 4. Stage outcomes are `ok`, `runtime_error`, `timeout`, `budget_exceeded`, `report_missing`, `report_invalid`,
+`commit_failed`, and `changeset_too_large` — only `ok` carries a trusted report. A fatal error also exits 2 so the Job
+is marked failed for the controller's orphan handling.

@@ -26,9 +26,21 @@ type Phase string
 
 // PhaseInvestigate runs the analysis stage only; PhaseRemediate remediates
 // from a controller-provided analysis file.
+//
+// PhasePlan and PhaseBuild are an intent's stages. Plan reads the request
+// and the tree and writes a plan, read-only, on the investigate stage's
+// harness, model, limits and timeout; build builds the approved plan — its
+// first build and every revise round — on the remediate stage's harness,
+// model and timeout, under the manual budget. In both, a per-Job grant may
+// lower the stage's limits but never raise them (planLimits, buildLimits).
+// Both run on brokered claude only (see intentHarness). The Job seams keep
+// their Finding names on an intent run: PATCHY_FINDING carries the
+// IntentRun's name, and input/investigation.md the approved plan.
 const (
 	PhaseInvestigate Phase = "investigate"
 	PhaseRemediate   Phase = "remediate"
+	PhasePlan        Phase = "plan"
+	PhaseBuild       Phase = "build"
 )
 
 // Config is the runner's configuration; in the pod every field arrives as
@@ -153,7 +165,12 @@ func (c Config) investigationPath() string {
 func (c Config) remediationPath() string {
 	return filepath.Join(c.Workspace, "reports", "remediation.md")
 }
+
 func (c Config) commitScript() string { return filepath.Join(c.Workspace, "commit.sh") }
+
+// planPath and buildPath are the intent stages' reports.
+func (c Config) planPath() string  { return filepath.Join(c.Workspace, "reports", "plan.md") }
+func (c Config) buildPath() string { return filepath.Join(c.Workspace, "reports", "build.md") }
 
 // branch is the remediation branch, keyed by finding name (pull-request
 // webhooks resolve the Finding from the head ref).
@@ -290,10 +307,10 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		errs = append(errs, "PATCHY_FINDING is required")
 	}
 	switch cfg.Phase {
-	case PhaseInvestigate, PhaseRemediate:
+	case PhaseInvestigate, PhaseRemediate, PhasePlan, PhaseBuild:
 	default:
-		errs = append(errs, fmt.Sprintf("PATCHY_PHASE=%q is not %q or %q",
-			cfg.Phase, PhaseInvestigate, PhaseRemediate))
+		errs = append(errs, fmt.Sprintf("PATCHY_PHASE=%q is not %q, %q, %q or %q",
+			cfg.Phase, PhaseInvestigate, PhaseRemediate, PhasePlan, PhaseBuild))
 	}
 	if len(errs) > 0 {
 		return Config{}, fmt.Errorf("agentrun config: %s", strings.Join(errs, "; "))

@@ -19,16 +19,24 @@ const Prefix = "PATCHY-EVENT: "
 // events by finding name; version 4 turned the investigation's max_turns and
 // token_budget into the unclamped estimated_max_turns/estimated_token_budget
 // and added hold_reasons beside await_approval.
+//
+// New event types are additive within a version: Decode accepts any
+// non-empty type at Version and every collector switches on the type,
+// ignoring the ones it does not own, so the intent plan event joined
+// version 4 without a bump.
 const Version = 4
 
 // Type discriminates events.
 type Type string
 
 // The event types: one per completed stage, plus fatal for a runner that
-// could not produce a stage result at all.
+// could not produce a stage result at all. An intent's build stage reports
+// with TypeRemediation — it produces the same changeset payload — and its
+// plan stage with TypePlan.
 const (
 	TypeInvestigation Type = "investigation"
 	TypeRemediation   Type = "remediation"
+	TypePlan          Type = "plan"
 	TypeFatal         Type = "fatal"
 )
 
@@ -155,16 +163,40 @@ type Changeset struct {
 	Deletes       []string     `json:"deletes,omitempty"`
 }
 
-// Remediation is the stage-2 event payload.
+// Remediation is the stage-2 event payload, and an intent build's: the
+// stage's report and the changeset the controller pushes.
 type Remediation struct {
 	Stage
 	ReportMarkdown string  `json:"report_markdown,omitempty"`
 	Success        bool    `json:"success"`
 	Confidence     float64 `json:"confidence,omitempty"`
 	// Branch is the local branch carrying the fix; Changeset is its content
-	// diffed against Changeset.BaseSHA.
+	// diffed against Changeset.BaseSHA. An intent build leaves Branch empty
+	// and reports no confidence: the intent controller names the pushed
+	// branch itself (patchy-intent/<intent>), and a build report carries
+	// its tests rather than a confidence.
 	Branch    string     `json:"branch,omitempty"`
 	Changeset *Changeset `json:"changeset,omitempty"`
+}
+
+// Plan is an intent's plan-stage event payload: the plan report exactly as
+// the agent wrote it, frontmatter included, plus that frontmatter parsed.
+// The report is the contract — it is what the approver reads and what the
+// build follows — so a controller re-derives the fields from it
+// (agentresult.FromPlan) rather than trusting these; they ride the event so
+// a reader of the log sees the plan's shape without parsing markdown.
+type Plan struct {
+	Stage
+	ReportMarkdown  string   `json:"report_markdown,omitempty"`
+	Summary         string   `json:"summary,omitempty"`
+	Repositories    []string `json:"repositories,omitempty"`
+	NewDependencies []string `json:"new_dependencies,omitempty"`
+	Questions       []string `json:"questions,omitempty"`
+	Confidence      float64  `json:"confidence,omitempty"`
+	// EstimatedMaxTurns/EstimatedTokenBudget are the plan's PREDICTION of
+	// what its build will spend, reported verbatim and never binding.
+	EstimatedMaxTurns    int `json:"estimated_max_turns,omitempty"`
+	EstimatedTokenBudget int `json:"estimated_token_budget,omitempty"`
 }
 
 // Event is one envelope line.
@@ -173,11 +205,13 @@ type Event struct {
 	Type Type `json:"type"`
 	// Finding context so events are self-contained.
 	Repo string `json:"repo"`
-	// Finding names the owning Finding resource.
+	// Finding names the owning Finding resource — on an intent run, the
+	// owning IntentRun (the Job's PATCHY_FINDING).
 	Finding string `json:"finding,omitempty"`
 
 	Investigation *Investigation `json:"investigation,omitempty"`
 	Remediation   *Remediation   `json:"remediation,omitempty"`
+	Plan          *Plan          `json:"plan,omitempty"`
 	// Error is set on fatal events.
 	Error string `json:"error,omitempty"`
 }

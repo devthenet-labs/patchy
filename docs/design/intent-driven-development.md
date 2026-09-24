@@ -50,7 +50,9 @@ within:
 - **Authority comes from GitHub's API.** Every decision about human authority (trigger, approval, revision feedback) is
   taken from facts GitHub reports through its API and checked against an allowlist the operator owns. It is never taken
   from a handler-time stamp or from `author_association`.
-- **The build agent receives exactly what the approving human saw.**
+- **The build agent receives exactly what the approving human saw.** That is the approved plan, which the approver read
+  verbatim, and nothing else of the request: GitHub showed the approver the issue only as rendered markdown, which hides
+  HTML comments, `<details>` blocks and characters that render as nothing.
 - **patchy never force-moves a branch it did not just create.** Human commits on a PR branch survive every revision.
 - **Spend is bounded before it starts.** The bounds are: triggers only from authorised people, one global slot,
   per-stage budgets, `maxRevisions`, a per-intent ceiling and the broker's limits.
@@ -163,8 +165,9 @@ within:
 - `Spec.Kind = "intent"`. `NameFor` gains an `intent → int` entry, which gives Job names of the form
   `patchy-<hash>-int-a<n>`.
 - `Spec.Finding` and `Spec.Owner` carry the IntentRun name.
-- `issue.md` carries the intent snapshot. `investigation.md` carries the approved plan and, for a revision, that round's
-  feedback and compare patch.
+- `issue.md` carries the intent snapshot to a plan Job, and is empty on a build Job: agent-runner refuses a build handed
+  a request, because the approved plan is the build's whole contract. `investigation.md` carries the approved plan and,
+  for a revision, that round's feedback and compare patch.
 - `stageEnvNames` gains a `build → PATCHY_REMEDIATE_*` mapping.
 
 The golden Job YAMLs, `prepareScript` and `buildJob` stay byte-identical. The cost is some naming debt, documented at
@@ -175,6 +178,24 @@ IntentRun name matches none of them.
 The intent `jobs.Client` sets `AllowRepositoryImages`, `EphemeralStorage` and its own runnerguard Breaker.
 `runnerguard.PinFor(spec, repo)` is added beside `Pin`, which is not touched. It has no revival rule: an intent brought
 back by its trigger label is a new plan and a new approval, not a Finding revival.
+
+**Per-stage configuration.** Each intent stage reads its Finding counterpart's keys (plan reads `PATCHY_INVESTIGATE_*`,
+build and revise read `PATCHY_REMEDIATE_*`), and only turns and tokens have a per-Job channel. A new `PATCHY_*` key
+would add a blank to the repository-image golden, which blanks every key agent-runner reads. So intent-controller builds
+the `jobs.Client` for each launch from one base Config plus that run's stage env (`jobs.New` only wraps the clientset):
+
+- _Turns and tokens._ `grant.maxTurns` and `grant.tokenBudget` reach the pod as `PATCHY_GRANTED_*`. agent-runner only
+  lowers the stage's ceiling with them: `PATCHY_INVESTIGATE_MAX_TURNS`/`_TOKEN_BUDGET` for plan, and
+  `PATCHY_REMEDIATE_MANUAL_*` for build and revise. Unlike a remediation's grant, a build's has no floor at the
+  automated budget, so a Project that tightens a stage is honoured. `PATCHY_REMEDIATE_AUTO_*` applies only to a Job with
+  no grant, and intent-controller always grants.
+- _Time._ A stage's wall clock is `PATCHY_INVESTIGATE_TIMEOUT` for plan and `PATCHY_REMEDIATE_TIMEOUT` for build and
+  revise, set in the launch's env to that stage's limit, so build (60 m) and revise (45 m) differ.
+  `grant.timeoutMilliseconds` records that value. The Job deadline (90 m) bounds every stage.
+- _The build budget the plan is sized for._ The plan prompt states the most a build can be granted, which agent-runner
+  reads from the plan Job's `PATCHY_REMEDIATE_MANUAL_*`, the build stage's own ceiling. The plan launch sets it to the
+  grant the Project's build will receive (its build limit, clamped by the controller's flag), with
+  `PATCHY_REMEDIATE_AUTO_*` no higher, as agent-runner requires. The build launch uses the same ceiling.
 
 ### Custom resources
 
@@ -345,6 +366,15 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
    - When a slot frees, launch the plan Job: default runner image, read-only, brokered.
 4. **Collect.**
    - Persist the transcript and parse the plan frontmatter.
+   - The plan must be visible text throughout, frontmatter and body. agent-runner refuses a report that holds invalid
+     UTF-8, a control character other than tab, line feed and a CRLF's carriage return, U+2028/U+2029, a format
+     character (zero-width characters, bidi controls, the soft hyphen, U+FEFF), a tag character, a variation selector,
+     or any other default-ignorable code point. The outcome is `report_invalid`, with the character's code point, line
+     and column. The approver reads the plan verbatim and its digest covers every byte, so no byte may be one the
+     approver cannot see. For the same reason no visible text may sit out of view: the layout rule (see "Plan contract
+     and output sanitisation") refuses padding and stacked combining marks, with where they start. The build report
+     follows the visible-text rule but not the layout rule: no approver reads it in a code block, and patchy renders the
+     pull request's description itself.
    - Reject a plan that names repositories outside the Project.
    - Store the raw report in the immutable ConfigMap `<intent>-plan-r1`. Its digest is the sha256 of those bytes.
    - Delete the plan Repository.
@@ -375,7 +405,8 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
    - Launch the Job in that image, with workspace-write access:
      - `investigation.md` is the approved plan, read from its ConfigMap. It is re-hashed at launch, and a mismatch stops
        the launch.
-     - `issue.md` is the input snapshot.
+     - `issue.md` is empty. The build reads the approved plan and nothing else of the request, and agent-runner refuses
+       a build whose `issue.md` holds anything, before any agent runs.
    - If `jobs.Create` reports that the Job ran the default image, delete the Job and block the Intent.
 8. **Push and PR.**
    - Validate the changeset (see "Build environment and changeset rules").
@@ -522,12 +553,39 @@ The plan frontmatter is strict and parsed by `report.ParsePlan`:
 
 - `summary` (at most 200 characters)
 - `repositories[]` (a subset of the Project's)
-- `new_dependencies[]` (at most 16)
+- `new_dependencies[]` (at most 16, each at most 200 bytes)
 - `questions[]` (at most 10)
 - `confidence`
 - `estimated_max_turns` and `estimated_token_budget`
 
-The body is at most 48 KiB: approach, per-repo steps, test plan and risks.
+Every value is plain YAML in one document: an explicit tag (`!!binary` decodes base64 into bytes the approver never sees
+as text) and text after a document end marker (`...`) are refused.
+
+The body is at most 48 KiB: approach, per-repo steps, test plan and risks. The whole report is at most 56 KiB, sized so
+that every plan `report.ParsePlan` accepts fits in its approval comment: GitHub caps a comment at 65,536 characters, and
+the comment's header repeats the summary and the new dependencies above the plan (hence their byte bound) and fences the
+plan one backtick longer than its longest run (hence no run of more than 16 backticks). A plan too large to show for
+approval is therefore `report_invalid` in the pod, where a retry is told why, rather than refused once recorded.
+
+The plan is read in a code block, which GitHub does not wrap, so its layout is bounded too: no gap of more than 16
+columns of blank characters before more text on a line (a tab counts as 8, and any blank character but a space as 2), no
+indentation past 64 columns, and no more than 4 combining marks in a row. A blank character is a tab, a space separator,
+or one that is not whitespace but draws as empty space: U+2800 BRAILLE PATTERN BLANK, U+1D159 MUSICAL SYMBOL NULL
+NOTEHEAD, or a private-use character. Without those bounds, a step padded past the block's right edge, or a stack of
+marks drawn over the lines around it, would be text the approver never saw and the build still reads. A line that is
+merely long is not refused: its text runs off the block's edge mid-sentence, where the approver can see there is more,
+and the approval comment counts such lines.
+
+Neither the build report nor the build input is held to the layout rule. The build report is recorded on its run, and
+the pull request's description is rendered from the approved plan, never from the report; the tool output a build quotes
+to show how it verified the change (pytest's right-aligned progress, `go tool cover -func`'s tab-aligned columns)
+routinely exceeds the bounds, and refusing it would throw away a build that had implemented and committed its plan. The
+build input's plan passed the rule when it was written, and a revise round's compare patch is source whose indentation
+routinely exceeds it.
+
+The estimates never bind the build, which runs on its grant. A plan whose estimate exceeds the build grant is posted
+with that stated beside the estimate, so the approver sees it before approving. Approving does not raise the grant: the
+remedy is a higher Project build limit and a replan.
 
 **The plan is shown verbatim.** The plan comment is the approval artifact, and it shows the approver exactly the bytes
 the build agent reads: the plan report, the ConfigMap bytes whose digest the approval binds, rendered unchanged inside a
@@ -617,13 +675,17 @@ closes the intent issue itself.
   - Comments from non-approvers are counted but never included. App repos are public, so anyone can comment.
 - **Diff.** The compare patch for `base...head`, at most 48 KiB, with any truncation stated. There is no second tree in
   the pod.
+- **Visible text only.** agent-runner holds the whole of `investigation.md` to the plan's rule, the round after the plan
+  included, and refuses the build otherwise. So the controller renders every character of the round that the rule
+  refuses as a visible `<U+XXXX>` escape, whether it comes from feedback, the compare patch (source may hold a BOM or a
+  ZWJ) or check output. CRLF passes as it is: GitHub returns comment bodies CRLF-terminated.
 - **Idempotency.** Consumed review IDs, and the command comment ID of a `/patchy revise`, are recorded on the IntentRun
   spec, so a restart or a repeated poll never runs a round twice. The round's number comes from the Intent's `rounds`
   ordinal, which a failed round advances too, so a later round never reuses a failed round's run name.
 - **Bounds:**
   - `maxRevisions` (default 3);
   - the per-intent ceiling;
-  - per-stage limits (turns / tokens / time), all inside agentrun's `grant()` clamp:
+  - per-stage limits (turns / tokens / time), which a grant may lower but never raise (see "Per-stage configuration"):
 
     | Stage  | Turns | Tokens | Time |
     | ------ | ----- | ------ | ---- |
@@ -1051,7 +1113,9 @@ devthenet-dev in a separate Helm upgrade from the release that ships them.
   and the regression gate is mandatory for every wave.
 - **Polling cost and latency.** Bounded as described, but an approval or review can take up to a minute to register.
 - **Prompt injection by an approver, or through the issue text, is accepted within trust.** The limit on damage is what
-  reaches a PR, which a human merges.
+  reaches a PR, which a human merges. Issue text that GitHub does not render (an HTML comment, tag characters) reaches
+  the planner alone: whatever it steers the plan to say, the approver reads verbatim, and the build never reads the
+  issue.
 - **Builds that need a new dependency fail offline** until a human updates the image. This friction stays until a proxy
   exists.
 - **Naming debt from reusing `jobs.Create`:** `PATCHY_FINDING` and `LabelFinding` hold run names, and `investigation.md`

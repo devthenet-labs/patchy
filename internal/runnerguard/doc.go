@@ -9,7 +9,9 @@
 // Repository pinned (Guard.Pin): only with the controller's kill switch on,
 // the sandbox breaker untripped and the finding not revived by a human, and
 // only an image source-controller actually pinned — a rejected declaration
-// carries no image, so its finding runs the default one. While a
+// carries no image, so its finding runs the default one. Guard.PinFor makes
+// the same decision for a launch that requires the image (an intent's build
+// or revise run), where no image to copy is a refusal, not a fallback. While a
 // repository-image Job has not finished, whether its pod is still within the
 // pull grace, stuck on a deterministic pull failure, or worth another look
 // (Pending): a pod in ImagePullBackOff never mutates its Job, so the Job watch

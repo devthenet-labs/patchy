@@ -61,6 +61,50 @@ func (g Guard) Pin(spec *jobs.Spec, repo *v1alpha1.Repository, fnd *v1alpha1.Fin
 	return ""
 }
 
+// Further reasons PinFor reports: a launch that requires the repository's
+// image has none to run, or may not run it.
+const (
+	SkipNoImage     = "the repository declares no runner image patchy can use"
+	SkipRejected    = "the repository's runner-image declaration was rejected"
+	SkipRevivedWork = "a human revived the work, and revived work never runs a repository-declared image"
+)
+
+// PinFor is Pin for a launch that requires the repository's image: an
+// intent's build or revise run, which has no default-image fallback (the
+// default image carries no toolchain, so a build there would open an
+// untested pull request). It copies the Repository's pinned image into spec
+// only when source-controller accepted one — Image set and not Rejected,
+// since a Repository rejected under onReject default is Ready all the same
+// — and the guard allows it, and returns "" exactly then. Otherwise it
+// returns why not (SkipNoImage, SkipRejected, SkipDisabled, SkipBreaker or
+// SkipRevivedWork, checked in Pin's order) and leaves spec untouched, so the
+// caller blocks instead of launching.
+//
+// revived is the caller's own record that a human brought the work back
+// from a terminal state, as Revived reads one off a Finding. Like Pin, what
+// PinFor copies is a request: jobs.Client.Create decides and returns what
+// the Job runs, and a caller requiring the image must still refuse a Job
+// whose returned stamp is not the repository's.
+func (g Guard) PinFor(spec *jobs.Spec, repo *v1alpha1.Repository, revived bool) string {
+	ri := repo.Status.RunnerImage
+	switch {
+	case ri != nil && ri.Rejected != "":
+		return SkipRejected
+	case ri == nil || ri.Image == "":
+		return SkipNoImage
+	case !g.Enabled:
+		return SkipDisabled
+	case g.Breaker.Tripped():
+		return SkipBreaker
+	case revived:
+		return SkipRevivedWork
+	}
+	spec.RunnerImage = ri.Image
+	spec.RunnerSearchPath = ri.SearchPath
+	spec.RunnerImageManifest = ri.Manifest
+	return ""
+}
+
 // Revived reports whether a human brought the finding back from a terminal
 // phase — approve on a HandedOff finding, retry on a Failed one — which the
 // append-only phase log records as an earlier HandedOff or Failed entry.

@@ -65,6 +65,32 @@ expect_fail() {
   fi
 }
 
+# notes NAME [helm args...]: render the install NOTES into $out/NAME.notes.
+# helm template never renders NOTES.txt; a client-side dry-run install does,
+# without a cluster. A failed render is itself a failure.
+notes() {
+  name=$1
+  shift
+  if helm install patchy "$chart" --namespace patchy --dry-run=client "$@" >"$out/$name.install" 2>"$out/$name.err"; then
+    sed -n '/^NOTES:$/,$p' "$out/$name.install" >"$out/$name.notes"
+  else
+    fail "$name: dry-run install failed: $(cat "$out/$name.err")"
+    : >"$out/$name.notes"
+  fi
+}
+
+# notes_has NAME NEEDLE WANT: whether the NOTES of a notes render contain
+# NEEDLE verbatim is WANT (yes or no).
+notes_has() {
+  got=no
+  if grep -qF -- "$2" "$out/$1.notes"; then
+    got=yes
+  fi
+  if [ "$got" != "$3" ]; then
+    fail "$1: NOTES contain '$2': $got, want $3"
+  fi
+}
+
 # ---- feature off: the default render carries none of it --------------------
 render default
 for key in PATCHY_REPOSITORY_IMAGES PATCHY_REPOSITORY_IMAGE_REGISTRIES PATCHY_REPOSITORY_IMAGE_ON_REJECT \
@@ -400,6 +426,20 @@ Sidecar/patchy-agent-egress-codex"
 # flags mean nothing while the controller itself is off.
 render eval-off-cilium --set agent.networkPolicy.mode=cilium --set evaluationController.runners.codex.enabled=true
 expect eval-off-cilium "$hnp" "CiliumNetworkPolicy/patchy-agent-egress-claude"
+
+# ---- ...and the install NOTES name its model Secret -------------------------
+# A non-brokered harness is enabled only when its credential Secret exists in
+# the agent namespace, whichever fleet runs it, so the NOTES' list of Secrets
+# to create follows the same rule as the egress policies above.
+codexsecret="patchy-openai (key api-key, as OPENAI_API_KEY)"
+notes notes-eval-codex -f "$ef" \
+  --set evaluationController.runners.claude.enabled=false --set evaluationController.runners.codex.enabled=true
+notes_has notes-eval-codex "$codexsecret" yes
+notes_has notes-eval-codex "patchy-copilot" no
+notes notes-codex --set agent.runners.codex.enabled=true
+notes_has notes-codex "$codexsecret" yes
+notes notes-eval-off --set evaluationController.runners.codex.enabled=true
+notes_has notes-eval-off "patchy-openai" no
 
 # ---- egress broker limits ---------------------------------------------------
 render limits -f "$fixtures/broker-limits.yaml"

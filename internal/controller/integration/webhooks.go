@@ -171,11 +171,12 @@ func (s *Signals) pullRequest(ctx context.Context, payload []byte) error {
 	var ev struct {
 		Action      string `json:"action"`
 		PullRequest struct {
-			Number   int64  `json:"number"`
-			HTMLURL  string `json:"html_url"`
-			Merged   bool   `json:"merged"`
-			MergedAt string `json:"merged_at"`
-			Head     struct {
+			Number         int64  `json:"number"`
+			HTMLURL        string `json:"html_url"`
+			Merged         bool   `json:"merged"`
+			MergedAt       string `json:"merged_at"`
+			MergeCommitSHA string `json:"merge_commit_sha"`
+			Head           struct {
 				Ref string `json:"ref"`
 			} `json:"head"`
 		} `json:"pull_request"`
@@ -203,6 +204,11 @@ func (s *Signals) pullRequest(ctx context.Context, payload []byte) error {
 				if at, err := time.Parse(time.RFC3339, ev.PullRequest.MergedAt); err == nil {
 					t := metav1.NewTime(at)
 					cur.Status.PullRequest.MergedAt = &t
+				}
+				// A commit id longer than a SHA-256 hex digest is not one;
+				// record nothing rather than a truncated id.
+				if sha := ev.PullRequest.MergeCommitSHA; len(sha) <= 64 {
+					cur.Status.PullRequest.MergeCommitSHA = sha
 				}
 			}
 		}

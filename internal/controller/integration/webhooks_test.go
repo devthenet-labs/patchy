@@ -206,7 +206,8 @@ func TestSignalsPullRequest(t *testing.T) {
 			s, c := newSignals(t, fnd)
 			payload := fmt.Sprintf(
 				`{"action":"closed","pull_request":{"number":11,"merged":%v,`+
-					`"merged_at":"2026-07-21T13:00:00Z","head":{"ref":"patchy/finding-aa-1"}}}`,
+					`"merged_at":"2026-07-21T13:00:00Z","merge_commit_sha":"fa82fcdc7efab2777d432ba3385517fa735e0ae0",`+
+					`"head":{"ref":"patchy/finding-aa-1"}}}`,
 				tc.merged)
 			if err := s.Handle(t.Context(), testIntegration(), event("pull_request", payload)); err != nil {
 				t.Fatalf("Handle: %v", err)
@@ -220,6 +221,15 @@ func TestSignalsPullRequest(t *testing.T) {
 			}
 			if tc.merged && (f.Status.CompletedAt == nil || f.Status.PullRequest.MergedAt == nil) {
 				t.Error("merged PR left completedAt/mergedAt unset")
+			}
+			// The merge commit is what ingest measures later scanner
+			// observations against; an unmerged close records none.
+			wantSHA := ""
+			if tc.merged {
+				wantSHA = "fa82fcdc7efab2777d432ba3385517fa735e0ae0"
+			}
+			if got := f.Status.PullRequest.MergeCommitSHA; got != wantSHA {
+				t.Errorf("mergeCommitSHA = %q, want %q", got, wantSHA)
 			}
 		})
 	}

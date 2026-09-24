@@ -723,8 +723,16 @@ spec:
               pullRequest:
                 description: |-
                   PullRequest is the remediation PR (remediation opens; integration owns
-                  state/mergedAt).
+                  state/mergedAt/mergeCommitSHA).
                 properties:
+                  mergeCommitSHA:
+                    description: |-
+                      MergeCommitSHA is the commit the merge put on the base branch (the
+                      merge, squash, or last rebased commit): the first revision carrying
+                      the fix. Ingest compares scanner observations against it, so an
+                      analysis of older code cannot reopen the finding it fixed.
+                    maxLength: 64
+                    type: string
                   mergedAt:
                     description: MergedAt is when the pull request merged.
                     format: date-time

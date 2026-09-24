@@ -364,7 +364,7 @@ type RemediationSummary struct {
 
 // PullRequestStatus is the lifecycle of the remediation pull request.
 // remediation-controller writes number/url at open; integration-controller
-// owns state/mergedAt from PR webhooks.
+// owns state/mergedAt/mergeCommitSHA from PR webhooks.
 type PullRequestStatus struct {
 	// Number of the pull request.
 	Number int64 `json:"number"`
@@ -378,6 +378,13 @@ type PullRequestStatus struct {
 	// MergedAt is when the pull request merged.
 	// +optional
 	MergedAt *metav1.Time `json:"mergedAt,omitempty"`
+	// MergeCommitSHA is the commit the merge put on the base branch (the
+	// merge, squash, or last rebased commit): the first revision carrying
+	// the fix. Ingest compares scanner observations against it, so an
+	// analysis of older code cannot reopen the finding it fixed.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	MergeCommitSHA string `json:"mergeCommitSHA,omitempty"`
 }
 
 // AttemptCounts tallies agent runs per stage.
@@ -441,7 +448,7 @@ type FindingStatus struct {
 	// +optional
 	Remediation *RemediationSummary `json:"remediation,omitempty"`
 	// PullRequest is the remediation PR (remediation opens; integration owns
-	// state/mergedAt).
+	// state/mergedAt/mergeCommitSHA).
 	// +optional
 	PullRequest *PullRequestStatus `json:"pullRequest,omitempty"`
 	// Attempts tallies agent runs (respective controllers).

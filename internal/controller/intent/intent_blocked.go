@@ -103,9 +103,10 @@ func (p *pass) blocked(ctx context.Context) (bool, error) {
 }
 
 // blockHolds reports whether any block still holds: the spend still at the
-// ceiling; a repository-image block still in force (repository images still
-// off or the breaker still tripped, or else neither the Project nor the
-// default branch changed since the block).
+// ceiling; a repository-image block still in force (the Project still
+// requires the image, and repository images are still off or the breaker
+// still tripped, or else neither the Project nor the default branch changed
+// since the block).
 func (p *pass) blockHolds(ctx context.Context) (bool, error) {
 	if meta.IsStatusConditionTrue(p.in.Status.Conditions, v1alpha1.ConditionBudgetExhausted) &&
 		p.in.Status.Usage.CostMicroUSD >= maxCostMicroUSD(p.proj) {
@@ -115,14 +116,16 @@ func (p *pass) blockHolds(ctx context.Context) (bool, error) {
 	if c == nil || c.Status != metav1.ConditionTrue {
 		return false, nil
 	}
+	if !requireRepositoryImage(p.proj) {
+		// Opted out: the build runs on the default image, whatever kept the
+		// repository's from being usable (images off, the breaker tripped).
+		return false, nil
+	}
 	switch c.Reason {
 	case ReasonRepositoryImagesOff:
 		return !p.r.Images.Enabled, nil
 	case ReasonSandboxBreaker:
 		return p.r.Images.Breaker.Tripped(), nil
-	}
-	if !requireRepositoryImage(p.proj) {
-		return false, nil
 	}
 	var gen int64
 	var known bool

@@ -288,6 +288,57 @@ func TestBuildOnDefaultImageWhenNotRequired(t *testing.T) {
 	e.drive(name, v1alpha1.IntentInReview, "")
 }
 
+// TestOptOutLiftsAnImageBlock: a build blocked because repository images are
+// off, or because the sandbox breaker is tripped, resumes on the default
+// image once its Project stops requiring the repository's, although neither
+// cause has changed: the opt-out is the remedy the docs name for both.
+func TestOptOutLiftsAnImageBlock(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		reason string
+		cause  func(e *env)
+	}{
+		{name: "repository images off", reason: ReasonRepositoryImagesOff, cause: func(e *env) {
+			e.intent.Images.Enabled, e.runs.Images.Enabled = false, false
+		}},
+		{name: "the sandbox breaker tripped", reason: ReasonSandboxBreaker, cause: func(e *env) {
+			e.runs.Images.Breaker.Trip(context.Background(), "a-job", "a-run")
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t, testProject())
+			tt.cause(e)
+			name := e.awaiting()
+			e.gh.label(1, "patchy:approved", approver)
+			in := e.drive(name, v1alpha1.IntentBlocked, repoImage)
+			if c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionImageRequired); c == nil ||
+				c.Reason != tt.reason {
+				t.Fatalf("ImageRequired = %+v, want reason %s", c, tt.reason)
+			}
+			e.settleActions(name)
+			if in := e.get(name); in.Status.Phase != v1alpha1.IntentBlocked {
+				t.Fatalf("phase = %s while the Project still requires the image", in.Status.Phase)
+			}
+
+			proj := e.getProject()
+			proj.Spec.RequireRepositoryImage = new(false)
+			proj.Generation++
+			if err := e.c.Update(context.Background(), proj); err != nil {
+				t.Fatal(err)
+			}
+			in = e.drive(name, v1alpha1.IntentInReview, repoImage)
+			if meta.IsStatusConditionTrue(in.Status.Conditions, v1alpha1.ConditionImageRequired) {
+				t.Error("ImageRequired is still True")
+			}
+			for _, s := range e.jobs.launched() {
+				if s.Phase == "build" && s.RunnerImage != "" {
+					t.Errorf("the build ran on the repository image %s, want the default one", s.RunnerImage)
+				}
+			}
+		})
+	}
+}
+
 // TestChangesetRejected: a build touching .github is refused before any
 // forge call, counts as a failed attempt, and pushes nothing.
 func TestChangesetRejected(t *testing.T) {

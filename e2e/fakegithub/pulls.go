@@ -7,18 +7,59 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // pull is the fake's pull-request record.
 type pull struct {
-	Number  int    `json:"number"`
-	HTMLURL string `json:"html_url"`
-	State   string `json:"state"`
-	Title   string `json:"title"`
-	Body    string `json:"body"`
-	Head    ref    `json:"head"`
-	Base    ref    `json:"base"`
+	Number         int        `json:"number"`
+	HTMLURL        string     `json:"html_url"`
+	State          string     `json:"state"`
+	Title          string     `json:"title"`
+	Body           string     `json:"body"`
+	Head           ref        `json:"head"`
+	Base           ref        `json:"base"`
+	Merged         bool       `json:"merged"`
+	MergedAt       *time.Time `json:"merged_at"`
+	MergeCommitSHA string     `json:"merge_commit_sha,omitempty"`
+}
+
+// MergePull records pull request number, from branch head, as merged into
+// mergeCommitSHA — the state a merge leaves behind — creating it when the
+// fake has not seen it (a test fabricating a PR patchy opened earlier).
+func (s *Server) MergePull(number int, head, mergeCommitSHA string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.pulls[number]
+	if !ok {
+		p = &pull{Number: number, Head: ref{Ref: head}, Base: ref{Ref: "main"}}
+		s.pulls[number] = p
+	}
+	at := s.Now().UTC().Truncate(time.Second)
+	p.State, p.Merged, p.MergedAt, p.MergeCommitSHA = "closed", true, &at, mergeCommitSHA
+}
+
+// getPull answers GET /repos/{o}/{r}/pulls/{number}.
+func (s *Server) getPull(w http.ResponseWriter, r *http.Request) {
+	n, err := strconv.Atoi(r.PathValue("number"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	p, ok := s.pulls[n]
+	var out pull
+	if ok {
+		out = *p
+	}
+	s.mu.Unlock()
+	if !ok {
+		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+		return
+	}
+	writeJSON(w, &out)
 }
 
 type ref struct {

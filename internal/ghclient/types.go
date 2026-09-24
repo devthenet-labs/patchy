@@ -35,6 +35,18 @@ type PR struct {
 	HTMLURL string
 }
 
+// PullRequest is a pull request's current state, as GetPullRequest reads
+// it. State is "open" or "closed"; a closed one may be Merged, and only then
+// are MergedAt and MergeCommitSHA the merge's (an open PR's merge commit is
+// GitHub's trial merge).
+type PullRequest struct {
+	Number         int
+	State          string
+	Merged         bool
+	MergedAt       time.Time
+	MergeCommitSHA string
+}
+
 // IssueRequest is the payload for creating an issue.
 type IssueRequest struct {
 	Title  string

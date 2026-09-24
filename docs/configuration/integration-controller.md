@@ -75,7 +75,9 @@ never fatal: the reconcile loops are the retry mechanism, and the webhook path o
   fix it; or that a run on the image ended `image_incompatible` or was refused with `SandboxUnenforced`. A repository
   that declares nothing gets no comment.
 - **Human signals** — issue close (`→ HandedOff`), issue reopen (`Dismissed → HandedOff`), accepted `/approve` comments
-  (recorded on `spec.approval`), and `pull_request` webhooks on `patchy/<finding>` branches (`InReview → Remediated` on
-  merge, `→ Failed` on unmerged close).
+  (recorded on `spec.approval`), and `pull_request` webhooks for the finding's recorded PR on its `patchy/<finding>`
+  branch (`InReview → Remediated` on merge, `→ Failed` on unmerged close). An issue closed during review is checked
+  against that PR first (read with the Integration's credential), since its merge closes the issue too: merged or
+  closed, the PR's outcome applies; still open, the finding is handed off.
 - **Credential revalidation** — an Integration reconciler validates each Integration's referenced Secret on its
   `spec.interval` and maintains its `Ready` condition.

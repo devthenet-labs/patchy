@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -36,7 +37,8 @@ const BranchPrefix = "patchy/"
 var approverAssociations = []string{"OWNER", "MEMBER", "COLLABORATOR"}
 
 // Signals applies human actions on tracking items to Findings: the writer of
-// edges 16/17 (PR merged/closed), 19 (issue reopened after dismissal), 20
+// edges 16/17 (PR merged/closed — from the PR's delivery, or its tracking
+// issue's when that lands first), 19 (issue reopened after dismissal), 20
 // (issue closed by a human), and of spec.approval.
 type Signals struct {
 	client.Client
@@ -46,13 +48,26 @@ type Signals struct {
 	Now func() time.Time
 	// Log receives diagnostics; nil discards.
 	Log *slog.Logger
+	// PullRequests reads the remediation PR's live state when its tracking
+	// issue closes during review (issues); nil skips the lookup, so every
+	// such close hands the finding off.
+	PullRequests PullRequestReader
+}
+
+// PullRequestReader reads one pull request's current state.
+type PullRequestReader interface {
+	// GetPullRequest reads PR number in repo with the Integration's
+	// credential.
+	GetPullRequest(
+		ctx context.Context, integ *v1alpha1.Integration, repo ghclient.Repo, number int,
+	) (*ghclient.PullRequest, error)
 }
 
 // Handle applies one tracking-system delivery.
 func (s *Signals) Handle(ctx context.Context, integ *v1alpha1.Integration, e webhook.Event) error {
 	switch e.Type {
 	case "issues":
-		return s.issues(ctx, e.Payload)
+		return s.issues(ctx, integ, e.Payload)
 	case "issue_comment":
 		return s.comment(ctx, integ, e.Payload)
 	case "pull_request":
@@ -69,8 +84,10 @@ type issueRef struct {
 }
 
 // issues handles close (any non-terminal phase → HandedOff) and reopen
-// (Dismissed → HandedOff).
-func (s *Signals) issues(ctx context.Context, payload []byte) error {
+// (Dismissed → HandedOff). A close during review first asks whether the
+// remediation PR closed (reviewedPRClose): if so, the PR's close settles the
+// finding, exactly as its own delivery would.
+func (s *Signals) issues(ctx context.Context, integ *v1alpha1.Integration, payload []byte) error {
 	var ev struct {
 		Action string   `json:"action"`
 		Issue  issueRef `json:"issue"`
@@ -85,11 +102,20 @@ func (s *Signals) issues(ctx context.Context, payload []byte) error {
 	if err != nil || fnd == "" {
 		return err
 	}
+	var closed *prClose
+	if ev.Action == "closed" {
+		if closed, err = s.reviewedPRClose(ctx, integ, fnd); err != nil {
+			return err
+		}
+	}
 	return s.updateFinding(ctx, fnd, func(cur *v1alpha1.Finding) error {
 		if cur.Status.Tracking != nil {
 			cur.Status.Tracking.State = map[string]string{"closed": "closed", "reopened": "open"}[ev.Action]
 		}
 		switch {
+		case closed != nil && cur.Status.Phase == v1alpha1.PhaseInReview &&
+			cur.Status.PullRequest != nil && cur.Status.PullRequest.Number == closed.number:
+			return closed.settle(cur, s.now())
 		case ev.Action == "closed" && !v1alpha1.Terminal(cur.Status.Phase):
 			return v1alpha1.SetPhase(cur, v1alpha1.PhaseHandedOff, s.now())
 		case ev.Action == "reopened" && cur.Status.Phase == v1alpha1.PhaseDismissed:
@@ -199,9 +225,19 @@ func (s *Signals) pullRequest(ctx context.Context, payload []byte) error {
 		return nil
 	}
 	fnd := strings.TrimPrefix(ev.PullRequest.Head.Ref, BranchPrefix)
+	closed := prClose{
+		number:         ev.PullRequest.Number,
+		merged:         ev.PullRequest.Merged,
+		mergeCommitSHA: ev.PullRequest.MergeCommitSHA,
+	}
+	if at, err := time.Parse(time.RFC3339, ev.PullRequest.MergedAt); err == nil {
+		closed.mergedAt = at
+	}
 	return s.updateFinding(ctx, fnd, func(cur *v1alpha1.Finding) error {
 		if cur.Status.Phase != v1alpha1.PhaseInReview {
-			return nil // stale or duplicate delivery
+			// Stale or duplicate — or the second of a merge's two
+			// deliveries, after its tracking issue's close settled it.
+			return nil
 		}
 		if !isRecordedPR(cur, ev.Repository.FullName, ev.PullRequest.Head.Repo.FullName, ev.PullRequest.Number) {
 			s.log().LogAttrs(ctx, slog.LevelInfo, "closed pull request is not the finding's recorded one; ignored",
@@ -211,28 +247,87 @@ func (s *Signals) pullRequest(ctx context.Context, payload []byte) error {
 				slog.String("head_repository", ev.PullRequest.Head.Repo.FullName))
 			return nil
 		}
-		to := v1alpha1.PhaseFailed
-		state := "closed"
-		if ev.PullRequest.Merged {
-			to = v1alpha1.PhaseRemediated
-			state = "merged"
-		}
-		if cur.Status.PullRequest != nil {
-			cur.Status.PullRequest.State = state
-			if ev.PullRequest.Merged {
-				if at, err := time.Parse(time.RFC3339, ev.PullRequest.MergedAt); err == nil {
-					t := metav1.NewTime(at)
-					cur.Status.PullRequest.MergedAt = &t
-				}
-				// A commit id longer than a SHA-256 hex digest is not one;
-				// record nothing rather than a truncated id.
-				if sha := ev.PullRequest.MergeCommitSHA; len(sha) <= 64 {
-					cur.Status.PullRequest.MergeCommitSHA = sha
-				}
+		return closed.settle(cur, s.now())
+	})
+}
+
+// prClose is the close of a finding's remediation PR, as the PR's own
+// delivery or, when its tracking issue's close lands first, the API reports
+// it.
+type prClose struct {
+	number         int64
+	merged         bool
+	mergedAt       time.Time // zero when unknown
+	mergeCommitSHA string
+}
+
+// settle applies the close to an InReview finding: merged → Remediated
+// (edge 16), recording when and the commit the merge put on the base branch;
+// closed unmerged → Failed (edge 17).
+func (c prClose) settle(cur *v1alpha1.Finding, now time.Time) error {
+	to := v1alpha1.PhaseFailed
+	state := "closed"
+	if c.merged {
+		to = v1alpha1.PhaseRemediated
+		state = "merged"
+	}
+	if cur.Status.PullRequest != nil {
+		cur.Status.PullRequest.State = state
+		if c.merged {
+			if !c.mergedAt.IsZero() {
+				t := metav1.NewTime(c.mergedAt)
+				cur.Status.PullRequest.MergedAt = &t
+			}
+			// A commit id longer than a SHA-256 hex digest is not one;
+			// record nothing rather than a truncated id.
+			if sha := c.mergeCommitSHA; len(sha) <= 64 {
+				cur.Status.PullRequest.MergeCommitSHA = sha
 			}
 		}
-		return v1alpha1.SetPhase(cur, to, s.now())
-	})
+	}
+	return v1alpha1.SetPhase(cur, to, now)
+}
+
+// reviewedPRClose reads the remediation PR of a finding whose tracking issue
+// just closed, when the finding is in review of one. Its body says
+// "Fixes #N", so the merge closes the issue too, and deliveries are handled
+// unordered: the issue's close can land before the PR's, and handing the
+// finding off then would leave the PR's delivery nothing to settle. nil
+// means the close is a human's — the PR is still open — or there is no PR
+// to ask about.
+//
+// A failed lookup is returned rather than guessed at: the finding stays in
+// review, where the PR's own delivery still settles it, instead of being
+// handed off with its merge unrecorded.
+func (s *Signals) reviewedPRClose(ctx context.Context, integ *v1alpha1.Integration, name string) (*prClose, error) {
+	if s.PullRequests == nil {
+		return nil, nil
+	}
+	var fnd v1alpha1.Finding
+	if err := s.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: name}, &fnd); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+	rec := fnd.Status.PullRequest
+	if fnd.Status.Phase != v1alpha1.PhaseInReview || rec == nil {
+		return nil, nil
+	}
+	repo, ok := recordedPRRepo(&fnd)
+	if !ok {
+		return nil, nil
+	}
+	pr, err := s.PullRequests.GetPullRequest(ctx, integ, repo, int(rec.Number))
+	if err != nil {
+		return nil, fmt.Errorf("finding %s: read pull request %s#%d: %w", name, repo, rec.Number, err)
+	}
+	if pr.State != "closed" {
+		return nil, nil // still open: a human closed the issue on purpose
+	}
+	return &prClose{
+		number:         rec.Number,
+		merged:         pr.Merged,
+		mergedAt:       pr.MergedAt,
+		mergeCommitSHA: pr.MergeCommitSHA,
+	}, nil
 }
 
 // isRecordedPR reports whether a closed pull request — number, in repo, from
@@ -284,16 +379,21 @@ func (s *Signals) findByIssueURL(ctx context.Context, url string) (string, error
 	return list.Items[0].Name, nil
 }
 
-// updateFinding applies mutate under conflict retry; a vanished Finding is a
-// no-op.
+// updateFinding applies mutate under conflict retry; a vanished Finding, or
+// a delivery that changes nothing (a duplicate, or the second of a merge's
+// two), is a no-op that writes nothing.
 func (s *Signals) updateFinding(ctx context.Context, name string, mutate func(*v1alpha1.Finding) error) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var cur v1alpha1.Finding
 		if err := s.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: name}, &cur); err != nil {
 			return client.IgnoreNotFound(err)
 		}
+		before := cur.Status.DeepCopy()
 		if err := mutate(&cur); err != nil {
 			return err
+		}
+		if equality.Semantic.DeepEqual(before, &cur.Status) {
+			return nil
 		}
 		return s.Status().Update(ctx, &cur)
 	})

@@ -197,6 +197,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /repos/{owner}/{repo}", s.getRepo)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{spec}", s.compare)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls", s.listPulls)
+	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}", s.getPull)
 	mux.HandleFunc("POST /repos/{owner}/{repo}/pulls", s.createPull)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/tarball/{ref...}", s.tarballRedirect)
 	mux.HandleFunc("GET /_tarball/{owner}/{repo}/{ref...}", s.tarball)

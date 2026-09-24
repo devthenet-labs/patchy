@@ -99,6 +99,11 @@ These are the only things on GitHub that move `Finding` state:
 | PR on `patchy/<finding>` merged          | `InReview` → `Remediated`   |
 | PR on `patchy/<finding>` closed unmerged | → `Failed`                  |
 
+A PR close counts only when it is the PR the finding recorded — the same number, in the finding's repository, from a
+branch there, not a fork's — so a stray branch named `patchy/<finding>` moves nothing. The PR body's `Fixes #N` closes
+the tracking issue as the PR merges, and the two deliveries can arrive in either order: an issue closed while its
+finding is `InReview` is checked against the PR first, and only a PR still open means a human closed it (`HandedOff`).
+
 `approveComment` changes the command; it defaults to `/approve`. Who may approve is RBAC on the status page and the CLI,
 but on an issue it is whoever can comment — so treat the comment as a convenience for repositories whose write access
 already matches your approval policy.

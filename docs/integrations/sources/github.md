@@ -133,19 +133,21 @@ text-reordering characters stripped. `/approve` still approves, matched exactly 
 **Who may command a finding.** The commenter needs write access to the tracking issue's repository — `admin`, `maintain`
 or `write`, read from GitHub's collaborator-permission API when the command is answered. `read` is not enough, since a
 public repository grants it to every GitHub account; neither is organization membership (`author_association` plays no
-part), and an account GitHub does not know is refused. A command from a bot, the App's own `<slug>[bot]` included, is
-ignored without a reply. The status page and the CLI keep their own RBAC checks; a command on the issue is authorised by
-the repository's write access alone.
+part), and an account GitHub does not know is refused. The check comes first, whatever the verb: a command from an
+account without write access is not allowed even when its verb is one patchy does not know. A command from a bot, the
+App's own `<slug>[bot]` included, is ignored without a reply. The status page and the CLI keep their own RBAC checks; a
+command on the issue is authorised by the repository's write access alone.
 
 **The answer.** A command recorded on the finding gets an `eyes` reaction, then one reply from patchy saying what
 happened: done; not available in the finding's current phase, listing the commands that are; not allowed; superseded (a
-`suspend` or `resume` written before the last one patchy applied); or, for a verb patchy does not know, the list of
-commands a tracking issue accepts. An account gets one refusal reply (not allowed, or an unknown verb) per finding: its
-later refusals there get the reaction alone, so commenting cannot make patchy post a reply per comment. The phase gate
-is the status page's own: `approve` means something only on a held (`AwaitingApproval`) or handed-off finding, for
-instance, so an approval written while the finding is still being investigated is answered "not available" rather than
-kept for later. A command writes the spec only; the controller that owns the phase edge moves the phase, exactly as for
-a status-page action.
+`suspend` or `resume` written before the last one patchy applied); or, for a verb patchy does not know from someone with
+write access, the list of commands a tracking issue accepts. An account without write access gets one "not allowed"
+reply per finding: its later commands there get the reaction alone, so commenting cannot make patchy post a reply per
+comment. An account with write access is never quietened: every command from it, a mistyped verb or one not available in
+the finding's current phase included, gets its reply. The phase gate is the status page's own: `approve` means something
+only on a held (`AwaitingApproval`) or handed-off finding, for instance, so an approval written while the finding is
+still being investigated is answered "not available" rather than kept for later. A command writes the spec only; the
+controller that owns the phase edge moves the phase, exactly as for a status-page action.
 
 **Delivery.** GitHub's webhook is answered before it is handled and never redelivered once answered, so the webhook
 handler only records the command on the finding (`status.commands.pending`). Anyone who can comment on the issue gets

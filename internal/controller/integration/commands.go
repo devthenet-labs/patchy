@@ -61,14 +61,15 @@ var (
 // command moves through four steps, each a durable write, and a retry after
 // any failure resumes at the step that failed:
 //
-//  1. Decide. A verb a tracking issue does not offer is answered with the
-//     ones it does. Otherwise the commenter needs write access to the
-//     tracking issue's repository (mayCommand), a suspend or resume must be
-//     newer than the last one decided Done (LastToggle), and then the
-//     finding's phase must admit the verb, gated by action.Apply exactly as
-//     the status page and the CLI gate it. The outcome is written to the
-//     command before anything acts on it, so a retry never decides again
-//     and the reply never changes.
+//  1. Decide. The commenter needs write access to the tracking issue's
+//     repository (mayCommand), whatever the verb: without it the command is
+//     refused NotAllowed, one naming a verb patchy does not know included.
+//     Then a verb a tracking issue does not offer is answered with the ones
+//     it does, a suspend or resume must be newer than the last one decided
+//     Done (LastToggle), and the finding's phase must admit the verb, gated
+//     by action.Apply exactly as the status page and the CLI gate it. The
+//     outcome is written to the command before anything acts on it, so a
+//     retry never decides again and the reply never changes.
 //  2. Apply (Done only). The effect is written to the spec through
 //     action.Apply, as the status page writes it: spec only, so the phase
 //     stays with the controller that owns the edge. Then it is marked
@@ -76,9 +77,11 @@ var (
 //  3. Answer. An eyes reaction on the comment, then exactly one reply
 //     giving the outcome, headed by a marker keyed by the comment id; a
 //     refusal to an account already sent one on this finding gets the
-//     reaction alone. The thread is never listed to post it (answer says
-//     how the reply stays single), so a command costs the same GitHub calls
-//     however many comments the issue holds.
+//     reaction alone. Only an account without write access is ever refused,
+//     so a maintainer's answers are always given in full. The thread is
+//     never listed to post it (answer says how the reply stays single), so a
+//     command costs the same GitHub calls however many comments the issue
+//     holds.
 //  4. Consume. The command leaves pending and, unless it was refused, its
 //     id joins consumed, so a redelivered or replayed delivery never
 //     records it again.
@@ -233,22 +236,28 @@ func (a commandAnswer) decideAndRecord(
 }
 
 // decide answers the command as it stands against fnd at now: whether its
-// verb is one a tracking issue offers, whether its author may command the
-// finding, whether a suspend or resume is newer than the last one decided
+// author may command the finding, whether its verb is one a tracking issue
+// offers, whether a suspend or resume is newer than the last one decided
 // Done, and whether the finding's phase admits the verb. For an Unavailable
 // outcome it also returns the verbs the phase does admit.
+//
+// The author is asked about first, whatever the verb, so that only an
+// account without write access is ever refused: an unknown verb is
+// NotAllowed from anyone else, and is answered with the help only for a
+// maintainer, whom the one-refusal-reply rule (RefusedActors) then never
+// reaches.
 func (a commandAnswer) decide(
 	ctx context.Context, fnd *v1alpha1.Finding, c v1alpha1.FindingCommand, now time.Time,
 ) (v1alpha1.CommandOutcome, []string, error) {
-	if !slices.Contains(command.Available(command.FindingIssue), c.Verb) {
-		return v1alpha1.CommandUnknownVerb, nil, nil
-	}
 	ok, err := a.mayCommand(ctx, c.Actor)
 	if err != nil {
 		return "", nil, err
 	}
 	if !ok {
 		return v1alpha1.CommandNotAllowed, nil, nil
+	}
+	if !slices.Contains(command.Available(command.FindingIssue), c.Verb) {
+		return v1alpha1.CommandUnknownVerb, nil, nil
 	}
 	// Written before a suspend or resume already decided, delivered after
 	// it: applying it now would undo the later one.
@@ -595,10 +604,13 @@ func isToggle(verb string) bool {
 	return verb == action.VerbSuspend || verb == action.VerbResume
 }
 
-// refusal reports the outcomes that refuse a command outright: it had no
-// effect, and needs no remembering.
+// refusal reports the outcome that refuses a command outright because its
+// author failed the write-access check: it had no effect, and needs no
+// remembering. Every other outcome, UnknownVerb included, is decided only
+// for an account with write access (decide), so it is never quietened, its
+// id joins consumed like any maintainer's command, and it keeps its slot.
 func refusal(o v1alpha1.CommandOutcome) bool {
-	return o == v1alpha1.CommandNotAllowed || o == v1alpha1.CommandUnknownVerb
+	return o == v1alpha1.CommandNotAllowed
 }
 
 // rememberActor adds id to ids, keeping the latest MaxRefusedActors of them.
@@ -657,11 +669,15 @@ var commandDone = map[string]string{
 
 // commandReply is the one reply to a decided command, headed by its
 // marker. It echoes the verb only as command.Parse left it: 1-32 ASCII
-// letters, or empty.
+// letters, or empty (a refusal of a command naming no verb patchy could
+// read names the prefix alone).
 func commandReply(c v1alpha1.FindingCommand, repo ghclient.Repo) string {
 	var b strings.Builder
 	b.WriteString(commandMarker(c.CommentID) + "\n@" + c.Actor.Login + " ")
-	used := "`" + command.Prefix + " " + c.Verb + "`"
+	used := "`" + command.Prefix + "`"
+	if c.Verb != "" {
+		used = "`" + command.Prefix + " " + c.Verb + "`"
+	}
 	switch c.Outcome {
 	case v1alpha1.CommandDone:
 		b.WriteString(used + " is done: " + commandDone[c.Verb])

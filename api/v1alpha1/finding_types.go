@@ -573,10 +573,12 @@ type FindingCommands struct {
 	// +kubebuilder:validation:Minimum=0
 	LastToggle int64 `json:"lastToggle,omitempty"`
 	// RefusedActors are the GitHub ids of the accounts already sent a reply
-	// refusing a command on this finding (NotAllowed or UnknownVerb), the
-	// latest MaxRefusedActors of them. A later refusal to one of them is
-	// answered by the reaction alone (FindingCommand.Quiet), so an account
-	// commenting repeatedly cannot make patchy post a reply per comment.
+	// refusing a command on this finding because they lack write access
+	// (NotAllowed, whatever the verb), the latest MaxRefusedActors of them. A
+	// later refusal to one of them is answered by the reaction alone
+	// (FindingCommand.Quiet), so an account commenting repeatedly cannot make
+	// patchy post a reply per comment. An account with write access is never
+	// added: every answer to it, an unknown verb's included, is given in full.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=32
@@ -594,9 +596,12 @@ const (
 	// CommandUnavailable: the verb means nothing in the finding's phase.
 	CommandUnavailable CommandOutcome = "Unavailable"
 	// CommandNotAllowed: the commenter lacks write access to the tracking
-	// issue's repository.
+	// issue's repository. It is asked first, so a command from such an
+	// account is NotAllowed whatever its verb, one patchy does not know
+	// included.
 	CommandNotAllowed CommandOutcome = "NotAllowed"
-	// CommandUnknownVerb: the verb is not one a tracking issue offers.
+	// CommandUnknownVerb: the verb is not one a tracking issue offers, from
+	// a commenter with write access.
 	CommandUnknownVerb CommandOutcome = "UnknownVerb"
 	// CommandSuperseded: a suspend or resume written before the latest one
 	// decided Done (FindingCommands.LastToggle). It is not applied, so the
@@ -666,8 +671,9 @@ type FindingCommand struct {
 	// Applied reports that a Done command's effect is written to the spec.
 	// +optional
 	Applied bool `json:"applied,omitempty"`
-	// Quiet marks a refusal answered by the reaction alone: its author was
-	// already sent a refusal on this finding (FindingCommands.RefusedActors).
+	// Quiet marks a NotAllowed refusal answered by the reaction alone: its
+	// author was already sent a refusal on this finding
+	// (FindingCommands.RefusedActors).
 	// +optional
 	Quiet bool `json:"quiet,omitempty"`
 	// AnsweringSince is when patchy first set out to answer the command

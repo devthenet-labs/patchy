@@ -4,7 +4,6 @@
 package intent
 
 import (
-	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -502,15 +501,50 @@ func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (c
 // is collected again when the suspension is cleared.
 var errHeld = errors.New("the intent is suspended; its push waits")
 
-// suspended reports that the run's Intent is suspended, read uncached: a
-// push is the one write to GitHub the run reconciler makes.
-func (r *RunReconciler) suspended(ctx context.Context, run *v1alpha1.IntentRun) (bool, error) {
+// errIntentEnded: the run's Intent, read uncached, is gone, is another
+// Intent under its name, is being deleted, or has ended (a cancel, a human
+// close). Nothing more of the build reaches GitHub.
+var errIntentEnded = errors.New("the intent ended before the build's push")
+
+// pushGate reads the run's Intent uncached before each write the push makes
+// to GitHub (the commit, then the branch), which are the only writes the run
+// reconciler makes: the cache it decided to collect from can lag a cancel or
+// a suspension written a moment ago. It is errIntentEnded when the Intent no
+// longer wants the build, errHeld while it is suspended, and nil to push.
+func (r *RunReconciler) pushGate(ctx context.Context, run *v1alpha1.IntentRun) error {
 	var in v1alpha1.Intent
-	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name},
-		&in); err != nil {
-		return false, err
+	err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name}, &in)
+	switch {
+	case kerrors.IsNotFound(err):
+		return errIntentEnded
+	case err != nil:
+		return err
+	case in.UID != run.Spec.IntentRef.UID || !in.DeletionTimestamp.IsZero() || terminal(in.Status.Phase):
+		return errIntentEnded
+	case in.Spec.Suspend:
+		return errHeld
 	}
-	return in.Spec.Suspend, nil
+	return nil
+}
+
+// endedBeforePush settles a build whose Intent ended before its push was
+// complete: aborted, keeping what the build reported, with its Job deleted
+// and nothing (more) written to GitHub. A commit already created is left
+// dangling, with no branch at it.
+func (r *RunReconciler) endedBeforePush(ctx context.Context, run *v1alpha1.IntentRun, res result) error {
+	if run.Status.JobRef != nil {
+		if err := r.Jobs.Delete(ctx, run.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
+			return fmt.Errorf("delete job %s: %w", run.Status.JobRef.Name, err)
+		}
+	}
+	res.outcome, res.complete = OutcomeAborted, false
+	res.detail = "the intent ended before the build's push; nothing was pushed"
+	if run.Status.PushedCommit != "" {
+		res.detail = "the intent ended before the build's branch was created; commit " + run.Status.PushedCommit +
+			" was made, and no branch points at it"
+	}
+	r.log().LogAttrs(ctx, slog.LevelInfo, "intent ended; the build's push is abandoned", slog.String("run", run.Name))
+	return r.settle(ctx, run, res)
 }
 
 // hold leaves a build whose push waits on a suspension Running. Clearing
@@ -671,8 +705,11 @@ func (r *RunReconciler) collectBuild(ctx context.Context, run *v1alpha1.IntentRu
 // agent's are dropped), records it on the run before any ref moves, then
 // creates the intent branch at it.
 func (r *RunReconciler) push(ctx context.Context, run *v1alpha1.IntentRun, ev *envelope.Remediation, res result) error {
-	if held, err := r.suspended(ctx, run); err != nil || held {
-		return cmp.Or(err, errHeld)
+	switch err := r.pushGate(ctx, run); {
+	case errors.Is(err, errIntentEnded):
+		return r.endedBeforePush(ctx, run, res)
+	case err != nil:
+		return err
 	}
 	var in v1alpha1.Intent
 	if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name}, &in); err != nil {
@@ -719,8 +756,11 @@ func (r *RunReconciler) push(ctx context.Context, run *v1alpha1.IntentRun, ev *e
 // create-only: an existing branch is adopted only when it already points at
 // that commit (a retry), and is otherwise branch_exists. Nothing is forced.
 func (r *RunReconciler) createBranch(ctx context.Context, run *v1alpha1.IntentRun) error {
-	if held, err := r.suspended(ctx, run); err != nil || held {
-		return cmp.Or(err, errHeld)
+	switch err := r.pushGate(ctx, run); {
+	case errors.Is(err, errIntentEnded):
+		return r.endedBeforePush(ctx, run, result{keep: true})
+	case err != nil:
+		return err
 	}
 	branch := branchName(run.Spec.IntentRef.Name)
 	err := r.GitHub.CreateBranchRef(ctx, run.Spec.Repository.URL, branch, run.Status.PushedCommit)

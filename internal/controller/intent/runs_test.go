@@ -1045,6 +1045,96 @@ func TestSuspendHoldsThePush(t *testing.T) {
 	}
 }
 
+// activeIntent is a cache that has not yet seen the Intent end: it reads the
+// Intent as Building.
+type activeIntent struct {
+	client.Client
+}
+
+func (s activeIntent) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := s.Client.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if in, ok := obj.(*v1alpha1.Intent); ok {
+		in.Status.Phase = v1alpha1.IntentBuilding
+	}
+	return nil
+}
+
+// TestEndedIntentPushesNothing: a build collected by a pass whose cache
+// still shows its Intent active, after an approver cancelled it, writes
+// nothing more to GitHub: neither the commit nor, when the commit was made
+// already, the branch. The run is aborted and its Job deleted.
+func TestEndedIntentPushesNothing(t *testing.T) {
+	for _, afterCommit := range []bool{false, true} {
+		t.Run(map[bool]string{false: "before the commit", true: "before the branch"}[afterCommit], func(t *testing.T) {
+			e := newEnv(t, testProject())
+			ctx := context.Background()
+			name := e.awaiting()
+			e.gh.label(1, "patchy:approved", approver)
+			if afterCommit {
+				e.gh.failNext("CreateBranchRef", errTransient)
+			}
+			reached := func() bool {
+				runs := e.runsOf(name, v1alpha1.IntentStageBuild)
+				if len(runs) == 0 {
+					return false
+				}
+				if afterCommit {
+					return runs[0].Status.PushedCommit != ""
+				}
+				return runs[0].Status.JobRef != nil
+			}
+			for range 30 {
+				if reached() {
+					break
+				}
+				_ = e.reconcileIntent(name)
+				e.readyRepositories(repoImage)
+				_, _ = e.runs.Reconcile(ctx, req(runSchedulerRequest))
+				for _, r := range e.intentRuns(name) {
+					_, _ = e.runs.Reconcile(ctx, req(r.Name))
+				}
+				e.clock.Advance(time.Minute)
+			}
+			if !reached() {
+				t.Fatal("the build never reached the point to cancel at")
+			}
+			e.gh.comment(approver, "/patchy cancel")
+			for range 5 {
+				if e.get(name).Status.Phase == v1alpha1.IntentClosed {
+					break
+				}
+				e.clock.Advance(time.Minute)
+				e.mustIntent(name) // the intent passes alone: no run is reconciled
+			}
+			if in := e.get(name); in.Status.Phase != v1alpha1.IntentClosed {
+				t.Fatalf("phase = %s after the cancel", in.Status.Phase)
+			}
+
+			e.runs.Client = activeIntent{Client: e.c}
+			commits, refs := len(e.gh.commits), e.gh.calls["CreateBranchRef"]
+			run := e.runsOf(name, v1alpha1.IntentStageBuild)[0]
+			if _, err := e.runs.Reconcile(ctx, req(run.Name)); err != nil {
+				t.Fatal(err)
+			}
+			if len(e.gh.commits) != commits || e.gh.calls["CreateBranchRef"] != refs || len(e.gh.branches) != 0 {
+				t.Errorf("a cancelled intent's push reached GitHub: commits %d then %d, branch creates %d then %d",
+					commits, len(e.gh.commits), refs, e.gh.calls["CreateBranchRef"])
+			}
+			run = e.runsOf(name, v1alpha1.IntentStageBuild)[0]
+			if run.Status.Phase != v1alpha1.RunFailed || run.Status.Outcome != OutcomeAborted ||
+				!strings.Contains(run.Status.Detail, "intent ended") {
+				t.Errorf("run = %s %s: %s, want aborted as the intent ended", run.Status.Phase, run.Status.Outcome,
+					run.Status.Detail)
+			}
+			if !contains(e.jobs.deleted, run.Status.JobRef.Name) {
+				t.Errorf("the build's Job %s was not deleted (%v)", run.Status.JobRef.Name, e.jobs.deleted)
+			}
+		})
+	}
+}
+
 // TestTransientPRFailureRetries: a failed pull request create is retried and
 // opens exactly one.
 func TestTransientPRFailureRetries(t *testing.T) {

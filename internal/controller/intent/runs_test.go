@@ -886,7 +886,7 @@ func TestSuspendHoldsThePush(t *testing.T) {
 			}
 			run := e.runsOf(name, v1alpha1.IntentStageBuild)[0]
 			if len(e.gh.commits) != commits || e.gh.calls["CreateBranchRef"] != refs || len(e.gh.branches) != 0 {
-				t.Fatalf("a suspended intent's push reached GitHub: commits %d→%d, branch creates %d→%d",
+				t.Fatalf("a suspended intent's push reached GitHub: commits %d then %d, branch creates %d then %d",
 					commits, len(e.gh.commits), refs, e.gh.calls["CreateBranchRef"])
 			}
 			if run.Status.Phase != v1alpha1.RunRunning {

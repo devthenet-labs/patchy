@@ -115,18 +115,6 @@ func visibleText(s string) string {
 	return b.String()
 }
 
-// countInvisible counts the characters in s that visibleText shows by their
-// code point (a carriage return is a line break, never one of them).
-func countInvisible(s string) int {
-	n := 0
-	for _, r := range s {
-		if r != '\r' && invisible(r) {
-			n++
-		}
-	}
-	return n
-}
-
 // invisible reports a character that renders as nothing: a control
 // character other than newline and tab, a format character (bidi controls,
 // zero-width characters, tag characters, the byte order mark), a variation

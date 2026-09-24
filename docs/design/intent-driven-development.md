@@ -535,8 +535,7 @@ fenced code block (` ```markdown `). The fence is backticks, at least three and 
 backticks in the report, so no line of the report can close it, whatever the report holds. The block is the last thing
 in the comment. Outside it there is only the controller's header: the marker, the plan revision and its full digest, how
 to approve, the summary as one sanitised line, the new dependencies as a sanitised list, a count of the planner's
-questions (which are read in the plan itself), and a count of the characters in the plan that render as nothing even
-inside a code block (zero-width, bidi and tag characters, which a model reads as text).
+questions (which are read in the plan itself), and notes on what the block does not show at a glance (see below).
 
 Why verbatim rather than sanitised: a sanitised rendering shows the approver what the plan says only as far as the
 sanitiser's list of markdown tricks reaches. HTML comments, `<details>`, link reference definitions, link titles, a code
@@ -557,9 +556,28 @@ tests are seeded. They check that the text between the fences equals the report 
 end the block early, because none holds a run of backticks as long as the fence and goldmark, standing in for GitHub,
 reads the block whole; and that the output, plan or notice, never exceeds the limit.
 
-Two limits remain, and the approver has to act on both. First, GitHub does not wrap lines in a code block: a long line
-scrolls sideways, behind a scroll bar. Second, characters that render as nothing are counted in the header but not
-located, and a plan that holds any should be replanned rather than approved.
+A code block renders nothing, but three things can still keep part of a plan from the approver, and a hostile planner
+can use each to hide an instruction the build agent reads:
+
+- **Characters that render as nothing even in a code block.** Some can carry text: Unicode tag characters
+  (U+E0000-E007F), which a model reads as the ASCII they shadow; bidi embedding, override and isolate controls
+  (U+202A-202E, U+2066-2069), which reorder the text the approver sees; and variation selectors, a run of which (or any
+  but the one emoji presentation selector after a visible character) encodes bytes. No comment can show these, so a plan
+  holding any is refused like an oversize one, with its own notice, and never offered for approval: a count the approver
+  could approve past is no protection. Other such characters (a zero-width space, a byte order mark, a control
+  character) are counted under "Before you approve", with the advice to ask for a new plan. The ones an emoji or a
+  script's joining is made of (the presentation selector in a red heart, the joiner between two emoji, the non-joiner in
+  Persian) are part of what the approver sees and are not counted, so the count stays rare enough to be heeded.
+- **Lines wider than the block.** GitHub does not wrap a code block, so a line runs past its right edge behind a scroll
+  bar, and padding (spaces, tabs, ideographic spaces) can make a line look finished at the edge when it is not. The
+  header counts the lines whose text reaches past 100 columns (tabs to stops of eight, East Asian wide characters as
+  two), and the preamble to the block says to scroll a long line to its end. Long lines are common in prose, so they are
+  counted rather than refused.
+- **Long runs of blank lines.** A stretch of empty block can look like the plan's end. A run of more than three blank
+  lines with more of the plan after it is reported, with its length.
+
+The property tests check these notes against an independent reckoning over generated reports, and example tests pin each
+padding shape and each character class.
 
 All other agent-authored text that reaches GitHub passes through one sanitiser in `internal/templates`. That covers the
 plan's summary and dependencies in the header, pull request bodies, status comments that quote agent output, and

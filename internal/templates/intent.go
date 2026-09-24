@@ -35,13 +35,15 @@ const MaxCommentBytes = 65536
 
 // ErrPlanRefused reports a plan no comment can show an approver in full,
 // exactly as the build agent reads it: rendered for approval it is over
-// MaxCommentBytes, or it is not UTF-8, which a comment — text, sent to
-// GitHub as JSON — cannot carry byte for byte. Cutting or repairing it would
-// show the approver something other than what the build agent reads, so the
-// plan is refused instead: RenderPlanComment returns this error, wrapped,
-// together with the notice to post in the plan's place, and
-// intent-controller treats the plan as invalid, never offering it for
-// approval.
+// MaxCommentBytes; it is not UTF-8, which a comment — text, sent to GitHub
+// as JSON — cannot carry byte for byte; or it holds characters that render
+// as nothing even in a code block and can carry text a model reads (tag
+// characters, bidi controls, stray variation selectors: unshowable).
+// Cutting, repairing or merely counting them would leave the approver
+// approving something other than what the build agent reads, so the plan is
+// refused instead: RenderPlanComment returns this error, wrapped, together
+// with the notice to post in the plan's place, and intent-controller treats
+// the plan as invalid, never offering it for approval.
 var ErrPlanRefused = errors.New("plan refused: no comment can show it to an approver exactly as written")
 
 // PlanDigest is the digest a plan's approval binds: "sha256:" and the hex
@@ -217,10 +219,12 @@ type PlanComment struct {
 	// Report is the plan report exactly as stored: the bytes the approval's
 	// digest binds and the build agent reads. The comment shows all of it,
 	// verbatim, in a code block no line of it can close, last in the
-	// comment; it renders none of it as markdown, so nothing in it can hide
-	// from the approver or act on GitHub, whatever markup it holds. What
-	// renders as nothing even in a code block (a zero-width or tag
-	// character) it counts, for the approver.
+	// comment; it renders none of it as markdown, so no markup in it can
+	// hide from the approver or act on GitHub. What a code block cannot
+	// show the approver at a glance, the header points to (planView):
+	// characters that render as nothing, lines that run past the block's
+	// right edge, long runs of blank lines. A report holding characters
+	// that render as nothing and can carry text (unshowable) is refused.
 	Report []byte
 	// Summary and NewDependencies are the report's parsed frontmatter
 	// fields, called out, sanitised, above the plan; Questions are counted
@@ -248,20 +252,25 @@ type PlanComment struct {
 func RenderPlanComment(p PlanComment) (string, error) {
 	digest := PlanDigest(p.Report)
 	if !utf8.Valid(p.Report) {
-		return refusePlan(p, digest, 0)
+		return refusePlan(p, digest, planRefusal{})
 	}
-	out, err := planComment(p, digest)
+	view := viewPlan(string(p.Report))
+	if view.unshowable > 0 {
+		return refusePlan(p, digest, planRefusal{unshowable: view.unshowable})
+	}
+	out, err := planComment(p, digest, view)
 	if err != nil {
 		return "", err
 	}
 	if len(out) > MaxCommentBytes {
-		return refusePlan(p, digest, len(out))
+		return refusePlan(p, digest, planRefusal{size: len(out)})
 	}
 	return out, nil
 }
 
-// planComment renders the plan comment whatever its size.
-func planComment(p PlanComment, digest string) (string, error) {
+// planComment renders the plan comment whatever its size, with view the
+// report's planView.
+func planComment(p PlanComment, digest string, view planView) (string, error) {
 	deps := make([]string, 0, len(p.NewDependencies))
 	for _, d := range p.NewDependencies {
 		if d = code(strings.TrimSpace(visibleText(d))); d != "" {
@@ -281,6 +290,9 @@ func planComment(p PlanComment, digest string) (string, error) {
 		ShortDigest     string
 		Summary         string
 		Invisible       string
+		Wide            string
+		ViewColumns     int
+		BlankRun        int
 		NewDependencies []string
 		Questions       string
 		ApproveLabel    string
@@ -295,7 +307,10 @@ func planComment(p PlanComment, digest string) (string, error) {
 		Digest:          digest,
 		ShortDigest:     shortDigest(digest),
 		Summary:         SanitizeInline(p.Summary),
-		Invisible:       count(countInvisible(string(p.Report)), "1 character", "characters"),
+		Invisible:       count(view.invisible, "1 character", "characters"),
+		Wide:            count(view.wide, "1 line", "lines"),
+		ViewColumns:     planViewColumns,
+		BlankRun:        view.blankRun,
 		NewDependencies: deps,
 		Questions:       count(questions, "a question", "questions"),
 		ApproveLabel:    oneLine(p.ApproveLabel),
@@ -307,16 +322,23 @@ func planComment(p PlanComment, digest string) (string, error) {
 	})
 }
 
+// planRefusal says why RenderPlanComment refuses a plan: size is what its
+// comment came to, over MaxCommentBytes; unshowable is how many characters
+// no comment can show it holds; neither set means it is not UTF-8.
+type planRefusal struct {
+	size, unshowable int
+}
+
 // refusePlan renders the notice posted in place of a plan RenderPlanComment
-// refuses, with the error wrapping ErrPlanRefused: size is what the plan
-// comment came to, or 0 when the report is not UTF-8.
-func refusePlan(p PlanComment, digest string, size int) (string, error) {
+// refuses, with the error wrapping ErrPlanRefused.
+func refusePlan(p PlanComment, digest string, why planRefusal) (string, error) {
 	notice, err := render("intent_plan_refused.md.tmpl", struct {
 		Marker       string
 		Revision     int32
 		Digest       string
 		Size         int
 		Limit        int
+		Unshowable   string
 		TriggerLabel string
 		Replan       string
 		Cancel       string
@@ -324,8 +346,9 @@ func refusePlan(p PlanComment, digest string, size int) (string, error) {
 		Marker:       NoticeMarker(p.Namespace, p.Intent, fmt.Sprintf("plan-r%d", p.Revision)),
 		Revision:     p.Revision,
 		Digest:       shortDigest(digest),
-		Size:         size,
+		Size:         why.size,
 		Limit:        MaxCommentBytes,
+		Unshowable:   count(why.unshowable, "1 character", "characters"),
 		TriggerLabel: oneLine(p.TriggerLabel),
 		Replan:       slashCommand(action.VerbReplan),
 		Cancel:       slashCommand(action.VerbCancel),
@@ -333,11 +356,15 @@ func refusePlan(p PlanComment, digest string, size int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if size == 0 {
-		return notice, fmt.Errorf("plan r%d is not UTF-8: %w", p.Revision, ErrPlanRefused)
+	switch {
+	case why.size > 0:
+		return notice, fmt.Errorf("plan r%d renders to %d bytes, over %d: %w",
+			p.Revision, why.size, MaxCommentBytes, ErrPlanRefused)
+	case why.unshowable > 0:
+		return notice, fmt.Errorf("plan r%d holds %d characters no comment can show: %w",
+			p.Revision, why.unshowable, ErrPlanRefused)
 	}
-	return notice, fmt.Errorf("plan r%d renders to %d bytes, over %d: %w",
-		p.Revision, size, MaxCommentBytes, ErrPlanRefused)
+	return notice, fmt.Errorf("plan r%d is not UTF-8: %w", p.Revision, ErrPlanRefused)
 }
 
 // verbatim renders content as a fenced code block holding it byte for byte:

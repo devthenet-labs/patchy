@@ -5,14 +5,17 @@ package intent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -57,6 +60,12 @@ func TestProjectValidation(t *testing.T) {
 			wantReason: v1alpha1.ReasonAppNotInstalled},
 		{name: "repository not in the installation", installErr: ghError(http.StatusUnprocessableEntity, "x"),
 			wantReason: v1alpha1.ReasonAppNotInstalled},
+		{name: "forge secret not readable", installErr: fmt.Errorf("get forge secret patchy/other: %w",
+			kerrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, "other", errors.New("not in resourceNames"))),
+			wantReason: ReasonForgeSecretUnreadable},
+		{name: "forge secret missing", installErr: fmt.Errorf("get forge secret patchy/gone: %w",
+			kerrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, "gone")),
+			wantReason: ReasonForgeSecretUnreadable},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

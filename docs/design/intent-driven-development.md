@@ -243,7 +243,8 @@ names, and a seeded property test checks that they are label-safe and unique wit
   - `preview` (slice 2)
   - `suspend`
 - **Status:**
-  - the `Ready` condition, with reasons `ForgeUnresolved`, `AppNotInstalled` and `AmbiguousIntentRepository`
+  - the `Ready` condition, with reasons `ForgeUnresolved`, `AppNotInstalled`, `AmbiguousIntentRepository` and
+    `ForgeSecretUnreadable` (the covering Forge's Secret is missing or outside intent-controller's `resourceNames`)
   - the `IntentNameConflict` condition: an issue whose Intent name is held by another repository's issue
   - `activeIntents`
   - `lastPolledAt`

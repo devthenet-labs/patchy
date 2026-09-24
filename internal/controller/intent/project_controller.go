@@ -41,6 +41,10 @@ const (
 	// ReasonNameHeld: an issue's Intent name is held by another repository's
 	// issue.
 	ReasonNameHeld = "NameHeld"
+	// ReasonForgeSecretUnreadable: the covering Forge's credential Secret
+	// cannot be read: missing, or not among the Secrets intent-controller's
+	// RBAC names (secrets get is restricted by resourceNames).
+	ReasonForgeSecretUnreadable = "ForgeSecretUnreadable"
 )
 
 // revalidateEvery re-checks a Ready Project's forge, installation and labels
@@ -253,6 +257,9 @@ func (r *ProjectReconciler) validate(ctx context.Context, p *v1alpha1.Project) (
 		{app, pullsWrite, "pull requests: write"},
 	} {
 		if err := r.GitHub.Installed(ctx, check.url, check.perms); err != nil {
+			if secretUnreadable(err) {
+				return notReady(ReasonForgeSecretUnreadable, forgeSecretMessage, check.url, err)
+			}
 			if installationRefused(err) {
 				return notReady(v1alpha1.ReasonAppNotInstalled,
 					"the App cannot act on %s with %s: %v", check.url, check.what, err)
@@ -265,6 +272,9 @@ func (r *ProjectReconciler) validate(ctx context.Context, p *v1alpha1.Project) (
 		{approveLabel(p), approveLabelColor, "patchy: approve the posted plan"},
 	} {
 		if err := r.GitHub.EnsureLabel(ctx, p.Spec.IntentRepository, l.name, l.color, l.description); err != nil {
+			if secretUnreadable(err) {
+				return notReady(ReasonForgeSecretUnreadable, forgeSecretMessage, p.Spec.IntentRepository, err)
+			}
 			if installationRefused(err) {
 				return notReady(v1alpha1.ReasonAppNotInstalled,
 					"the label %q cannot be created on %s: %v", l.name, p.Spec.IntentRepository, err)
@@ -274,6 +284,20 @@ func (r *ProjectReconciler) validate(ctx context.Context, p *v1alpha1.Project) (
 	}
 	return metav1.Condition{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: ReasonValidated,
 		Message: "the repositories resolve, the App is installed on them, and the labels exist"}, nil
+}
+
+// forgeSecretMessage explains a ForgeSecretUnreadable Project: the
+// repository, then the error, which names the Secret.
+const forgeSecretMessage = "the credential Secret of the Forge covering %s cannot be read (%v); " +
+	"intent-controller reads only the Secrets its RBAC names: add it to intentController.forgeSecrets " +
+	"(Helm) or to the component's rbac.yaml (kustomize)"
+
+// secretUnreadable reports a Forge credential Secret the API server will not
+// hand over: missing, or not one intent-controller may read (its secrets
+// get is restricted by resourceNames). Not a transient failure, so the
+// Project reports it rather than retrying in the dark.
+func secretUnreadable(err error) bool {
+	return kerrors.IsForbidden(err) || kerrors.IsNotFound(err)
 }
 
 // discover polls the intent repository for open trigger-labelled issues and

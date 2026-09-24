@@ -109,7 +109,8 @@ projects:
 
 The Project reports `Ready` once:
 
-- its repository resolves to exactly one Forge (`ForgeUnresolved` otherwise);
+- its repository resolves to exactly one Forge (`ForgeUnresolved` otherwise), whose credential Secret intent-controller
+  may read (`ForgeSecretUnreadable` otherwise);
 - the App is installed on the intent and app repositories, with the issues, contents and pull-requests permissions
   intents use (`AppNotInstalled` otherwise);
 - no other Project shares its intent repository and trigger label (`AmbiguousIntentRepository`).
@@ -157,7 +158,8 @@ is the tightest of any controller:
 
 - **Secrets:** `secrets get` is restricted by `resourceNames` to the Secrets your Forges reference
   (`intentController.forgeSecrets` in the chart, `rbac.yaml` in the kustomize component). A Forge that references any
-  other Secret leaves its Projects not Ready, and the refused read appears in the log.
+  other Secret, or a Secret that does not exist, leaves its Projects not Ready with the reason `ForgeSecretUnreadable`,
+  whose message names the Secret.
 - **GitHub tokens:** each GitHub operation mints its own token, scoped to one repository and one permission. The
   unscoped installation client is never used.
 - **Writes:** it writes only to the repositories a Project lists, plus issues on the intent repository. Branches are

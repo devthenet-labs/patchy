@@ -41,6 +41,23 @@ const (
 	VerbReset = "reset"
 )
 
+// Intent verbs. They join the same vocabulary so that, when intents gain
+// status-page or CLI actions, those use these names too. Until then they
+// arrive only as GitHub commands (internal/command) and are not custom RBAC
+// verbs: they are deliberately in none of the lists below, so Apply rejects
+// them with ErrUnknownVerb, and neither the admission policy, the status
+// server's access reviews nor the CLI enumerates them for Findings. An intent
+// reuses VerbApprove (approve the posted plan) and VerbRetry (retry a failed
+// round on its pull request) with their own meaning there.
+const (
+	// VerbReplan asks for a fresh plan of an intent awaiting approval.
+	VerbReplan = "replan"
+	// VerbCancel stops an intent and closes its issue.
+	VerbCancel = "cancel"
+	// VerbRevise starts a revision round on an intent's pull request.
+	VerbRevise = "revise"
+)
+
 // ActionVerbs lists the per-finding verbs in the order clients present them.
 var ActionVerbs = []string{VerbApprove, VerbRetry, VerbExpedite, VerbSuspend, VerbResume}
 

@@ -5,7 +5,15 @@ package action
 
 import (
 	"errors"
+	"go/ast"
+	"go/constant"
+	"go/parser"
+	"go/token"
+	"maps"
+	"path/filepath"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -436,6 +444,111 @@ func TestAvailableAgreesWithApply(t *testing.T) {
 					t.Errorf("phase %s suspended=%v: Available has %s = %v, Apply says %v",
 						phase, suspended, verb, got, want)
 				}
+			}
+		}
+	}
+}
+
+// verbConstants reads every Verb* constant the package's non-test source
+// declares, with its value, straight from the syntax tree, so a verb added
+// in any file is checked without anyone remembering to list it. A verb
+// constant must be a string literal of its own: one defined as another
+// constant, or left to repeat the previous value in a const block, fails
+// here, since either would make two verbs one.
+func verbConstants(t *testing.T) map[string]string {
+	t.Helper()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	consts := map[string]string{}
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				vs, _ := spec.(*ast.ValueSpec)
+				for i, id := range vs.Names {
+					if !strings.HasPrefix(id.Name, "Verb") {
+						continue
+					}
+					var lit *ast.BasicLit
+					if i < len(vs.Values) {
+						lit, _ = vs.Values[i].(*ast.BasicLit)
+					}
+					if lit == nil || lit.Kind != token.STRING {
+						t.Fatalf("%s: verb constant %s is not a string literal of its own", fset.Position(id.Pos()), id.Name)
+					}
+					consts[id.Name] = constant.StringVal(constant.MakeFromLiteral(lit.Value, lit.Kind, 0))
+				}
+			}
+		}
+	}
+	return consts
+}
+
+// TestVerbConstantsAreUnique: no two verb constants share a name, so every
+// verb names one action. The constants are read from the source rather than
+// listed here, so a new one that collides — say a VerbStop = "cancel" — fails
+// even if nobody updates this test.
+func TestVerbConstantsAreUnique(t *testing.T) {
+	consts := verbConstants(t)
+	// The walk sees the constants as the compiler does.
+	for name, value := range map[string]string{
+		"VerbApprove": VerbApprove, "VerbReset": VerbReset, "VerbReplan": VerbReplan, "VerbRevise": VerbRevise,
+	} {
+		if got, ok := consts[name]; !ok || got != value {
+			t.Fatalf("verbConstants()[%s] = %q, %v; want %q", name, got, ok, value)
+		}
+	}
+	byValue := map[string]string{}
+	for _, name := range slices.Sorted(maps.Keys(consts)) {
+		if other, dup := byValue[consts[name]]; dup {
+			t.Errorf("%s and %s are both %q: every verb must name one action", other, name, consts[name])
+		}
+		byValue[consts[name]] = name
+	}
+}
+
+// TestIntentVerbsStayOffFindings: the intent verbs share the vocabulary but
+// never become Finding actions. A Finding surface that enumerated them — the
+// admission policy's custom verbs, the status server's access reviews, the
+// CLI's action commands — would offer actions Apply cannot perform, and a
+// phase gate here that accepted them would let a GitHub command meant for an
+// intent move a Finding.
+func TestIntentVerbsStayOffFindings(t *testing.T) {
+	intentVerbs := []string{VerbReplan, VerbCancel, VerbRevise}
+	for _, verb := range intentVerbs {
+		for name, list := range map[string][]string{
+			"ActionVerbs": ActionVerbs, "IntegrationVerbs": IntegrationVerbs, "AdminVerbs": AdminVerbs,
+		} {
+			if slices.Contains(list, verb) {
+				t.Errorf("%s lists intent verb %q", name, verb)
+			}
+		}
+		for _, phase := range allPhases {
+			f := failed(v1alpha1.PhaseRemediating)
+			f.Status.Phase = phase
+			before := f.DeepCopy()
+			changed, err := Apply(f, verb, "op@acme.test", "note", testClock)
+			if changed || !errors.Is(err, ErrUnknownVerb) {
+				t.Errorf("Apply(%s) in %s = (%v, %v), want (false, ErrUnknownVerb)", verb, phase, changed, err)
+			}
+			if !reflect.DeepEqual(before, f) {
+				t.Errorf("Apply(%s) in %s mutated the finding", verb, phase)
+			}
+			if slices.Contains(Available(f, testClock), verb) {
+				t.Errorf("Available in %s offers intent verb %q", phase, verb)
 			}
 		}
 	}

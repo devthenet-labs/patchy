@@ -360,7 +360,9 @@ however, has only the ad-hoc `/approve` comment, and this design adds labels and
 there is one grammar, and everything else is an alias for it.
 
 - **Grammar.** `/patchy <verb> [note]` as the first line of a comment. The note is at most 1 KiB, with control
-  characters stripped. Which verbs apply depends on where the comment is:
+  characters stripped, and so are the characters that make text read differently from what it holds: bidi overrides and
+  isolates, tag characters, U+FEFF, and stacked variation selectors. Other format characters, such as the ZWJ in emoji
+  and the ZWNJ in Persian, are ordinary text and stay. Which verbs apply depends on where the comment is:
 
   | Where                  | Verbs                                               |
   | ---------------------- | --------------------------------------------------- |

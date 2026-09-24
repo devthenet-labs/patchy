@@ -257,6 +257,7 @@ func (r *RemediationReconciler) launch(ctx context.Context, rem *v1alpha1.Remedi
 		BaseSHA:               repo.Status.ResolvedSHA,
 		IssueMarkdown:         handoff,
 		InvestigationMarkdown: inv.Status.Report,
+		PreviousAttempt:       agentresult.EncodePreviousAttempt(rem.Spec.PreviousAttempt),
 		Kind:                  string(v1alpha1.RunKindRemediation),
 		Owner:                 rem.Name,
 		Finding:               fnd.Name,

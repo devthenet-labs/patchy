@@ -363,6 +363,39 @@ type TranscriptRef struct {
 	Truncated bool `json:"truncated,omitempty"`
 }
 
+// PreviousOutcomePullRequestClosed is the PreviousAttempt outcome for a run
+// whose fix was pushed and then closed unmerged in review: the run itself
+// completed, so there is no stage outcome to repeat.
+const PreviousOutcomePullRequestClosed = "pull_request_closed"
+
+// PreviousAttempt is what a retry is told about the run it follows: the
+// latest earlier attempt of the same stage on the same Finding whose agent
+// actually ran, when that attempt failed. The controller that creates the
+// retry copies it onto the retry's immutable spec (the one writer), so the
+// new attempt's prompt can say what went wrong instead of handing the agent
+// the same inputs that already failed once.
+//
+// Detail — and in principle Outcome — is UNTRUSTED: it can quote output from
+// the repository or the image the run executed on (a git status listing, a
+// stderr tail). Both are bounded here, and the prompt renders them as fenced
+// data, never as instructions.
+type PreviousAttempt struct {
+	// Name of the failed run (an Investigation or Remediation).
+	Name string `json:"name"`
+	// Attempt ordinal of the failed run.
+	// +kubebuilder:validation:Minimum=1
+	Attempt int32 `json:"attempt"`
+	// Outcome is the failed run's stage outcome (StageResult.Outcome), or
+	// pull_request_closed when its pull request was closed unmerged.
+	// +kubebuilder:validation:MaxLength=64
+	Outcome string `json:"outcome"`
+	// Detail explains the outcome — for commit_failed, the git status
+	// excerpt the runner found after commit.sh.
+	// +optional
+	// +kubebuilder:validation:MaxLength=4096
+	Detail string `json:"detail,omitempty"`
+}
+
 // ConfidencePattern validates a confidence decimal string in [0, 1] with up
 // to four fractional digits.
 const ConfidencePattern = `^(0(\.[0-9]{1,4})?|1(\.0{1,4})?)$`

@@ -147,6 +147,37 @@ spec:
                     minimum: 0
                     type: integer
                 type: object
+              previousAttempt:
+                description: |-
+                  PreviousAttempt is the failed investigation this one retries,
+                  rendered into the prompt so the agent does not repeat the failure.
+                  Nil on a first attempt.
+                properties:
+                  attempt:
+                    description: Attempt ordinal of the failed run.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  detail:
+                    description: |-
+                      Detail explains the outcome — for commit_failed, the git status
+                      excerpt the runner found after commit.sh.
+                    maxLength: 4096
+                    type: string
+                  name:
+                    description: Name of the failed run (an Investigation or Remediation).
+                    type: string
+                  outcome:
+                    description: |-
+                      Outcome is the failed run's stage outcome (StageResult.Outcome), or
+                      pull_request_closed when its pull request was closed unmerged.
+                    maxLength: 64
+                    type: string
+                required:
+                - attempt
+                - name
+                - outcome
+                type: object
               repositoryRef:
                 description: |-
                   RepositoryRef names the Repository artifact the agent works from; nil

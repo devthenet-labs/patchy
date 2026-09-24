@@ -3,24 +3,62 @@
 
 // Package agentresult converts agent envelope payloads into the CRD status
 // shapes — the one place the float-bearing wire format meets the no-float
-// structural schemas. Both job controllers (investigation, remediation) use
-// it so cost/confidence formatting and size caps never drift apart.
+// structural schemas — and a failed run's result into what its retry is told
+// about it. Both job controllers (investigation, remediation) use it so
+// cost/confidence formatting and size caps never drift apart.
 package agentresult
 
 import (
+	"encoding/json"
 	"strconv"
 	"unicode/utf8"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/envelope"
 	"github.com/bitwise-media-group/patchy/internal/model"
+	"github.com/bitwise-media-group/patchy/internal/templates"
 )
 
 // Size caps (bytes) for CRD string fields.
 const (
-	maxReport = 65536
-	maxDetail = 4096
+	maxReport  = 65536
+	maxDetail  = 4096
+	maxOutcome = 64
 )
+
+// PreviousAttempt is what the retry of a failed run is told about it: the
+// run's name and ordinal, and its stage outcome and detail capped to the API
+// bounds. Nil when the run recorded no stage. The detail is untrusted text;
+// the prompt, not this, is where it is fenced.
+func PreviousAttempt(name string, attempt int32, st *v1alpha1.StageResult) *v1alpha1.PreviousAttempt {
+	if st == nil {
+		return nil
+	}
+	outcome := st.Outcome
+	if outcome == "" {
+		outcome = "unknown"
+	}
+	return &v1alpha1.PreviousAttempt{
+		Name:    name,
+		Attempt: attempt,
+		Outcome: truncate(outcome, maxOutcome),
+		Detail:  TruncateDetail(st.Detail),
+	}
+}
+
+// EncodePreviousAttempt renders p as the JSON a Job hands the agent-runner
+// (PATCHY_PREVIOUS_ATTEMPT, decoded into templates.PreviousAttempt); "" for
+// nil, which omits the variable and with it the prompt section.
+func EncodePreviousAttempt(p *v1alpha1.PreviousAttempt) string {
+	if p == nil {
+		return ""
+	}
+	blob, err := json.Marshal(templates.PreviousAttempt{Attempt: p.Attempt, Outcome: p.Outcome, Detail: p.Detail})
+	if err != nil {
+		return "" // three plain fields cannot fail to marshal
+	}
+	return string(blob)
+}
 
 // FailedStage builds the stage to record for a run the controller is failing.
 //

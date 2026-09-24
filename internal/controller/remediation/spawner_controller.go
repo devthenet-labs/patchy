@@ -19,9 +19,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/agentresult"
 	"github.com/bitwise-media-group/patchy/internal/harness"
 	"github.com/bitwise-media-group/patchy/internal/model"
 	"github.com/bitwise-media-group/patchy/internal/priority"
+	"github.com/bitwise-media-group/patchy/internal/runnerguard"
 )
 
 // SpawnerReconciler is the queue-admission writer: it turns approvals and
@@ -279,6 +281,10 @@ func (r *SpawnerReconciler) spawn(ctx context.Context, fnd *v1alpha1.Finding) er
 	}
 	params = r.resolveParams(params)
 	params.MaxTurns, params.TokenBudget = r.resolveGrant(params.Estimate, fnd.Spec.Approval != nil)
+	prev, err := r.previousAttempt(ctx, fnd)
+	if err != nil {
+		return err
+	}
 
 	score := priority.Score(fnd.Spec.Severity, inv.Exploitability, inv.Likelihood, inv.Impact, r.Weights)
 	rem := &v1alpha1.Remediation{
@@ -312,6 +318,7 @@ func (r *SpawnerReconciler) spawn(ctx context.Context, fnd *v1alpha1.Finding) er
 			Parameters:       params,
 			ApprovedBy:       approvedBy(fnd),
 			Revival:          fnd.Spec.Approval != nil && attempt > 1,
+			PreviousAttempt:  prev,
 		},
 	}
 	if err := r.Create(ctx, rem); err != nil && !kerrors.IsAlreadyExists(err) {
@@ -329,6 +336,44 @@ func (r *SpawnerReconciler) spawn(ctx context.Context, fnd *v1alpha1.Finding) er
 		cur.Status.Attempts.Remediation = attempt
 		return r.Status().Update(ctx, &cur)
 	})
+}
+
+// previousAttempt is what the next attempt is told about the one before it:
+// the latest earlier Remediation whose agent actually ran — one the sandbox
+// probe refused never reached its agent, so it is passed over — when that
+// run failed (an automatic retry, or a human retry after exhaustion), or when
+// it succeeded and its pull request was then closed unmerged (a human retry
+// of the review). Nil for a first attempt, a revival after a hand-off, or a
+// run that no longer exists. spawn has already established the latest
+// attempt is settled.
+func (r *SpawnerReconciler) previousAttempt(
+	ctx context.Context, fnd *v1alpha1.Finding,
+) (*v1alpha1.PreviousAttempt, error) {
+	for n := fnd.Status.Attempts.Remediation; n > 0; n-- {
+		var rem v1alpha1.Remediation
+		key := types.NamespacedName{Namespace: fnd.Namespace, Name: fmt.Sprintf("%s-rem-%d", fnd.Name, n)}
+		if err := r.Get(ctx, key, &rem); err != nil {
+			return nil, client.IgnoreNotFound(err)
+		}
+		switch {
+		case rem.Spec.FindingRef.UID != fnd.UID:
+			return nil, nil // an earlier Finding's run under the same name
+		case runnerguard.Refused(rem.Status.Conditions):
+			continue
+		case rem.Status.Phase == v1alpha1.RunFailed:
+			return agentresult.PreviousAttempt(rem.Name, rem.Spec.Attempt, rem.Status.Stage), nil
+		case rem.Status.Success && fnd.Status.PullRequest != nil && fnd.Status.PullRequest.State == "closed":
+			return &v1alpha1.PreviousAttempt{
+				Name:    rem.Name,
+				Attempt: rem.Spec.Attempt,
+				Outcome: v1alpha1.PreviousOutcomePullRequestClosed,
+				Detail: fmt.Sprintf("pull request #%d was closed without being merged",
+					fnd.Status.PullRequest.Number),
+			}, nil
+		}
+		return nil, nil
+	}
+	return nil, nil
 }
 
 // approvedBy extracts the approver, empty when none.

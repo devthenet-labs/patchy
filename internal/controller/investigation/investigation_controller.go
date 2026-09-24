@@ -232,6 +232,8 @@ func (r *InvestigationReconciler) launch(ctx context.Context, inv *v1alpha1.Inve
 		ArtifactURL:    repo.Status.Artifact.URL,
 		ArtifactDigest: repo.Status.Artifact.Digest,
 		Calibration:    r.calibration(ctx, repoName),
+		// What the attempt this one retries failed with, from its own spec.
+		PreviousAttempt: agentresult.EncodePreviousAttempt(inv.Spec.PreviousAttempt),
 	}
 	if skipped := r.Images.Pin(&spec, &repo, &fnd); skipped != "" {
 		r.log().LogAttrs(ctx, slog.LevelInfo, "not running the repository-declared runner image",

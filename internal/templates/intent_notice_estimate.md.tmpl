@@ -1,0 +1,8 @@
+{{- /* Posted before a plan whose own estimate of its build is more than the
+build is granted, so the approver reads it before approving. One line per
+paragraph: GitHub renders a line break inside an issue comment as a hard
+break. */ -}}
+{{ .Marker }}
+Plan r{{ .PlanRevision }} estimates that its build needs {{ .EstimatedMaxTurns }} turns and {{ .EstimatedTokenBudget }} output tokens, but a build of this project is granted {{ .GrantMaxTurns }} turns and {{ .GrantTokenBudget }} output tokens{{ if and .TurnsOver .TokensOver }}: both are over{{ else if .TurnsOver }}: the turns are over{{ else if .TokensOver }}: the output tokens are over{{ end }}. The build runs on its grant, never on the estimate, so it may stop before the plan is built.
+
+Approving does not raise the grant. To give the build more, raise the project's build limit, then ask for a new plan: re-apply the {{ code .TriggerLabel }} label or comment {{ .Replan }}.

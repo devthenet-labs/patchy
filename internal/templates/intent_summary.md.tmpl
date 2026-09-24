@@ -1,0 +1,21 @@
+{{- /* The summary posted once every pull request of an intent has merged,
+before patchy closes the issue as completed. The pull requests are patchy's
+own, linked on purpose. One line per paragraph: GitHub renders a line break
+inside an issue comment as a hard break. */ -}}
+{{ .Marker }}
+### patchy: done
+
+Every pull request patchy opened for this intent has merged, so patchy closes the issue as completed.
+{{- with .PullRequests }}
+
+**Merged:**
+{{ range . }}
+- [{{ .Ref }}]({{ .URL }})
+{{- end }}
+{{- end }}
+
+**Revisions:** {{ .Revisions }}
+{{- with .Cost }}
+
+**Reported cost:** {{ code . }}
+{{- end }}

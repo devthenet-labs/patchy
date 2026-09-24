@@ -13,6 +13,8 @@ deploy/
 │   ├── components/cilium/     # optional FQDN egress (CiliumNetworkPolicy)
 │   ├── components/gke-fqdn/   # optional FQDN egress (GKE Dataplane V2 FQDNNetworkPolicy)
 │   ├── components/istio/      # optional Sidecar + ServiceEntry + netpol
+│   ├── components/intent-controller/
+│   │                          # optional intent-driven development
 │   └── overlays/
 │       ├── dev/               # kind/colima: NodePort 30079, throwaway secrets + CRs,
 │       │                      #   2m windows, fake harness, fake CMDB
@@ -104,3 +106,21 @@ can launder an approval by deleting a finding and recreating it with one preset.
 
 The base's `secrets.example.yaml` and `crs.example.yaml` are documentation, not resources — the dev overlay's throwaway
 values exist so the pods schedule and the CR state machine runs, not so GitHub calls succeed.
+
+## Intent-driven development
+
+The [intent-controller](../configuration/intent-controller.md) is not in the base, and no shipped overlay enables it.
+Add its component to your overlay:
+
+```yaml
+components:
+  - ../../components/intent-controller
+```
+
+It adds the Deployment, its ServiceAccount, a Role in `patchy` and its own copy of the agent-jobs Role in
+`patchy-agents`, and a ConfigMap of `PATCHY_INTENT_*` settings. It reads that ConfigMap after the shared one. The base's
+controller NetworkPolicy already covers it. Its `secrets get` names the Forge Secret, `patchy-github`; patch the
+component's Role if your Forges reference other Secrets. Builds need an accepted repository-declared image, and the base
+does not configure repository images, so either add those keys (the component's `configmap.yaml` lists the ones it
+reads) or set `requireRepositoryImage: false` on each Project. The base already carries the Project, Intent and
+IntentRun CRDs; apply your Projects like the other CRs.

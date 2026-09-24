@@ -6,6 +6,7 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -374,21 +375,39 @@ func TestCreateAgentEnvPreviousAttempt(t *testing.T) {
 	}
 }
 
-// TestConfigEnvCannotShadowPerJobHandoff: the per-Job handoff variables are
-// the controller's to set from the Spec, so an operator's Config.Env entry
-// of the same name must never reach the pod. Not on a Job that sets the
-// name (a second, conflicting entry whose winner Kubernetes leaves
+// TestOperatorEnvCannotShadowPerJobHandoff: the per-Job handoff variables
+// are the controller's to set from the Spec, so an operator's entry of the
+// same name must never reach the pod — whether it comes through Config.Env
+// or through Runner.Env, which carries the operator's provider env
+// (--claude-provider-env, the chart's provider `env`). Not on a Job that
+// sets the name (a second, conflicting entry whose winner Kubernetes leaves
 // undefined), not on one that leaves it unset (a first attempt told it is a
 // retry), and not on a repository-image Job, where it would stand in for
 // the blank that keeps an image's ENV from reaching agent-runner.
-func TestConfigEnvCannotShadowPerJobHandoff(t *testing.T) {
-	const operator = `{"attempt":9,"outcome":"unknown","detail":"from Config.Env"}`
+func TestOperatorEnvCannotShadowPerJobHandoff(t *testing.T) {
+	const operator = `{"attempt":9,"outcome":"unknown","detail":"from the operator"}`
 	handoff := []struct {
 		env string
 		set func(*Spec, string)
 	}{
 		{"PATCHY_CALIBRATION", func(s *Spec, v string) { s.Calibration = v }},
 		{"PATCHY_PREVIOUS_ATTEMPT", func(s *Spec, v string) { s.PreviousAttempt = v }},
+	}
+	sources := []struct {
+		name string
+		set  func(cfg *Config, name, value string)
+	}{
+		{"Config.Env", func(cfg *Config, name, value string) { cfg.Env[name] = value }},
+		{"Runner.Env", func(cfg *Config, name, value string) {
+			r := cfg.Runners["claude"]
+			env := maps.Clone(r.Env)
+			if env == nil {
+				env = map[string]string{}
+			}
+			env[name] = value
+			r.Env = env
+			cfg.Runners["claude"] = r
+		}},
 	}
 	shapes := []struct {
 		name string
@@ -402,27 +421,30 @@ func TestConfigEnvCannotShadowPerJobHandoff(t *testing.T) {
 		{"repository image", injectedConfig, injectedSpec, true},
 	}
 	for _, h := range handoff {
-		for _, shape := range shapes {
-			for _, jobValue := range []string{`{"attempt":1}`, ""} {
-				t.Run(fmt.Sprintf("%s/%s/job sets %q", h.env, shape.name, jobValue), func(t *testing.T) {
-					cfg := shape.cfg()
-					cfg.Env[h.env] = operator
-					spec := shape.spec()
-					h.set(&spec, jobValue)
-					var got []corev1.EnvVar
-					for _, e := range buildJobForTest(t, cfg, spec).Spec.Template.Spec.Containers[0].Env {
-						if e.Name == h.env {
-							got = append(got, e)
+		for _, src := range sources {
+			for _, shape := range shapes {
+				for _, jobValue := range []string{`{"attempt":1}`, ""} {
+					name := fmt.Sprintf("%s/%s/%s/job sets %q", h.env, src.name, shape.name, jobValue)
+					t.Run(name, func(t *testing.T) {
+						cfg := shape.cfg()
+						src.set(&cfg, h.env, operator)
+						spec := shape.spec()
+						h.set(&spec, jobValue)
+						var got []corev1.EnvVar
+						for _, e := range buildJobForTest(t, cfg, spec).Spec.Template.Spec.Containers[0].Env {
+							if e.Name == h.env {
+								got = append(got, e)
+							}
 						}
-					}
-					want := []corev1.EnvVar{{Name: h.env, Value: jobValue}}
-					if jobValue == "" && !shape.blank {
-						want = nil
-					}
-					if !slices.Equal(got, want) {
-						t.Errorf("%s entries = %+v, want %+v", h.env, got, want)
-					}
-				})
+						want := []corev1.EnvVar{{Name: h.env, Value: jobValue}}
+						if jobValue == "" && !shape.blank {
+							want = nil
+						}
+						if !slices.Equal(got, want) {
+							t.Errorf("%s entries = %+v, want %+v", h.env, got, want)
+						}
+					})
+				}
 			}
 		}
 	}

@@ -402,6 +402,41 @@ func TestSecretEnvFlagsMatchAcceptedChannels(t *testing.T) {
 	}
 }
 
+// TestClaudeProviderEnvRefusesPerJobNames: the operator's provider env
+// reaches the agent pod through the claude runner's Env, so a name every
+// Job sets itself (a retry's PATCHY_PREVIOUS_ATTEMPT, the Spec's
+// PATCHY_REPO, HOME) must fail startup, naming the flag and the variable,
+// rather than be dropped from every Job without a word. Any other name
+// still passes through: HTTPS_PROXY is provider.Validate's own benign
+// example.
+func TestClaudeProviderEnvRefusesPerJobNames(t *testing.T) {
+	base := []string{"--claude-agent-image", "claude:1", "--broker-url", "http://broker:8080"}
+	for _, name := range jobs.PerJobEnvNames() {
+		t.Run(name, func(t *testing.T) {
+			args := append(slices.Clone(base), "--claude-provider-env", name+"=operator")
+			runners, err := Runners(newOpts(t, args...))
+			if err == nil {
+				t.Fatalf("Runners succeeded with claude Env %v, want %s refused", runners["claude"].Env, name)
+			}
+			for _, want := range []string{"--claude-provider-env", name} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+		})
+	}
+	t.Run("other names pass through", func(t *testing.T) {
+		args := append(slices.Clone(base), "--claude-provider-env", "HTTPS_PROXY=http://proxy:3128")
+		runners, err := Runners(newOpts(t, args...))
+		if err != nil {
+			t.Fatalf("Runners: %v", err)
+		}
+		if got := runners["claude"].Env["HTTPS_PROXY"]; got != "http://proxy:3128" {
+			t.Errorf("claude Env HTTPS_PROXY = %q, want the operator's value", got)
+		}
+	})
+}
+
 // TestEvolveRunnersNeverInject: evaluation Jobs have no pinned tree to read a
 // declaration from and always run their harness's image, so the evolve
 // fleet's brokered claude runner, unlike the finding one, injects nothing.

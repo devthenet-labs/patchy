@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -290,6 +291,18 @@ func ClaudeProviderConfig(opts *cli.Options) (provider.Config, error) {
 	}
 	if err := cfg.Validate(); err != nil {
 		return provider.Config{}, err
+	}
+	// Validate refuses the gateway and credential names; the names every
+	// finding Job sets itself are the jobs package's to know, and provider
+	// cannot import it. A finding Job drops them from the runner env anyway,
+	// so refusing them here turns a silent drop into an error the operator
+	// sees, for both fleets (the evolve runner is built here too).
+	perJob := jobs.PerJobEnvNames()
+	for _, k := range slices.Sorted(maps.Keys(extra)) {
+		if slices.Contains(perJob, k) {
+			return provider.Config{}, fmt.Errorf(
+				"--claude-provider-env: %s is set per Job by patchy; it cannot be set here", k)
+		}
 	}
 	return cfg, nil
 }

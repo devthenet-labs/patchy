@@ -70,6 +70,9 @@ type Server struct {
 	// (each commit mapped to its parent); compares counts its calls.
 	parents  map[string]string
 	compares int
+	// moved are alerts a later analysis moved without a webhook (SetAlert):
+	// their state and most recent instance, by number.
+	moved map[int]movedAlert
 	pulls    map[int]*pull
 	git      gitData
 	next     int
@@ -83,6 +86,7 @@ func newState() (*Server, *http.ServeMux) {
 		comments:  make(map[int][]comment),
 		dismissed: make(map[int]string),
 		parents:   make(map[string]string),
+		moved:     make(map[int]movedAlert),
 		pulls:     make(map[int]*pull),
 		git:       newGitData(),
 		next:      100,
@@ -207,12 +211,37 @@ func (s *Server) getAlert(w http.ResponseWriter, r *http.Request) {
 	// its state first, and only a dismissed alert is reopened.
 	s.mu.Lock()
 	_, isDismissed := s.dismissed[number]
+	moved, isMoved := s.moved[number]
 	s.mu.Unlock()
 	state := "open"
+	if isMoved {
+		state = moved.state
+	}
 	if isDismissed {
 		state = "dismissed"
 	}
-	writeJSON(w, alertBody(r.PathValue("owner"), r.PathValue("repo"), number, state, false))
+	body := alertBody(r.PathValue("owner"), r.PathValue("repo"), number, state, false)
+	if isMoved {
+		inst := body["most_recent_instance"].(map[string]any)
+		inst["ref"], inst["commit_sha"] = moved.ref, moved.commit
+	}
+	writeJSON(w, body)
+}
+
+// movedAlert is an alert's state and most recent instance after SetAlert.
+type movedAlert struct {
+	state, ref, commit string
+}
+
+// SetAlert moves an alert the way a later analysis does, without a webhook
+// — GitHub sends code_scanning_alert events only when an alert's state
+// changes, so an analysis that finds an open alert again only moves its
+// most recent instance: the get endpoint reports state, and the latest
+// instance on ref at commit.
+func (s *Server) SetAlert(number int, state, ref, commit string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.moved[number] = movedAlert{state: state, ref: ref, commit: commit}
 }
 
 // seededAlert is one pre-existing code-scanning alert the list endpoints

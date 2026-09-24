@@ -72,6 +72,7 @@ type trackerClient interface {
 	Assign(ctx context.Context, repo ghclient.Repo, number int, logins []string) error
 	Close(ctx context.Context, repo ghclient.Repo, number int) error
 	DismissAlert(ctx context.Context, repo ghclient.Repo, number int, reason, comment string) error
+	GetAlert(ctx context.Context, repo ghclient.Repo, number int) (*ghclient.Alert, error)
 }
 
 // FindingReconciler projects each Finding (and its children's results) onto
@@ -99,6 +100,12 @@ type FindingReconciler struct {
 	// finding's Repository: on, the reconciler also watches Repositories and
 	// needs get/list/watch on them; off (the default), it reads none.
 	RunnerImages bool
+	// Ingest re-ingests an alert whose reopen was set aside as stale once it
+	// is seen where the fix does not supersede it (recheckStale); nil
+	// disables the re-check.
+	Ingest *Ingestor
+	// StaleRecheck paces that re-check; zero means DefaultStaleRecheck.
+	StaleRecheck time.Duration
 	// Log receives diagnostics; nil discards.
 	Log *slog.Logger
 }
@@ -124,6 +131,12 @@ func (r *FindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// from, or they sit open there after patchy has closed them here.
 	if err := r.resolveSource(ctx, &fnd); err != nil {
 		return ctrl.Result{}, err
+	}
+
+	// Ahead of the projection, so a finding whose tracking issue keeps
+	// failing still has its stale reopens re-read.
+	if wait := r.recheckStale(ctx, &fnd); wait > 0 && (requeue == 0 || wait < requeue) {
+		requeue = wait
 	}
 
 	if err := r.project(ctx, &fnd); err != nil {

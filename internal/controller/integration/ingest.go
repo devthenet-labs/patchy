@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -67,12 +68,16 @@ type Ingestor struct {
 	Commits CommitGraph
 }
 
-// CommitGraph answers the one question about repository history ingest
-// asks: does one commit strictly precede another.
+// CommitGraph answers the questions about repository history ingest asks:
+// does one commit strictly precede another, and is a commit still on a
+// branch.
 type CommitGraph interface {
 	// Precedes reports whether commit is a strict ancestor of descendant
 	// in repo — reachable from it, and not the same commit.
 	Precedes(ctx context.Context, integ *v1alpha1.Integration, repo source.Repo, commit, descendant string) (bool, error)
+	// Contains reports whether commit is in branch's history in repo — the
+	// branch head or one of its ancestors.
+	Contains(ctx context.Context, integ *v1alpha1.Integration, repo source.Repo, branch, commit string) (bool, error)
 }
 
 // keyHash is the hex form of the accumulation key's hash — the label value
@@ -107,10 +112,26 @@ func (in *Ingestor) SetupWithManager(mgr ctrl.Manager) error {
 // live pre-investigation Finding of its family, or create the next
 // generation.
 func (in *Ingestor) Ingest(ctx context.Context, integ *v1alpha1.Integration, f source.Finding) error {
+	_, err := in.ingest(ctx, integ, f, false)
+	return err
+}
+
+// ingest is Ingest, reporting whether f was set aside as stale — recorded on
+// the remediated generation whose merged fix supersedes it — rather than
+// folded or created.
+//
+// recheck is the stale re-check's mode (recheckStale): f re-reads an alert
+// whose stale observation is already recorded and will be read again, so a
+// failed ancestry lookup or recording is returned as an error instead of
+// failing open — a transient error must not turn an alert that is still
+// stale into the duplicate finding the check exists to prevent.
+func (in *Ingestor) ingest(
+	ctx context.Context, integ *v1alpha1.Integration, f source.Finding, recheck bool,
+) (stale bool, err error) {
 	repoURL := repositoryURL(integ, f)
 	scope := accumulationScope(repoURL, f)
 	if scope == "" {
-		return fmt.Errorf("ingest %s finding: names neither a repository nor a cloud resource", f.Source)
+		return false, fmt.Errorf("ingest %s finding: names neither a repository nor a cloud resource", f.Source)
 	}
 	primary := ""
 	if len(f.Advisories) > 0 {
@@ -121,16 +142,36 @@ func (in *Ingestor) Ingest(ctx context.Context, integ *v1alpha1.Integration, f s
 	var family v1alpha1.FindingList
 	if err := in.List(ctx, &family, client.InNamespace(in.Namespace),
 		client.MatchingFields{KeyHashIndex: hash}); err != nil {
-		return fmt.Errorf("list finding family %s: %w", hash, err)
+		return false, fmt.Errorf("list finding family %s: %w", hash, err)
 	}
 
-	if fix := in.supersedingFix(ctx, integ, f, family.Items); fix != nil {
-		in.log().LogAttrs(ctx, slog.LevelInfo, "stale alert observation skipped", append([]slog.Attr{
+	fix, err := in.supersedingFix(ctx, integ, f, family.Items)
+	switch {
+	case err != nil && recheck:
+		return false, err
+	case err != nil:
+		in.log().LogAttrs(ctx, slog.LevelWarn, "commit ancestry lookup failed; ingesting", append([]slog.Attr{
+			slog.String("alert", alertID(f)), slog.String("commit", f.Commit), slog.Any("error", err),
+		}, deliveryAttrs(ctx)...)...)
+	case fix != nil:
+		attrs := append([]slog.Attr{
 			slog.String("finding", fix.Name), slog.String("alert", alertID(f)),
 			slog.String("commit", f.Commit),
 			slog.String("merge_commit", fix.Status.PullRequest.MergeCommitSHA),
-		}, deliveryAttrs(ctx)...)...)
-		return nil
+		}, deliveryAttrs(ctx)...)
+		// Recorded, or not skipped at all: the scanner will not report the
+		// alert again while it stays open, so an unrecorded skip could never
+		// be revisited when a later analysis regresses it.
+		err := in.recordStale(ctx, fix, f)
+		if err == nil {
+			in.log().LogAttrs(ctx, slog.LevelInfo, "stale alert observation skipped", attrs...)
+			return true, nil
+		}
+		if recheck {
+			return false, fmt.Errorf("record stale observation: %w", err)
+		}
+		in.log().LogAttrs(ctx, slog.LevelWarn, "stale alert observation not recorded; ingesting",
+			append(attrs, slog.Any("error", err))...)
 	}
 
 	// Fold into a live pre-investigation generation when one exists.
@@ -145,13 +186,13 @@ func (in *Ingestor) Ingest(ctx context.Context, integ *v1alpha1.Integration, f s
 			if err == errRaced {
 				// The live generation advanced mid-fold; open its successor.
 				gen := generationOf(cur.Name)
-				return in.create(ctx, integ, f, repoURL, hash, gen+1, cur.Name)
+				return false, in.create(ctx, integ, f, repoURL, hash, gen+1, cur.Name)
 			}
-			return err
+			return false, err
 		}
 	}
 
-	return in.create(ctx, integ, f, repoURL, hash, maxGen+1, prevName(family.Items, maxGen))
+	return false, in.create(ctx, integ, f, repoURL, hash, maxGen+1, prevName(family.Items, maxGen))
 }
 
 // supersedingFix returns the generation whose merged pull request already
@@ -169,19 +210,65 @@ func (in *Ingestor) Ingest(ctx context.Context, integ *v1alpha1.Integration, f s
 // vulnerability no longer on the branch.
 //
 // The rule is deliberately narrow. The alert's latest generation must be
-// Remediated through a merged pull request with a recorded merge commit, and
-// f's commit must strictly precede that merge commit. An observation at or
-// after the merge — a regression or revert that brings the code back, a fix
-// the scanner still flags — ingests, as does anything unproven (no commit on
-// f, a PR merged before merge commits were recorded, a failed lookup): a
-// duplicate finding is noise, a dropped regression is a missed vulnerability.
+// Remediated through a merged pull request with a recorded merge commit, f's
+// commit must strictly precede that merge commit, and the merge commit must
+// still be on the branch f was observed on — a default branch reset to
+// before the fix keeps the orphaned merge commit resolvable, but carries the
+// vulnerable code again. An observation at or after the merge — a regression
+// or revert that brings the code back, a fix the scanner still flags —
+// ingests, as does anything unproven (no commit or branch on f, a PR merged
+// before merge commits were recorded, a failed lookup): a duplicate finding
+// is noise, a dropped regression is a missed vulnerability.
+//
+// A skipped observation is not forgotten: the caller records it on the
+// returned generation, and the projection reconciler re-reads the alert
+// (recheckStale), because the scanner reports an alert only when its state
+// changes — a later analysis that regresses an alert already open sends
+// nothing.
+//
+// err reports a failed lookup; what failing means is the caller's call.
 func (in *Ingestor) supersedingFix(
 	ctx context.Context, integ *v1alpha1.Integration, f source.Finding, family []v1alpha1.Finding,
-) *v1alpha1.Finding {
+) (*v1alpha1.Finding, error) {
 	if in.Commits == nil || f.Commit == "" {
-		return nil
+		return nil, nil
 	}
-	id := alertID(f)
+	branch, ok := branchOf(f.Ref)
+	if !ok {
+		return nil, nil
+	}
+	latest := latestWithAlert(family, alertID(f))
+	if latest == nil || latest.Status.Phase != v1alpha1.PhaseRemediated {
+		return nil, nil
+	}
+	pr := latest.Status.PullRequest
+	if pr == nil || pr.State != "merged" || pr.MergeCommitSHA == "" || pr.MergeCommitSHA == f.Commit {
+		return nil, nil
+	}
+	lookupFailed := func(err error) (*v1alpha1.Finding, error) {
+		return nil, fmt.Errorf("finding %s, merge commit %s, branch %s: %w",
+			latest.Name, pr.MergeCommitSHA, branch, err)
+	}
+	older, err := in.Commits.Precedes(ctx, integ, f.Repo, f.Commit, pr.MergeCommitSHA)
+	if err != nil {
+		return lookupFailed(err)
+	}
+	if !older {
+		return nil, nil
+	}
+	fixed, err := in.Commits.Contains(ctx, integ, f.Repo, branch, pr.MergeCommitSHA)
+	if err != nil {
+		return lookupFailed(err)
+	}
+	if !fixed {
+		return nil, nil
+	}
+	return latest, nil
+}
+
+// latestWithAlert is the newest generation in family carrying alert id, or
+// nil when none does.
+func latestWithAlert(family []v1alpha1.Finding, id string) *v1alpha1.Finding {
 	var latest *v1alpha1.Finding
 	for i := range family {
 		cur := &family[i]
@@ -192,25 +279,20 @@ func (in *Ingestor) supersedingFix(
 			latest = cur
 		}
 	}
-	if latest == nil || latest.Status.Phase != v1alpha1.PhaseRemediated {
-		return nil
-	}
-	pr := latest.Status.PullRequest
-	if pr == nil || pr.State != "merged" || pr.MergeCommitSHA == "" || pr.MergeCommitSHA == f.Commit {
-		return nil
-	}
-	older, err := in.Commits.Precedes(ctx, integ, f.Repo, f.Commit, pr.MergeCommitSHA)
-	if err != nil {
-		in.log().LogAttrs(ctx, slog.LevelWarn, "commit ancestry lookup failed; ingesting",
-			slog.String("finding", latest.Name), slog.String("alert", id),
-			slog.String("commit", f.Commit), slog.String("merge_commit", pr.MergeCommitSHA),
-			slog.Any("error", err))
-		return nil
-	}
-	if !older {
-		return nil
-	}
 	return latest
+}
+
+// branchOf is the branch a ref names — refs/heads/<branch>, or a bare
+// branch name — and false for anything else: a tag, a pull-request ref, no
+// ref at all.
+func branchOf(ref string) (string, bool) {
+	if b, ok := strings.CutPrefix(ref, "refs/heads/"); ok {
+		return b, b != ""
+	}
+	if ref == "" || strings.HasPrefix(ref, "refs/") {
+		return "", false
+	}
+	return ref, true
 }
 
 // repositoryURL is the finding's repository, or empty when it names none. A

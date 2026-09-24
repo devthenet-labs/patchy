@@ -313,16 +313,32 @@ func NewCommitGraph(creds *Creds) CommitGraph { return githubCommits{creds: cred
 func (g githubCommits) Precedes(
 	ctx context.Context, integ *v1alpha1.Integration, repo source.Repo, commit, descendant string,
 ) (bool, error) {
+	status, err := g.compare(ctx, integ, repo, descendant, commit)
+	return status == "behind", err
+}
+
+// Contains implements CommitGraph: branch contains commit when comparing
+// from commit to the branch reports the branch "ahead" of it or
+// "identical" — "behind" or "diverged" means the branch was moved off it.
+func (g githubCommits) Contains(
+	ctx context.Context, integ *v1alpha1.Integration, repo source.Repo, branch, commit string,
+) (bool, error) {
+	status, err := g.compare(ctx, integ, repo, commit, branch)
+	return status == "ahead" || status == "identical", err
+}
+
+// compare asks GitHub how head relates to base, with the Integration's
+// client for the repository. The compare API needs the credential to hold
+// the Contents (read) permission.
+func (g githubCommits) compare(
+	ctx context.Context, integ *v1alpha1.Integration, repo source.Repo, base, head string,
+) (string, error) {
 	r := ghclient.Repo{Owner: repo.Owner, Name: repo.Name}
 	c, err := g.creds.Client(ctx, integ, r)
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	status, err := c.CompareStatus(ctx, r, descendant, commit)
-	if err != nil {
-		return false, err
-	}
-	return status == "behind", nil
+	return c.CompareStatus(ctx, r, base, head)
 }
 
 func (r *Receiver) log() *slog.Logger {

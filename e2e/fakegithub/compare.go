@@ -18,6 +18,14 @@ func (s *Server) SetParents(parents map[string]string) {
 	maps.Copy(s.parents, parents)
 }
 
+// SetBranch points a branch at a commit, the way a push (or a force-push)
+// does; the compare endpoint resolves branch names through it.
+func (s *Server) SetBranch(name, sha string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.git.refs["heads/"+name] = sha
+}
+
 // Compares reports how many compare calls the fake has answered.
 func (s *Server) Compares() int {
 	s.mu.Lock()
@@ -37,6 +45,7 @@ func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.compares++
+	base, head = s.resolve(base), s.resolve(head)
 	status, ahead, behind := "diverged", 0, 0
 	switch {
 	case base == head:
@@ -60,4 +69,13 @@ func (s *Server) steps(descendant, ancestor string) int {
 		}
 	}
 	return 0
+}
+
+// resolve maps a branch name to its head commit; anything else is taken to
+// be a commit already. Callers hold s.mu.
+func (s *Server) resolve(rev string) string {
+	if sha, ok := s.git.refs["heads/"+rev]; ok {
+		return sha
+	}
+	return rev
 }

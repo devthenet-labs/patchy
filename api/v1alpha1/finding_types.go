@@ -469,6 +469,36 @@ type FindingStatus struct {
 	// TTL contract is completedAt + TTL.
 	// +optional
 	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
+	// StaleObservations are scanner reopens of this finding's alerts that
+	// ingest set aside because they observed code its merged fix replaced
+	// (integration). The alert stays open at the scanner, which notifies
+	// only on state changes, so each is re-read until the alert closes or is
+	// seen at a commit the fix does not supersede — then the successor
+	// generation opens.
+	// +optional
+	// +listType=map
+	// +listMapKey=alertID
+	// +kubebuilder:validation:MaxItems=64
+	StaleObservations []StaleObservation `json:"staleObservations,omitempty"`
+}
+
+// StaleObservation is one alert reopen set aside as stale: observed at a
+// commit that strictly precedes the finding's merged fix, on a branch the fix
+// is still on.
+type StaleObservation struct {
+	// AlertID is the alert that reopened (spec.alerts[].id).
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	AlertID string `json:"alertID"`
+	// Commit the stale observation was made at.
+	// +kubebuilder:validation:MaxLength=64
+	Commit string `json:"commit"`
+	// Ref the observation was made on (refs/heads/<default branch>).
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	Ref string `json:"ref,omitempty"`
+	// ObservedAt is when ingest set the observation at this commit aside.
+	ObservedAt metav1.Time `json:"observedAt"`
 }
 
 // +kubebuilder:object:root=true

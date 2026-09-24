@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.11.10](https://github.com/devthenet-labs/patchy/compare/v0.11.9...v0.11.10) (2026-09-24)
+
+
+### Bug Fixes
+
+* **integration:** trust only the recorded PR's close, and settle a merge whose issue close lands first ([#39](https://github.com/devthenet-labs/patchy/issues/39)) ([ebaf288](https://github.com/devthenet-labs/patchy/commit/ebaf2883992e0843316ead0f7a2c48e516653009))
+* **jobs:** keep per-Job env names out of operator-set env ([#36](https://github.com/devthenet-labs/patchy/issues/36)) ([1164840](https://github.com/devthenet-labs/patchy/commit/11648404cf1ef43eeedcf511a84e3412370b12f0))
+* **remediation:** record the pushed commit on the Remediation ([#37](https://github.com/devthenet-labs/patchy/issues/37)) ([4d51327](https://github.com/devthenet-labs/patchy/commit/4d513279ac77e6cbeb130c1b4f1ea3f53b521ce2))
+
 ## [0.11.9](https://github.com/devthenet-labs/patchy/compare/v0.11.8...v0.11.9) (2026-09-24)
 
 

@@ -115,7 +115,10 @@ charts/             Helm rendering of the same stack, pushed to ghcr OCI on rele
                     stamps both Chart.yaml versions. Lint/render with `mise run helm-lint`.
 e2e/                SEPARATE Go module: envtest carries the CRDs, the real binaries run against it,
                     fakegithub (in-memory API) stands in at the network edge, recorded webhook
-                    fixtures + the replay tool drive it (`make e2e`).
+                    fixtures + the replay tool drive it (`make e2e`). envtest has no kubelet, so
+                    Finding Jobs never run there; the intent tests register a fake kubelet
+                    (kubelet_test.go) that runs hack/fake-agent for run-kind=intent Jobs, beside an
+                    in-memory OCI registry (registry_test.go) serving the repository runner image.
 docs/ overrides/    Zensical docs site (zensical.toml at the root; patchy-branded theme in
                     docs/stylesheets/extra.css + overrides/). `mise run serve` to preview,
                     `mise run docs-build` to build; the reusable release workflow publishes it

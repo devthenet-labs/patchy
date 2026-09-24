@@ -69,9 +69,9 @@ Intents run on brokered claude and nothing else, because no other harness honour
 The runner flags are the shared ones (`--claude-agent-image`, `--broker-url`, `--broker-token-audience`,
 `--claude-provider*`, `--claude-model-map`, `--claude-provider-env`, `--harnesses`; see the
 [investigation-controller](investigation-controller.md#agent-job-flags)). At startup the controller refuses both stage
-models unless they resolve to the same harness, and that harness is brokered claude (or the fake harness in dev and
-e2e). The Helm chart stamps `PATCHY_HARNESSES=claude` for it and deploys the egress broker whenever it is enabled, even
-if the finding fleet runs no claude.
+models unless they resolve to the same harness, and that harness is brokered claude (or the fake harness in dev; the e2e
+suite runs it on brokered claude, as production does). The Helm chart stamps `PATCHY_HARNESSES=claude` for it and
+deploys the egress broker whenever it is enabled, even if the finding fleet runs no claude.
 
 ### Repository-declared images
 

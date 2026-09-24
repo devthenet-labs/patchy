@@ -294,9 +294,10 @@ type IntentRunStatus struct {
 	PushedCommit string `json:"pushedCommit,omitempty"`
 	// Outcome is the envelope outcome vocabulary, plus the controller's
 	// own: changeset_rejected, branch_exists, head_moved, aborted for a run
-	// killed with no envelope, and hold_expired for a build whose Job
-	// expired while its push waited on a suspension (not counted as an
-	// attempt).
+	// killed with no envelope, push_refused and launch_refused for a push or
+	// a Job create refused for itself (GitHub's or the API server's 4xx), and
+	// hold_expired for a build whose Job expired while its push waited on a
+	// suspension (not counted as an attempt).
 	// +optional
 	// +kubebuilder:validation:MaxLength=64
 	Outcome string `json:"outcome,omitempty"`

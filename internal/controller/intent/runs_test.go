@@ -5,14 +5,18 @@ package intent
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -484,6 +488,106 @@ func TestBranchExists(t *testing.T) {
 	if got := e.gh.branches["patchy-intent/target-1"]; got != strings.Repeat("7", 40) {
 		t.Errorf("the existing branch was moved to %s", got)
 	}
+}
+
+// TestPushRefused: a commit or branch GitHub refuses for itself (a ruleset
+// restricting ref creation, a permission the App lost) would be refused
+// again, so the run ends push_refused, a counted attempt, instead of holding
+// its slot forever; the intent fails once both attempts are spent, never
+// hanging in Building. A server error is still retried.
+func TestPushRefused(t *testing.T) {
+	ruleset := ghError(http.StatusUnprocessableEntity,
+		"Repository rule violations found\n\nCannot create ref due to creations being restricted.")
+	lost := ghError(http.StatusForbidden, "Resource not accessible by integration")
+	for _, tt := range []struct {
+		name   string
+		method string
+		errs   []error
+		want   v1alpha1.IntentPhase
+	}{
+		{name: "the branch refused by a ruleset", method: "CreateBranchRef", errs: []error{ruleset, ruleset},
+			want: v1alpha1.IntentFailed},
+		{name: "the commit refused", method: "CreateCommit", errs: []error{lost, lost}, want: v1alpha1.IntentFailed},
+		{name: "a server error", method: "CreateBranchRef", want: v1alpha1.IntentInReview,
+			errs: []error{ghError(http.StatusBadGateway, "Server Error")}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t, testProject())
+			name := e.awaiting()
+			e.gh.label(1, "patchy:approved", approver)
+			e.gh.failNext(tt.method, tt.errs...)
+			e.tolerantDrive(name, tt.want, false)
+			runs := e.runsOf(name, v1alpha1.IntentStageBuild)
+			if tt.want == v1alpha1.IntentInReview {
+				if len(runs) != 1 || runs[0].Status.Phase != v1alpha1.RunComplete {
+					t.Errorf("build runs = %d, first %s; want the one, retried to completion", len(runs),
+						runs[0].Status.Phase)
+				}
+				return
+			}
+			if len(runs) != 2 {
+				t.Fatalf("build runs = %d, want the two counted attempts", len(runs))
+			}
+			for _, r := range runs {
+				if r.Status.Phase != v1alpha1.RunFailed || r.Status.Outcome != OutcomePushRefused ||
+					!strings.Contains(r.Status.Detail, "refused") {
+					t.Errorf("run %s = %s %s: %s, want push_refused", r.Name, r.Status.Phase, r.Status.Outcome,
+						r.Status.Detail)
+				}
+			}
+			if len(e.gh.branches) != 0 {
+				t.Errorf("branches = %v, want none", e.gh.branches)
+			}
+		})
+	}
+}
+
+// TestLaunchRefused: an agent Job the API server refuses for itself (an
+// admission policy denying it) ends its run launch_refused, a counted
+// attempt, rather than keeping a granted slot forever; an unavailable API
+// server is retried.
+func TestLaunchRefused(t *testing.T) {
+	jobsResource := schema.GroupResource{Group: "batch", Resource: "jobs"}
+	t.Run("denied", func(t *testing.T) {
+		e := newEnv(t, testProject())
+		e.jobs.createErr = kerrors.NewForbidden(jobsResource, "patchy-x-int-a1",
+			errors.New(`admission webhook "jobs.example" denied the request`))
+		name := e.newIntent(approver)
+		e.tolerantDrive(name, v1alpha1.IntentFailed, false)
+		runs := e.runsOf(name, v1alpha1.IntentStagePlan)
+		if len(runs) != 2 {
+			t.Fatalf("plan runs = %d, want the two counted attempts", len(runs))
+		}
+		for _, r := range runs {
+			if r.Status.Outcome != OutcomeLaunchRefused || !strings.Contains(r.Status.Detail, "denied the request") {
+				t.Errorf("run %s = %s: %s, want launch_refused", r.Name, r.Status.Outcome, r.Status.Detail)
+			}
+		}
+	})
+	t.Run("unavailable", func(t *testing.T) {
+		e := newEnv(t, testProject())
+		e.jobs.createErr = kerrors.NewServiceUnavailable("the API server is restarting")
+		name := e.newIntent(approver)
+		ctx := context.Background()
+		for range 6 {
+			_ = e.reconcileIntent(name)
+			e.readyRepositories("")
+			_, _ = e.runs.Reconcile(ctx, req(runSchedulerRequest))
+			for _, r := range e.intentRuns(name) {
+				_, _ = e.runs.Reconcile(ctx, req(r.Name))
+			}
+			e.clock.Advance(time.Minute)
+		}
+		runs := e.runsOf(name, v1alpha1.IntentStagePlan)
+		if len(runs) != 1 || runs[0].Status.Phase != v1alpha1.RunRunning {
+			t.Fatalf("plan runs = %+v, want the one, still launching", runs)
+		}
+		e.jobs.createErr = nil
+		e.drive(name, v1alpha1.IntentAwaitingApproval, "")
+		if n := len(e.runsOf(name, v1alpha1.IntentStagePlan)); n != 1 {
+			t.Errorf("plan runs = %d, want the one", n)
+		}
+	})
 }
 
 // TestPushResumesFromTheRecordedCommit: a branch create that fails after the

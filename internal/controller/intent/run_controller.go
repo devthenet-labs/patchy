@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -389,7 +390,13 @@ func (r *RunReconciler) launch(ctx context.Context, run *v1alpha1.IntentRun) err
 	}
 	build := settings.grant(&proj, v1alpha1.IntentStageBuild)
 	jobName, image, err := r.Jobs.Create(ctx, spec, stageEnv(stage, settings, build))
-	if err != nil {
+	switch {
+	case launchRefused(err):
+		// Retrying would keep a granted slot forever: the run ends, its
+		// attempt counted, and the Intent reads why.
+		return r.settle(ctx, run, result{outcome: OutcomeLaunchRefused,
+			detail: "the API server refused the agent Job: " + err.Error()})
+	case err != nil:
 		return fmt.Errorf("launch run %s: %w", run.Name, err)
 	}
 	if requireImage && image.Source != v1alpha1.RunnerImageSourceRepository {
@@ -406,6 +413,24 @@ func (r *RunReconciler) launch(ctx context.Context, run *v1alpha1.IntentRun) err
 		cur.Status.BaseSHA = repo.Status.ResolvedSHA
 		cur.Status.StartedAt = &now
 	})
+}
+
+// launchRefused reports a Job create the API server refused for itself: a
+// 4xx other than 401, 408, 409 and 429 (an admission policy or webhook
+// denying the Job, an invalid Job, a missing namespace), which repeating
+// unchanged gets again. A conflict, throttling, a timeout, a server error and
+// a failure that never reached the API server are retried.
+func launchRefused(err error) bool {
+	var status kerrors.APIStatus
+	if err == nil || !errors.As(err, &status) {
+		return false
+	}
+	switch code := status.Status().Code; code {
+	case http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests:
+		return false
+	default:
+		return code >= 400 && code < 500
+	}
 }
 
 // stageSpec completes spec for the run's stage from its input. A plan's
@@ -801,7 +826,13 @@ func (r *RunReconciler) push(ctx context.Context, run *v1alpha1.IntentRun, ev *e
 		req.Files = append(req.Files, ghclient.CommitFile{Path: up.Path, Mode: up.Mode, Content: content})
 	}
 	commit, err := r.GitHub.CreateCommit(ctx, run.Spec.Repository.URL, req)
-	if err != nil {
+	switch {
+	case ghclient.IsRefused(err):
+		// The same commit would be refused again: the run ends rather than
+		// hold its slot retrying it.
+		res.outcome, res.detail = OutcomePushRefused, "GitHub refused the build's commit: "+err.Error()
+		return r.settle(ctx, run, res)
+	case err != nil:
 		return fmt.Errorf("create the commit: %w", err)
 	}
 	if err := r.updateRun(ctx, run, func(cur *v1alpha1.IntentRun) {
@@ -832,6 +863,12 @@ func (r *RunReconciler) createBranch(ctx context.Context, run *v1alpha1.IntentRu
 	switch {
 	case errors.Is(err, ghclient.ErrBranchExists):
 		return r.settle(ctx, run, result{outcome: OutcomeBranchExists, detail: err.Error(), keep: true})
+	case ghclient.IsRefused(err):
+		// A ruleset restricting ref creation, a permission the App lost:
+		// the same branch would be refused again, and the Job the run could
+		// otherwise time out on is no longer read once the commit is made.
+		return r.settle(ctx, run, result{outcome: OutcomePushRefused, keep: true,
+			detail: "GitHub refused the intent branch: " + err.Error()})
 	case err != nil:
 		return fmt.Errorf("create the branch: %w", err)
 	}

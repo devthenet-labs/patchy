@@ -26,6 +26,26 @@ func IsForbidden(err error) bool {
 	return errors.As(err, &ger) && ger.Response != nil && ger.Response.StatusCode == http.StatusForbidden
 }
 
+// IsRefused reports whether err (anywhere in its chain) is GitHub refusing
+// the request itself: a 4xx answer other than 401 (a credential that may be
+// re-minted), 408 (a timeout) and 429 (throttling). Repeating such a request
+// unchanged gets the same answer: a missing permission (403), a ruleset
+// refusing a ref (422), a repository gone (404). Rate limiting and the
+// secondary limit are go-github's own error types, never a refusal, and so
+// is any failure that never reached GitHub.
+func IsRefused(err error) bool {
+	var ger *github.ErrorResponse
+	if !errors.As(err, &ger) || ger.Response == nil {
+		return false
+	}
+	switch code := ger.Response.StatusCode; code {
+	case http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return false
+	default:
+		return code >= 400 && code < 500
+	}
+}
+
 // IsUnprocessable reports whether err (anywhere in its chain) is a GitHub
 // API 422. Minting an installation token for a repository the installation
 // does not cover answers so, as does creating something that already

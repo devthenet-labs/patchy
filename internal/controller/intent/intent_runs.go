@@ -42,6 +42,15 @@ const (
 	// the unpushed changeset with it. The loss is the suspension's, not the
 	// agent's, so the attempt does not count.
 	OutcomeHoldExpired = "hold_expired"
+	// OutcomePushRefused: GitHub refused the build's commit or branch for
+	// itself (a ruleset restricting ref creation, a permission the App lost,
+	// a repository gone): the same push would be refused again, so the run
+	// ends rather than hold its slot retrying it. It counts as an attempt.
+	OutcomePushRefused = "push_refused"
+	// OutcomeLaunchRefused: the API server refused the run's agent Job for
+	// itself (an admission policy or webhook denying it, an invalid Job, a
+	// missing namespace). It counts as an attempt.
+	OutcomeLaunchRefused = "launch_refused"
 )
 
 // roundRuns are one stage's runs of one round, by attempt.

@@ -24,18 +24,31 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/kube"
 )
 
+// botLogin is the login fakeTracker posts as: the projection's own identity.
+const botLogin = "patchy[bot]"
+
 // fakeTracker records every tracking-system write.
 type fakeTracker struct {
 	nextNumber    int
 	issues        map[int]*ghclient.Issue
-	comments      []string // Comment() bodies, in call order
+	comments      []string // posted comment bodies, in call order
 	issueComments map[int][]*ghclient.Comment
 	nextCommentID int64
 	commentEdits  int
-	assigned      []string
-	closed        []int
-	dismissed     []int
-	bodyEdits     int
+	lists         int // ListComments calls
+	// listLag models GitHub's eventually consistent list endpoint: a comment
+	// posted while it is set is missing from ListComments.
+	listLag   bool
+	unlisted  map[int64]bool
+	assigned  []string
+	closed    []int
+	dismissed []int
+	bodyEdits int
+
+	// failAssign and failClose fail that many calls with a transient 502.
+	failAssign, failClose int
+	// onPost, when set, is called as each issue or comment is posted.
+	onPost func()
 }
 
 func newFakeTracker() *fakeTracker {
@@ -43,15 +56,33 @@ func newFakeTracker() *fakeTracker {
 		nextNumber:    7,
 		issues:        map[int]*ghclient.Issue{},
 		issueComments: map[int][]*ghclient.Comment{},
+		unlisted:      map[int64]bool{},
 	}
+}
+
+// notFound is the error GitHub answers a missing issue or comment with.
+func notFound(what string) error {
+	return fmt.Errorf("ghclient: %s: %w", what,
+		&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusNotFound}})
+}
+
+// badGateway is a transient GitHub failure.
+func badGateway(what string) error {
+	return fmt.Errorf("ghclient: %s: %w", what,
+		&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusBadGateway}})
 }
 
 func (f *fakeTracker) Create(
 	_ context.Context, repo ghclient.Repo, req ghclient.IssueRequest,
 ) (*ghclient.Issue, error) {
+	if f.onPost != nil {
+		f.onPost()
+	}
 	n := f.nextNumber
 	f.nextNumber++
-	is := &ghclient.Issue{Repo: repo, Number: n, Title: req.Title, Body: req.Body, State: "open", Labels: req.Labels}
+	is := &ghclient.Issue{
+		Repo: repo, Number: n, Title: req.Title, Body: req.Body, State: "open", Labels: req.Labels, Author: botLogin,
+	}
 	f.issues[n] = is
 	return is, nil
 }
@@ -59,8 +90,7 @@ func (f *fakeTracker) Create(
 func (f *fakeTracker) GetIssue(_ context.Context, _ ghclient.Repo, number int) (*ghclient.Issue, error) {
 	is, ok := f.issues[number]
 	if !ok {
-		return nil, fmt.Errorf("ghclient: get issue #%d: %w", number,
-			&github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusNotFound}})
+		return nil, notFound(fmt.Sprintf("get issue #%d", number))
 	}
 	return is, nil
 }
@@ -87,15 +117,34 @@ func (f *fakeTracker) RemoveLabel(_ context.Context, _ ghclient.Repo, number int
 	return nil
 }
 
-func (f *fakeTracker) Comment(_ context.Context, _ ghclient.Repo, number int, body string) error {
+func (f *fakeTracker) Comment(ctx context.Context, repo ghclient.Repo, number int, body string) error {
+	_, err := f.CreateComment(ctx, repo, number, body)
+	return err
+}
+
+func (f *fakeTracker) CreateComment(_ context.Context, _ ghclient.Repo, number int, body string) (int64, error) {
+	if f.onPost != nil {
+		f.onPost()
+	}
 	f.comments = append(f.comments, body)
 	f.nextCommentID++
-	f.issueComments[number] = append(f.issueComments[number], &ghclient.Comment{ID: f.nextCommentID, Body: body})
-	return nil
+	f.issueComments[number] = append(f.issueComments[number],
+		&ghclient.Comment{ID: f.nextCommentID, Body: body, UserLogin: botLogin})
+	if f.listLag {
+		f.unlisted[f.nextCommentID] = true
+	}
+	return f.nextCommentID, nil
 }
 
 func (f *fakeTracker) ListComments(_ context.Context, _ ghclient.Repo, number int) ([]*ghclient.Comment, error) {
-	return f.issueComments[number], nil
+	f.lists++
+	var out []*ghclient.Comment
+	for _, c := range f.issueComments[number] {
+		if !f.unlisted[c.ID] {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeTracker) EditComment(_ context.Context, _ ghclient.Repo, commentID int64, body string) error {
@@ -108,15 +157,23 @@ func (f *fakeTracker) EditComment(_ context.Context, _ ghclient.Repo, commentID 
 			}
 		}
 	}
-	return fmt.Errorf("comment %d not found", commentID)
+	return notFound(fmt.Sprintf("edit comment %d", commentID))
 }
 
-func (f *fakeTracker) Assign(_ context.Context, _ ghclient.Repo, _ int, logins []string) error {
+func (f *fakeTracker) Assign(_ context.Context, _ ghclient.Repo, number int, logins []string) error {
+	if f.failAssign > 0 {
+		f.failAssign--
+		return badGateway(fmt.Sprintf("assign #%d", number))
+	}
 	f.assigned = append(f.assigned, logins...)
 	return nil
 }
 
 func (f *fakeTracker) Close(_ context.Context, _ ghclient.Repo, number int) error {
+	if f.failClose > 0 {
+		f.failClose--
+		return badGateway(fmt.Sprintf("close #%d", number))
+	}
 	f.closed = append(f.closed, number)
 	return nil
 }

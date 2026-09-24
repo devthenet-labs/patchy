@@ -22,6 +22,7 @@ func (c *Client) GetIssue(ctx context.Context, repo Repo, number int) (*Issue, e
 		Body:      is.GetBody(),
 		State:     is.GetState(),
 		CreatedAt: is.GetCreatedAt().Time,
+		Author:    is.GetUser().GetLogin(),
 	}
 	for _, l := range is.Labels {
 		out.Labels = append(out.Labels, l.GetName())

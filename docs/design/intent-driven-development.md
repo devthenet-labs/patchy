@@ -176,6 +176,24 @@ The intent `jobs.Client` sets `AllowRepositoryImages`, `EphemeralStorage` and it
 `runnerguard.PinFor(spec, repo)` is added beside `Pin`, which is not touched. It has no revival rule: an intent brought
 back by its trigger label is a new plan and a new approval, not a Finding revival.
 
+**Per-stage configuration.** Each intent stage reads its Finding counterpart's keys (plan reads `PATCHY_INVESTIGATE_*`,
+build and revise read `PATCHY_REMEDIATE_*`), and only turns and tokens have a per-Job channel. A new `PATCHY_*` key
+would add a blank to the repository-image golden, which blanks every key agent-runner reads. So intent-controller builds
+the `jobs.Client` for each launch from one base Config plus that run's stage env (`jobs.New` only wraps the clientset):
+
+- _Turns and tokens._ `grant.maxTurns` and `grant.tokenBudget` reach the pod as `PATCHY_GRANTED_*`. agent-runner only
+  lowers the stage's ceiling with them: `PATCHY_INVESTIGATE_MAX_TURNS`/`_TOKEN_BUDGET` for plan, and
+  `PATCHY_REMEDIATE_MANUAL_*` for build and revise. Unlike a remediation's grant, a build's has no floor at the
+  automated budget, so a Project that tightens a stage is honoured. `PATCHY_REMEDIATE_AUTO_*` applies only to a Job with
+  no grant, and intent-controller always grants.
+- _Time._ A stage's wall clock is `PATCHY_INVESTIGATE_TIMEOUT` for plan and `PATCHY_REMEDIATE_TIMEOUT` for build and
+  revise, set in the launch's env to that stage's limit, so build (60 m) and revise (45 m) differ.
+  `grant.timeoutMilliseconds` records that value. The Job deadline (90 m) bounds every stage.
+- _The build budget the plan is sized for._ The plan prompt states the most a build can be granted, which agent-runner
+  reads from the plan Job's `PATCHY_REMEDIATE_MANUAL_*`, the build stage's own ceiling. The plan launch sets it to the
+  grant the Project's build will receive (its build limit, clamped by the controller's flag), with
+  `PATCHY_REMEDIATE_AUTO_*` no higher, as agent-runner requires. The build launch uses the same ceiling.
+
 ### Custom resources
 
 All of them are in `patchy.bitwisemedia.uk/v1alpha1`, in namespace `patchy`, with `categories=patchy`. Every field is
@@ -529,6 +547,10 @@ The plan frontmatter is strict and parsed by `report.ParsePlan`:
 
 The body is at most 48 KiB: approach, per-repo steps, test plan and risks.
 
+The estimates never bind the build, which runs on its grant. A plan whose estimate exceeds the build grant is posted
+with that stated beside the estimate, so the approver sees it before approving. Approving does not raise the grant: the
+remedy is a higher Project build limit and a replan.
+
 **The plan is shown verbatim.** The plan comment is the approval artifact, and it shows the approver exactly the bytes
 the build agent reads: the plan report, the ConfigMap bytes whose digest the approval binds, rendered unchanged inside a
 fenced code block (` ```markdown `). The fence is backticks, at least three and one more than the longest run of
@@ -623,7 +645,7 @@ closes the intent issue itself.
 - **Bounds:**
   - `maxRevisions` (default 3);
   - the per-intent ceiling;
-  - per-stage limits (turns / tokens / time), all inside agentrun's `grant()` clamp:
+  - per-stage limits (turns / tokens / time), which a grant may lower but never raise (see "Per-stage configuration"):
 
     | Stage  | Turns | Tokens | Time |
     | ------ | ----- | ------ | ---- |

@@ -23,7 +23,10 @@ type PlanPrompt struct {
 	// what to build, never how the agent works.
 	Intent string
 	// BuildMaxTurns/BuildTokenBudget are the most a build of this plan can
-	// be granted, so the plan is sized to fit.
+	// be granted, so the plan is sized to fit. agent-runner fills them from
+	// the plan Job's PATCHY_REMEDIATE_MANUAL_*, which is the build stage's
+	// own ceiling; the intent controller sets it to the grant the Project's
+	// build will receive, so the number stated is the one the build gets.
 	BuildMaxTurns    int
 	BuildTokenBudget int
 	// PreviousAttempt is the failed plan this one retries; nil omits the

@@ -37,6 +37,12 @@ carries the IntentRun's name, `input/issue.md` the intent snapshot, and `input/i
   may lower but never raise. Unlike a remediation's, a build's grant has no floor: one below
   `PATCHY_REMEDIATE_AUTO_MAX_TURNS`/`_TOKEN_BUDGET` is honoured, and those apply only to a build Job with no grant.
 
+No per-Job timeout reaches the pod, so a stage's wall clock is `PATCHY_INVESTIGATE_TIMEOUT` (plan) or
+`PATCHY_REMEDIATE_TIMEOUT` (build, and every revise round): the intent controller launches each stage with its own time
+limit there. The plan prompt tells the planner the most a build can be granted, read from the plan Job's
+`PATCHY_REMEDIATE_MANUAL_MAX_TURNS`/`_TOKEN_BUDGET` (the build stage's ceiling), which the intent controller sets to the
+grant the Project's build will receive.
+
 Both run on **brokered claude only**: any other harness, or claude without `PATCHY_BROKER_TOKEN_FILE`, is refused with a
 fatal event before a model is called, because codex and copilot do not honour the sandbox postures. No configuration key
 exists for the intent phases alone.

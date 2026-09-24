@@ -173,7 +173,11 @@ func (a *Agent) plan(ctx context.Context) *envelope.Plan {
 		IssuePath:  a.cfg.issuePath(),
 		ReportPath: a.cfg.planPath(),
 		Intent:     string(intent),
-		// The most a build can be granted: buildLimits' ceiling.
+		// The most the build can be granted: buildLimits' ceiling, read from
+		// this Job's PATCHY_REMEDIATE_MANUAL_*. The intent controller sets it
+		// on the plan launch to the grant the Project's build will get, so
+		// the plan is sized against the budget its build receives rather
+		// than the runner's default ceiling.
 		BuildMaxTurns:    a.cfg.RemediateManualMaxTurns,
 		BuildTokenBudget: a.cfg.RemediateManualTokenBudget,
 		PreviousAttempt:  a.cfg.PreviousAttempt,
@@ -192,6 +196,10 @@ func (a *Agent) plan(ctx context.Context) *envelope.Plan {
 
 	maxTurns, budget := a.planLimits()
 	onLine, _ := a.observe(h, budget)
+	// The stage's wall clock is the investigate timeout: no per-Job timeout
+	// reaches the pod (a new key would change the repository-image Job), so
+	// the intent controller sets each stage's on the Env of the jobs Client
+	// it launches that stage with.
 	res, runErr := a.exec.Run(ctx, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.InvestigateModel, a.cfg.InvestigateHarness),
@@ -305,6 +313,9 @@ func (a *Agent) build(ctx context.Context, params remediationParams) *envelope.R
 	}
 
 	onLine, _ := a.observe(h, params.budget)
+	// The remediate timeout, for a build and a revise round alike: the
+	// intent controller launches each with its stage's time limit in that
+	// key (see the plan stage).
 	res, runErr := a.exec.Run(ctx, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.RemediateModel, a.cfg.RemediateHarness),

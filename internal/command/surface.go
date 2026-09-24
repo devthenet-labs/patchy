@@ -45,7 +45,7 @@ var surfaces = map[Surface][]usage{
 	},
 	IntentIssue: {
 		{action.VerbApprove, false, "approve the posted plan and start the build"},
-		{action.VerbReplan, false, "plan again, taking the comments since the last plan into account"},
+		{action.VerbReplan, true, "plan again, taking the note and approvers' comments since the last plan into account"},
 		{action.VerbCancel, false, "stop work on this intent and close it; open pull requests are left to you"},
 	},
 	IntentPR: {

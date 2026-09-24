@@ -87,7 +87,7 @@ func TestHelp(t *testing.T) {
 			"- `/patchy resume`: resume this finding after a suspend"},
 		{command.IntentIssue, intro +
 			"- `/patchy approve`: approve the posted plan and start the build\n" +
-			"- `/patchy replan`: plan again, taking the comments since the last plan into account\n" +
+			"- `/patchy replan [note]`: plan again, taking the note and approvers' comments since the last plan into account\n" +
 			"- `/patchy cancel`: stop work on this intent and close it; open pull requests are left to you"},
 		{command.IntentPR, intro +
 			"- `/patchy revise [note]`: start a revision round from your review feedback and the note\n" +

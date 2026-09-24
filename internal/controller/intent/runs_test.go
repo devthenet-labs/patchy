@@ -913,6 +913,30 @@ func TestTransientPRFailureRetries(t *testing.T) {
 	}
 }
 
+// TestPullRequestPollHonoursTheRateFloor: under the rate floor an intent in
+// review reads nothing from GitHub, its pull request included; once the
+// budget recovers, the merge is seen.
+func TestPullRequestPollHonoursTheRateFloor(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	e.gh.closePR(true)
+	e.gh.remaining = 10
+	e.gh.calls = map[string]int{}
+	e.settleActions(name)
+	if in := e.get(name); in.Status.Phase != v1alpha1.IntentInReview {
+		t.Fatalf("phase = %s under the floor", in.Status.Phase)
+	}
+	for _, m := range []string{"GetPullRequest", "GetIssue", "ListIssueEvents", "ListIssueComments"} {
+		if n := e.gh.calls[m]; n != 0 {
+			t.Errorf("%s called %d times under the rate floor", m, n)
+		}
+	}
+	e.gh.remaining = 5000
+	e.drive(name, v1alpha1.IntentMerged, repoImage)
+}
+
 // TestClosedPullRequestClosesTheIntent: every pull request closed unmerged
 // closes the issue as not planned.
 func TestClosedPullRequestClosesTheIntent(t *testing.T) {

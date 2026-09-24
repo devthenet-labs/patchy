@@ -92,6 +92,33 @@ func (p *pass) lastTrigger() v1alpha1.IntentAction {
 	return v1alpha1.IntentAction{Source: v1alpha1.IntentActionLabel, EventID: rb.EventID, Login: rb.Login, At: rb.At}
 }
 
+// rateOK reports whether the installation's rate budget is at or over the
+// floor, read once per pass: under it the pass polls nothing (its issue, its
+// pull requests, a blocked build's default branch), so intents never take
+// the security flow's share of the installation's requests. The floor is a
+// coarse guard: GitHub's headers are not consistent from one response to the
+// next.
+func (p *pass) rateOK(ctx context.Context) (bool, error) {
+	if p.rateRead {
+		return p.rateAbove, nil
+	}
+	floor := p.set.RateLimitFloor
+	if floor <= 0 {
+		p.rateRead, p.rateAbove = true, true
+		return true, nil
+	}
+	remaining, err := p.r.GitHub.RateRemaining(ctx, p.repo())
+	if err != nil {
+		return false, fmt.Errorf("read the rate budget: %w", err)
+	}
+	p.rateRead, p.rateAbove = true, remaining >= floor
+	if !p.rateAbove {
+		p.r.log().LogAttrs(ctx, slog.LevelWarn, "installation rate budget under the floor; intent poll paused",
+			slog.String("intent", p.in.Name), slog.Int("remaining", remaining), slog.Int("floor", floor))
+	}
+	return p.rateAbove, nil
+}
+
 // seen is the newest comment the poll has settled, or nil.
 func (p *pass) seen() *v1alpha1.IntentCommentRef {
 	if c := p.in.Status.Commands; c != nil {
@@ -123,18 +150,10 @@ func (p *pass) listSince() time.Time {
 // never answered twice, even after patchy's reply to it is deleted.
 func (p *pass) poll(ctx context.Context) (stop bool, err error) {
 	p.r.memo(func() { p.r.polled[p.in.Name] = p.now })
-	p.polled = true
-	if floor := p.set.RateLimitFloor; floor > 0 {
-		remaining, err := p.r.GitHub.RateRemaining(ctx, p.repo())
-		if err != nil {
-			return false, fmt.Errorf("read the rate budget: %w", err)
-		}
-		if remaining < floor {
-			p.r.log().LogAttrs(ctx, slog.LevelWarn, "installation rate budget under the floor; intent poll paused",
-				slog.String("intent", p.in.Name), slog.Int("remaining", remaining), slog.Int("floor", floor))
-			return false, nil
-		}
+	if ok, err := p.rateOK(ctx); err != nil || !ok {
+		return false, err
 	}
+	p.polled = true
 	issue, err := p.r.GitHub.GetIssue(ctx, p.repo(), p.number())
 	if err != nil {
 		return false, fmt.Errorf("read the issue: %w", err)

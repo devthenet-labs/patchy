@@ -109,9 +109,13 @@ type pass struct {
 
 	bot     string
 	botRead bool
-	// polled reports that this pass polled the issue: the poll was due, so
-	// the phase's other polls (a blocked build's default branch) are too.
+	// polled reports that this pass polled the issue: the poll was due and
+	// the rate budget over the floor, so the phase's other polls (a blocked
+	// build's default branch) are too.
 	polled bool
+	// rateRead and rateAbove are the pass's one reading of the rate floor
+	// (rateOK).
+	rateRead, rateAbove bool
 	// comments are the issue's comments listed since commentsSince this
 	// pass (nil: none listed); own indexes patchy's own among them by their
 	// marker line.

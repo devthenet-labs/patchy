@@ -62,11 +62,10 @@ func (g Guard) Pin(spec *jobs.Spec, repo *v1alpha1.Repository, fnd *v1alpha1.Fin
 }
 
 // Further reasons PinFor reports: a launch that requires the repository's
-// image has none to run, or may not run it.
+// image has none to run.
 const (
-	SkipNoImage     = "the repository declares no runner image patchy can use"
-	SkipRejected    = "the repository's runner-image declaration was rejected"
-	SkipRevivedWork = "a human revived the work, and revived work never runs a repository-declared image"
+	SkipNoImage  = "the repository declares no runner image patchy can use"
+	SkipRejected = "the repository's runner-image declaration was rejected"
 )
 
 // PinFor is Pin for a launch that requires the repository's image: an
@@ -76,29 +75,20 @@ const (
 // only when source-controller accepted one — Image set and not Rejected,
 // since a Repository rejected under onReject default is Ready all the same
 // — and the guard allows it, and returns "" exactly then. Otherwise it
-// returns why not (SkipNoImage, SkipRejected, SkipDisabled, SkipBreaker or
-// SkipRevivedWork, checked in Pin's order) and leaves spec untouched, so the
-// caller blocks instead of launching.
+// returns why not (SkipRejected, SkipNoImage, SkipDisabled or SkipBreaker,
+// in that order) and leaves spec untouched, so the caller blocks instead of
+// launching.
 //
-// revived is the Finding approval-revival notion, exactly what Revived
-// reads off a Finding: a human brought it back from HandedOff (approve) or
-// Failed (retry) on the understanding that the repository's image may be
-// what sent it there, so from then on it runs on the default image. A
-// launch that requires the image has no default to move to, so revived
-// refuses it with SkipRevivedWork, and nothing the caller can re-evaluate
-// clears that: the refusal holds until the record does.
-//
-// Intent callers pass false, always. An intent revived by its trigger label
-// is not a Finding revival but a new approved build: re-applying the label
-// takes a new input snapshot, a new plan and a new approval — a fresh human
-// decision, whose build runs in whatever image the Repository then pins,
-// fixed or not — and SkipRevivedWork is not among the design's Blocked
-// causes, which a Project change can clear.
+// It has no counterpart to Pin's revival rule, which moves a revived
+// Finding to the default image: a launch that requires the repository's
+// image has no default to move to, and an intent brought back by its
+// trigger label is a new plan and a new approval, a fresh human decision,
+// not a revival.
 //
 // Like Pin, what PinFor copies is a request: jobs.Client.Create decides and
 // returns what the Job runs, and a caller requiring the image must still
 // refuse a Job whose returned stamp is not the repository's.
-func (g Guard) PinFor(spec *jobs.Spec, repo *v1alpha1.Repository, revived bool) string {
+func (g Guard) PinFor(spec *jobs.Spec, repo *v1alpha1.Repository) string {
 	ri := repo.Status.RunnerImage
 	switch {
 	case ri != nil && ri.Rejected != "":
@@ -109,8 +99,6 @@ func (g Guard) PinFor(spec *jobs.Spec, repo *v1alpha1.Repository, revived bool) 
 		return SkipDisabled
 	case g.Breaker.Tripped():
 		return SkipBreaker
-	case revived:
-		return SkipRevivedWork
 	}
 	spec.RunnerImage = ri.Image
 	spec.RunnerSearchPath = ri.SearchPath

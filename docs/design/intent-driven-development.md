@@ -173,7 +173,8 @@ because the only `LabelFinding` consumers index Investigations, Remediations and
 IntentRun name matches none of them.
 
 The intent `jobs.Client` sets `AllowRepositoryImages`, `EphemeralStorage` and its own runnerguard Breaker.
-`runnerguard.PinFor(spec, repo, revived bool)` is added beside `Pin`, which is not touched.
+`runnerguard.PinFor(spec, repo)` is added beside `Pin`, which is not touched. It has no revival rule: an intent
+brought back by its trigger label is a new plan and a new approval, not a Finding revival.
 
 ### Custom resources
 

@@ -253,7 +253,7 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		return err
 	}
 	if err := (&intent.TTLReconciler{
-		Client: mgr.GetClient(), TTL: opts.Duration("intent-ttl"), Log: log,
+		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), TTL: opts.Duration("intent-ttl"), Log: log,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}

@@ -434,6 +434,39 @@ func TestHandOffSurvivesAFailure(t *testing.T) {
 	}
 }
 
+// staleIntent is a cache that has not yet seen an Intent's revival: it shows
+// the Intent Failed, completed at done.
+type staleIntent struct {
+	client.Client
+	done metav1.Time
+}
+
+func (s staleIntent) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := s.Client.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if in, ok := obj.(*v1alpha1.Intent); ok {
+		in.Status.Phase, in.Status.CompletedAt = v1alpha1.IntentFailed, &s.done
+	}
+	return nil
+}
+
+// TestTTLSparesARevivedIntent: an Intent the cache still shows Failed and
+// expired, but that an approver revived just now, is not deleted.
+func TestTTLSparesARevivedIntent(t *testing.T) {
+	revived := &v1alpha1.Intent{
+		ObjectMeta: metav1.ObjectMeta{Name: "target-1", Namespace: testNS, UID: "u1"},
+		Status:     v1alpha1.IntentStatus{Phase: v1alpha1.IntentPlanning},
+	}
+	e := newEnv(t, revived)
+	e.clock.Advance(14 * 24 * time.Hour)
+	e.ttl.Client = staleIntent{Client: e.c, done: metav1.NewTime(time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC))}
+	if _, err := e.ttl.Reconcile(context.Background(), req("target-1")); err != nil {
+		t.Fatal(err)
+	}
+	e.get("target-1")
+}
+
 // TestTTL: an ended intent is deleted, in the foreground, its TTL after it
 // completed; an active one never is.
 func TestTTL(t *testing.T) {

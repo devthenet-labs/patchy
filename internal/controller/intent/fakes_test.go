@@ -896,7 +896,7 @@ func newEnv(t *testing.T, objs ...client.Object) *env {
 	e.runs = &RunReconciler{Client: e.c, APIReader: e.c, Jobs: e.jobs, GitHub: e.gh, Settings: set,
 		MaxConcurrent: 1, Harness: "claude", PlanModel: "anthropic/claude-sonnet-5",
 		BuildModel: "anthropic/claude-opus-5", Images: images, Now: e.clock.Now}
-	e.ttl = &TTLReconciler{Client: e.c, TTL: DefaultTTL, Now: e.clock.Now}
+	e.ttl = &TTLReconciler{Client: e.c, APIReader: e.c, TTL: DefaultTTL, Now: e.clock.Now}
 	return e
 }
 

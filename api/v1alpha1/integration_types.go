@@ -27,7 +27,11 @@ const (
 type GitHubIssues struct {
 	// Enabled turns the issues capability on.
 	Enabled bool `json:"enabled"`
-	// ApproveComment is the comment command that approves a held remediation.
+	// ApproveComment is the deprecated alias of "/patchy approve" on a
+	// finding's tracking issue: a comment that is exactly it, or starts
+	// with it and a space, approves as "/patchy approve" does, with the same
+	// write-access check and reply. "/patchy <verb>" is the command grammar
+	// every tracking issue accepts whatever this says.
 	// +optional
 	// +kubebuilder:default="/approve"
 	ApproveComment string `json:"approveComment,omitempty"`

@@ -319,6 +319,10 @@ func TestSchemaValidation(t *testing.T) {
 	t.Run("intent run spec is immutable and holds its stage invariants", func(t *testing.T) {
 		testIntentRunSchema(ctx, t, c)
 	})
+
+	t.Run("finding commands round-trip and are bounded", func(t *testing.T) {
+		testFindingCommandsSchema(ctx, t, c)
+	})
 }
 
 // testRepositoryRunnerImageSchema writes a fully populated runner-image

@@ -299,7 +299,7 @@
                             "properties": {
                                 "approveComment": {
                                     "default": "/approve",
-                                    "description": "ApproveComment is the comment command that approves a held remediation.",
+                                    "description": "ApproveComment is the deprecated alias of \"/patchy approve\" on a\nfinding's tracking issue: a comment that is exactly it, or starts\nwith it and a space, approves as \"/patchy approve\" does, with the same\nwrite-access check and reply. \"/patchy <verb>\" is the command grammar\nevery tracking issue accepts whatever this says.",
                                     "type": "string"
                                 },
                                 "enabled": {

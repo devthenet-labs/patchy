@@ -147,7 +147,8 @@ type RelatedFinding struct {
 	Relationship RelationshipType `json:"relationship"`
 }
 
-// Approval records a human /approve on the tracking item.
+// Approval records a human approval: "/patchy approve" on the tracking item,
+// or the approve action on the status page or in the CLI.
 type Approval struct {
 	// By is the approving login.
 	By string `json:"by"`
@@ -232,8 +233,9 @@ type FindingSpec struct {
 	// Suspend pauses pipeline progress for this finding (human-written).
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
-	// Approval is the recorded human /approve, written by
-	// integration-controller from the tracking system's comment webhook.
+	// Approval is the recorded human approval: written by the status page or
+	// the CLI, or by integration-controller once an approve command on the
+	// tracking issue is authorised (status.commands).
 	// +optional
 	Approval *Approval `json:"approval,omitempty"`
 	// Retry requests recovery of a Failed finding back to the state it
@@ -499,6 +501,129 @@ type FindingStatus struct {
 	// +listMapKey=alertID
 	// +kubebuilder:validation:MaxItems=64
 	StaleObservations []StaleObservation `json:"staleObservations,omitempty"`
+	// Commands are the human commands made on the tracking issue, kept from
+	// the delivery that carried them until they are answered
+	// (integration). A webhook delivery is answered before it is handled
+	// and never redelivered after that, so the delivery only records a
+	// command here; the projection then authorises it against GitHub,
+	// applies it and replies, retrying until GitHub answers.
+	// +optional
+	Commands *FindingCommands `json:"commands,omitempty"`
+}
+
+// Bounds on status.commands. The schema markers repeat them as literals;
+// keep the two in lockstep.
+const (
+	// MaxPendingCommands bounds status.commands.pending: a command that
+	// arrives while it is full is not recorded, and so never answered.
+	MaxPendingCommands = 8
+	// MaxConsumedCommands bounds status.commands.consumed, which keeps the
+	// largest comment ids answered.
+	MaxConsumedCommands = 32
+)
+
+// FindingCommands are the human commands made on a finding's tracking
+// issue: those still to be answered, and the comment ids of those answered.
+type FindingCommands struct {
+	// Pending are the commands recorded and not yet answered, each answered
+	// in comment-id order: GitHub's ids grow with creation, so a suspend
+	// and the resume written after it apply in that order however their
+	// deliveries arrive.
+	// +optional
+	// +listType=map
+	// +listMapKey=commentID
+	// +kubebuilder:validation:MaxItems=8
+	Pending []FindingCommand `json:"pending,omitempty"`
+	// Consumed are the comment ids of the latest commands answered, the
+	// largest MaxConsumedCommands of them, in ascending order. A delivery of
+	// one of them (a redelivery, or a demo replay) records nothing, and
+	// neither does one of a smaller id once the list is full: GitHub's ids
+	// grow with creation, so such a comment was answered long ago.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=32
+	Consumed []int64 `json:"consumed,omitempty"`
+}
+
+// CommandOutcome is patchy's answer to a human command.
+// +kubebuilder:validation:Enum=Done;Unavailable;NotAllowed;UnknownVerb
+type CommandOutcome string
+
+// Command outcomes.
+const (
+	// CommandDone: the command's effect is recorded on the finding's spec.
+	CommandDone CommandOutcome = "Done"
+	// CommandUnavailable: the verb means nothing in the finding's phase.
+	CommandUnavailable CommandOutcome = "Unavailable"
+	// CommandNotAllowed: the commenter lacks write access to the tracking
+	// issue's repository.
+	CommandNotAllowed CommandOutcome = "NotAllowed"
+	// CommandUnknownVerb: the verb is not one a tracking issue offers.
+	CommandUnknownVerb CommandOutcome = "UnknownVerb"
+)
+
+// CommandActor is the GitHub account that wrote a command, as its delivery
+// names it.
+type CommandActor struct {
+	// Login of the account.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9_.-]*(\[bot\])?$`
+	Login string `json:"login"`
+	// ID is GitHub's numeric id of the account.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	ID int64 `json:"id,omitempty"`
+	// Type is GitHub's account type: User, Bot or Organization.
+	// +optional
+	// +kubebuilder:validation:MaxLength=32
+	Type string `json:"type,omitempty"`
+}
+
+// FindingCommand is one human command made on the tracking issue, as it
+// moves from recorded (by the delivery) to decided, applied and answered
+// (by the projection). Each step is one durable write, so a retry after any
+// failure resumes where the last one stopped: a decision is never taken
+// twice, and the spec is never written twice.
+type FindingCommand struct {
+	// CommentID is GitHub's id of the comment carrying the command.
+	// +kubebuilder:validation:Minimum=1
+	CommentID int64 `json:"commentID"`
+	// Actor wrote the comment.
+	Actor CommandActor `json:"actor"`
+	// Verb is the command's verb, lower-cased; empty when the command line
+	// names no word patchy could read as one.
+	// +optional
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^[a-z]*$`
+	Verb string `json:"verb,omitempty"`
+	// Note is the text after the verb; approve records it on the approval.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	Note string `json:"note,omitempty"`
+	// Legacy marks a command made with the deprecated approve comment
+	// ("/approve", or the Integration's approveComment) rather than
+	// "/patchy approve".
+	// +optional
+	Legacy bool `json:"legacy,omitempty"`
+	// ReceivedAt is when the delivery carrying the command was handled.
+	ReceivedAt metav1.Time `json:"receivedAt"`
+	// Outcome is the answer decided; empty until it is.
+	// +optional
+	Outcome CommandOutcome `json:"outcome,omitempty"`
+	// DecidedAt is when the outcome was decided, and the time a Done
+	// command's effect is recorded with on the spec.
+	// +optional
+	DecidedAt *metav1.Time `json:"decidedAt,omitempty"`
+	// Available are the verbs the finding's phase admitted when an
+	// Unavailable outcome was decided, for the reply to list.
+	// +optional
+	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:items:MaxLength=32
+	Available []string `json:"available,omitempty"`
+	// Applied reports that a Done command's effect is written to the spec.
+	// +optional
+	Applied bool `json:"applied,omitempty"`
 }
 
 // StaleObservation is one alert reopen set aside as stale: observed at a

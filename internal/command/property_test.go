@@ -275,12 +275,14 @@ func genTextStart(r *rand.Rand) string {
 	return starts[r.Intn(len(starts))]
 }
 
-// noteText is hostile text without "/", so the only "/patchy" or "/approve"
-// in a generated command is its command line.
+// noteText is hostile text that cannot spell any part of a command line: no
+// "/" and no letter of any verb genVerb draws, in either case. So the only
+// "/patchy", "/approve" or verb in a generated command is its command line,
+// and one found in the note was leaked there by the parser.
 func noteText(r *rand.Rand) string {
 	var clean []string
 	for _, f := range hostile {
-		if !strings.Contains(f, "/") {
+		if !strings.ContainsAny(strings.ToLower(f), "/"+strings.Join(verbs, "")) {
 			clean = append(clean, f)
 		}
 	}
@@ -303,24 +305,28 @@ func spelling(r *rand.Rand) string {
 // inline are whitespace runes that do not end a line.
 var inline = []string{" ", "\t", "\u00a0", "\u2003", "\u202f", "\u3000"}
 
-// genVerb is a real verb or an unknown one.
-func genVerb(r *rand.Rand) string {
-	verbs := []string{action.VerbApprove, action.VerbRetry, action.VerbRevise, action.VerbCancel, "please"}
-	return verbs[r.Intn(len(verbs))]
+// verbs are the real verbs and an unknown one.
+var verbs = []string{
+	action.VerbApprove, action.VerbRetry, action.VerbRevise, action.VerbCancel, action.VerbReplan, "please",
 }
 
-// TestParseNoteExcludesCommandLineProperty: the note is what follows the
-// verb and nothing of the command line itself — it never contains the
-// prefix or the alias, and it is the same however the command line is
-// spelled.
+// genVerb is a real verb or an unknown one.
+func genVerb(r *rand.Rand) string { return verbs[r.Intn(len(verbs))] }
+
+// TestParseNoteExcludesCommandLineProperty: the note never contains the
+// command line. It holds neither the prefix, the alias nor the verb — the
+// note text can spell none of them, so any found there leaked from the
+// command line — and it is exactly the note rule applied to the text after
+// the verb, however the command line is spelled.
 func TestParseNoteExcludesCommandLineProperty(t *testing.T) {
 	excluded := func(head, verb, note string) bool {
 		c, ok := command.Parse(head + verb + " " + note)
 		if !ok || c.Verb != verb || c.Alias != "" {
 			return false
 		}
-		canonical, _ := command.Parse(command.Prefix + " " + verb + " " + note)
-		return !strings.Contains(strings.ToLower(c.Note), command.Prefix) && c.Note == canonical.Note
+		lower := strings.ToLower(c.Note)
+		return !strings.Contains(lower, command.Prefix) && !strings.Contains(lower, verb) &&
+			c.Note == command.Note(note)
 	}
 	if err := quick.Check(excluded, quickConfig(20260927, spelling, genVerb, noteText)); err != nil {
 		t.Error(err)
@@ -329,7 +335,7 @@ func TestParseNoteExcludesCommandLineProperty(t *testing.T) {
 	legacy := func(note string) bool {
 		c, ok := command.Parser{Surface: command.FindingIssue}.Parse(command.LegacyApprove + " " + note)
 		return ok && c.Verb == action.VerbApprove && c.Alias == command.LegacyApprove &&
-			!strings.Contains(c.Note, command.LegacyApprove)
+			!strings.Contains(strings.ToLower(c.Note), action.VerbApprove) && c.Note == command.Note(note)
 	}
 	if err := quick.Check(legacy, quickConfig(20260928, noteText)); err != nil {
 		t.Error(err)

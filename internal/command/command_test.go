@@ -67,6 +67,8 @@ func TestParseGrammar(t *testing.T) {
 			command.Command{Verb: strings.Repeat("a", 32)}, true},
 		{"a /patchy mention in the note is note text", "/patchy approve see /patchy docs",
 			approve("see /patchy docs"), true},
+		{"the verb is no part of the note, even one that repeats it", "/patchy revise revise the handler",
+			command.Command{Verb: action.VerbRevise, Note: "revise the handler"}, true},
 		{"only the first line is a command; a later one is note text", "/patchy approve\n/patchy cancel",
 			approve("/patchy cancel"), true},
 		{"control characters and bidi overrides are dropped, tabs kept",

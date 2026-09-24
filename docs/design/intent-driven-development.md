@@ -176,15 +176,37 @@ The intent `jobs.Client` sets `AllowRepositoryImages`, `EphemeralStorage` and it
 All of them are in `patchy.bitwisemedia.uk/v1alpha1`, in namespace `patchy`, with `categories=patchy`. Every field is
 bounded. Nothing goes into `transitions.go`.
 
+**Name budget.** Intent and IntentRun names are written into label values: `patchy.bitwisemedia.uk/intent` and
+`intent-run` on Repositories, and `LabelOwner` and `LabelFinding` on Jobs and transcripts. Label values are capped at 63
+characters, and a Job is mapped back to its run by the exact value, so no derived name may be truncated. The longest
+name is a build run's:
+
+| Part                                | Characters |
+| ----------------------------------- | ---------- |
+| Project name                        | 25         |
+| `-` and the issue number (7 digits) | 8          |
+| `-bld-r` and the round (3 digits)   | 9          |
+| `-` and the repository key          | 17         |
+| `-a` and the attempt (at most 16)   | 4          |
+| **Total**                           | **63**     |
+
+Each part is bounded where it is written. The Intent name must be `<project>-<issue>` (at most 33 characters), and the
+IntentRun schema refuses any name over 63 as a backstop. `IntentName` and `IntentRunName` in the API package derive the
+names, and a seeded property test checks that they are label-safe and unique within an Intent.
+
 **Project** is operator config.
 
 - **Writers.** The operator writes the spec through the patchy-config chart; only intent-controller writes status.
   Writing `projects` is admin-only in RBAC, because a Project is the power to point agents at repositories.
 - **Spec:**
   - `intentRepository`
-  - `labels.trigger` (default `patchy:<name>`) and `labels.approve` (default `patchy:approved`)
+  - `labels.trigger` (default `patchy:<name>`) and `labels.approve` (default `patchy:approved`). The schema refuses a
+    derived trigger that equals the approve label.
   - `approvers.logins[]` (1-20): the only logins whose trigger, approval and review feedback count
-  - `repositories[]` (at most 8; slice 1 enforces exactly 1) `{name, url}`, where the first entry is the planning repo
+  - `repositories[]` (at most 8; slice 1 enforces exactly 1) `{name, url}`, where the first entry is the planning repo.
+    The key `name` is at most 16 characters. No two entries may name the same repository: URLs are compared
+    case-insensitively, ignoring a `.git` suffix, because PRs are recorded by URL and every repository uses the same
+    intent branch.
   - `limits`:
     - `maxActiveIntents` (2)
     - `maxRevisions` (3)
@@ -202,17 +224,26 @@ bounded. Nothing goes into `transitions.go`.
 
 - **Writers.** intent-controller is the only writer. Humans may patch `spec.suspend` only, using the native verb.
 - **Spec** (CEL-immutable except `suspend`): `project`, `issue{repository, number, url}` and
-  `requestedBy{login, at, eventID}`.
+  `requestedBy{login, at, eventID}`. The Intent is named `<project>-<issue>` (CEL-enforced).
 - **Status:**
   - `phase` and `phaseTimes`
   - conditions: `BudgetExhausted`, `RevisionLimitReached`, `ImageRequired`, `ApprovalRejected`
-  - `input{revision, digest, configMap}`
-  - `plan{revision, digest, configMap, commentID, commentDigest, postedAt, summary, repositories}`
-  - `approval{by, eventID, at, planRevision, planDigest, inputDigest}`
+  - `input{revision, digest, configMap}`. Every entry to `Planning` except a resume from `Blocked` (the first, a replan,
+    a revival) takes a new snapshot at the next revision, so a revision is never reused.
+  - `plan{revision, digest, configMap, commentID, commentDigest, postedAt, summary, repositories}`. The plan's revision
+    is the input revision it was planned from.
+  - `approval{by, source, eventID, at, planRevision, planDigest, inputDigest}`. `source` (`label` or `command`) says
+    which GitHub id space `eventID` is in: a labeled issue event and an issue comment have separate ids.
+  - `lastTrigger{source, eventID, login, at}`: the newest trigger action consumed after `requestedBy` (a replan or
+    revival, or one refused with a notice). Later polls consider only actions GitHub dates after it. So a revival whose
+    plan fails again, posting no plan to anchor on, cannot re-consume the action that revived it, and GitHub's clock is
+    never compared with the controller's.
   - `branch`
   - `pullRequests[]` (at most 8, keyed by repository):
     `{repository, number, url, nodeID, headSHA, state, mergedAt, mergeCommitSHA}`
-  - `revisions`
+  - `rounds`: the revise-round ordinal, one count over every revise-stage round whatever its trigger or outcome. It is
+    advanced in the status write that records the round's first run as `activeRun`.
+  - `revisions` and `checkFixes`: the review-driven and check-fix subsets of those rounds, against their limits
   - `usage` (micro-USD as int64, plus tokens)
   - `tracking{statusCommentID, statusDigest}`
   - `activeRun`
@@ -226,9 +257,15 @@ bounded. Nothing goes into `transitions.go`.
 - **Spec** (`self == oldSelf`):
   - `intentRef` (pinned by UID)
   - `stage`: `plan`, `build` or `revise`
+  - `trigger` (revise runs only): `review`, `command` or `checks`
   - `repository{url, repositoryRef}`
-  - `round` and `attempt`
-  - `inputs{configMap, inputDigest, planRevision, planDigest, reviewIDs[] (at most 32)}`
+  - `round` and `attempt`. The round comes from a counter that never repeats, because runs are kept and the create is
+    the lease: a plan run takes the input revision, a build run the approved plan revision (CEL-enforced), and a revise
+    run the Intent's `rounds` ordinal. Retries and the one `head_moved` re-run are further attempts of the same round.
+  - `inputs{configMap, inputDigest, planRevision, planDigest, reviewIDs[], checkRunIDs[], commandID}`, each list at most
+    32 ids. The schema requires each trigger's own record (`reviewIDs` for `review`, `checkRunIDs` for `checks`,
+    `commandID` for `command`) and keeps each record to its kind of round. A command round may also consume the reviews
+    since the last round.
   - `imageFrom`: the build-round Repository, used by revise runs
   - `grant{maxTurns, tokenBudget, timeout}`
   - `previousAttempt`
@@ -239,7 +276,8 @@ bounded. Nothing goes into `transitions.go`.
   - `outcome`, `report` (at most 64 KiB) and `detail`
   - `usage` and `transcript`
   - timestamps
-- **Names:** `<intent>-plan-r<rev>-a<n>`, `<intent>-bld-<repokey>-a<n>` and `<intent>-rev<k>-<repokey>-a<n>`.
+- **Names:** `<intent>-plan-r<rev>-a<n>`, `<intent>-bld-r<rev>-<repokey>-a<n>` and `<intent>-rev<k>-<repokey>-a<n>`,
+  inside the name budget. A controller that adopts an existing run on AlreadyExists checks its `intentRef` UID.
 
 **Repository** is reused as it is.
 
@@ -308,8 +346,8 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
    - the issue body still hashes to the input snapshot;
    - the label is still on the issue.
 
-   It then records `status.approval{by, eventID, at, planRevision, planDigest, inputDigest}` and moves to `Building`. If
-   the comment or the issue body has changed, it posts a notice, removes the label and asks for a replan.
+   It then records `status.approval{by, source, eventID, at, planRevision, planDigest, inputDigest}` and moves to
+   `Building`. If the comment or the issue body has changed, it posts a notice, removes the label and asks for a replan.
 
 7. **Build.**
    - Create R0 at the head of the default branch.
@@ -464,8 +502,9 @@ closes the intent issue itself.
   - Comments from non-approvers are counted but never included. App repos are public, so anyone can comment.
 - **Diff.** The compare patch for `base...head`, at most 48 KiB, with any truncation stated. There is no second tree in
   the pod.
-- **Idempotency.** Consumed review IDs are recorded on the IntentRun spec, so a restart or a repeated poll never runs a
-  round twice.
+- **Idempotency.** Consumed review IDs, and the command comment ID of a `/patchy revise`, are recorded on the IntentRun
+  spec, so a restart or a repeated poll never runs a round twice. The round's number comes from the Intent's `rounds`
+  ordinal, which a failed round advances too, so a later round never reuses a failed round's run name.
 - **Bounds:**
   - `maxRevisions` (default 3);
   - the per-intent ceiling;
@@ -517,8 +556,9 @@ iterates on those failures itself, using the revise machinery.
   cost ceiling. If a check fails again after a fix round with the same failure signature (its annotations, or the tail
   of its log), the controller stops and the Intent goes to `Blocked` with the condition `ChecksFailing` and a notice.
   The agent cannot touch `.github/**`, so a failure in the CI configuration is reported, not fixed.
-- **Records.** IntentRun gains `spec.trigger` (`review`, `command` or `checks`) and `spec.inputs.checkRunIDs[]` (at most
-  32), so a check failure is consumed exactly once.
+- **Records.** IntentRun gains `spec.trigger` (`review`, `command` or `checks`), `spec.inputs.checkRunIDs[]` (at
+  most 32) and `spec.inputs.commandID`, so a check failure or a command is consumed exactly once. A checks round
+  consumes check runs only, so it is never counted against `maxRevisions`.
 - **GitHub App.** Checks: read, Commit statuses: read and Actions: read (for job logs). All three are read-only, and the
   installation owner accepts them when they are added.
 - **Security Findings.** Remediation PRs do not get this in this design. The same mechanism could later drive a Finding

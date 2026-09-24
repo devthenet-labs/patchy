@@ -349,8 +349,9 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
    - Delete the plan Repository.
 5. **Write-back.**
    - Remove the approve label if it is present.
-   - Post the plan comment, rendered from the ConfigMap bytes and sanitised (see below), with the marker
-     `<!-- patchy:plan patchy/target-1 r1 sha256:<12> -->`.
+   - Post the plan comment, which shows the ConfigMap bytes verbatim in a code block (see below), with the marker
+     `<!-- patchy:plan patchy/target-1 r1 sha256:<12> -->`. A plan the comment cannot show in full is invalid: patchy
+     posts a refusal notice instead and asks for a new plan.
    - Record `commentID`, `commentDigest`, and `postedAt` as returned by GitHub.
    - Move to `AwaitingApproval`.
 6. **Approval.** While in `AwaitingApproval`, the controller polls the issue's events every 30 s. It accepts the newest
@@ -527,13 +528,45 @@ The plan frontmatter is strict and parsed by `report.ParsePlan`:
 
 The body is at most 48 KiB: approach, per-repo steps, test plan and risks.
 
-All agent-authored text that reaches GitHub passes through one sanitiser in `internal/templates`. Its property tests are
-seeded, and they check that the sanitiser is idempotent, that its output never matches GitHub's closing-keyword grammar,
-and that no raw HTML survives. What it does:
+**The plan is shown verbatim.** The plan comment is the approval artifact, and it shows the approver exactly the bytes
+the build agent reads: the plan report, the ConfigMap bytes whose digest the approval binds, rendered unchanged inside a
+fenced code block (` ```markdown `). The fence is backticks, at least three and one more than the longest run of
+backticks in the report, so no line of the report can close it, whatever the report holds. The block is the last thing
+in the comment. Outside it there is only the controller's header: the marker, the plan revision and its full digest, how
+to approve, the summary as one sanitised line, the new dependencies as a sanitised list, a count of the planner's
+questions (which are read in the plan itself), and a count of the characters in the plan that render as nothing even
+inside a code block (zero-width, bidi and tag characters, which a model reads as text).
 
-- **Raw HTML is escaped**, so an HTML comment or a `<details>` block in a plan is shown literally. A prompt-injected
-  planner therefore cannot hide instructions that the approver would not see but the build agent would read. The
-  controller's marker is the only HTML comment.
+Why verbatim rather than sanitised: a sanitised rendering shows the approver what the plan says only as far as the
+sanitiser's list of markdown tricks reaches. HTML comments, `<details>`, link reference definitions, link titles, a code
+fence's info string and a table cell past the header's count all hide text on GitHub. A trick missing from that list, or
+one GitHub adds later, would hide text that the build agent still reads, and the approval would bind a digest of bytes
+the approver never saw. A code block needs no list. Nothing inside it renders, so markup, mentions, issue references and
+closing keywords are shown as the text they are and do nothing. The only way to end the block is its fence, and patchy
+chooses the fence after reading the plan.
+
+GitHub refuses a comment of more than 65,536 characters. The plan contract bounds the report at 64 KiB, but a report
+near that bound does not fit alongside the header, which is about 1 KiB. patchy never cuts a plan short. If the rendered
+comment would exceed the limit (counted in bytes, since a character is at least one byte), the renderer returns
+`ErrPlanRefused` together with a notice to post instead. The notice says the plan is too large to show and is refused,
+and quotes none of the plan. It carries a notice marker rather than the plan marker, so nothing can find it as a plan to
+approve. intent-controller treats the plan as invalid and asks for a new one. A report that is not UTF-8 is refused in
+the same way, because a comment (JSON text, over GitHub's API) cannot carry it byte for byte. The renderer's property
+tests are seeded. They check that the text between the fences equals the report exactly; that no generated report can
+end the block early, because none holds a run of backticks as long as the fence and goldmark, standing in for GitHub,
+reads the block whole; and that the output, plan or notice, never exceeds the limit.
+
+Two limits remain, and the approver has to act on both. First, GitHub does not wrap lines in a code block: a long line
+scrolls sideways, behind a scroll bar. Second, characters that render as nothing are counted in the header but not
+located, and a plan that holds any should be replanned rather than approved.
+
+All other agent-authored text that reaches GitHub passes through one sanitiser in `internal/templates`. That covers the
+plan's summary and dependencies in the header, pull request bodies, status comments that quote agent output, and
+revise-round comments. Its property tests are seeded, and they check that the sanitiser is idempotent, that its output
+never matches GitHub's closing-keyword grammar, and that no raw HTML survives. What it does:
+
+- **Raw HTML is escaped**, so an HTML comment or a `<details>` block is shown literally. A prompt-injected agent
+  therefore cannot hide instructions from the human reading the text. The controller's marker is the only HTML comment.
 - **Closing keywords, issue references and mentions are neutralised** by rendering them as inline code. This covers
   forms like `fixes #3` and `owner/repo#3`, and `@mentions`.
 - **The controller composes the commit message:** `<project>: <summary> (<intent repo>#N, round k)`, plus the trailers
@@ -770,10 +803,11 @@ A deploy triggered by `pull_request` cannot be gated by an Environment branch ru
    - the planner is read-only;
    - nothing that writes code runs before an approval bound to both the plan digest and the input digest.
 
-   A plan carrying a prompt injection remains possible; a human reads it and a human merges.
+   A plan carrying a prompt injection remains possible; a human reads it, verbatim, and a human merges.
 
-3. **Agent text reaching GitHub is sanitised.** This closes the cross-flow path from an intent PR to a Finding's
-   tracking issue.
+3. **Agent text reaching GitHub is inert.** The plan is shown verbatim in a code block, where nothing renders or acts,
+   and all other agent text is sanitised. This closes the cross-flow path from an intent PR to a Finding's tracking
+   issue.
 4. **Stricter changeset and image rules for intents:**
    - `.github/**`, `.patchy/**` and `.devcontainer/**` are always refused;
    - a repository image is required;

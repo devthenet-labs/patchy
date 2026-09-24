@@ -12,10 +12,15 @@
 // every accumulation, never string-edited. The accumulator (source-controller)
 // owns the body; everyone else appends comments.
 //
-// Agent-authored text that reaches GitHub from the intent flow — a plan, its
-// summary and questions, a pull request's summary — passes through Sanitize
-// (or SanitizeInline) first: nothing it holds renders hidden from the human
-// who approves it, and no mention, issue reference or closing keyword in it
-// is live. The intent renderers take plain values, and the commit message,
-// which GitHub reads as plain text, breaks references apart instead.
+// The plan an approver approves is shown verbatim — the exact bytes the
+// build agent reads — in a fenced code block no line of it can close, so
+// what the approver sees depends on no list of markdown tricks; a plan no
+// comment can show that way (over GitHub's size limit, or not UTF-8) is
+// refused (ErrPlanRefused). Every other piece of agent-authored text that
+// reaches GitHub from the intent flow — a plan's summary and dependencies, a
+// pull request's summary — passes through Sanitize (or SanitizeInline)
+// first: nothing it holds renders hidden from a reader, and no mention,
+// issue reference or closing keyword in it is live. The intent renderers
+// take plain values, and the commit message, which GitHub reads as plain
+// text, breaks references apart instead.
 package templates

@@ -271,7 +271,14 @@ func checkSanitized(out string) string {
 	if strings.ContainsFunc(out, unseen) {
 		return "output keeps a character that renders as nothing"
 	}
-	seen := parse(out)
+	return checkInert(parse(out))
+}
+
+// checkInert returns what in a rendering could hide text from a reader or
+// act on GitHub — raw HTML, a link or an image, an unescaped '<' outside
+// code, or in prose a live mention, issue reference or closing keyword —
+// or "". Code, a span or a block, is inert whatever it holds.
+func checkInert(seen rendering) string {
 	switch {
 	case seen.rawHTML:
 		return "output carries raw HTML"

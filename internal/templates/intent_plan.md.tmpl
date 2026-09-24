@@ -1,28 +1,22 @@
-{{- /* A plan posted for approval. Everything the build agent will read is
-shown: the summary and body sanitised, the frontmatter as written in a code
-block, with nothing collapsed or hidden, and a character that renders as
-nothing shown by its code point and counted before approval. The rule after
-the body separates the planner's words from patchy's. One line per
-paragraph: GitHub renders a line break inside an issue comment as a hard
-break. */ -}}
+{{- /* A plan posted for approval. The plan is the report exactly as stored —
+the bytes the approval's digest binds and the build agent reads — shown
+verbatim in a code block whose fence no line of it can close, and last, so
+nothing follows it. Of the agent's text, only the summary and the new
+dependencies are rendered outside the block, sanitised; the rest outside it
+is patchy's. One line per paragraph: GitHub renders a line break inside an
+issue comment as a hard break. */ -}}
 {{ .Marker }}
 ## Plan r{{ .Revision }}
 {{- with .Summary }}
 
 **Summary:** {{ . }}
 {{- end }}
-{{- with .Body }}
-
-{{ . }}
-{{- end }}
-
----
 {{- if or .Invisible .NewDependencies .Questions }}
 
 ### Before you approve
 {{- with .Invisible }}
 
-This plan holds {{ . }} that render as nothing, each shown here by its code point, such as `[U+200B]`. The build agent reads them as written, and a model reads some as text: a plan written for a person has no need of them.
+The plan holds {{ . }} that render as nothing, so you cannot see them below, yet the build agent reads them, and a model reads some as text. A plan written for a person has no need of them: ask for a new plan rather than approve this one.
 {{- end }}
 {{- with .NewDependencies }}
 
@@ -33,25 +27,18 @@ The build runs offline, in the image this repository declares, so it cannot fetc
 {{- end }}
 {{- with .Questions }}
 
-The planner asks:
-{{ range . }}
-- {{ . }}
+The planner asks {{ . }}, under `questions` in the plan. Answer in a comment, then ask for a new plan.
 {{- end }}
-
-Answer in a comment, then ask for a new plan.
-{{- end }}
-{{- end }}
-{{- with .Data }}
-
-### Plan data
-
-The plan's frontmatter, as the build agent reads it:
-
-{{ . }}
 {{- end }}
 
 ### To approve
 
-Add the {{ code .ApproveLabel }} label to this issue, or comment {{ .Approve }}. patchy then builds exactly this plan: r{{ .Revision }}, `{{ .Digest }}`. If this comment or the issue description is edited after patchy posted the plan, the approval is refused and patchy asks for a new plan.
+Add the {{ code .ApproveLabel }} label to this issue, or comment {{ .Approve }}. patchy then builds exactly the plan below: r{{ .Revision }}, `{{ .ShortDigest }}`. If this comment or the issue description is edited after patchy posted the plan, the approval is refused and patchy asks for a new plan.
 
 For a different plan, say what should change in a comment, then re-apply the {{ code .TriggerLabel }} label or comment {{ .Replan }}. {{ .Cancel }} stops work on this intent.
+
+### The plan
+
+This is the planner's report exactly as the build agent reads it, byte for byte: nothing in it is rendered, hidden or left out. Its digest is `{{ .Digest }}`.
+
+{{ .Plan }}

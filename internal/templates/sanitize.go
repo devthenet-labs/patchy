@@ -13,13 +13,16 @@ import (
 )
 
 // Sanitize makes agent-authored markdown safe to post to GitHub. Every piece
-// of agent text that reaches an issue, a comment or a pull request passes
-// through it, or through SanitizeInline; patchy's own markers and headings
-// are added around the result, never inside it, so the controller's marker
-// is the only HTML comment a posted body carries.
+// of agent text that reaches an issue, a comment or a pull request as
+// markdown passes through it, or through SanitizeInline; patchy's own
+// markers and headings are added around the result, never inside it, so the
+// controller's marker is the only HTML comment a posted body carries. The
+// plan put up for approval does not: it is shown verbatim in a code block,
+// where nothing renders (RenderPlanComment), so what the approver sees
+// does not rest on this function knowing every trick markdown has.
 //
-// Two things are at stake. What the approving human reads must be what the
-// agent reads next: an HTML comment, a <details> block, a link reference
+// Two things are at stake. What a human reads must be what an agent reads
+// next: an HTML comment, a <details> block, a link reference
 // definition ("[//]: # (...)"), a link title or image alt text, a code
 // fence's info string, a math expression and a table cell past its header's
 // count (GitHub drops it) can all carry text a reader never sees, so each is

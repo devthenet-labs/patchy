@@ -1,0 +1,10 @@
+{{- /* Posted in place of a plan no comment can show an approver in full,
+exactly as the build agent reads it. It quotes nothing of the plan. One line
+per paragraph: GitHub renders a line break inside an issue comment as a hard
+break. */ -}}
+{{ .Marker }}
+## Plan r{{ .Revision }} refused
+
+{{ if .Size }}The plan is too large to show here: with patchy's notes it comes to {{ .Size }} bytes, and patchy posts at most {{ .Limit }}, GitHub's limit for a comment.{{ else }}The plan is not UTF-8 text, and a comment holds only text, so no comment can show it as the build agent would read it.{{ end }} An approver must see all of a plan exactly as the build agent reads it, so patchy does not post part of one: plan r{{ .Revision }} (`{{ .Digest }}`) cannot be approved, and patchy will not build it.
+
+For a new plan, say what should change in a comment{{ if .Size }}, such as a shorter plan{{ end }}, then re-apply the {{ code .TriggerLabel }} label or comment {{ .Replan }}. {{ .Cancel }} stops work on this intent.

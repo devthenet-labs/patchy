@@ -15,30 +15,34 @@ import (
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/action"
 	"github.com/bitwise-media-group/patchy/internal/command"
-	"github.com/bitwise-media-group/patchy/internal/report"
 )
 
 // This file renders what intent-controller writes to GitHub. The renderers
-// take plain values, never the intent resource types, and every value an
-// agent wrote (a plan, its summary, questions, dependencies) goes through
-// Sanitize, SanitizeInline or code here, before any template sees it.
-// Controller values that quote agent output (a refusal naming a changeset
-// path) are fenced. Logins are rendered as code, never as mentions: patchy
-// notifies nobody. Commands are named from internal/command and
-// internal/action, so a reply here and the parser that reads the command
-// cannot disagree on a verb.
+// take plain values, never the intent resource types. The plan an approver
+// approves is shown verbatim, in a code block (RenderPlanComment); every
+// other value an agent wrote (a plan's summary and dependencies, a pull
+// request's summary) goes through Sanitize, SanitizeInline or code here,
+// before any template sees it. Controller values that quote agent output (a
+// refusal naming a changeset path) are fenced. Logins are rendered as code,
+// never as mentions: patchy notifies nobody. Commands are named from
+// internal/command and internal/action, so a reply here and the parser that
+// reads the command cannot disagree on a verb.
 
 // MaxCommentBytes is the most a rendered comment may be. GitHub refuses a
 // body of more than 65,536 characters, and a character is at least a byte,
 // so a body within this many bytes is always accepted.
 const MaxCommentBytes = 65536
 
-// ErrCommentTooLarge reports a rendered comment GitHub would refuse.
-// Sanitising expands agent text (every "<" gains a backslash), so a plan
-// within its own byte bound can still render past GitHub's; the plan is then
-// too large to put in front of an approver, and must not be cut short, since
-// the approver has to see all of what the build agent reads.
-var ErrCommentTooLarge = errors.New("rendered comment exceeds GitHub's comment size limit")
+// ErrPlanRefused reports a plan no comment can show an approver in full,
+// exactly as the build agent reads it: rendered for approval it is over
+// MaxCommentBytes, or it is not UTF-8, which a comment — text, sent to
+// GitHub as JSON — cannot carry byte for byte. Cutting or repairing it would
+// show the approver something other than what the build agent reads, so the
+// plan is refused instead: RenderPlanComment returns this error, wrapped,
+// together with the notice to post in the plan's place, and
+// intent-controller treats the plan as invalid, never offering it for
+// approval.
+var ErrPlanRefused = errors.New("plan refused: no comment can show it to an approver exactly as written")
 
 // PlanDigest is the digest a plan's approval binds: "sha256:" and the hex
 // SHA-256 of the report exactly as stored.
@@ -211,13 +215,16 @@ type PlanComment struct {
 	// Revision is the plan's revision, from 1.
 	Revision int32
 	// Report is the plan report exactly as stored: the bytes the approval's
-	// digest binds and the build agent reads. The comment shows all of it —
-	// the frontmatter as written, the body sanitised, and in both every
-	// character that renders as nothing by its code point, with a count of
-	// them for the approver — and nothing else of the agent's.
+	// digest binds and the build agent reads. The comment shows all of it,
+	// verbatim, in a code block no line of it can close, last in the
+	// comment; it renders none of it as markdown, so nothing in it can hide
+	// from the approver or act on GitHub, whatever markup it holds. What
+	// renders as nothing even in a code block (a zero-width or tag
+	// character) it counts, for the approver.
 	Report []byte
-	// Summary, NewDependencies and Questions are the report's parsed
-	// frontmatter fields, called out for the approver.
+	// Summary and NewDependencies are the report's parsed frontmatter
+	// fields, called out, sanitised, above the plan; Questions are counted
+	// there, and read in the plan itself.
 	Summary         string
 	NewDependencies []string
 	Questions       []string
@@ -226,77 +233,140 @@ type PlanComment struct {
 	TriggerLabel string
 }
 
-// RenderPlanComment renders a plan for approval, headed by PlanMarker over
-// the report's digest. It fails with ErrCommentTooLarge rather than post a
-// plan cut short.
+// RenderPlanComment renders a plan for approval: headed by PlanMarker over
+// the report's digest, then patchy's own words (the summary and new
+// dependencies sanitised, how to approve), then the report verbatim in a
+// fenced code block (```markdown, the fence longer than any run of
+// backticks in the report), with nothing after it. Between the block's
+// opening line and its closing fence is the report byte for byte, and a
+// line break before the fence when the report does not end with one.
+//
+// A plan no comment can show in full, exactly as written, is refused: it
+// returns the notice to post in the plan's place (headed by NoticeMarker,
+// keyed plan-r<revision>, so nothing finds it as a plan to approve) and an
+// error wrapping ErrPlanRefused. Any other error returns no body.
 func RenderPlanComment(p PlanComment) (string, error) {
 	digest := PlanDigest(p.Report)
-	body := report.StripFrontmatter(string(p.Report))
-	// StripFrontmatter only slices, so the frontmatter is what precedes it.
-	frontmatter := strings.TrimRight(visibleText(string(p.Report)[:len(p.Report)-len(body)]), "\n")
-	var data []string
-	if frontmatter != "" {
-		data = codeBlock("yaml", strings.Split(frontmatter, "\n"))
+	if !utf8.Valid(p.Report) {
+		return refusePlan(p, digest, 0)
 	}
+	out, err := planComment(p, digest)
+	if err != nil {
+		return "", err
+	}
+	if len(out) > MaxCommentBytes {
+		return refusePlan(p, digest, len(out))
+	}
+	return out, nil
+}
+
+// planComment renders the plan comment whatever its size.
+func planComment(p PlanComment, digest string) (string, error) {
 	deps := make([]string, 0, len(p.NewDependencies))
 	for _, d := range p.NewDependencies {
 		if d = code(strings.TrimSpace(visibleText(d))); d != "" {
 			deps = append(deps, d)
 		}
 	}
-	questions := make([]string, 0, len(p.Questions))
+	questions := 0
 	for _, q := range p.Questions {
-		if q = SanitizeInline(q); q != "" {
-			questions = append(questions, q)
+		if strings.TrimSpace(q) != "" {
+			questions++
 		}
 	}
-	// The parsed fields are the report's own, so counting the report counts
-	// every hidden character the comment shows.
-	invisibles := ""
-	if n := countInvisible(string(p.Report)); n == 1 {
-		invisibles = "1 character"
-	} else if n > 1 {
-		invisibles = fmt.Sprintf("%d characters", n)
-	}
-	out, err := render("intent_plan.md.tmpl", struct {
+	return render("intent_plan.md.tmpl", struct {
 		Marker          string
 		Revision        int32
 		Digest          string
+		ShortDigest     string
 		Summary         string
-		Body            string
-		Data            string
 		Invisible       string
 		NewDependencies []string
-		Questions       []string
+		Questions       string
 		ApproveLabel    string
 		TriggerLabel    string
 		Approve         string
 		Replan          string
 		Cancel          string
+		Plan            string
 	}{
-		Invisible:       invisibles,
+		Marker:          PlanMarker(p.Namespace, p.Intent, p.Revision, digest),
+		Revision:        p.Revision,
+		Digest:          digest,
+		ShortDigest:     shortDigest(digest),
+		Summary:         SanitizeInline(p.Summary),
+		Invisible:       count(countInvisible(string(p.Report)), "1 character", "characters"),
+		NewDependencies: deps,
+		Questions:       count(questions, "a question", "questions"),
+		ApproveLabel:    oneLine(p.ApproveLabel),
+		TriggerLabel:    oneLine(p.TriggerLabel),
 		Approve:         slashCommand(action.VerbApprove),
 		Replan:          slashCommand(action.VerbReplan),
 		Cancel:          slashCommand(action.VerbCancel),
-		Marker:          PlanMarker(p.Namespace, p.Intent, p.Revision, digest),
-		Revision:        p.Revision,
-		Digest:          shortDigest(digest),
-		Summary:         SanitizeInline(p.Summary),
-		Body:            strings.Trim(Sanitize(body), "\n"),
-		Data:            strings.Join(data, "\n"),
-		NewDependencies: deps,
-		Questions:       questions,
-		ApproveLabel:    oneLine(p.ApproveLabel),
-		TriggerLabel:    oneLine(p.TriggerLabel),
+		Plan:            verbatim("markdown", string(p.Report)),
+	})
+}
+
+// refusePlan renders the notice posted in place of a plan RenderPlanComment
+// refuses, with the error wrapping ErrPlanRefused: size is what the plan
+// comment came to, or 0 when the report is not UTF-8.
+func refusePlan(p PlanComment, digest string, size int) (string, error) {
+	notice, err := render("intent_plan_refused.md.tmpl", struct {
+		Marker       string
+		Revision     int32
+		Digest       string
+		Size         int
+		Limit        int
+		TriggerLabel string
+		Replan       string
+		Cancel       string
+	}{
+		Marker:       NoticeMarker(p.Namespace, p.Intent, fmt.Sprintf("plan-r%d", p.Revision)),
+		Revision:     p.Revision,
+		Digest:       shortDigest(digest),
+		Size:         size,
+		Limit:        MaxCommentBytes,
+		TriggerLabel: oneLine(p.TriggerLabel),
+		Replan:       slashCommand(action.VerbReplan),
+		Cancel:       slashCommand(action.VerbCancel),
 	})
 	if err != nil {
 		return "", err
 	}
-	if len(out) > MaxCommentBytes {
-		return "", fmt.Errorf("plan r%d renders to %d bytes, over %d: %w",
-			p.Revision, len(out), MaxCommentBytes, ErrCommentTooLarge)
+	if size == 0 {
+		return notice, fmt.Errorf("plan r%d is not UTF-8: %w", p.Revision, ErrPlanRefused)
 	}
-	return out, nil
+	return notice, fmt.Errorf("plan r%d renders to %d bytes, over %d: %w",
+		p.Revision, size, MaxCommentBytes, ErrPlanRefused)
+}
+
+// verbatim renders content as a fenced code block holding it byte for byte:
+// the fence is backticks, at least three and one more than the longest run
+// of backticks in content, so no line of content can close it, however a
+// reader splits the lines; a line break is added before the closing fence
+// only when non-empty content does not end with one.
+func verbatim(info, content string) string {
+	f := strings.Repeat("`", max(3, longestBacktickRun(content)+1))
+	var b strings.Builder
+	b.Grow(2*len(f) + len(info) + len(content) + 2)
+	b.WriteString(f + info + "\n" + content)
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		b.WriteByte('\n')
+	}
+	b.WriteString(f)
+	return b.String()
+}
+
+// count renders n of something: "" for none, one for one ("a question"),
+// and n with many otherwise ("3 questions").
+func count(n int, one, many string) string {
+	switch {
+	case n <= 0:
+		return ""
+	case n == 1:
+		return one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // NotAllowedNotice answers a command, or the label standing for one, from

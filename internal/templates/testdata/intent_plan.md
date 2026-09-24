@@ -3,6 +3,27 @@
 
 **Summary:** Add GET /version returning {sha, built} as JSON
 
+### To approve
+
+Add the `patchy:approved` label to this issue, or comment `/patchy approve`. patchy then builds exactly the plan below: r2, `sha256:05126c8813d2`. If this comment or the issue description is edited after patchy posted the plan, the approval is refused and patchy asks for a new plan.
+
+For a different plan, say what should change in a comment, then re-apply the `patchy:target` label or comment `/patchy replan`. `/patchy cancel` stops work on this intent.
+
+### The plan
+
+This is the planner's report exactly as the build agent reads it, byte for byte: nothing in it is rendered, hidden or left out. Its digest is `sha256:05126c8813d281315916c9f1f41d09f98dd4ddc8a8f258a3ca8a5af18d593fcf`.
+
+```markdown
+---
+summary: Add GET /version returning {sha, built} as JSON
+repositories: [patchy-target]
+new_dependencies: []
+questions: []
+confidence: high
+estimated_max_turns: 60
+estimated_token_budget: 300000
+---
+
 ## Approach
 
 Add a `GET /version` handler in `internal/server` that returns the commit SHA and build time, set with `-ldflags` at build time.
@@ -20,27 +41,4 @@ Add a `GET /version` handler in `internal/server` that returns the commit SHA an
 ## Risks
 
 A new public endpoint; it reveals the deployed commit, which is public anyway.
-
----
-
-### Plan data
-
-The plan's frontmatter, as the build agent reads it:
-
-```yaml
----
-summary: Add GET /version returning {sha, built} as JSON
-repositories: [patchy-target]
-new_dependencies: []
-questions: []
-confidence: high
-estimated_max_turns: 60
-estimated_token_budget: 300000
----
 ```
-
-### To approve
-
-Add the `patchy:approved` label to this issue, or comment `/patchy approve`. patchy then builds exactly this plan: r2, `sha256:05126c8813d2`. If this comment or the issue description is edited after patchy posted the plan, the approval is refused and patchy asks for a new plan.
-
-For a different plan, say what should change in a comment, then re-apply the `patchy:target` label or comment `/patchy replan`. `/patchy cancel` stops work on this intent.

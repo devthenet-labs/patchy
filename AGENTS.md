@@ -143,12 +143,15 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
 - `labels` — the trimmed human-facing label vocabulary the issue projection renders (one-way; never parsed back
   into state).
 - `templates` — the finding handoff/issue body, both stage prompts, and the PR body, rendered from embedded
-  templates with golden tests. Also the intent side (not wired in yet): `Sanitize`/`SanitizeInline`, the one
-  pass all agent text bound for GitHub takes (hidden markup shown literally, tables as text, characters that
-  render as nothing as their code point; mentions, issue references on any host and so closing keywords made
-  inline code; seeded properties checked against goldmark as a stand-in for GitHub, including that a reader
-  sees every word), and the intent status/plan comments, notices, PR body ("Part of", never a closing
-  keyword) and plain-text commit message, over plain values.
+  templates with golden tests. Also the intent side (not wired in yet): the plan comment, which shows the
+  plan report VERBATIM (its exact bytes) in a ```markdown block whose fence no line of it can close, only
+  patchy's header outside it, and refuses (`ErrPlanRefused`, with a notice to post instead) a plan over
+  GitHub's comment limit or not UTF-8; `Sanitize`/`SanitizeInline`, the pass every OTHER piece of agent
+  text bound for GitHub takes (hidden markup shown literally, tables as text, characters that render as
+  nothing as their code point; mentions, issue references on any host and so closing keywords made inline
+  code); both with seeded properties checked against goldmark as a stand-in for GitHub; and the intent
+  status comment, notices, PR body ("Part of", never a closing keyword) and plain-text commit message, over
+  plain values.
 - `webhook`, `telemetry`, `cli`, `version` — service plumbing (the webhook server is used by
   integration-controller only).
 - `action` — the human-action vocabulary (the custom verbs) and the state-machine gating behind each one:

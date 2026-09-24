@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.12.0](https://github.com/devthenet-labs/patchy/compare/v0.11.11...v0.12.0) (2026-09-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **integration:** approving a Finding from its tracking issue now needs write access (admin, maintain or write) to the issue's repository, read from GitHub's collaborator-permission API; organization membership (author_association MEMBER) without write access is refused. And an approve written before the finding is held (Opened, Enhanced, Investigating, Queued) is answered "not available" instead of being kept as a pre-approval: approve again once the finding is AwaitingApproval or HandedOff, as on the status page and in the CLI. spec.approval.at is now the time the approval was decided, not the time the webhook arrived. Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com> Claude-Session: https://claude.ai/code/session_014FE92p7scSHarV7yhSSYYV
+
+### Features
+
+* **agentrun:** the in-pod intent plan and build stages ([#45](https://github.com/devthenet-labs/patchy/issues/45)) ([2073d28](https://github.com/devthenet-labs/patchy/commit/2073d28d861d7965a56f7cd1416741882cb464f5))
+* **integration:** Finding tracking-issue commands use the shared grammar and a write-permission check ([#48](https://github.com/devthenet-labs/patchy/issues/48)) ([f8bb8b1](https://github.com/devthenet-labs/patchy/commit/f8bb8b1ceac411891474ff53639ddbf62ba855fc))
+* **templates,changeset,runnerguard:** controller-side shared seams for intents ([#46](https://github.com/devthenet-labs/patchy/issues/46)) ([1d59992](https://github.com/devthenet-labs/patchy/commit/1d59992e004afe6df78ef18c690142dd1c772206))
+
+
+### Bug Fixes
+
+* **report:** refuse a non-finite confidence as an invalid report ([#47](https://github.com/devthenet-labs/patchy/issues/47)) ([81f5179](https://github.com/devthenet-labs/patchy/commit/81f5179c7d85bc5cbbe18e52f87a0acda73e6df4))
+
 ## [0.11.11](https://github.com/devthenet-labs/patchy/compare/v0.11.10...v0.11.11) (2026-09-24)
 
 

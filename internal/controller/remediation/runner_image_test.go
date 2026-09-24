@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/changeset"
 	"github.com/bitwise-media-group/patchy/internal/envelope"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/runnerguard"
@@ -380,7 +381,7 @@ func TestRemediationChangesetUnpushable(t *testing.T) {
 func TestRemediationChangesetEntryCapDefaultImage(t *testing.T) {
 	many := func(cs *envelope.Changeset) {
 		cs.Upserts = nil
-		for i := range DefaultChangesetMaxEntries + 1 {
+		for i := range changeset.DefaultMaxEntries + 1 {
 			cs.Upserts = append(cs.Upserts, envelope.FileChange{
 				Path: "vendor/example.com/m/f" + strconv.Itoa(i) + ".go", Mode: "100644", ContentB64: "eA==",
 			})

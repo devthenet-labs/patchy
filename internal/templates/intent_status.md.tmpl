@@ -1,0 +1,42 @@
+{{- /* An intent's sticky status comment, edited in place. The summary
+arrives sanitised, the reason (which may quote agent output) is fenced, and
+logins are code, never mentions. The pull requests are patchy's own, linked
+on purpose. One line per paragraph: GitHub renders a line break inside an
+issue comment as a hard break. */ -}}
+{{ .Marker }}
+### patchy
+
+**Phase:** {{ code .Phase }}{{ with .Sentence }}: {{ . }}{{ end }}
+{{- if .PlanRevision }}
+
+**Plan:** {{ if .PlanURL }}[r{{ .PlanRevision }}]({{ .PlanURL }}){{ else }}r{{ .PlanRevision }}{{ end }}{{ with .Summary }}: {{ . }}{{ end }}
+{{- end }}
+{{- if .ApprovedBy }}
+
+**Approved:** plan r{{ .ApprovedRevision }}, by {{ code .ApprovedBy }}.
+{{- end }}
+{{- with .PullRequests }}
+
+**Pull requests:**
+{{ range . }}
+- [{{ .Ref }}]({{ .URL }}){{ with .State }} ({{ . }}){{ end }}
+{{- end }}
+{{- end }}
+{{- if .MaxRevisions }}
+
+**Revisions:** {{ .Revisions }} of {{ .MaxRevisions }}
+{{- end }}
+{{- if or .Cost .MaxCost }}
+
+**Reported cost:** {{ code (or .Cost "$0.00") }}{{ with .MaxCost }} of the {{ code . }} limit{{ end }}
+{{- end }}
+{{- with .Reason }}
+
+{{ fence . | chomp }}
+{{- end }}
+{{- with .Commands }}
+
+**Commands now:** {{ join . ", " }}
+{{- end }}
+
+_patchy updates this comment as the work progresses._

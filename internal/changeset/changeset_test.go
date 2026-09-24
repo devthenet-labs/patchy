@@ -1,7 +1,7 @@
 // Copyright 2026 Bitwise Media Group Ltd.
 // SPDX-License-Identifier: MIT
 
-package remediation
+package changeset
 
 import (
 	"math/rand"
@@ -22,10 +22,10 @@ func changesetOf(paths ...string) *envelope.Changeset {
 	return cs
 }
 
-// TestValidateChangeset names each refusal, and shows the repository-image
+// TestValidate names each refusal, and shows the repository-image
 // rules adding exactly the entry cap, control characters and CI
 // definitions.
-func TestValidateChangeset(t *testing.T) {
+func TestValidate(t *testing.T) {
 	tests := []struct {
 		name     string
 		cs       *envelope.Changeset
@@ -54,7 +54,7 @@ func TestValidateChangeset(t *testing.T) {
 		{"NUL on a default image", changesetOf("a\x00b"), false, "contains NUL", false},
 		{"NUL on a repository image", changesetOf("a\x00b"), true, "contains NUL", false},
 		{"invalid UTF-8", changesetOf("a\xffb"), false, "not valid UTF-8", false},
-		{"overlong", changesetOf(strings.Repeat("a", maxChangesetPathBytes+1)), false, "over the 4096-byte limit", false},
+		{"overlong", changesetOf(strings.Repeat("a", maxPathBytes+1)), false, "over the 4096-byte limit", false},
 		{"workflow on a default image", changesetOf(".github/workflows/ci.yml"), false, "", true},
 		{"workflow on a repository image", changesetOf(".github/workflows/ci.yml"), true, "is a CI definition", false},
 		{"case-folded workflow on a repository image", changesetOf(".GitHub/Workflows/ci.yml"), true,
@@ -66,23 +66,23 @@ func TestValidateChangeset(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateChangeset(tt.cs, changesetRules{Base: "abc123", MaxEntries: 3, RepositoryImage: tt.repoImg})
+			err := Validate(tt.cs, Rules{Base: "abc123", MaxEntries: 3, RepositoryImage: tt.repoImg})
 			if tt.wantPass {
 				if err != nil {
-					t.Errorf("validateChangeset = %v, want nil", err)
+					t.Errorf("Validate = %v, want nil", err)
 				}
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Errorf("validateChangeset = %v, want an error containing %q", err, tt.wantErr)
+				t.Errorf("Validate = %v, want an error containing %q", err, tt.wantErr)
 			}
 		})
 	}
 }
 
-// TestValidateChangesetBase: the base must be the pinned commit, on any
+// TestValidateBase: the base must be the pinned commit, on any
 // run, and an unknown pin refuses rather than waves the changeset through.
-func TestValidateChangesetBase(t *testing.T) {
+func TestValidateBase(t *testing.T) {
 	tests := []struct {
 		name    string
 		base    string
@@ -102,24 +102,24 @@ func TestValidateChangesetBase(t *testing.T) {
 			t.Run(tt.name+"/"+image, func(t *testing.T) {
 				cs := changesetOf("a.go")
 				cs.BaseSHA = tt.base
-				err := validateChangeset(cs, changesetRules{Base: tt.pinned, MaxEntries: 3, RepositoryImage: repoImg})
+				err := Validate(cs, Rules{Base: tt.pinned, MaxEntries: 3, RepositoryImage: repoImg})
 				if tt.wantErr == "" {
 					if err != nil {
-						t.Errorf("validateChangeset = %v, want nil", err)
+						t.Errorf("Validate = %v, want nil", err)
 					}
 					return
 				}
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("validateChangeset = %v, want an error containing %q", err, tt.wantErr)
+					t.Errorf("Validate = %v, want an error containing %q", err, tt.wantErr)
 				}
 			})
 		}
 	}
 }
 
-// TestValidateChangesetUpserts: an upsert must carry a mode a blob can
+// TestValidateUpserts: an upsert must carry a mode a blob can
 // have and content that decodes, on any run.
-func TestValidateChangesetUpserts(t *testing.T) {
+func TestValidateUpserts(t *testing.T) {
 	tests := []struct {
 		name    string
 		fc      envelope.FileChange
@@ -143,15 +143,15 @@ func TestValidateChangesetUpserts(t *testing.T) {
 		for image, repoImg := range map[string]bool{"default": false, "repository": true} {
 			t.Run(tt.name+"/"+image, func(t *testing.T) {
 				cs := &envelope.Changeset{BaseSHA: "abc123", Upserts: []envelope.FileChange{tt.fc}}
-				err := validateChangeset(cs, changesetRules{Base: "abc123", MaxEntries: 3, RepositoryImage: repoImg})
+				err := Validate(cs, Rules{Base: "abc123", MaxEntries: 3, RepositoryImage: repoImg})
 				if tt.wantErr == "" {
 					if err != nil {
-						t.Errorf("validateChangeset = %v, want nil", err)
+						t.Errorf("Validate = %v, want nil", err)
 					}
 					return
 				}
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("validateChangeset = %v, want an error containing %q", err, tt.wantErr)
+					t.Errorf("Validate = %v, want an error containing %q", err, tt.wantErr)
 				}
 			})
 		}
@@ -191,15 +191,15 @@ func pathConfig(seed int64) *quick.Config {
 	}
 }
 
-// TestValidateChangesetProperties states the validator's invariants over
+// TestValidateProperties states the validator's invariants over
 // generated paths: an accepted path never escapes the tree or touches .git;
 // the repository-image rules only ever refuse more, and what they refuse
 // beyond the default is exactly the CI definitions and the paths with a
 // control character.
-func TestValidateChangesetProperties(t *testing.T) {
+func TestValidateProperties(t *testing.T) {
 	accepted := func(p string, repoImg bool) bool {
-		return validateChangeset(changesetOf(p), changesetRules{
-			Base: "abc123", MaxEntries: DefaultChangesetMaxEntries, RepositoryImage: repoImg,
+		return Validate(changesetOf(p), Rules{
+			Base: "abc123", MaxEntries: DefaultMaxEntries, RepositoryImage: repoImg,
 		}) == nil
 	}
 	contained := func(p string) bool {
@@ -233,10 +233,10 @@ func TestValidateChangesetProperties(t *testing.T) {
 	}
 }
 
-// TestValidateChangesetEntryCapProperty: the cap alone decides a
+// TestValidateEntryCapProperty: the cap alone decides a
 // repository-image changeset of acceptable paths — any count up to it
 // passes, any count past it fails — and never a default-image one.
-func TestValidateChangesetEntryCapProperty(t *testing.T) {
+func TestValidateEntryCapProperty(t *testing.T) {
 	cfg := &quick.Config{
 		MaxCount: 500,
 		Rand:     rand.New(rand.NewSource(20260925)),
@@ -255,7 +255,7 @@ func TestValidateChangesetEntryCapProperty(t *testing.T) {
 		for range deletes {
 			cs.Deletes = append(cs.Deletes, "old/file")
 		}
-		err := validateChangeset(cs, changesetRules{Base: "abc123", MaxEntries: maxEntries, RepositoryImage: repoImg})
+		err := Validate(cs, Rules{Base: "abc123", MaxEntries: maxEntries, RepositoryImage: repoImg})
 		return (err == nil) == (!repoImg || upserts+deletes <= maxEntries)
 	}
 	if err := quick.Check(capped, cfg); err != nil {

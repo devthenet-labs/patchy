@@ -1,0 +1,11 @@
+{{- /* The reply to a command, or its label, that means nothing in the
+intent's current phase. What the phase does admit is command.HelpFor's list,
+so this reply and the parser's own help cannot disagree. */ -}}
+{{ .Marker }}
+{{ if .Command }}{{ .Command }} does nothing{{ else }}Adding the {{ code .Label }} label does nothing{{ end }} while this intent is {{ code .Phase }}.
+{{- if .Ended }} This intent has ended: to ask for more, open a new issue.{{ end }}
+{{- if .LabelRemoved }} patchy removed the label.{{ end }}
+{{- if .Help }}
+
+{{ .Help }}
+{{- else }} No command is available now.{{ end }}

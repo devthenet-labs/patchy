@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/bitwise-media-group/patchy/internal/changeset"
 	"github.com/bitwise-media-group/patchy/internal/cli"
 	"github.com/bitwise-media-group/patchy/internal/controller/remediation"
 	"github.com/bitwise-media-group/patchy/internal/controller/rollup"
@@ -73,7 +74,7 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 		"most agent turns a human approval can grant")
 	f.Int("remediate-manual-token-budget", 1200000,
 		"most output tokens a human approval can grant")
-	f.Int("changeset-max-entries", remediation.DefaultChangesetMaxEntries,
+	f.Int("changeset-max-entries", changeset.DefaultMaxEntries,
 		"most files (upserts plus deletes) a changeset from a repository-image run may touch before it is "+
 			"rejected without any forge call")
 	return cmd

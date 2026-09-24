@@ -173,7 +173,8 @@ because the only `LabelFinding` consumers index Investigations, Remediations and
 IntentRun name matches none of them.
 
 The intent `jobs.Client` sets `AllowRepositoryImages`, `EphemeralStorage` and its own runnerguard Breaker.
-`runnerguard.PinFor(spec, repo, revived bool)` is added beside `Pin`, which is not touched.
+`runnerguard.PinFor(spec, repo)` is added beside `Pin`, which is not touched. It has no revival rule: an intent brought
+back by its trigger label is a new plan and a new approval, not a Finding revival.
 
 ### Custom resources
 
@@ -349,8 +350,9 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
    - Delete the plan Repository.
 5. **Write-back.**
    - Remove the approve label if it is present.
-   - Post the plan comment, rendered from the ConfigMap bytes and sanitised (see below), with the marker
-     `<!-- patchy:plan patchy/target-1 r1 sha256:<12> -->`.
+   - Post the plan comment, which shows the ConfigMap bytes verbatim in a code block (see below), with the marker
+     `<!-- patchy:plan patchy/target-1 r1 sha256:<12> -->`. A plan the comment cannot show in full is invalid: patchy
+     posts a refusal notice instead and asks for a new plan.
    - Record `commentID`, `commentDigest`, and `postedAt` as returned by GitHub.
    - Move to `AwaitingApproval`.
 6. **Approval.** While in `AwaitingApproval`, the controller polls the issue's events every 30 s. It accepts the newest
@@ -527,17 +529,76 @@ The plan frontmatter is strict and parsed by `report.ParsePlan`:
 
 The body is at most 48 KiB: approach, per-repo steps, test plan and risks.
 
-All agent-authored text that reaches GitHub passes through one sanitiser in `internal/templates`. Its property tests are
-seeded, and they check that the sanitiser is idempotent, that its output never matches GitHub's closing-keyword grammar,
-and that no raw HTML survives. What it does:
+**The plan is shown verbatim.** The plan comment is the approval artifact, and it shows the approver exactly the bytes
+the build agent reads: the plan report, the ConfigMap bytes whose digest the approval binds, rendered unchanged inside a
+fenced code block (` ```markdown `). The fence is backticks, at least three and one more than the longest run of
+backticks in the report, so no line of the report can close it, whatever the report holds. The block is the last thing
+in the comment. Outside it there is only the controller's header: the marker, the plan revision and its full digest, how
+to approve, the summary as one sanitised line, the new dependencies as a sanitised list, a count of the planner's
+questions (which are read in the plan itself), and notes on what the block does not show at a glance (see below).
 
-- **Raw HTML is escaped**, so an HTML comment or a `<details>` block in a plan is shown literally. A prompt-injected
-  planner therefore cannot hide instructions that the approver would not see but the build agent would read. The
-  controller's marker is the only HTML comment.
+Why verbatim rather than sanitised: a sanitised rendering shows the approver what the plan says only as far as the
+sanitiser's list of markdown tricks reaches. HTML comments, `<details>`, link reference definitions, link titles, a code
+fence's info string and a table cell past the header's count all hide text on GitHub. A trick missing from that list, or
+one GitHub adds later, would hide text that the build agent still reads, and the approval would bind a digest of bytes
+the approver never saw. A code block needs no list. Nothing inside it renders, so markup, mentions, issue references and
+closing keywords are shown as the text they are and do nothing. The only way to end the block is its fence, and patchy
+chooses the fence after reading the plan.
+
+GitHub refuses a comment of more than 65,536 characters. The plan contract bounds the report at 64 KiB, but a report
+near that bound does not fit alongside the header, which is about 1 KiB. patchy never cuts a plan short. If the rendered
+comment would exceed the limit (counted in bytes, since a character is at least one byte), the renderer returns
+`ErrPlanRefused` together with a notice to post instead. The notice says the plan is too large to show and is refused,
+and quotes none of the plan. It carries a notice marker rather than the plan marker, so nothing can find it as a plan to
+approve. intent-controller treats the plan as invalid and asks for a new one. A report that is not UTF-8 is refused in
+the same way, because a comment (JSON text, over GitHub's API) cannot carry it byte for byte. The renderer's property
+tests are seeded. They check that the text between the fences equals the report exactly; that no generated report can
+end the block early, because none holds a run of backticks as long as the fence and goldmark, standing in for GitHub,
+reads the block whole; and that the output, plan or notice, never exceeds the limit.
+
+A code block renders nothing, but three things can still keep part of a plan from the approver, and a hostile planner
+can use each to hide an instruction the build agent reads:
+
+- **Characters that render as nothing even in a code block.** Some can carry text: Unicode tag characters
+  (U+E0000-E007F), which a model reads as the ASCII they shadow; bidi embedding, override and isolate controls
+  (U+202A-202E, U+2066-2069), which reorder the text the approver sees; and variation selectors, a run of which (or any
+  but the one emoji presentation selector after a visible character) encodes bytes. No comment can show these, so a plan
+  holding any is refused like an oversize one, with its own notice, and never offered for approval: a count the approver
+  could approve past is no protection. Other such characters (a zero-width space, a byte order mark, a control
+  character) are counted under "Before you approve", with the advice to ask for a new plan. The ones an emoji or a
+  script's joining is made of (the presentation selector in a red heart, the joiner between two emoji, the non-joiner in
+  Persian) are part of what the approver sees and are not counted, so the count stays rare enough to be heeded.
+- **Lines wider than the block.** GitHub does not wrap a code block, so a line runs past its right edge behind a scroll
+  bar, and padding (spaces, tabs, ideographic spaces) can make a line look finished at the edge when it is not. The
+  header counts the lines whose text reaches past 100 columns (tabs to stops of eight, East Asian wide characters as
+  two), and the preamble to the block says to scroll a long line to its end. Long lines are common in prose, so they are
+  counted rather than refused.
+- **Long runs of blank lines.** A stretch of empty block can look like the plan's end. A run of more than three blank
+  lines with more of the plan after it is reported, with its length.
+
+The property tests check these notes against an independent reckoning over generated reports, and example tests pin each
+padding shape and each character class.
+
+All other agent-authored text that reaches GitHub passes through one sanitiser in `internal/templates`. That covers the
+plan's summary and dependencies in the header, pull request bodies, status comments that quote agent output, and
+revise-round comments. Its property tests are seeded, and they check that the sanitiser is idempotent, that no raw HTML
+survives, and that its output, read as markdown, holds no live reference or mention outside code, so GitHub's
+closing-keyword grammar never matches there. What it does:
+
+- **Raw HTML is escaped**, so an HTML comment or a `<details>` block is shown literally. A prompt-injected agent
+  therefore cannot hide instructions from the human reading the text. The controller's marker is the only HTML comment.
 - **Closing keywords, issue references and mentions are neutralised** by rendering them as inline code. This covers
-  forms like `fixes #3` and `owner/repo#3`, and `@mentions`.
+  forms like `fixes #3` and `owner/repo#3`, and `@mentions`. Inline code protects them only while GitHub reads the text
+  as markdown.
+- **Plain text is defanged.** A commit message and a PR title are plain text on the default branch, and a repository can
+  set GitHub to copy the PR body, as written, into the merge or squash commit ("Pull request title and description").
+  There a kept code span holding `closes #12` would close issue 12. So wherever agent text can end up as plain text,
+  each reference and mention in it is also broken apart with a space (`# 12`, `@ octocat`, `/issues/ 12`), code spans
+  included. Seeded properties read the raw commit message, PR title and PR body as plain text: none holds a closing
+  keyword with a reference, and the only reference is the intent issue's.
 - **The controller composes the commit message:** `<project>: <summary> (<intent repo>#N, round k)`, plus the trailers
-  `Patchy-Intent:` and `Patchy-Run:`. The agent's own commit messages are dropped.
+  `Patchy-Intent:` and `Patchy-Run:`. The agent's own commit messages are dropped. It also composes the PR title,
+  `<project>: <summary>`, which a squash commit uses as its subject.
 
 This matters for the security flow. A Finding's tracking issue lives in the same app repo, and `Signals.issues` moves
 any non-terminal Finding to `HandedOff` when its tracking issue is closed, no matter who closed it (webhooks.go:85-91).
@@ -770,10 +831,11 @@ A deploy triggered by `pull_request` cannot be gated by an Environment branch ru
    - the planner is read-only;
    - nothing that writes code runs before an approval bound to both the plan digest and the input digest.
 
-   A plan carrying a prompt injection remains possible; a human reads it and a human merges.
+   A plan carrying a prompt injection remains possible; a human reads it, verbatim, and a human merges.
 
-3. **Agent text reaching GitHub is sanitised.** This closes the cross-flow path from an intent PR to a Finding's
-   tracking issue.
+3. **Agent text reaching GitHub is inert.** The plan is shown verbatim in a code block, where nothing renders or acts,
+   and all other agent text is sanitised. This closes the cross-flow path from an intent PR to a Finding's tracking
+   issue.
 4. **Stricter changeset and image rules for intents:**
    - `.github/**`, `.patchy/**` and `.devcontainer/**` are always refused;
    - a repository image is required;

@@ -1,0 +1,6 @@
+{{- /* The reply to a command, or its label, from someone who may not use
+it. The actor is code, never a mention. */ -}}
+{{ .Marker }}
+{{ if .Command }}{{ .Command }} from {{ code .Actor }} was not applied{{ else }}The {{ code .Label }} label, added by {{ code .Actor }}, was not applied{{ end }}: {{ if .Bot }}patchy takes commands from the project's approvers only, never from a bot account{{ else }}only the project's approvers can do that here{{ end }}.
+{{- if .LabelRemoved }} patchy removed the label.{{ end }}
+{{- if .Closed }} patchy will not work on this issue.{{ end }}

@@ -1,0 +1,13 @@
+{{- /* An intent pull request's body. The intent issue is referred to with
+"Part of", never a closing keyword: patchy closes it itself, and nothing
+here may close an issue when the pull request merges. The summary arrives
+sanitised. */ -}}
+Part of {{ .IntentRepository }}#{{ .IssueNumber }}
+{{- with .Summary }}
+
+{{ . }}
+{{- end }}
+
+---
+
+_patchy built this pull request from plan r{{ .PlanRevision }} (`{{ .Digest }}`) of the intent{{ with .ApprovedBy }}, approved by {{ code . }}{{ end }}. Review it like any other change. Merging it completes the intent, and patchy updates the intent issue itself._

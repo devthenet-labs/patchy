@@ -1,0 +1,4 @@
+target: Add GET /version returning {sha, built} as JSON (devthenet-labs/intents#1, round 2)
+
+Patchy-Intent: patchy/target-1
+Patchy-Run: target-1-bld-r2-patchy-target-a1

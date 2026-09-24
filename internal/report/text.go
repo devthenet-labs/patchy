@@ -110,7 +110,8 @@ var (
 // plain scalar that was already valid keeps its string value, and every
 // list in these schemas is a list of strings, so callers only attempt this
 // after a strict parse has failed and surface the original error if the
-// repaired block fails too.
+// repaired block fails too. A null (yamlNull) is the exception: quoting it
+// would turn "no value" into the string "null", so it is left as it is.
 func repairFreeText(block []byte, keys map[string]bool) ([]byte, bool) {
 	lines := strings.Split(string(block), "\n")
 	changed := false
@@ -124,7 +125,10 @@ func repairFreeText(block []byte, keys map[string]bool) ([]byte, bool) {
 			continue
 		}
 		val = strings.TrimRight(val, " \t\r")
-		if val == "" {
+		if val == "" || yamlNull(val) {
+			// A null stays null: quoted, "~" or "null" would become that
+			// string, and a reason a model left out that way would then read
+			// as given.
 			continue
 		}
 		switch val[0] {
@@ -142,6 +146,22 @@ func repairFreeText(block []byte, keys map[string]bool) ([]byte, bool) {
 		return block, false
 	}
 	return []byte(strings.Join(lines, "\n")), true
+}
+
+// yamlNull reports whether a plain value is one of YAML's null spellings,
+// alone or before a comment.
+func yamlNull(val string) bool {
+	if i := strings.IndexAny(val, " \t"); i >= 0 {
+		if rest := strings.TrimLeft(val[i:], " \t"); rest != "" && rest[0] != '#' {
+			return false
+		}
+		val = val[:i]
+	}
+	switch val {
+	case "~", "null", "Null", "NULL":
+		return true
+	}
+	return false
 }
 
 // decodeRepairing decodes a frontmatter block strictly into out, retrying

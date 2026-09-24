@@ -88,6 +88,48 @@ func TestParseBuildRepairsUnquotedProse(t *testing.T) {
 	}
 }
 
+// TestParseBuildRepairKeepsNulls: the repair runs because a colon broke the
+// summary, and must not quote the nulls a model leaves beside it — "reason:
+// ~" on a success, or "command: null" for tests that never ran, would become
+// the strings "~" and "null" and fail a build that is fine. Prose that only
+// starts with "null" is prose, and is quoted.
+func TestParseBuildRepairKeepsNulls(t *testing.T) {
+	colonSummary := buildWith(`summary: "Add GET /version returning the build's SHA and time"`,
+		`summary: Version endpoint: returns the SHA and time`)
+	notRun := strings.Replace(colonSummary, "tests:\n  ran: true\n  passed: true\n  command: \"go test ./...\"",
+		"tests:\n  ran: false\n  passed: false\n  command: null", 1)
+	failed := strings.Replace(strings.Replace(notRun, "success: true", "success: false", 1), "notes:",
+		"reason: null handler: the router rejects it\nnotes:", 1)
+	tests := []struct {
+		name        string
+		src         string
+		wantReason  string
+		wantCommand string
+	}{
+		{"reason ~ on a success", strings.Replace(colonSummary, "notes:", "reason: ~\nnotes:", 1), "", "go test ./..."},
+		{"reason null on a success", strings.Replace(colonSummary, "notes:", "reason: null\nnotes:", 1), "",
+			"go test ./..."},
+		{"reason NULL before a comment", strings.Replace(colonSummary, "notes:", "reason: NULL  # none\nnotes:", 1), "",
+			"go test ./..."},
+		{"a null command for tests that never ran", notRun, "", ""},
+		{"prose starting with null", failed, "null handler: the router rejects it", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := ParseBuild([]byte(tt.src))
+			if err != nil {
+				t.Fatalf("ParseBuild() error = %v", err)
+			}
+			if b.Summary != "Version endpoint: returns the SHA and time" {
+				t.Errorf("Summary = %q; the repair did not run", b.Summary)
+			}
+			if b.Reason != tt.wantReason || b.Tests.Command != tt.wantCommand {
+				t.Errorf("reason %q, command %q; want %q, %q", b.Reason, b.Tests.Command, tt.wantReason, tt.wantCommand)
+			}
+		})
+	}
+}
+
 func TestParseBuildErrors(t *testing.T) {
 	tests := []struct {
 		name string

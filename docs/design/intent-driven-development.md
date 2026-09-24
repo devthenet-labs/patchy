@@ -730,7 +730,7 @@ closes the intent issue itself.
     | build  | 150   | 800k   | 60m  |
     | revise | 80    | 400k   | 45m  |
 
-  - a Job deadline of 90 m (the broker caller token lasts 105 m);
+  - a Job deadline of 90 m (the broker caller token is minted for the deadline plus 15 m, so 105 m here);
   - two attempts per stage;
   - one `head_moved` retry per round.
 - **The cost ceiling is advisory for build and revise runs.** Those runs use the repository-declared image, and the

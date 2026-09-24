@@ -40,9 +40,10 @@ data:
     # remediation's.
     PATCHY_INTENT_MAX_CONCURRENT_RUNS: "1"
     # activeDeadlineSeconds on every intent Job: at least both stage
-    # timeouts (the controller refuses to start otherwise), and inside the
-    # broker caller token's lifetime (105m). The shared PATCHY_JOB_DEADLINE
-    # is the finding stages' and does not apply here.
+    # timeouts (the controller refuses to start otherwise). The broker
+    # caller token each Job gets is minted for this deadline plus 15m (at
+    # least 1h), so it outlives any deadline set here. The shared
+    # PATCHY_JOB_DEADLINE is the finding stages' and does not apply here.
     PATCHY_INTENT_JOB_DEADLINE: 90m
     # Ended intents are deleted this long after completion, with everything
     # they own; "0" keeps them forever.

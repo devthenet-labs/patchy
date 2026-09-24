@@ -53,7 +53,8 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 		"pause intent polling while the installation has fewer core GitHub requests left than this (0 disables)")
 	f.Duration("intent-ttl", intent.DefaultTTL, "retention of ended intents after completion; 0 keeps them forever")
 	f.Duration("intent-job-deadline", 90*time.Minute,
-		"activeDeadlineSeconds on an intent agent Job (inside the broker caller token's lifetime)")
+		"activeDeadlineSeconds on an intent agent Job, at least both stage timeouts (the broker caller token is "+
+			"minted for it plus 15m)")
 	f.Int("intent-plan-max-turns", 40, "most agent turns a plan run may take (a Project may lower it)")
 	f.Int("intent-plan-token-budget", 200000, "most output tokens a plan run may spend (a Project may lower it)")
 	f.Duration("intent-plan-timeout", 20*time.Minute, "wall-clock limit of a plan run")

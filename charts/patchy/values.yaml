@@ -516,8 +516,9 @@ intentController:
         # they own cascades); "0s" keeps them forever.
         intentTTL: 336h
         # activeDeadlineSeconds on every intent Job: at least both stage
-        # timeouts (the controller refuses to start otherwise), and inside
-        # the broker caller token's lifetime (105m).
+        # timeouts (the controller refuses to start otherwise). The broker
+        # caller token each Job gets is minted for this deadline plus 15m
+        # (at least 1h), so it outlives any deadline set here.
         jobDeadline: 90m
         # The per-stage ceilings. A Project's limits may lower them, never
         # raise them. The models must resolve to the claude harness.

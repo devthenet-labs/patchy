@@ -59,8 +59,9 @@ other binary binds, so the shared kustomize ConfigMap cannot set one by accident
 | `--changeset-max-entries`         | `PATCHY_CHANGESET_MAX_ENTRIES`         | `500`                       | Most files a build's changeset may touch; more is rejected before any forge call                 |
 
 The per-stage limits are ceilings. A Project's `limits` may lower them for its own intents, never raise them. The
-controller refuses to start with a Job deadline shorter than either stage timeout; keep it inside the broker caller
-token's lifetime (105 minutes) too. `--job-deadline`, `--model-allowlist` and the `--investigate-*`/`--remediate-*`
+controller refuses to start with a Job deadline shorter than either stage timeout. Any longer deadline works: each Job's
+broker caller token is minted for the deadline plus 15 minutes (at least an hour), so it always outlives the Job.
+`--job-deadline`, `--model-allowlist` and the `--investigate-*`/`--remediate-*`
 flags belong to the finding job controllers and are not read here.
 
 ### Brokered claude only
@@ -79,9 +80,21 @@ A plan runs read-only on the default runner image. A build runs only in the appl
 repository-declared image (see
 [repository-declared runner images](investigation-controller.md#repository-declared-runner-images)): the pin must be set
 and not rejected, and the default image, which has no toolchain, is never a fallback. If the image is missing or
-rejected, or `jobs.Create` reports that the default image ran, the intent goes to `Blocked` with `ImageRequired`, and it
-resumes once the repository's image is accepted. A Project can opt out with `requireRepositoryImage: false`. So without
-`--repository-images` every build blocks unless its Project opts out.
+rejected, or `jobs.Create` reports that the default image ran, the intent goes to `Blocked` with `ImageRequired`. A
+Project can opt out with `requireRepositoryImage: false`. So without `--repository-images` every build blocks unless its
+Project opts out.
+
+A block does not lift on its own when the image becomes acceptable. source-controller pins a Repository's image exactly
+once, so fixing its allowlist or cosign key never changes the blocked build's pin. The block is checked again, with a
+new build attempt pinned afresh, when:
+
+- the Project's spec changes (setting `requireRepositoryImage: false` lifts it outright);
+- the app repository's default branch moves, since a new commit may declare an image that is accepted;
+- intent-controller restarts, which a change to its configuration does.
+
+A block because `--repository-images` is off lifts once it is on, and a block because the sandbox breaker tripped lifts
+once the breaker is clear; both need a restart. Each check is a new attempt, and once all 16 attempt numbers of the
+build are spent the intent fails instead.
 
 A build's changeset is held to the intent rules whatever image ran it. Nothing under `.github/`, `.patchy/` or
 `.devcontainer/` is accepted, so an agent cannot choose its own next sandbox.

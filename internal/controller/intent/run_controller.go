@@ -138,8 +138,12 @@ func (r *RunReconciler) schedule(ctx context.Context) (ctrl.Result, error) {
 		maxConcurrent = 1
 	}
 	for _, name := range schedule.Pick(pending, maxConcurrent-running, r.now(), schedule.AgingPolicy{}) {
-		if err := r.grant(ctx, name); err != nil {
+		granted, err := r.grant(ctx, name, maxConcurrent)
+		if err != nil {
 			return ctrl.Result{}, err
+		}
+		if !granted {
+			break
 		}
 	}
 	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
@@ -172,21 +176,37 @@ func (r *RunReconciler) launchable(ctx context.Context, run *v1alpha1.IntentRun)
 	return meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionReady) && repo.Status.Artifact != nil
 }
 
-// grant moves one run to Running.
-func (r *RunReconciler) grant(ctx context.Context, name string) error {
+// grant moves one run to Running, while a slot is still free as the API
+// server counts them: the cache the pass counted from can lag a grant made
+// just before (a pass re-queued while the last one granted), and the pool is
+// a spend bound, never to be exceeded. slot is false when none is free.
+func (r *RunReconciler) grant(ctx context.Context, name string, maxConcurrent int) (slot bool, err error) {
+	var list v1alpha1.IntentRunList
+	if err := r.APIReader.List(ctx, &list, client.InNamespace(r.Settings.Namespace)); err != nil {
+		return false, err
+	}
+	running := 0
+	for i := range list.Items {
+		if list.Items[i].Status.Phase == v1alpha1.RunRunning {
+			running++
+		}
+	}
+	if running >= maxConcurrent {
+		return false, nil
+	}
 	var run v1alpha1.IntentRun
 	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: r.Settings.Namespace, Name: name}, &run); err != nil {
-		return client.IgnoreNotFound(err)
+		return true, client.IgnoreNotFound(err)
 	}
 	if run.Status.Phase != "" && run.Status.Phase != v1alpha1.RunPending {
-		return nil
+		return true, nil
 	}
 	run.Status.Phase = v1alpha1.RunRunning
 	run.Status.ObservedGeneration = run.Generation
 	if err := r.Status().Update(ctx, &run); err != nil && !kerrors.IsConflict(err) {
-		return client.IgnoreNotFound(err)
+		return true, client.IgnoreNotFound(err)
 	}
-	return nil
+	return true, nil
 }
 
 // run drives one run: finalize, abort, launch or collect.

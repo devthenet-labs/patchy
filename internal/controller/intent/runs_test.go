@@ -647,48 +647,108 @@ func TestBudgetExhausted(t *testing.T) {
 
 // TestSlotsBuildBeforePlan: one slot, a pending plan and a pending build:
 // the build is granted first.
+// pendingRun creates a launchable pending run of stage for intent (made in
+// Planning when missing), with its input and Repository.
+func (e *env) pendingRun(name, intent string, stage v1alpha1.IntentStage) {
+	e.t.Helper()
+	ctx := context.Background()
+	in := &v1alpha1.Intent{
+		ObjectMeta: metav1.ObjectMeta{Name: intent, Namespace: testNS},
+		Spec: v1alpha1.IntentSpec{Project: "target", Issue: v1alpha1.IntentIssue{Repository: intentRepoURL, Number: 9},
+			RequestedBy: v1alpha1.IntentRequest{Login: approver, EventID: 1}},
+	}
+	if err := e.c.Get(ctx, client.ObjectKeyFromObject(in), in); err != nil {
+		if err := e.c.Create(ctx, in); err != nil {
+			e.t.Fatal(err)
+		}
+	}
+	in.Status.Phase = v1alpha1.IntentPlanning
+	if err := e.c.Status().Update(ctx, in); err != nil {
+		e.t.Fatal(err)
+	}
+	run := &v1alpha1.IntentRun{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS,
+			Labels: map[string]string{v1alpha1.LabelIntent: intent}},
+		Spec: v1alpha1.IntentRunSpec{IntentRef: v1alpha1.ObjectReference{Name: intent, UID: in.UID}, Stage: stage,
+			Round: 1, Attempt: 1,
+			Repository: v1alpha1.IntentRunRepository{URL: appRepoURL,
+				RepositoryRef: v1alpha1.LocalObjectReference{Name: name + "-src"}},
+			Inputs: v1alpha1.IntentRunInputs{ConfigMap: name + "-input"}},
+	}
+	if err := e.c.Create(ctx, run); err != nil {
+		e.t.Fatal(err)
+	}
+	input := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name + "-input", Namespace: testNS}}
+	if err := e.c.Create(ctx, input); err != nil {
+		e.t.Fatal(err)
+	}
+	if err := e.c.Create(ctx, &v1alpha1.Repository{ObjectMeta: metav1.ObjectMeta{Name: name + "-src", Namespace: testNS},
+		Spec: v1alpha1.RepositorySpec{URL: appRepoURL}}); err != nil {
+		e.t.Fatal(err)
+	}
+	e.clock.Advance(time.Second)
+}
+
+// staleRuns is a cache that has not yet seen the grant of the run it hides:
+// it lists that run as still pending.
+type staleRuns struct {
+	client.Client
+	hide string
+}
+
+func (s staleRuns) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if err := s.Client.List(ctx, list, opts...); err != nil {
+		return err
+	}
+	if runs, ok := list.(*v1alpha1.IntentRunList); ok {
+		for i := range runs.Items {
+			if runs.Items[i].Name == s.hide {
+				runs.Items[i].Status.Phase = v1alpha1.RunPending
+			}
+		}
+	}
+	return nil
+}
+
+// TestGrantCountsSlotsUncached: a scheduler pass whose cache has not yet
+// seen the run the last pass granted does not grant a second run into the
+// one slot.
+func TestGrantCountsSlotsUncached(t *testing.T) {
+	e := newEnv(t, testProject())
+	ctx := context.Background()
+	e.pendingRun("target-9-plan-r1-a1", "target-9", v1alpha1.IntentStagePlan)
+	e.readyRepositories(repoImage)
+	if _, err := e.runs.Reconcile(ctx, req(runSchedulerRequest)); err != nil {
+		t.Fatal(err)
+	}
+	// A build becomes launchable while the cache still shows the plan
+	// pending: the build outranks it.
+	e.pendingRun("target-8-bld-r1-app-a1", "target-8", v1alpha1.IntentStageBuild)
+	e.readyRepositories(repoImage)
+	e.runs.Client = staleRuns{Client: e.c, hide: "target-9-plan-r1-a1"}
+	if _, err := e.runs.Reconcile(ctx, req(runSchedulerRequest)); err != nil {
+		t.Fatal(err)
+	}
+	var list v1alpha1.IntentRunList
+	if err := e.c.List(ctx, &list); err != nil {
+		t.Fatal(err)
+	}
+	running := 0
+	for _, r := range list.Items {
+		if r.Status.Phase == v1alpha1.RunRunning {
+			running++
+		}
+	}
+	if running != 1 {
+		t.Errorf("%d runs running in a pool of one", running)
+	}
+}
+
 func TestSlotsBuildBeforePlan(t *testing.T) {
 	e := newEnv(t, testProject())
 	ctx := context.Background()
-	mk := func(name, intent string, stage v1alpha1.IntentStage) {
-		in := &v1alpha1.Intent{
-			ObjectMeta: metav1.ObjectMeta{Name: intent, Namespace: testNS},
-			Spec: v1alpha1.IntentSpec{Project: "target", Issue: v1alpha1.IntentIssue{Repository: intentRepoURL, Number: 9},
-				RequestedBy: v1alpha1.IntentRequest{Login: approver, EventID: 1}},
-		}
-		if err := e.c.Get(ctx, client.ObjectKeyFromObject(in), in); err != nil {
-			if err := e.c.Create(ctx, in); err != nil {
-				t.Fatal(err)
-			}
-		}
-		in.Status.Phase = v1alpha1.IntentPlanning
-		if err := e.c.Status().Update(ctx, in); err != nil {
-			t.Fatal(err)
-		}
-		run := &v1alpha1.IntentRun{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNS,
-				Labels: map[string]string{v1alpha1.LabelIntent: intent}},
-			Spec: v1alpha1.IntentRunSpec{IntentRef: v1alpha1.ObjectReference{Name: intent, UID: in.UID}, Stage: stage,
-				Round: 1, Attempt: 1,
-				Repository: v1alpha1.IntentRunRepository{URL: appRepoURL,
-					RepositoryRef: v1alpha1.LocalObjectReference{Name: name + "-src"}},
-				Inputs: v1alpha1.IntentRunInputs{ConfigMap: name + "-input"}},
-		}
-		if err := e.c.Create(ctx, run); err != nil {
-			t.Fatal(err)
-		}
-		input := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name + "-input", Namespace: testNS}}
-		if err := e.c.Create(ctx, input); err != nil {
-			t.Fatal(err)
-		}
-		if err := e.c.Create(ctx, &v1alpha1.Repository{ObjectMeta: metav1.ObjectMeta{Name: name + "-src", Namespace: testNS},
-			Spec: v1alpha1.RepositorySpec{URL: appRepoURL}}); err != nil {
-			t.Fatal(err)
-		}
-		e.clock.Advance(time.Second)
-	}
-	mk("target-9-plan-r1-a1", "target-9", v1alpha1.IntentStagePlan)
-	mk("target-8-bld-r1-app-a1", "target-8", v1alpha1.IntentStageBuild)
+	e.pendingRun("target-9-plan-r1-a1", "target-9", v1alpha1.IntentStagePlan)
+	e.pendingRun("target-8-bld-r1-app-a1", "target-8", v1alpha1.IntentStageBuild)
 	e.readyRepositories(repoImage)
 	if _, err := e.runs.Reconcile(ctx, req(runSchedulerRequest)); err != nil {
 		t.Fatal(err)

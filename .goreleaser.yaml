@@ -77,6 +77,21 @@ builds:
       goarch:
           - amd64
           - arm64
+    - id: intent-controller
+      main: ./cmd/intent-controller
+      binary: intent-controller
+      flags:
+          - -trimpath
+      ldflags:
+          - -s -w
+          - -X github.com/bitwise-media-group/patchy/internal/version.Version={{ .Version }}
+          - -X github.com/bitwise-media-group/patchy/internal/version.Commit={{ .ShortCommit }}
+          - -X github.com/bitwise-media-group/patchy/internal/version.BuildDate={{ .Date }}
+      goos:
+          - linux
+      goarch:
+          - amd64
+          - arm64
     - id: remediation-controller
       main: ./cmd/remediation-controller
       binary: remediation-controller
@@ -229,6 +244,7 @@ archives:
           - context-controller
           - remediation-controller
           - evaluation-controller
+          - intent-controller
           - integration-controller
           - investigation-controller
           - egress-broker
@@ -315,6 +331,24 @@ dockers_v2:
           - linux/arm64
       build_args:
           TARGET: evaluation-controller
+      labels:
+          org.opencontainers.image.source: https://github.com/devthenet-labs/patchy
+          org.opencontainers.image.licenses: MIT
+          org.opencontainers.image.revision: "{{ .FullCommit }}"
+          org.opencontainers.image.version: "{{ .Version }}"
+    - id: intent-controller
+      ids: [intent-controller]
+      dockerfile: Dockerfile.controller
+      images:
+          - ghcr.io/devthenet-labs/patchy/intent-controller
+      tags:
+          - v{{ .Version }}
+          - latest
+      platforms:
+          - linux/amd64
+          - linux/arm64
+      build_args:
+          TARGET: intent-controller
       labels:
           org.opencontainers.image.source: https://github.com/devthenet-labs/patchy
           org.opencontainers.image.licenses: MIT

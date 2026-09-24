@@ -102,10 +102,15 @@ These are the only things on GitHub that move `Finding` state:
 A PR close counts only when it is the PR the finding recorded — the same number, in the finding's repository, from a
 branch there, not a fork's — so a stray branch named `patchy/<finding>` moves nothing. The PR body's `Fixes #N` closes
 the tracking issue as the PR merges, and the two deliveries can arrive in either order: an issue closed while its
-finding is `InReview` is checked against the PR first, and only a PR still open means a human closed it (`HandedOff`).
-Renaming or transferring the repository during review is covered too: a close from the new name is checked against the
-recorded PR, which GitHub still serves under the old name. Until GitHub answers, the close waits on the finding as the
-`ReviewClosePending` condition and is retried, so an API outage delays it rather than losing it.
+finding is `InReview` is checked against the PR first. Merged or closed, the PR's outcome applies; still open, or one
+GitHub answers 404 or 403 for, means a human closed the issue (`HandedOff`) — provided GitHub still reports the issue
+closed, since a close and a quick reopen can be delivered reopen first. Renaming the repository during review is covered
+too: a close from the new name is checked against the recorded PR, which GitHub still serves under the old name. A
+transfer to another owner is covered only while the App's installation on the old owner (or the token) can still read
+the repository; otherwise GitHub answers 404, the close moves nothing, and the finding stays `InReview` for a human to
+close out. Until GitHub answers, the close waits on the finding as the `ReviewClosePending` condition and is retried, so
+an API outage delays it rather than losing it. Suspending the Integration, turning its issues off, or deleting it holds
+the close too: it settles once an issues-enabled Integration is back.
 
 `approveComment` changes the command; it defaults to `/approve`. Who may approve is RBAC on the status page and the CLI,
 but on an issue it is whoever can comment — so treat the comment as a convenience for repositories whose write access

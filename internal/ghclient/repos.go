@@ -52,7 +52,10 @@ func (c *Client) CreatePR(ctx context.Context, repo Repo, req PRRequest) (*PR, e
 	if err != nil {
 		return nil, fmt.Errorf("ghclient: create PR in %s: %w", repo, err)
 	}
-	return &PR{Number: pr.GetNumber(), HTMLURL: pr.GetHTMLURL()}, nil
+	return &PR{
+		Number: pr.GetNumber(), HTMLURL: pr.GetHTMLURL(),
+		NodeID: pr.GetNodeID(), HeadSHA: pr.GetHead().GetSHA(),
+	}, nil
 }
 
 // SearchIssues runs an issue search query and returns every matching

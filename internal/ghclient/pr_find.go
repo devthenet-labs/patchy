@@ -25,5 +25,8 @@ func (c *Client) FindPRByHead(ctx context.Context, repo Repo, branch string) (*P
 	if len(prs) == 0 {
 		return nil, nil
 	}
-	return &PR{Number: prs[0].GetNumber(), HTMLURL: prs[0].GetHTMLURL()}, nil
+	return &PR{
+		Number: prs[0].GetNumber(), HTMLURL: prs[0].GetHTMLURL(),
+		NodeID: prs[0].GetNodeID(), HeadSHA: prs[0].GetHead().GetSHA(),
+	}, nil
 }

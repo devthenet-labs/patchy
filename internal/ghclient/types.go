@@ -66,6 +66,10 @@ func (c *Comment) Author() Actor {
 type PR struct {
 	Number  int
 	HTMLURL string
+	// NodeID is GitHub's global node id of the pull request, and HeadSHA
+	// its head commit, where the response carried them.
+	NodeID  string
+	HeadSHA string
 }
 
 // PullRequest is a pull request's current state, as GetPullRequest reads
@@ -78,6 +82,10 @@ type PullRequest struct {
 	Merged         bool
 	MergedAt       time.Time
 	MergeCommitSHA string
+	// NodeID is GitHub's global node id, which no other pull request ever
+	// has, and HeadSHA the head commit now; empty when not reported.
+	NodeID  string
+	HeadSHA string
 }
 
 // IssueRequest is the payload for creating an issue.

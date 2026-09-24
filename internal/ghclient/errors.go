@@ -25,3 +25,12 @@ func IsForbidden(err error) bool {
 	var ger *github.ErrorResponse
 	return errors.As(err, &ger) && ger.Response != nil && ger.Response.StatusCode == http.StatusForbidden
 }
+
+// IsUnprocessable reports whether err (anywhere in its chain) is a GitHub
+// API 422. Minting an installation token for a repository the installation
+// does not cover answers so, as does creating something that already
+// exists; the caller knows which it asked for.
+func IsUnprocessable(err error) bool {
+	_, ok := unprocessable(err)
+	return ok
+}

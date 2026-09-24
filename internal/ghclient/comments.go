@@ -80,6 +80,26 @@ func (c *Client) GetIssueComment(ctx context.Context, repo Repo, commentID int64
 	return wc.comment(), nil
 }
 
+// CreateIssueComment adds a comment to the issue and returns it as GitHub
+// stored it: its id, the body GitHub now holds, and GitHub's created_at.
+// A caller that later proves the comment unchanged hashes this body, never
+// the one it sent, and orders other events against this time, never its own
+// clock.
+func (c *Client) CreateIssueComment(ctx context.Context, repo Repo, number int, body string) (*Comment, error) {
+	path := fmt.Sprintf("%s/issues/%d/comments", repoPath(repo), number)
+	req, err := c.gh.NewRequest(ctx, http.MethodPost, path, struct {
+		Body string `json:"body"`
+	}{body})
+	if err != nil {
+		return nil, fmt.Errorf("ghclient: comment on %s#%d: %w", repo, number, err)
+	}
+	var wc wireComment
+	if _, err := c.gh.Do(req, &wc); err != nil {
+		return nil, fmt.Errorf("ghclient: comment on %s#%d: %w", repo, number, err)
+	}
+	return wc.comment(), nil
+}
+
 // ReactionEyes is the "seen" reaction a command is acknowledged with.
 const ReactionEyes = "eyes"
 

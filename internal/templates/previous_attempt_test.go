@@ -42,6 +42,10 @@ func retryPrompts() []retryPrompt {
 				PreviousAttempt: p,
 			})
 		}},
+		{"plan", "\n\n## How to plan", func(p *PreviousAttempt) (string, error) {
+			return renderTestPlanPrompt(testPlanRequest, p)
+		}},
+		{"build", "\n\n## The build", renderTestBuildPrompt},
 	}
 }
 
@@ -261,7 +265,7 @@ func detailConfig(seed int64) *quick.Config {
 // it (the goldens pin only two), and one without renders the bare section.
 func TestPreviousAttemptHints(t *testing.T) {
 	prompts := retryPrompts()
-	remediate, investigate := prompts[0], prompts[1]
+	remediate, investigate, plan, build := prompts[0], prompts[1], prompts[2], prompts[3]
 	tests := []struct {
 		prompt  retryPrompt
 		outcome string
@@ -280,6 +284,19 @@ func TestPreviousAttemptHints(t *testing.T) {
 		{investigate, "budget_exceeded", "ran out of turns, tokens or time"},
 		{investigate, "timeout", "ran out of turns, tokens or time"},
 		{investigate, "aborted", ""},
+		{plan, "report_missing", "Write the report to `/workspace/reports/plan.md`"},
+		{plan, "report_invalid", "Write the report to `/workspace/reports/plan.md`"},
+		{plan, "budget_exceeded", "ran out of turns, tokens or time"},
+		{plan, "timeout", "ran out of turns, tokens or time"},
+		{plan, "runtime_error", ""},
+		{build, "commit_failed", "add it to `commit.sh` with\n`git add <path>`"},
+		{build, "changeset_rejected", "it touched `.github/`, `.patchy/` or `.devcontainer/`"},
+		{build, "report_missing", "Write the report to `/workspace/reports/build.md`"},
+		{build, "report_invalid", "Write the report to `/workspace/reports/build.md`"},
+		{build, "budget_exceeded", "ran out of turns, tokens or time"},
+		{build, "timeout", "ran out of turns, tokens or time"},
+		{build, "changeset_too_large", "exceeded the size limit"},
+		{build, "image_incompatible", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.prompt.name+"/"+tt.outcome, func(t *testing.T) {

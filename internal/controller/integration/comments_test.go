@@ -10,33 +10,79 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/ghclient"
 )
 
-// laggingCache stands in for an informer cache that has not yet applied the
-// reconciler's own last write: the next reads Gets of the Finding return the
-// snapshot it holds, and every other read passes through. It is what the
-// reconcile queued behind a busy one sees — dirtied by an event during that
-// reconcile, it starts before the watch event of that reconcile's final
-// write lands.
+// laggingCache stands in for an informer cache that has fallen behind the
+// reconciler's own writes. It snapshots the Finding every time the tracker
+// takes a post; once lagging, every Get of the Finding returns the last
+// snapshot — the Finding without anything the projection wrote after that
+// post — until the reconciler next writes, whose conflict is when a real
+// reconciler would re-read and find the newer object. Every other read
+// passes through. So a projection can learn what it already posted only by
+// reading past the cache, through its APIReader.
 type laggingCache struct {
 	client.Client
-	stale *v1alpha1.Finding
-	reads int
+	key      client.ObjectKey
+	snapshot *v1alpha1.Finding
+	lagging  bool
+}
+
+// posted snapshots the Finding as the tracker takes a post.
+func (l *laggingCache) posted() {
+	var f v1alpha1.Finding
+	if err := l.Client.Get(context.Background(), l.key, &f); err == nil {
+		l.snapshot = &f
+	}
 }
 
 func (l *laggingCache) Get(
 	ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption,
 ) error {
-	if f, ok := obj.(*v1alpha1.Finding); ok && l.reads > 0 && key == client.ObjectKeyFromObject(l.stale) {
-		l.reads--
-		l.stale.DeepCopyInto(f)
+	if f, ok := obj.(*v1alpha1.Finding); ok && l.lagging && key == l.key {
+		l.snapshot.DeepCopyInto(f)
 		return nil
 	}
 	return l.Client.Get(ctx, key, obj, opts...)
+}
+
+func (l *laggingCache) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	l.lagging = false
+	return l.Client.Update(ctx, obj, opts...)
+}
+
+func (l *laggingCache) Patch(
+	ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption,
+) error {
+	l.lagging = false
+	return l.Client.Patch(ctx, obj, patch, opts...)
+}
+
+func (l *laggingCache) Status() client.SubResourceWriter {
+	return &laggingStatus{SubResourceWriter: l.Client.Status(), cache: l}
+}
+
+// laggingStatus is the status writer of a laggingCache: its writes catch the
+// cache up, as the main resource's do.
+type laggingStatus struct {
+	client.SubResourceWriter
+	cache *laggingCache
+}
+
+func (s *laggingStatus) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	s.cache.lagging = false
+	return s.SubResourceWriter.Update(ctx, obj, opts...)
+}
+
+func (s *laggingStatus) Patch(
+	ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption,
+) error {
+	s.cache.lagging = false
+	return s.SubResourceWriter.Patch(ctx, obj, patch, opts...)
 }
 
 // linkedFinding is a projectable finding at phase, accumulated, whose
@@ -77,9 +123,10 @@ func countComments(tracker *fakeTracker, needle string) int {
 
 // TestProjectLaggingCacheDoesNotRepost is the duplicate-comment regression:
 // a projection posts, and the reconcile right behind it reads the Finding
-// from a cache that has not yet seen that projection's writes, while
-// GitHub's comment list does not yet show the new comment either. The second
-// reconcile must still post nothing — and open no second issue.
+// from a cache that has seen none of that projection's writes after the
+// post, while GitHub's comment list does not yet show the new comment
+// either. The second reconcile must still post nothing — and open no second
+// issue.
 func TestProjectLaggingCacheDoesNotRepost(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -139,15 +186,16 @@ func TestProjectLaggingCacheDoesNotRepost(t *testing.T) {
 			tracker.nextNumber = 8
 			tracker.listLag = true
 			r, c := newProjector(t, tracker, append([]client.Object{testIntegration()}, tt.objs()...)...)
-			r.APIReader = c
-			before := get(t, c, "finding-aa-1") // what the cache still holds after the first pass
+			cache := &laggingCache{Client: c, key: types.NamespacedName{Namespace: "patchy", Name: "finding-aa-1"}}
+			r.Client, r.APIReader = cache, c
+			tracker.onPost = cache.posted
 
 			reconcileFinding(t, r)
 			if got := tt.count(tracker); got != 1 {
 				t.Fatalf("after the first projection: %d, want 1", got)
 			}
 
-			r.Client = &laggingCache{Client: c, stale: before, reads: 1}
+			cache.lagging = true
 			reconcileFinding(t, r)
 			if got := tt.count(tracker); got != 1 {
 				t.Errorf("after a projection on a lagging cache: %d, want still 1; comments = %q", got, tracker.comments)
@@ -248,5 +296,16 @@ func TestProjectTrackedComments(t *testing.T) {
 					posts, len(tracker.comments), edits, tracker.commentEdits)
 			}
 		})
+	}
+}
+
+// TestSetupRequiresAPIReader: every post is confirmed through the API
+// reader, and without one those reads would come silently from the cache —
+// the very lag they exist to see past. Wiring the reconciler without one is
+// refused, not defaulted.
+func TestSetupRequiresAPIReader(t *testing.T) {
+	r := &FindingReconciler{Namespace: "patchy"}
+	if err := r.SetupWithManager(nil); err == nil || !strings.Contains(err.Error(), "APIReader") {
+		t.Errorf("SetupWithManager without an APIReader: err = %v, want it refused", err)
 	}
 }

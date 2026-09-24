@@ -25,8 +25,9 @@ import (
 // runs two reconciles of one key at once, so once that read shows nothing
 // posted, no other projection of the finding can be mid-post.
 
-// apiReader is the uncached reader: the manager's API reader in production,
-// the client itself when none is wired.
+// apiReader is the uncached reader: the manager's API reader in production
+// (SetupWithManager refuses to run without one), the client itself for a
+// reconciler driven directly over an uncached client.
 func (r *FindingReconciler) apiReader() client.Reader {
 	if r.APIReader != nil {
 		return r.APIReader

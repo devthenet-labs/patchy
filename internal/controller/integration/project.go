@@ -81,7 +81,8 @@ type FindingReconciler struct {
 	client.Client
 	// APIReader reads straight from the API server, past the cache: every
 	// post to the tracker is confirmed against it first (see comments.go).
-	// nil falls back to the client.
+	// SetupWithManager requires it; only a reconciler driven directly, as
+	// in unit tests over an uncached client, may leave it nil.
 	APIReader client.Reader
 	// Creds builds Integration API clients.
 	Creds *Creds
@@ -853,6 +854,11 @@ func (r *FindingReconciler) clientFor(
 // to the owning Finding, and the tracking-URL field index the Signals
 // handler queries.
 func (r *FindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.APIReader == nil {
+		// Without it every post's confirming read would come from the cache,
+		// the very lag it exists to see past — and nothing would say so.
+		return errors.New("finding projection: APIReader is required")
+	}
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &v1alpha1.Finding{}, TrackingURLIndex,
 		func(obj client.Object) []string {
 			f := obj.(*v1alpha1.Finding)

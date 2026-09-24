@@ -41,6 +41,9 @@ type fakeTracker struct {
 	closed    []int
 	dismissed []int
 	bodyEdits int
+
+	// onPost, when set, is called as each issue or comment is posted.
+	onPost func()
 }
 
 func newFakeTracker() *fakeTracker {
@@ -61,6 +64,9 @@ func notFound(what string) error {
 func (f *fakeTracker) Create(
 	_ context.Context, repo ghclient.Repo, req ghclient.IssueRequest,
 ) (*ghclient.Issue, error) {
+	if f.onPost != nil {
+		f.onPost()
+	}
 	n := f.nextNumber
 	f.nextNumber++
 	is := &ghclient.Issue{Repo: repo, Number: n, Title: req.Title, Body: req.Body, State: "open", Labels: req.Labels}
@@ -104,6 +110,9 @@ func (f *fakeTracker) Comment(ctx context.Context, repo ghclient.Repo, number in
 }
 
 func (f *fakeTracker) CreateComment(_ context.Context, _ ghclient.Repo, number int, body string) (int64, error) {
+	if f.onPost != nil {
+		f.onPost()
+	}
 	f.comments = append(f.comments, body)
 	f.nextCommentID++
 	f.issueComments[number] = append(f.issueComments[number], &ghclient.Comment{ID: f.nextCommentID, Body: body})

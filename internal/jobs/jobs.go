@@ -169,8 +169,8 @@ type Runner struct {
 	// Env is per-runner gateway/provider environment (base-URL overrides,
 	// skip-auth switches, the model map, the operator's provider env),
 	// values only, controller-built. It wins over Config.Env but can never
-	// name a credential channel, and on a finding Job never a name the Job
-	// sets itself (PerJobEnvNames).
+	// name a credential channel, nor a name the Job sets itself
+	// (PerJobEnvNames on a finding Job, EvalJobEnvNames on an evaluation one).
 	Env map[string]string
 	// Inject names the binaries this runner image contributes to a Job that
 	// runs a repository-declared image instead: the prepare init copies each

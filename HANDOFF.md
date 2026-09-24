@@ -4,6 +4,30 @@ Status as of 2026-09-24. Written so another coding agent (for example Codex) can
 context. Read this whole file, then `AGENTS.md` (orientation), then `docs/design/intent-driven-development.md` (the
 accepted design — the source of truth for what to build).
 
+## Running this work: environment and permissions
+
+- **Run locally, with network.** Work in `/Users/peter/code/patchy` on the owner's machine, not a cloud sandbox. The
+  gates download tools, Go modules and envtest binaries. The live steps need the owner's `gh` login (`brvtl`), `kubectl`
+  against `devthenet-dev` with `AWS_PROFILE=devthenet`, and SSH git pushes. In Codex CLI that means a mode with network
+  access that may run these commands. In a sandbox without them the gates fail and the live checks silently do not
+  happen, and that must never be reported as passing.
+- **Authorised so far without asking:**
+  - branching and pushing;
+  - opening PRs and squash-merging them once CI is green and review findings are resolved;
+  - merging release-please PRs;
+  - `helm upgrade` and `helm rollback` of the two releases on `devthenet-dev`;
+  - pushing deliberate test vulnerabilities to `devthenet-labs/patchy-target`, and merging patchy's own fix PRs there
+    during a gate;
+  - posting commands on patchy's own test issues.
+- **Ask the owner first** before anything else outward-facing: new repositories, GitHub App permission or webhook
+  changes, `terraform apply`, deleting branches, repositories or cluster resources, or changing who is an approver.
+- **Review without the old tooling.** The previous agent had independent reviewers plus two refuters check every serious
+  finding. Instead, review your own diff in a separate pass (for example Codex `/review`, or a fresh session) focused on
+  the security invariants below and on liveness (can an Intent get stuck, can a run hold a slot forever, can anything
+  hot-loop against GitHub). Check each finding against the code before acting on it.
+- **Report honestly.** Give failing tests with their output, state skipped steps plainly, and never call something
+  verified that was not run.
+
 ## The goal
 
 patchy started as a security pipeline (CodeQL alert → `Finding` → sandboxed `claude -p` investigation and remediation →

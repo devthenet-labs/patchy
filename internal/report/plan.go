@@ -30,6 +30,13 @@ const (
 // host, owner and name, and nothing else — no credentials, query, fragment
 // or trailing path. It is the Project schema's own pattern, so a URL that
 // passes here can be compared with the Project's repositories directly.
+//
+// It is a copy. The source of truth is the kubebuilder Pattern marker on
+// ProjectRepository.URL in api/v1alpha1/project_types.go (the Intent and
+// IntentRun repository fields carry the same one), which exports no Go
+// constant for it, and report stays free of the API types. Change the two
+// together: TestRepositoryURLMatchesProjectSchema compares this copy with
+// the generated Project CRD.
 var repositoryURL = regexp.MustCompile(`^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$`)
 
 // Plan is the parsed plan report: the intent plan stage's contract. The

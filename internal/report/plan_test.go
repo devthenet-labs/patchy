@@ -5,9 +5,12 @@ package report
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 const validPlan = `---
@@ -122,6 +125,47 @@ func items(key string, n int, item func(int) string) string {
 }
 
 func repoURL(i int) string { return fmt.Sprintf("https://github.com/devthenet-labs/app-%d", i) }
+
+// projectCRD is the Project CRD generated from api/v1alpha1, whose
+// repositories[].url pattern repositoryURL copies.
+const projectCRD = "../../deploy/kustomize/base/crds/patchy.bitwisemedia.uk_projects.yaml"
+
+// TestRepositoryURLMatchesProjectSchema guards the copy repositoryURL holds
+// of the Project schema's repository URL pattern. report does not import
+// the API types and they export no constant for it, so nothing else ties
+// the two; were they to drift, a plan could name a URL no Project can hold,
+// or be refused one it can.
+func TestRepositoryURLMatchesProjectSchema(t *testing.T) {
+	raw, err := os.ReadFile(projectCRD)
+	if err != nil {
+		t.Fatalf("read the Project CRD: %v", err)
+	}
+	var crd map[string]any
+	if err := yaml.Unmarshal(raw, &crd); err != nil {
+		t.Fatalf("decode the Project CRD: %v", err)
+	}
+	v := any(crd)
+	for _, key := range []any{"spec", "versions", 0, "schema", "openAPIV3Schema", "properties", "spec", "properties",
+		"repositories", "items", "properties", "url", "pattern"} {
+		switch k := key.(type) {
+		case string:
+			m, ok := v.(map[string]any)
+			if !ok {
+				t.Fatalf("Project CRD: no %q where the repository URL pattern should be", k)
+			}
+			v = m[k]
+		case int:
+			l, ok := v.([]any)
+			if !ok || len(l) <= k {
+				t.Fatalf("Project CRD: no item %d where the repository URL pattern should be", k)
+			}
+			v = l[k]
+		}
+	}
+	if got := repositoryURL.String(); v != got {
+		t.Errorf("Project CRD repositories[].url pattern = %v, report's copy = %q; change them together", v, got)
+	}
+}
 
 func TestParsePlanBounds(t *testing.T) {
 	summary := `summary: "Add GET /version returning {sha, built} as JSON"`

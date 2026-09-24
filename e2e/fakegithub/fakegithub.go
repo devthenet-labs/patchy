@@ -76,8 +76,10 @@ type Server struct {
 	// their state and most recent instance, by number.
 	moved map[int]movedAlert
 	pulls    map[int]*pull
-	git      gitData
-	next     int
+	// pullReadFailures is how many single-PR reads still answer 502.
+	pullReadFailures int
+	git              gitData
+	next             int
 	// Now stamps created_at; tests override it to age issues instantly.
 	Now func() time.Time
 }
@@ -169,6 +171,16 @@ func (s *Server) LabelsOf(number int) []string {
 	return out
 }
 
+// SetIssueState sets an issue open or closed, as a human doing so on GitHub
+// does; the matching issues delivery is the test's to send.
+func (s *Server) SetIssueState(number int, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if is, ok := s.issues[number]; ok {
+		is.State = state
+	}
+}
+
 // Age rewinds every issue's created_at by d, so time-gated transitions (the
 // accumulation window, the remediation minimum age) fire immediately.
 func (s *Server) Age(d time.Duration) {
@@ -197,6 +209,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /repos/{owner}/{repo}", s.getRepo)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{spec}", s.compare)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls", s.listPulls)
+	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}", s.getPull)
 	mux.HandleFunc("POST /repos/{owner}/{repo}/pulls", s.createPull)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/tarball/{ref...}", s.tarballRedirect)
 	mux.HandleFunc("GET /_tarball/{owner}/{repo}/{ref...}", s.tarball)
@@ -400,12 +413,16 @@ func (s *Server) getIssue(w http.ResponseWriter, r *http.Request) {
 	number, _ := strconv.Atoi(r.PathValue("number"))
 	s.mu.Lock()
 	is, ok := s.issues[number]
+	var out Issue
+	if ok {
+		out = *is // copied under the lock: SetIssueState and Age write it
+	}
 	s.mu.Unlock()
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	writeJSON(w, is)
+	writeJSON(w, &out)
 }
 
 func (s *Server) editIssue(w http.ResponseWriter, r *http.Request) {

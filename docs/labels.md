@@ -74,9 +74,22 @@ closes the tracking issue — a person can always pull a finding out of the mach
 | `Queued` → `Remediating`                                                               | remediation-controller   | Priority scheduler grants a slot                                     |
 | `Remediating` → `Queued`                                                               | remediation-controller   | Recoverable failure re-queued                                        |
 | `Remediating` → `InReview` / `Failed`                                                  | remediation-controller   | Push + PR succeeded / attempts exhausted                             |
-| `InReview` → `Remediated` / `Failed`                                                   | integration-controller   | `pull_request` webhook: merged / closed unmerged                     |
+| `InReview` → `Remediated` / `Failed`                                                   | integration-controller   | The recorded PR merged / closed unmerged (see below)                 |
 | `Dismissed` → `HandedOff`                                                              | integration-controller   | Human reopened the tracking issue                                    |
-| any non-terminal → `HandedOff`                                                         | integration-controller   | Human closed the tracking issue                                      |
+| any non-terminal → `HandedOff`                                                         | integration-controller   | Human closed the tracking issue (in review: see below)               |
+
+In review, only the finding's recorded PR settles it — the same number, in the finding's repository, from a branch
+there, not a fork's. The PR body's `Fixes #N` closes the tracking issue as the PR merges, and the two deliveries arrive
+in either order, so an issue closed during review is checked against the recorded PR: merged → `Remediated`, closed
+unmerged → `Failed`. Still open, or unreadable (GitHub answers 404 or 403, or no PR is recorded) → `HandedOff`, but only
+if GitHub still reports the tracking issue closed: a close and a quick reopen can be delivered reopen first. A PR close
+from a repository other than the recorded one — renamed since — is confirmed against the recorded PR: merged or closed,
+its outcome applies; still open or unreadable, nothing moves. A transfer to another owner is confirmed the same way only
+while the Integration's credential can still read the repository under its old name (a public repository, or an App
+installation on the old owner that still includes it); otherwise GitHub answers 404 and the finding stays `InReview` for
+a human. Either close is kept on the finding as `ReviewClosePending` until GitHub answers, because GitHub never
+redelivers a webhook it has already delivered — and while no issues-enabled Integration exists to read it through
+(suspended, issues turned off, or deleted), the close waits for one.
 
 ## Conditions
 
@@ -92,6 +105,7 @@ Finding **while** enhancement runs, so the window close cannot be a phase.
 | `Investigated`                                          | Finding                    | Analysis completed; the reason carries the recommendation                                                   |
 | `Approved`                                              | Finding                    | A human `/approve` was accepted                                                                             |
 | `ForgeResolved`                                         | Finding                    | The repository resolved to exactly one Forge (`False` reasons: `NoRepository`, `NoForgeMatch`, `Ambiguous`) |
+| `ReviewClosePending`                                    | Finding                    | A close seen in review awaits the recorded PR's state (`TrackingIssueClosed`, `UnrecordedRepository`)       |
 | `Complete`                                              | Investigation, Remediation | The stage finished; the reason carries the outcome                                                          |
 | `RolledUpTotal` / `…Repository` / `…Harness` / `…Model` | Finding                    | Per-scope rollup accounting markers (exactly-once, finalizer-backed)                                        |
 

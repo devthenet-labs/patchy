@@ -9,10 +9,18 @@
     "merged_at": "2026-09-23T22:53:48Z",
     "merge_commit_sha": "fa82fcdc7efab2777d432ba3385517fa735e0ae0",
     "head": {
-      "ref": "patchy/finding-1678e4a376-2"
+      "ref": "patchy/finding-1678e4a376-2",
+      "repo": {
+        "name": "patchy-target",
+        "full_name": "devthenet-labs/patchy-target"
+      }
     },
     "base": {
-      "ref": "main"
+      "ref": "main",
+      "repo": {
+        "name": "patchy-target",
+        "full_name": "devthenet-labs/patchy-target"
+      }
     }
   },
   "repository": {

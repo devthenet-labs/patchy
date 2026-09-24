@@ -48,6 +48,16 @@ const (
 	// open — every reopen of a remediated alert opens a successor finding.
 	// Absent until the first lookup is denied.
 	ConditionCommitAncestry = "CommitAncestry"
+	// ConditionReviewClosePending marks a Finding in review whose review
+	// may have ended in a way the delivery alone cannot settle: its tracking
+	// issue closed (ReasonTrackingIssueClosed), or a PR close named it from
+	// a repository other than the recorded one (ReasonUnrecordedRepository).
+	// The recorded PR's own state decides, and the integration-controller
+	// reads it until GitHub answers — a webhook delivery is never redelivered
+	// once answered, so the condition is what keeps the close. While no
+	// issues-enabled Integration can read it (suspended, issues turned off,
+	// deleted), the close waits. Removed as the finding leaves review.
+	ConditionReviewClosePending = "ReviewClosePending"
 
 	// Per-scope rollup markers. A scope's finalizer is removed only when its
 	// condition is True and deletion is underway — remaining finalizers show
@@ -79,6 +89,23 @@ const (
 	// at Opened rather than advancing it without a repository. Bounded by the
 	// accumulation window; past that the finding advances regardless.
 	ReasonRepositoryUnresolved = "RepositoryUnresolved"
+	// ReasonTrackingIssueClosed: the tracking issue closed during review.
+	// The PR body's "Fixes #N" closes it on merge too, so a merged or closed
+	// PR settles the finding as its own delivery would. A PR still open, or
+	// one GitHub answers 404/403 for, means a human closed the issue to take
+	// the finding over (HandedOff) — if GitHub still reports the issue
+	// closed: deliveries are unordered, so a quick reopen may land first.
+	ReasonTrackingIssueClosed = "TrackingIssueClosed"
+	// ReasonUnrecordedRepository: a PR close named the finding with its
+	// recorded number, from a branch in the repository it closed in, but not
+	// the recorded repository — renamed since (GitHub sends the new name and
+	// redirects the old), or another repository's PR of the same number. A
+	// recorded PR still open means the latter: nothing moves. A transfer to
+	// another owner looks the same, but the recorded PR reads under the old
+	// name only while the credential can still read the repository there (a
+	// public one, or an App installation on the old owner that still has
+	// it); otherwise GitHub answers 404 and nothing moves either.
+	ReasonUnrecordedRepository = "UnrecordedRepository"
 
 	// Repository runner-image reasons, all set by source-controller.
 

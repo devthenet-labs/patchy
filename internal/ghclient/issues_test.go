@@ -5,6 +5,7 @@ package ghclient
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"reflect"
 	"testing"
@@ -123,6 +124,23 @@ func TestIssueWrites(t *testing.T) {
 				writeJSON(t, w, `{"id":1}`)
 			},
 			call: func(c *Client) error { return c.Comment(ctx, testRepo, 3, "hello") },
+		},
+		{
+			name:    "CreateComment returns the new id",
+			pattern: "POST /repos/o/r/issues/3/comments",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				if body := decodeBody[map[string]any](t, r); body["body"] != "hello" {
+					t.Errorf("comment body = %v, want hello", body["body"])
+				}
+				writeJSON(t, w, `{"id":42}`)
+			},
+			call: func(c *Client) error {
+				id, err := c.CreateComment(ctx, testRepo, 3, "hello")
+				if err == nil && id != 42 {
+					return fmt.Errorf("CreateComment id = %d, want 42", id)
+				}
+				return err
+			},
 		},
 		{
 			name:    "EditBody",

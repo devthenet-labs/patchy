@@ -222,6 +222,31 @@ func TestIssueWrites(t *testing.T) {
 			},
 			call: func(c *Client) error { return c.Close(ctx, testRepo, 3) },
 		},
+		{
+			name:    "CloseIssue with a reason",
+			pattern: "PATCH /repos/o/r/issues/3",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				body := decodeBody[map[string]any](t, r)
+				want := map[string]any{"state": "closed", "state_reason": "completed"}
+				if !reflect.DeepEqual(body, want) {
+					t.Errorf("close request = %v, want %v", body, want)
+				}
+				writeJSON(t, w, `{"number":3,"state":"closed","state_reason":"completed"}`)
+			},
+			call: func(c *Client) error { return c.CloseIssue(ctx, testRepo, 3, CloseCompleted) },
+		},
+		{
+			name:    "CloseIssue without a reason sends none",
+			pattern: "PATCH /repos/o/r/issues/3",
+			handler: func(t *testing.T, w http.ResponseWriter, r *http.Request) {
+				body := decodeBody[map[string]any](t, r)
+				if !reflect.DeepEqual(body, map[string]any{"state": "closed"}) {
+					t.Errorf("close request = %v, want only state=closed", body)
+				}
+				writeJSON(t, w, `{"number":3,"state":"closed"}`)
+			},
+			call: func(c *Client) error { return c.CloseIssue(ctx, testRepo, 3, "") },
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

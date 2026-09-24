@@ -298,7 +298,8 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
    - Move to `AwaitingApproval`.
 6. **Approval.** While in `AwaitingApproval`, the controller polls the issue's events every 30 s. It accepts the newest
    `labeled` event for the approve label only when all of these hold:
-   - the actor is in the approvers list and is not a Bot;
+   - the actor is in the approvers list, has write access to the intent repo (see "One authorisation rule"), and is not
+     a Bot;
    - the event's `created_at` is later than `plan.postedAt`;
    - the plan comment, re-fetched now, still hashes to `commentDigest`;
    - the issue body still hashes to the input snapshot;
@@ -379,12 +380,18 @@ there is one grammar, and everything else is an alias for it.
   - a "Request changes" review is `/patchy revise`, with the review as the note;
   - `/approve` on a Finding tracking issue stays as a deprecated alias for `/patchy approve`.
 - **One authorisation rule.** For every verb arriving from GitHub, the actor must have write access to the repository
-  (the collaborator-permission API: `admin`, `maintain` or `write`) and must not be a Bot. For intents the actor must
-  also be in the Project's `approvers.logins`. `author_association` is no longer used. This tightens today's `/approve`,
-  which accepts any org `MEMBER`, even one without write access.
+  (the collaborator-permission API: `admin`, `maintain` or `write`, checked by `ghclient.CanWrite`) and must not be a
+  Bot. For intents the actor must also be in the Project's `approvers.logins`. `author_association` is no longer used.
+  This tightens today's `/approve`, which accepts any org `MEMBER`, even one without write access.
+
+  Write is the floor because `read` proves nothing: on a public repository the endpoint answers `read` for every GitHub
+  account (verified 2026-09-24). A 404 means no such account and counts as no access.
+
 - **One acknowledgement.** A command that is seen gets a 👀 reaction, then exactly one reply with the outcome: done, not
   available in this phase (listing what is), or not allowed. An unknown verb gets the list of verbs available there.
-  Commands and events from the App's own bot login are ignored.
+  Commands and events from the App's own bot login are ignored. That login is `<slug>[bot]`, with the slug from
+  `GET /app`, and the actor type is `Bot`. Label events carry `performed_via_github_app: null` even when the App applied
+  the label, so the actor is the only way to recognise them.
 - **One parser.** A pure package, `internal/command`, parses the grammar. integration-controller uses it on the webhook
   path for Findings, and intent-controller uses it on the poll path for intents. It has seeded property tests: parsing
   never panics, text that does not start with the command prefix never parses as a command, and the note never contains
@@ -405,10 +412,12 @@ adds `revise` with its review alias, and `retry` on intent PRs.
   or out-of-order deliveries have no effect.
 - **The cost is bounded.** Polling adds 30-60 s of latency and read traffic on the installation rate limit that the
   security flow shares. That is bounded by:
-  - ETag conditional requests (a 304 is documented as free; to verify for installation tokens);
+  - ETag conditional requests: a 304 does not consume the installation's rate limit (verified 2026-09-24 with an
+    installation token), and list responses carry `cache-control: max-age=60`;
   - polling only non-terminal intents, and only the thing the current phase waits on;
   - `--rate-limit-floor` (default 1000), which pauses intent polling when the installation's remaining budget drops
-    below it.
+    below it. The `x-ratelimit-*` headers are not consistent from one response to the next, so the floor is a coarse
+    guard, not an exact budget.
 
 ### Plan contract and output sanitisation
 
@@ -713,7 +722,7 @@ The waves:
   - Types, codegen, hand-added kustomization entries and schema envtests.
   - New ghclient calls:
     - `CreateCommit`, split out of `PushBranch`;
-    - `CreateBranchRef` (never forces), and `FastForwardRef` (returns `ErrNotFastForward`) (1b);
+    - `CreateBranchRef` (never forces), and `FastForwardRef` (returns `ErrNotFastForward`; landed with the 1a seams);
     - `ListIssueEvents`, and `ListIssues` with ETag;
     - comments since a time;
     - `GetPR`; `ListReviews` and `ListReviewComments` (1b);
@@ -742,7 +751,10 @@ The waves:
   - Kustomize opt-in component, goreleaser entries, the `policy_test` skip-list entry and CLI Kinds.
   - Docs: a DESIGN.md section, CLAUDE.md orientation, and a configuration page.
   - e2e: drive fakegithub state from `Pending` to `Merged`, asserting Job shapes, pushes and PRs, and run one existing
-    Finding e2e with intent-controller running.
+    Finding e2e with intent-controller running. The harness Forge already authenticates as a GitHub App against
+    fakegithub, which holds every token it mints to that token's repositories and permissions (403 "Resource not
+    accessible by integration" outside them) and attributes installation-token writes to the bot. So `TokenWith`,
+    `BotLogin` and the per-operation scoping all run in e2e, and a call made with the wrong token fails there.
 
 **Estimate.** 1a is about 6-8 working days and 1b about 4-5, each including its regression gates. Intents are enabled on
 devthenet-dev in a separate Helm upgrade from the release that ships them.
@@ -860,13 +872,15 @@ devthenet-dev in a separate Helm upgrade from the release that ships them.
 
 ## Risks
 
-- **Approval rests on unverified GitHub details:**
-  - whether the actor on a label applied by an issue form is the issue author;
-  - the fields in the events API;
-  - `UpdateRef force=false` semantics;
-  - whether 304 responses are free for installation tokens.
-
-  Verify all of these before wave 3 goes live.
+- **Approval rests on GitHub details, three of four now verified** (2026-09-24, live, with the App's installation
+  token):
+  - the events API returns `id`, `node_id`, `event`, `created_at`, `actor{login, id, type}` and `label{name}`. Label
+    events carry `performed_via_github_app: null`, so patchy recognises its own events by `actor.login == "<slug>[bot]"`
+    with `actor.type == "Bot"`; comments do carry `performed_via_github_app.slug`;
+  - `UpdateRef force=false` semantics (open question 3);
+  - 304 responses are free for installation tokens (open question 2);
+  - still unverified: whether the actor on a label applied by an issue form is the issue author (open question 1).
+    Verify it before wave 3 goes live.
 
 - **Shared code still ships in the same images as the Finding flow:** the split `ghclient` push, `stageEnvNames`,
   `NameFor`, the exported validator and runnerguard. Every change is additive and guarded by goldens and property tests,
@@ -912,8 +926,8 @@ Items 1-3, 5 and 6 are wave 0. Item 4 moves into wave 1 with the other ghclient 
 9. **Operational checks before wave 3 goes live:**
    - the App installation covers `devthenet-labs/intents`;
    - the Forge `github` resolves every repo;
-   - the collaborator-permission endpoint works with the App's permissions;
-   - the 304 rate-limit behaviour.
+   - the collaborator-permission endpoint works with the App's permissions (verified 2026-09-24);
+   - the 304 rate-limit behaviour (verified 2026-09-24).
 
 ## Decisions
 
@@ -933,11 +947,24 @@ Made on 2026-09-23.
 ## Open questions
 
 1. Is the actor of a label applied by an issue form the issue author?
-2. Do ETag 304 responses count against an App installation's rate limit?
-3. Does `UpdateRef` with `force=false` return 422 on a non-fast-forward, and succeed as a no-op when the ref already
-   points at the commit?
-4. Does the collaborator-permission endpoint work with the App's current permissions? Until that is verified, the
-   allowlist alone is the authority.
+2. ~~Do ETag 304 responses count against an App installation's rate limit?~~ **Answered (verified 2026-09-24):** no. A
+   request with `If-None-Match` set to the ETag returns 304 and does not consume the installation's rate limit;
+   responses carry `cache-control: max-age=60`. The `x-ratelimit-*` headers are not consistent across responses, so no
+   exact budget logic is built on them. `ghclient.ListIssues` is the conditional request.
+3. ~~Does `UpdateRef` with `force=false` return 422 on a non-fast-forward, and succeed as a no-op when the ref already
+   points at the commit?~~ **Answered (verified 2026-09-24):** yes. With `force=false`, the same SHA returns 200 (a
+   no-op success) and a fast-forward returns 200. A diverging or rewinding move returns 422
+   `Update is not a fast forward`, an unknown SHA 422 `Object does not exist`, and a missing ref 422
+   `Reference does not exist`. `POST git/refs` for an existing ref returns 422 `Reference already exists`. Every refusal
+   is a 422, so the message is what tells them apart: `ghclient.CreateBranchRef` and `ghclient.FastForwardRef` map
+   exactly these messages to `ErrBranchExists`, `ErrNotFastForward` and `ErrRefNotFound`, and any other message is a
+   plain error.
+4. ~~Does the collaborator-permission endpoint work with the App's current permissions?~~ **Answered (verified
+   2026-09-24):** yes. `GET /repos/{o}/{r}/collaborators/{u}/permission` works with the App's metadata read. On a public
+   repo any GitHub user gets `read` (octocat reads as `read`), the App's bot gets `none`, and a nonexistent login is
+   a 404. `GET /collaborators/{u}` is not used, because it returns 404 for real admins with an installation token. Since
+   public repos grant `read` to everyone, the approver check requires `admin`, `maintain` or `write`
+   (`ghclient.CanWrite`) as well as the allowlist.
 5. Should the status page or the CLI also be able to approve, through a custom verb and a VAP on Intent? Deferred.
 6. Should demo reset delete Intents? It lists kinds by hand in `integration/reset.go` and `web/admin.go`. Slice 1 leaves
    them out, and reset must never close human-authored intent issues.

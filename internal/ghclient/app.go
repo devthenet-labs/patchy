@@ -31,6 +31,7 @@ type App struct {
 	mu            sync.Mutex
 	installations map[Repo]int64    // repo → installation ID
 	clients       map[int64]*Client // installation ID → cached client
+	slug          string            // the App's slug once read (Slug)
 }
 
 // NewApp builds an App from cfg, parsing and validating the private key.
@@ -157,23 +158,70 @@ func (a *App) InstallationAccounts(ctx context.Context) ([]InstallationAccount, 
 	}
 }
 
+// Token permission levels.
+const (
+	PermRead  = "read"
+	PermWrite = "write"
+)
+
 // TokenPerms is the permission set for a scoped token; string values are
-// "read"/"write" per the GitHub API; empty means not requested.
+// PermRead/PermWrite per the GitHub API; empty means not requested. GitHub
+// adds metadata read to every installation token on its own.
 type TokenPerms struct {
-	Contents string
+	Contents     string
+	Issues       string
+	PullRequests string
+}
+
+// Validate reports a permission set a scoped token must not be minted with:
+// one requesting nothing — GitHub would then grant every permission the
+// installation holds — or a level other than read or write.
+func (p TokenPerms) Validate() error {
+	if p == (TokenPerms{}) {
+		return errors.New("ghclient: token permissions: none requested")
+	}
+	for _, perm := range []struct{ name, level string }{
+		{"contents", p.Contents}, {"issues", p.Issues}, {"pull_requests", p.PullRequests},
+	} {
+		if perm.level != "" && perm.level != PermRead && perm.level != PermWrite {
+			return fmt.Errorf("ghclient: token permissions: %s %q is neither %s nor %s",
+				perm.name, perm.level, PermRead, PermWrite)
+		}
+	}
+	return nil
+}
+
+// installationPermissions renders p for the access-token request: only the
+// permissions requested. Callers validate p first, so at least one is.
+func (p TokenPerms) installationPermissions() *github.InstallationPermissions {
+	out := &github.InstallationPermissions{}
+	if p.Contents != "" {
+		out.Contents = new(p.Contents)
+	}
+	if p.Issues != "" {
+		out.Issues = new(p.Issues)
+	}
+	if p.PullRequests != "" {
+		out.PullRequests = new(p.PullRequests)
+	}
+	return out
 }
 
 // ScopedToken mints a short-lived installation token restricted to the
 // single repository and permissions given, returning the token and its
-// expiry.
+// expiry. perms must pass Validate, checked before any request: an empty set
+// would have GitHub grant every permission the installation holds.
 func (a *App) ScopedToken(ctx context.Context, repo Repo, perms TokenPerms) (string, time.Time, error) {
+	if err := perms.Validate(); err != nil {
+		return "", time.Time{}, err
+	}
 	id, err := a.installationID(ctx, repo)
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	opts := &github.InstallationTokenOptions{Repositories: []string{repo.Name}}
-	if perms.Contents != "" {
-		opts.Permissions = &github.InstallationPermissions{Contents: new(perms.Contents)}
+	opts := &github.InstallationTokenOptions{
+		Repositories: []string{repo.Name},
+		Permissions:  perms.installationPermissions(),
 	}
 	tok, _, err := a.gh.Apps.CreateInstallationToken(ctx, id, opts)
 	if err != nil {

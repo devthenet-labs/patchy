@@ -20,9 +20,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -193,8 +197,21 @@ func startCluster(t *testing.T) *cluster {
 	return cl
 }
 
-// githubCredentials creates the Secret plus the Integration and Forge custom
-// resources that switch the pipeline on, all pointed at the fake GitHub.
+// forgeAppKey is the throwaway private key of the fake GitHub App the e2e
+// Forge authenticates as, generated once per run.
+var forgeAppKey = sync.OnceValues(func() ([]byte, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, err
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), nil
+})
+
+// githubCredentials creates the Secrets plus the Integration and Forge custom
+// resources that switch the pipeline on, all pointed at the fake GitHub. The
+// Forge authenticates as a GitHub App, as production does, so everything the
+// binaries do through it runs on installation tokens the fake mints and holds
+// to their scope; the Integration keeps a PAT.
 func (cl *cluster) githubCredentials(t *testing.T, ghURL string) {
 	t.Helper()
 	ctx := context.Background()
@@ -204,6 +221,16 @@ func (cl *cluster) githubCredentials(t *testing.T, ghURL string) {
 			"token":         "e2e-token",
 			"webhookSecret": webhookSecret,
 		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	appKey, err := forgeAppKey()
+	if err != nil {
+		t.Fatalf("generate the forge App key: %v", err)
+	}
+	if err := cl.client.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "patchy-forge", Namespace: namespace},
+		Data:       map[string][]byte{"appID": []byte("1"), "privateKey": appKey},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +253,7 @@ func (cl *cluster) githubCredentials(t *testing.T, ghURL string) {
 		Spec: v1alpha1.ForgeSpec{
 			Provider:  v1alpha1.ForgeProviderGitHub,
 			BaseURL:   ghURL,
-			SecretRef: v1alpha1.LocalSecretReference{Name: "patchy-github"},
+			SecretRef: v1alpha1.LocalSecretReference{Name: "patchy-forge"},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -471,6 +498,10 @@ func TestPipeline(t *testing.T) {
 	})
 	if repo.Status.ResolvedSHA != fakegithub.HeadSHA {
 		t.Errorf("resolvedSHA = %q, want the fake head %q", repo.Status.ResolvedSHA, fakegithub.HeadSHA)
+	}
+	// The pin ran on the Forge's App credential: an installation token.
+	if len(gh.TokenRequests()) == 0 {
+		t.Error("no installation token was minted; the Forge's App credential went unused")
 	}
 	resp, err := http.Get(repo.Status.Artifact.URL)
 	if err != nil {

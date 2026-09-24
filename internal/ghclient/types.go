@@ -19,7 +19,22 @@ type Issue struct {
 	CreatedAt time.Time
 	// Author is the login that opened the issue.
 	Author string
+	// HTMLURL is the issue's page on the forge, the link a human follows.
+	HTMLURL string
 }
+
+// Actor is the account behind an issue event or a comment.
+type Actor struct {
+	Login string
+	ID    int64
+	// Type is GitHub's account type: "User", "Bot" or "Organization".
+	Type string
+}
+
+// IsBot reports a bot account: a GitHub App's "<slug>[bot]" user or any
+// other. Label events carry no performed_via_github_app, so the account
+// type (with the login) is how an App's own events are told from a human's.
+func (a Actor) IsBot() bool { return a.Type == "Bot" }
 
 // Comment is one issue comment.
 type Comment struct {
@@ -27,6 +42,24 @@ type Comment struct {
 	Body              string
 	UserLogin         string
 	AuthorAssociation string
+	// UserID and UserType complete the author's identity: GitHub's numeric
+	// account id and account type ("User", "Bot", "Organization").
+	UserID   int64
+	UserType string
+	// CreatedAt is when the comment was written; UpdatedAt moves on every
+	// edit, and is what a since-filtered listing compares against.
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	// ViaApp is the slug of the GitHub App that wrote the comment
+	// (performed_via_github_app), "" for a human's comment.
+	ViaApp string
+	// HTMLURL is the comment's page on the forge.
+	HTMLURL string
+}
+
+// Author returns the comment author as an Actor.
+func (c *Comment) Author() Actor {
+	return Actor{Login: c.UserLogin, ID: c.UserID, Type: c.UserType}
 }
 
 // PR is a freshly created pull request.

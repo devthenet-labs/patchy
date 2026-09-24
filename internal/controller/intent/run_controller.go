@@ -350,37 +350,9 @@ func (r *RunReconciler) launch(ctx context.Context, run *v1alpha1.IntentRun) err
 		TokenBudget:     run.Spec.Grant.TokenBudget,
 		PreviousAttempt: agentresult.EncodePreviousAttempt(run.Spec.PreviousAttempt),
 	}
-	requireImage := false
-	switch stage {
-	case v1alpha1.IntentStagePlan:
-		// The request is re-hashed against the snapshot the run was
-		// created for, as a build's plan is against its approval.
-		if got := digest([]byte(spec.IssueMarkdown)); got != run.Spec.Inputs.InputDigest {
-			return r.settle(ctx, run, result{outcome: OutcomeAborted,
-				detail: fmt.Sprintf("the request's bytes hash to %s, not the snapshot's %s; nothing was launched",
-					got, run.Spec.Inputs.InputDigest)})
-		}
-		spec.Model = r.PlanModel
-	case v1alpha1.IntentStageBuild:
-		spec.Model = r.BuildModel
-		plan := cm.Data[keyInvestigation]
-		if got := digest([]byte(plan)); got != run.Spec.Inputs.PlanDigest {
-			return r.settle(ctx, run, result{outcome: OutcomeAborted,
-				detail: fmt.Sprintf("the approved plan's bytes hash to %s, not the approved %s; nothing was launched",
-					got, run.Spec.Inputs.PlanDigest)})
-		}
-		if spec.IssueMarkdown != "" {
-			return r.settle(ctx, run, result{outcome: OutcomeAborted,
-				detail: "a build is handed the approved plan alone, and its request was not empty"})
-		}
-		spec.InvestigationMarkdown = plan
-		requireImage = requireRepositoryImage(&proj)
-		if skipped := r.Images.PinFor(&spec, &repo); skipped != "" && requireImage {
-			return r.settle(ctx, run, result{outcome: OutcomeImageRequired, detail: skipped})
-		}
-	default:
-		return r.settle(ctx, run, result{outcome: OutcomeAborted,
-			detail: fmt.Sprintf("stage %q is not run by this controller", stage)})
+	requireImage, refusal := r.stageSpec(run, &spec, &cm, &proj, &repo)
+	if refusal != nil {
+		return r.settle(ctx, run, *refusal)
 	}
 	build := settings.grant(&proj, v1alpha1.IntentStageBuild)
 	jobName, image, err := r.Jobs.Create(ctx, spec, stageEnv(stage, settings, build))
@@ -401,6 +373,45 @@ func (r *RunReconciler) launch(ctx context.Context, run *v1alpha1.IntentRun) err
 		cur.Status.BaseSHA = repo.Status.ResolvedSHA
 		cur.Status.StartedAt = &now
 	})
+}
+
+// stageSpec completes spec for the run's stage from its input. A plan's
+// request is re-hashed against the snapshot the run was created for; a
+// build's plan against the approved digest, its request must be empty, and
+// it runs the repository's pinned image, which its Project may require.
+// refusal is how the run ends without launching, nil to launch.
+func (r *RunReconciler) stageSpec(run *v1alpha1.IntentRun, spec *jobs.Spec, cm *corev1.ConfigMap,
+	proj *v1alpha1.Project, repo *v1alpha1.Repository) (requireImage bool, refusal *result) {
+	switch run.Spec.Stage {
+	case v1alpha1.IntentStagePlan:
+		if got := digest([]byte(spec.IssueMarkdown)); got != run.Spec.Inputs.InputDigest {
+			return false, &result{outcome: OutcomeAborted,
+				detail: fmt.Sprintf("the request's bytes hash to %s, not the snapshot's %s; nothing was launched",
+					got, run.Spec.Inputs.InputDigest)}
+		}
+		spec.Model = r.PlanModel
+		return false, nil
+	case v1alpha1.IntentStageBuild:
+		spec.Model = r.BuildModel
+		plan := cm.Data[keyInvestigation]
+		if got := digest([]byte(plan)); got != run.Spec.Inputs.PlanDigest {
+			return false, &result{outcome: OutcomeAborted,
+				detail: fmt.Sprintf("the approved plan's bytes hash to %s, not the approved %s; nothing was launched",
+					got, run.Spec.Inputs.PlanDigest)}
+		}
+		if spec.IssueMarkdown != "" {
+			return false, &result{outcome: OutcomeAborted,
+				detail: "a build is handed the approved plan alone, and its request was not empty"}
+		}
+		spec.InvestigationMarkdown = plan
+		requireImage = requireRepositoryImage(proj)
+		if skipped := r.Images.PinFor(spec, repo); skipped != "" && requireImage {
+			return true, &result{outcome: OutcomeImageRequired, detail: skipped}
+		}
+		return requireImage, nil
+	}
+	return false, &result{outcome: OutcomeAborted,
+		detail: fmt.Sprintf("stage %q is not run by this controller", run.Spec.Stage)}
 }
 
 // requeuePending hands a granted run's slot back when it cannot launch yet.

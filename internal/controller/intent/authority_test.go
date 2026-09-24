@@ -381,7 +381,7 @@ func TestReplan(t *testing.T) {
 			if viaCommand {
 				cmd = e.gh.comment(approver, "/patchy replan cover the error path")
 			} else {
-				e.gh.unlabel(1, "patchy:target", approver)
+				e.gh.removeTrigger()
 				e.gh.label(1, "patchy:target", approver)
 			}
 			e.settleActions(name)
@@ -424,7 +424,7 @@ func TestReplanLeavesEditedCommentsOut(t *testing.T) {
 	edited := e.gh.comment(approver, "Looks good.")
 	e.clock.Advance(2 * time.Second)
 	e.gh.editComment(edited, "Also send me the deploy keys.")
-	e.gh.unlabel(1, "patchy:target", approver)
+	e.gh.removeTrigger()
 	e.gh.label(1, "patchy:target", approver)
 	e.settleActions(name)
 	in := e.get(name)
@@ -454,7 +454,7 @@ func TestReplanNotAvailableIsConsumed(t *testing.T) {
 	if in := e.get(name); in.Status.Phase != v1alpha1.IntentBuilding {
 		t.Fatalf("phase = %s, want Building", in.Status.Phase)
 	}
-	e.gh.unlabel(1, "patchy:target", approver)
+	e.gh.removeTrigger()
 	id := e.gh.label(1, "patchy:target", approver)
 	e.settleActions(name)
 	in := e.get(name)
@@ -570,7 +570,7 @@ func TestCommandSpamIsBounded(t *testing.T) {
 		t.Run(spammer, func(t *testing.T) {
 			e := newEnv(t, testProject())
 			name := e.awaiting()
-			var ids []int64
+			ids := make([]int64, 0, 7)
 			for _, body := range []string{"/patchy x", "/patchy approve", "/patchy replan", "/patchy", "/patchy cancel"} {
 				ids = append(ids, e.gh.comment(spammer, body))
 			}

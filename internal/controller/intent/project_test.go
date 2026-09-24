@@ -337,7 +337,7 @@ func TestRevival(t *testing.T) {
 			e.jobs.output = defaultOutput
 			e.clock.Advance(time.Minute)
 			if tt.end == v1alpha1.IntentMerged {
-				e.gh.unlabel(1, "patchy:target", approver)
+				e.gh.removeTrigger()
 			}
 			id := e.gh.label(1, "patchy:target", tt.actor)
 			e.reconcileProject()
@@ -403,7 +403,7 @@ func TestHandOffSurvivesAFailure(t *testing.T) {
 				e.gh.mu.Lock()
 				e.gh.issues[1].state = "open" // reopened
 				e.gh.mu.Unlock()
-				e.gh.unlabel(1, "patchy:target", approver)
+				e.gh.removeTrigger()
 			}
 			e.mustIntent(name)
 			e.jobs.output = defaultOutput

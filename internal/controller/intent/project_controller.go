@@ -153,18 +153,8 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	cur := p.DeepCopy()
 	now := r.now()
 
-	ready := meta.IsStatusConditionTrue(p.Status.Conditions, v1alpha1.ConditionReady)
-	forges := r.forgeChanges.Load()
-	sinceValidated := now.Sub(poll.validatedAt)
-	if poll.validatedAt.IsZero() || poll.validatedGen != p.Generation || poll.validatedForges != forges ||
-		sinceValidated >= revalidateEvery || (!ready && sinceValidated >= settings.PollInterval) {
-		cond, err := r.validate(ctx, &p)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("project %s: validate: %w", p.Name, err)
-		}
-		cond.ObservedGeneration = p.Generation
-		meta.SetStatusCondition(&cur.Status.Conditions, cond)
-		poll.validatedGen, poll.validatedAt, poll.validatedForges = p.Generation, now, forges
+	if err := r.revalidate(ctx, &p, cur, poll, now, settings.PollInterval); err != nil {
+		return ctrl.Result{}, fmt.Errorf("project %s: validate: %w", p.Name, err)
 	}
 	cur.Status.ObservedGeneration = p.Generation
 
@@ -206,6 +196,29 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// per interval, never in a loop.
 	next := max(time.Second, poll.attemptedAt.Add(settings.PollInterval).Sub(now))
 	return ctrl.Result{RequeueAfter: next}, nil
+}
+
+// revalidate validates the Project into cur's Ready condition when a check is
+// due: never checked by this process, the Project or a Forge changed since,
+// revalidateEvery passed, or, for a Project that is not Ready, a poll
+// interval.
+func (r *ProjectReconciler) revalidate(ctx context.Context, p, cur *v1alpha1.Project, poll *projectPoll,
+	now time.Time, interval time.Duration) error {
+	ready := meta.IsStatusConditionTrue(p.Status.Conditions, v1alpha1.ConditionReady)
+	forges := r.forgeChanges.Load()
+	since := now.Sub(poll.validatedAt)
+	if !poll.validatedAt.IsZero() && poll.validatedGen == p.Generation && poll.validatedForges == forges &&
+		since < revalidateEvery && (ready || since < interval) {
+		return nil
+	}
+	cond, err := r.validate(ctx, p)
+	if err != nil {
+		return err
+	}
+	cond.ObservedGeneration = p.Generation
+	meta.SetStatusCondition(&cur.Status.Conditions, cond)
+	poll.validatedGen, poll.validatedAt, poll.validatedForges = p.Generation, now, forges
+	return nil
 }
 
 // validate checks the Project and returns its Ready condition. An error is a

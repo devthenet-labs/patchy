@@ -61,8 +61,8 @@ other binary binds, so the shared kustomize ConfigMap cannot set one by accident
 The per-stage limits are ceilings. A Project's `limits` may lower them for its own intents, never raise them. The
 controller refuses to start with a Job deadline shorter than either stage timeout. Any longer deadline works: each Job's
 broker caller token is minted for the deadline plus 15 minutes (at least an hour), so it always outlives the Job.
-`--job-deadline`, `--model-allowlist` and the `--investigate-*`/`--remediate-*`
-flags belong to the finding job controllers and are not read here.
+`--job-deadline`, `--model-allowlist` and the `--investigate-*`/`--remediate-*` flags belong to the finding job
+controllers and are not read here.
 
 ### Brokered claude only
 
@@ -192,8 +192,8 @@ It writes no Finding spec, so it is not exempt from the finding admission policy
 ## Polling cost
 
 Each active intent reads about three GitHub resources per interval (its issue, its events, and its comments since the
-newest one it has already read). An intent in review also reads its pull request. A conditional listing that has not changed returns 304,
-which costs nothing against the installation's rate limit. The rate-limit floor pauses all intent polling while the
-installation's remaining core budget is below it, so intents can never starve the security flow of the requests it
-shares with them. The headers GitHub reports are not consistent from one response to the next, so the floor is a coarse
-guard, not an exact budget.
+newest one it has already read). An intent in review also reads its pull request. A conditional listing that has not
+changed returns 304, which costs nothing against the installation's rate limit. The rate-limit floor pauses all intent
+polling, pull requests included, while the installation's remaining core budget is below it, so intents can never starve
+the security flow of the requests it shares with them. The headers GitHub reports are not consistent from one response
+to the next, so the floor is a coarse guard, not an exact budget.

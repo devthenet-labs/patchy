@@ -235,11 +235,12 @@ func (f *fakeGitHub) label(n int64, label, actor string) int64 {
 	return id
 }
 
-// unlabel records actor removing label from issue n.
-func (f *fakeGitHub) unlabel(n int64, label, actor string) {
+// removeTrigger records the approver removing the trigger label from issue
+// 1, as they do before applying it again.
+func (f *fakeGitHub) removeTrigger() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.removeLabel(n, label, actor)
+	f.removeLabel(1, "patchy:target", approver)
 }
 
 func (f *fakeGitHub) removeLabel(n int64, label, actor string) {

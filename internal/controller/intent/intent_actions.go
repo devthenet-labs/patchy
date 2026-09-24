@@ -174,6 +174,30 @@ func (p *pass) poll(ctx context.Context) (stop bool, err error) {
 	if err != nil {
 		return false, err
 	}
+	if stop, err := p.answer(ctx, actions, issue); stop || err != nil {
+		return stop, err
+	}
+	if issue.State == "closed" {
+		// The pull requests decide first: patchy closes the issue itself
+		// when every one merged, before it writes Merged, and a lost write
+		// must not turn that close into a human's.
+		if len(p.in.Status.PullRequests) > 0 {
+			if ended, err := p.reviewNow(ctx); ended || err != nil {
+				return true, err
+			}
+		}
+		// A human closed the issue: that needs nothing more from patchy.
+		return true, p.setPhase(ctx, v1alpha1.IntentClosed, func(cur *v1alpha1.Intent) {
+			cur.Status.ActiveRun = nil
+		})
+	}
+	return false, nil
+}
+
+// answer settles the actions gathered, oldest first, recording each command
+// answered as seen as soon as its reply is posted, and then the whole
+// listing; stop reports that an action ended the Intent.
+func (p *pass) answer(ctx context.Context, actions []humanAction, issue *ghclient.Issue) (stop bool, err error) {
 	for _, a := range actions {
 		answered, err := p.settle(ctx, a, issue)
 		if err != nil {
@@ -189,23 +213,7 @@ func (p *pass) poll(ctx context.Context) (stop bool, err error) {
 		}
 	}
 	if c := p.pollNewest; c != nil {
-		if err := p.recordSeen(ctx, c.ID, c.CreatedAt); err != nil {
-			return false, err
-		}
-	}
-	if issue.State == "closed" {
-		// The pull requests decide first: patchy closes the issue itself
-		// when every one merged, before it writes Merged, and a lost write
-		// must not turn that close into a human's.
-		if len(p.in.Status.PullRequests) > 0 {
-			if ended, err := p.reviewNow(ctx); ended || err != nil {
-				return true, err
-			}
-		}
-		// A human closed the issue: that needs nothing more from patchy.
-		return true, p.setPhase(ctx, v1alpha1.IntentClosed, func(cur *v1alpha1.Intent) {
-			cur.Status.ActiveRun = nil
-		})
+		return false, p.recordSeen(ctx, c.ID, c.CreatedAt)
 	}
 	return false, nil
 }

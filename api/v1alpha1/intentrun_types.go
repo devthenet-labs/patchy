@@ -64,7 +64,8 @@ type IntentRunTrigger string
 const (
 	// IntentRunTriggerReview: a "Request changes" review from an approver.
 	IntentRunTriggerReview IntentRunTrigger = "review"
-	// IntentRunTriggerCommand: an approver's /patchy revise.
+	// IntentRunTriggerCommand: an approver's /patchy revise (or /patchy
+	// retry) comment, whose id the run records in inputs.commandID.
 	IntentRunTriggerCommand IntentRunTrigger = "command"
 	// IntentRunTriggerChecks: a named check failed on patchy's own head.
 	IntentRunTriggerChecks IntentRunTrigger = "checks"
@@ -85,7 +86,14 @@ type IntentRunRepository struct {
 
 // IntentRunInputs pins exactly what the run was given, so the record says
 // what the agent saw and a restart or a repeated poll can never consume the
-// same feedback twice.
+// same feedback twice. What a revise round consumed is recorded on the
+// immutable spec — that record is the exactly-once guarantee — so the
+// schema requires each trigger's own record (reviewIDs for a review round,
+// checkRunIDs for a checks round, commandID for a command round) and keeps
+// each record to the rounds it belongs to: a command round may also consume
+// the approver reviews since the last round as its feedback, while a checks
+// round consumes check runs only, so it is never counted against
+// maxRevisions.
 type IntentRunInputs struct {
 	// ConfigMap names the run's own input ConfigMap (owned by this run):
 	// the issue.md and investigation.md handed to the Job — the intent
@@ -110,19 +118,29 @@ type IntentRunInputs struct {
 	// +optional
 	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
 	PlanDigest string `json:"planDigest,omitempty"`
-	// ReviewIDs are the GitHub review ids a revise round consumed (slice
-	// 1b): recorded here, on the immutable spec, so no review ever starts
-	// a second round.
+	// ReviewIDs are the GitHub review ids a review or command round
+	// consumed (slice 1b): recorded here, on the immutable spec, so no
+	// review ever starts a second round. Required on a review round.
 	// +optional
 	// +listType=set
+	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=32
 	ReviewIDs []int64 `json:"reviewIDs,omitempty"`
-	// CheckRunIDs are the check-run ids whose failure a check-fix round
+	// CheckRunIDs are the check-run ids whose failure a checks round
 	// consumed (slice 1b), so a check failure is consumed exactly once.
+	// Required on a checks round, and on no other.
 	// +optional
 	// +listType=set
+	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=32
 	CheckRunIDs []int64 `json:"checkRunIDs,omitempty"`
+	// CommandID is the GitHub id of the issue comment carrying the /patchy
+	// command (revise, or retry) a command round consumed (slice 1b), so
+	// a command starts at most one round. Required on a command round, and
+	// on no other.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	CommandID int64 `json:"commandID,omitempty"`
 }
 
 // IntentRunGrant is what the run was granted: the Project's per-stage limits
@@ -159,14 +177,19 @@ type IntentRunGrant struct {
 // Beyond immutability the schema holds the stage invariants the design's
 // security posture rests on, so a malformed run record is refused at
 // admission rather than launched: a build or revise run always pins an
-// approved plan, and a revise run always names its trigger and takes its
-// image from the build round's Repository.
+// approved plan, and a revise run always names its trigger, records what
+// that trigger consumed (IntentRunInputs), and takes its image from the build
+// round's Repository.
 //
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec is immutable; create a new IntentRun for a new attempt"
-// +kubebuilder:validation:XValidation:rule="self.stage != 'build' || self.round == self.inputs.planRevision",message="a build run's round is the approved plan revision it builds (inputs.planRevision)"
+// +kubebuilder:validation:XValidation:rule="self.stage != 'build' || (has(self.inputs.planRevision) && self.round == self.inputs.planRevision)",message="a build run's round is the approved plan revision it builds (inputs.planRevision)"
 // +kubebuilder:validation:XValidation:rule="self.stage == 'plan' || (has(self.inputs.planRevision) && self.inputs.planRevision >= 1 && has(self.inputs.planDigest))",message="build and revise runs pin the approved plan (inputs.planRevision and inputs.planDigest)"
 // +kubebuilder:validation:XValidation:rule="(self.stage == 'revise') == has(self.trigger)",message="spec.trigger is set on revise runs, and only on them"
 // +kubebuilder:validation:XValidation:rule="(self.stage == 'revise') == has(self.imageFrom)",message="spec.imageFrom is set on revise runs, and only on them"
+// +kubebuilder:validation:XValidation:rule="!has(self.trigger) || (self.trigger == 'review' ? has(self.inputs.reviewIDs) : self.trigger == 'checks' ? has(self.inputs.checkRunIDs) : has(self.inputs.commandID))",message="a revise run records what its trigger consumed: inputs.reviewIDs for a review round, inputs.checkRunIDs for a checks round, inputs.commandID for a command round"
+// +kubebuilder:validation:XValidation:rule="!has(self.inputs.reviewIDs) || (has(self.trigger) && self.trigger != 'checks')",message="inputs.reviewIDs are consumed only by review and command rounds"
+// +kubebuilder:validation:XValidation:rule="!has(self.inputs.checkRunIDs) || (has(self.trigger) && self.trigger == 'checks')",message="inputs.checkRunIDs are consumed only by checks rounds"
+// +kubebuilder:validation:XValidation:rule="!has(self.inputs.commandID) || (has(self.trigger) && self.trigger == 'command')",message="inputs.commandID is consumed only by command rounds"
 type IntentRunSpec struct {
 	// IntentRef is the owning Intent (UID-pinned).
 	IntentRef ObjectReference `json:"intentRef"`

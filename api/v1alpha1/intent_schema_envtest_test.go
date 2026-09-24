@@ -527,8 +527,9 @@ func schemaIntentRun(name string, stage patchyv1.IntentStage) *patchyv1.IntentRu
 }
 
 // testIntentRunSchema exercises the IntentRun schema: spec immutability, the
-// per-stage invariants (round, plan pin, trigger, imageFrom), the bounds of
-// the slice 1b consumption lists, and a full status round-trip.
+// per-stage invariants (round, plan pin, trigger, imageFrom), the slice 1b
+// consumption records (each trigger's own, required, and only on its kind of
+// round) and their bounds, the name backstop, and a full status round-trip.
 func testIntentRunSchema(ctx context.Context, t *testing.T, c client.Client) {
 	t.Helper()
 	stages := []patchyv1.IntentStage{patchyv1.IntentStagePlan, patchyv1.IntentStageBuild, patchyv1.IntentStageRevise}
@@ -583,12 +584,45 @@ func testIntentRunSchema(ctx context.Context, t *testing.T, c client.Client) {
 	}{
 		{"an unknown stage", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) { s.Stage = "deploy" }, true},
 		{"an unknown trigger", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) { s.Trigger = "manual" }, true},
-		{"a command trigger", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
-			s.Trigger = patchyv1.IntentRunTriggerCommand
+		// Each trigger records what it consumed, and each record belongs
+		// to its own kind of round: the exactly-once guarantee.
+		{"a command round consuming the reviews since the last round", patchyv1.IntentStageRevise,
+			func(s *patchyv1.IntentRunSpec) {
+				s.Trigger, s.Inputs.CommandID = patchyv1.IntentRunTriggerCommand, 9001
+			}, false},
+		{"a command round with no reviews", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Trigger, s.Inputs.CommandID, s.Inputs.ReviewIDs = patchyv1.IntentRunTriggerCommand, 9001, nil
 		}, false},
 		{"a checks trigger", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
 			s.Trigger, s.Inputs.ReviewIDs, s.Inputs.CheckRunIDs = patchyv1.IntentRunTriggerChecks, nil, ids(32)
 		}, false},
+		{"a review round without its reviews", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.ReviewIDs = nil
+		}, true},
+		{"a checks round without its check runs", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Trigger, s.Inputs.ReviewIDs = patchyv1.IntentRunTriggerChecks, nil
+		}, true},
+		{"a command round without its command", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Trigger = patchyv1.IntentRunTriggerCommand
+		}, true},
+		{"a checks round consuming reviews", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Trigger, s.Inputs.CheckRunIDs = patchyv1.IntentRunTriggerChecks, ids(1)
+		}, true},
+		{"a review round consuming check runs", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.CheckRunIDs = ids(1)
+		}, true},
+		{"a review round consuming a command", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.CommandID = 9001
+		}, true},
+		{"a plan run consuming reviews", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.ReviewIDs = ids(1)
+		}, true},
+		{"a build run consuming check runs", patchyv1.IntentStageBuild, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.CheckRunIDs = ids(1)
+		}, true},
+		{"a build run consuming a command", patchyv1.IntentStageBuild, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.CommandID = 9001
+		}, true},
 		{"a plan run at round 0", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) { s.Round = 0 }, true},
 		{"a build run at round 0", patchyv1.IntentStageBuild, func(s *patchyv1.IntentRunSpec) {
 			s.Round, s.Inputs.PlanRevision = 0, 0
@@ -640,7 +674,7 @@ func testIntentRunSchema(ctx context.Context, t *testing.T, c client.Client) {
 			s.Inputs.ReviewIDs = ids(33)
 		}, true},
 		{"33 consumed check runs", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
-			s.Trigger, s.Inputs.CheckRunIDs = patchyv1.IntentRunTriggerChecks, ids(33)
+			s.Trigger, s.Inputs.ReviewIDs, s.Inputs.CheckRunIDs = patchyv1.IntentRunTriggerChecks, nil, ids(33)
 		}, true},
 		{"a review consumed twice", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
 			s.Inputs.ReviewIDs = []int64{7, 7}

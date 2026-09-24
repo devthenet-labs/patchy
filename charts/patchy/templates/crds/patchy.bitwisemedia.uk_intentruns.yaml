@@ -101,8 +101,9 @@ spec:
               Beyond immutability the schema holds the stage invariants the design's
               security posture rests on, so a malformed run record is refused at
               admission rather than launched: a build or revise run always pins an
-              approved plan, and a revise run always names its trigger and takes its
-              image from the build round's Repository.
+              approved plan, and a revise run always names its trigger, records what
+              that trigger consumed (IntentRunInputs), and takes its image from the build
+              round's Repository.
             properties:
               attempt:
                 description: |-
@@ -164,14 +165,25 @@ spec:
                 properties:
                   checkRunIDs:
                     description: |-
-                      CheckRunIDs are the check-run ids whose failure a check-fix round
+                      CheckRunIDs are the check-run ids whose failure a checks round
                       consumed (slice 1b), so a check failure is consumed exactly once.
+                      Required on a checks round, and on no other.
                     items:
                       format: int64
                       type: integer
                     maxItems: 32
+                    minItems: 1
                     type: array
                     x-kubernetes-list-type: set
+                  commandID:
+                    description: |-
+                      CommandID is the GitHub id of the issue comment carrying the /patchy
+                      command (revise, or retry) a command round consumed (slice 1b), so
+                      a command starts at most one round. Required on a command round, and
+                      on no other.
+                    format: int64
+                    minimum: 1
+                    type: integer
                   configMap:
                     description: |-
                       ConfigMap names the run's own input ConfigMap (owned by this run):
@@ -204,13 +216,14 @@ spec:
                     type: integer
                   reviewIDs:
                     description: |-
-                      ReviewIDs are the GitHub review ids a revise round consumed (slice
-                      1b): recorded here, on the immutable spec, so no review ever starts
-                      a second round.
+                      ReviewIDs are the GitHub review ids a review or command round
+                      consumed (slice 1b): recorded here, on the immutable spec, so no
+                      review ever starts a second round. Required on a review round.
                     items:
                       format: int64
                       type: integer
                     maxItems: 32
+                    minItems: 1
                     type: array
                     x-kubernetes-list-type: set
                 required:
@@ -338,7 +351,8 @@ spec:
               rule: self == oldSelf
             - message: a build run's round is the approved plan revision it builds
                 (inputs.planRevision)
-              rule: self.stage != 'build' || self.round == self.inputs.planRevision
+              rule: self.stage != 'build' || (has(self.inputs.planRevision) && self.round
+                == self.inputs.planRevision)
             - message: build and revise runs pin the approved plan (inputs.planRevision
                 and inputs.planDigest)
               rule: self.stage == 'plan' || (has(self.inputs.planRevision) && self.inputs.planRevision
@@ -347,6 +361,20 @@ spec:
               rule: (self.stage == 'revise') == has(self.trigger)
             - message: spec.imageFrom is set on revise runs, and only on them
               rule: (self.stage == 'revise') == has(self.imageFrom)
+            - message: 'a revise run records what its trigger consumed: inputs.reviewIDs
+                for a review round, inputs.checkRunIDs for a checks round, inputs.commandID
+                for a command round'
+              rule: '!has(self.trigger) || (self.trigger == ''review'' ? has(self.inputs.reviewIDs)
+                : self.trigger == ''checks'' ? has(self.inputs.checkRunIDs) : has(self.inputs.commandID))'
+            - message: inputs.reviewIDs are consumed only by review and command rounds
+              rule: '!has(self.inputs.reviewIDs) || (has(self.trigger) && self.trigger
+                != ''checks'')'
+            - message: inputs.checkRunIDs are consumed only by checks rounds
+              rule: '!has(self.inputs.checkRunIDs) || (has(self.trigger) && self.trigger
+                == ''checks'')'
+            - message: inputs.commandID is consumed only by command rounds
+              rule: '!has(self.inputs.commandID) || (has(self.trigger) && self.trigger
+                == ''command'')'
           status:
             description: |-
               IntentRunStatus records how the run ran. Written only by

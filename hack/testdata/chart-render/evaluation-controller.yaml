@@ -1,0 +1,14 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# chart-render-test fixture: the optional evaluation controller enabled with
+# the one value its render-time guard requires (inline auth configuration;
+# the API only verifies bearer tokens, so there is no client secret here).
+evaluationController:
+    enabled: true
+    auth:
+        config:
+            mode: oidc
+            oidc:
+                issuerURL: https://sso.example.com
+                clientID: evolve

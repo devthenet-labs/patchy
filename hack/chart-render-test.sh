@@ -246,6 +246,139 @@ cm guard-formats-fixed source-controller PATCHY_REPOSITORY_IMAGE_REGISTRIES \
   localhost:5000/team,Index.Docker.IO/library/,us-docker.pkg.dev/my-project/agent_images.v2/
 cm guard-formats-fixed investigation-controller PATCHY_AGENT_EPHEMERAL_STORAGE 1.5Gi
 
+# ---- evaluation controller: off by default, and none of its :9791 plumbing --
+# evaluationController.enabled gates its own file AND source-controller's
+# internal blob endpoint across four other templates; a half-rendered flag is
+# a listener nobody can reach or a client dialling a port nobody opened.
+evsrc='select(.kind == "Deployment" and .metadata.name == "patchy-source-controller") | .spec.template.spec'
+evsvc='select(.kind == "Service" and .metadata.name == "patchy-source-controller") | .spec.ports[]'
+evsrcnp='select(.kind == "NetworkPolicy" and .metadata.name == "patchy-source-controller") | .spec.ingress[]'
+ev='select(.kind == "Deployment" and .metadata.name == "patchy-evaluation-controller") | .spec.template'
+expect default 'select(.metadata.labels["app.kubernetes.io/name"] == "evaluation-controller") | .kind' ""
+cm default source-controller PATCHY_ARTIFACT_INTERNAL_ADDR null
+cm default source-controller PATCHY_WORKSPACE_RETENTION null
+expect default "$evsrc | .containers[0].ports[] | select(.containerPort == 9791) | .name" ""
+expect default "$evsvc | select(.port == 9791) | .name" ""
+expect default "$evsrcnp | select(.ports[].port == 9791) | .ports[].port" ""
+
+# ---- evaluation controller on: the Deployment, its identity and its grants --
+render eval -f "$fixtures/evaluation-controller.yaml"
+expect eval "$ev | .spec.containers[0].image | split(\":\") | .[0]" ghcr.io/devthenet-labs/patchy/evaluation-controller
+expect eval "$ev | .spec.serviceAccountName" patchy-evaluation-controller
+expect eval 'select(.kind == "ServiceAccount" and .metadata.name == "patchy-evaluation-controller") | .metadata.namespace' patchy
+# Every binding names that ServiceAccount, and every Role it references is rendered.
+expect eval 'select((.kind == "RoleBinding" or .kind == "ClusterRoleBinding") and .metadata.labels["app.kubernetes.io/name"] == "evaluation-controller") | .roleRef.kind + "/" + .roleRef.name + " <- " + (.subjects[] | .kind + " " + .namespace + "/" + .name)' \
+  "ClusterRole/patchy-evaluation-controller-authz <- ServiceAccount patchy/patchy-evaluation-controller
+Role/patchy-evaluation-controller <- ServiceAccount patchy/patchy-evaluation-controller
+Role/patchy-evaluation-controller-jobs <- ServiceAccount patchy/patchy-evaluation-controller"
+expect eval 'select((.kind == "Role" or .kind == "ClusterRole") and .metadata.labels["app.kubernetes.io/name"] == "evaluation-controller") | .kind + "/" + .metadata.name + " " + (.metadata.namespace // "-")' \
+  "ClusterRole/patchy-evaluation-controller-authz -
+Role/patchy-evaluation-controller patchy
+Role/patchy-evaluation-controller-jobs patchy-agents"
+evrole='select(.kind == "Role" and .metadata.name == "patchy-evaluation-controller") | .rules[]'
+expect eval "$evrole | select(.resources[0] == \"evaluations\") | .verbs | join(\",\")" "create,get,list,watch,delete"
+expect eval "$evrole | select(.resources[0] == \"evaluationunits\") | .verbs | join(\",\")" "create,get,list,watch,update,patch"
+expect eval "$evrole | select(.resources[0] == \"configmaps\") | .verbs | join(\",\")" "create,get,update"
+expect eval 'select(.kind == "Role" and .metadata.name == "patchy-evaluation-controller-jobs") | .rules[] | select(.resources[0] == "jobs") | .verbs | join(",")' \
+  "create,get,list,watch,delete"
+expect eval 'select(.kind == "ClusterRole" and .metadata.name == "patchy-evaluation-controller-authz") | .rules[] | .resources[0] + " " + (.verbs | join(","))' \
+  "subjectaccessreviews create"
+expect eval 'select(.kind == "ClusterRole" and .metadata.name == "patchy-evaluations-submitter") | .kind' ""
+
+# ---- evaluation controller on: config and the auth mount agree ---------------
+expect eval "$ev | .spec.containers[0].envFrom[0].configMapRef.name" patchy-evaluation-controller-config
+cm eval evaluation-controller PATCHY_HARNESSES claude
+cm eval evaluation-controller PATCHY_EVOLVE_CLAUDE_IMAGE ghcr.io/bitwise-media-group/evolve-runner-claude:latest
+cm eval evaluation-controller PATCHY_BROKER_URL http://patchy-egress-broker.patchy.svc.cluster.local:8080
+cm eval evaluation-controller PATCHY_ARTIFACT_UPLOAD_URL http://patchy-source-controller.patchy.svc.cluster.local:9791
+cm eval evaluation-controller PATCHY_ARTIFACT_BASE_URL http://patchy-source-controller.patchy.svc.cluster.local:9790
+cm eval evaluation-controller PATCHY_MAX_WORKSPACE_BYTES 67108864
+cm eval evaluation-controller PATCHY_AUTH_CONFIG /etc/patchy/auth/config.yaml
+expect eval "$ev | .spec.containers[0].volumeMounts[] | select(.name == \"auth\") | .mountPath + \" \" + (.readOnly | tostring)" \
+  "/etc/patchy/auth true"
+expect eval "$ev | .spec.volumes[] | select(.name == \"auth\") | .secret.secretName" patchy-evaluation-auth
+expect eval 'select(.kind == "Secret" and .metadata.name == "patchy-evaluation-auth") | .stringData["config.yaml"] | from_yaml | .mode + " " + .oidc.clientID' \
+  "oidc evolve"
+expect eval "$ev | .metadata.annotations[\"checksum/auth\"] | length" 64
+expect eval 'select(.kind == "Service" and .metadata.name == "patchy-evaluation-controller") | .spec.ports[] | .name + " " + (.port | tostring) + " -> " + .targetPort' \
+  "http 8080 -> http"
+expect eval "$ev | .spec.containers[0].ports[] | select(.name == \"http\") | .containerPort" 8080
+
+# ---- evaluation controller on: source-controller's :9791, end to end ----------
+cm eval source-controller PATCHY_ARTIFACT_INTERNAL_ADDR :9791
+cm eval source-controller PATCHY_WORKSPACE_RETENTION 168h
+expect eval "$evsrc | .containers[0].ports[] | select(.containerPort == 9791) | .name" internal
+expect eval "$evsvc | select(.port == 9791) | .name + \" -> \" + .targetPort" "internal -> internal"
+expect eval "$evsrcnp | select(.ports[].port == 9791) | .from[].podSelector.matchLabels[\"app.kubernetes.io/name\"]" \
+  evaluation-controller
+expect eval 'select(.kind == "NetworkPolicy" and .metadata.name == "patchy-evaluation-controller") | .spec.egress[] | select(.ports[].port == 9791) | .to[].podSelector.matchLabels["app.kubernetes.io/name"]' \
+  source-controller
+# the flag changes source-controller's config, so an upgrade that turns the
+# evaluation controller on rolls source-controller and opens the listener
+evsum='select(.kind == "Deployment" and .metadata.name == "patchy-source-controller") | .spec.template.metadata.annotations["checksum/config"]'
+if [ -z "$(get eval "$evsum")" ] || [ "$(get default "$evsum")" = "$(get eval "$evsum")" ]; then
+  fail "eval: source-controller's checksum/config did not change, so an upgrade would not open :9791"
+fi
+
+# ---- evaluation controller variants ------------------------------------------
+# An operator-owned auth Secret: mounted by name, neither rendered nor hashed.
+render eval-existing -f "$fixtures/evaluation-controller.yaml" \
+  --set evaluationController.auth.config=null --set evaluationController.auth.existingSecret=evals-auth
+expect eval-existing 'select(.kind == "Secret") | .metadata.name' ""
+expect eval-existing "$ev | .spec.volumes[] | select(.name == \"auth\") | .secret.secretName" evals-auth
+expect eval-existing "$ev | .metadata.annotations[\"checksum/auth\"]" null
+# A bring-your-own ServiceAccount: not rendered, but still what runs and binds.
+render eval-own-sa -f "$fixtures/evaluation-controller.yaml" \
+  --set evaluationController.serviceAccount.create=false --set evaluationController.serviceAccount.name=evals
+expect eval-own-sa 'select(.kind == "ServiceAccount" and .metadata.labels["app.kubernetes.io/name"] == "evaluation-controller") | .metadata.name' ""
+expect eval-own-sa "$ev | .spec.serviceAccountName" evals
+expect eval-own-sa 'select(.kind == "RoleBinding" and .metadata.labels["app.kubernetes.io/name"] == "evaluation-controller") | .subjects[].name' \
+  "evals
+evals"
+# claude enabled only on the evaluation fleet still deploys the broker.
+render eval-broker -f "$fixtures/evaluation-controller.yaml" \
+  --set agent.runners.claude.enabled=false --set agent.runners.codex.enabled=true
+expect eval-broker 'select(.kind == "Deployment" and .metadata.name == "patchy-egress-broker") | .kind' Deployment
+cm eval-broker evaluation-controller PATCHY_BROKER_URL http://patchy-egress-broker.patchy.svc.cluster.local:8080
+# A non-brokered evaluation runner reuses agent.runners.<harness>'s Secret.
+render eval-codex -f "$fixtures/evaluation-controller.yaml" \
+  --set evaluationController.runners.claude.enabled=false --set evaluationController.runners.codex.enabled=true
+cm eval-codex evaluation-controller PATCHY_HARNESSES codex
+cm eval-codex evaluation-controller PATCHY_CODEX_SECRET patchy-openai
+cm eval-codex evaluation-controller PATCHY_CODEX_SECRET_ENV OPENAI_API_KEY
+cm eval-codex evaluation-controller PATCHY_BROKER_URL null
+# Both exposure flavours and the example submitter tier.
+render eval-exposed -f "$fixtures/evaluation-controller.yaml" \
+  --set evaluationController.host=patchy-evals.example.com --set evaluationController.ingress.enabled=true \
+  --set evaluationController.httpRoute.enabled=true --set evaluationController.rbac.userRoles=true
+expect eval-exposed 'select(.kind == "Ingress" and .metadata.name == "patchy-evaluation-controller") | .spec.rules[0].host + " " + .spec.rules[0].http.paths[0].backend.service.name' \
+  "patchy-evals.example.com patchy-evaluation-controller"
+expect eval-exposed 'select(.kind == "HTTPRoute" and .metadata.name == "patchy-evaluation-controller") | .spec.hostnames[0] + " " + .spec.rules[0].backendRefs[0].name' \
+  "patchy-evals.example.com patchy-evaluation-controller"
+expect eval-exposed 'select(.kind == "ClusterRole" and .metadata.name == "patchy-evaluations-submitter") | .rules[0].verbs | join(",")' \
+  "create,get,delete"
+# Without its NetworkPolicy the component still renders; the :9791 ingress
+# on source-controller is keyed on the component, not on this flag.
+render eval-no-np -f "$fixtures/evaluation-controller.yaml" --set evaluationController.networkPolicy.create=false
+expect eval-no-np 'select(.kind == "NetworkPolicy" and .metadata.name == "patchy-evaluation-controller") | .kind' ""
+expect eval-no-np "$ev | .spec.serviceAccountName" patchy-evaluation-controller
+expect eval-no-np "$evsrcnp | select(.ports[].port == 9791) | .from[].podSelector.matchLabels[\"app.kubernetes.io/name\"]" \
+  evaluation-controller
+
+# ---- evaluation controller guards --------------------------------------------
+ef=$fixtures/evaluation-controller.yaml
+expect_fail "eval without auth" "evaluationController requires auth configuration" \
+  --set evaluationController.enabled=true
+expect_fail "eval with both auth sources" \
+  "evaluationController.auth.existingSecret and evaluationController.auth.config are mutually exclusive" \
+  -f "$ef" --set evaluationController.auth.existingSecret=evals-auth
+expect_fail "eval without a runner" "evaluationController.enabled requires at least one evaluationController.runners" \
+  -f "$ef" --set evaluationController.runners.claude.enabled=false
+expect_fail "eval ingress without host" "evaluationController.host is required when evaluationController.ingress is enabled" \
+  -f "$ef" --set evaluationController.ingress.enabled=true
+expect_fail "eval httpRoute without host" "evaluationController.host is required when evaluationController.httpRoute is enabled" \
+  -f "$ef" --set evaluationController.httpRoute.enabled=true
+
 # ---- egress broker limits ---------------------------------------------------
 render limits -f "$fixtures/broker-limits.yaml"
 cm limits egress-broker PATCHY_REQUESTS_PER_POD 2000

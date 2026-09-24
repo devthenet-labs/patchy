@@ -42,6 +42,8 @@ func designIntentEdges() map[[2]IntentPhase]bool {
 		{IntentInReview, IntentRevising}:         true, // review/revise/check-fix round
 		{IntentRevising, IntentInReview}:         true, // round done or failed
 		{IntentInReview, IntentMerged}:           true, // every PR merged
+		{IntentRevising, IntentMerged}:           true, // a human merged mid-round
+		{IntentBlocked, IntentMerged}:            true, // a human merged while blocked
 		{IntentPlanning, IntentFailed}:           true, // attempts exhausted / plan invalid twice
 		{IntentBuilding, IntentFailed}:           true, // attempts exhausted
 		{IntentFailed, IntentPlanning}:           true, // revival
@@ -93,7 +95,10 @@ func TestCanTransitionIntentExamples(t *testing.T) {
 		{"pending cannot build without a plan", IntentPending, IntentBuilding, false},
 		{"awaiting approval cannot open review", IntentAwaitingApproval, IntentInReview, false},
 		{"building cannot merge before review", IntentBuilding, IntentMerged, false},
-		{"revising cannot merge mid-round", IntentRevising, IntentMerged, false},
+		{"planning cannot merge", IntentPlanning, IntentMerged, false},
+		{"awaiting approval cannot merge", IntentAwaitingApproval, IntentMerged, false},
+		{"a human merge mid-round completes the intent", IntentRevising, IntentMerged, true},
+		{"a human merge while blocked completes the intent", IntentBlocked, IntentMerged, true},
 		{"a failed round never fails the intent", IntentRevising, IntentFailed, false},
 		{"review never fails the intent", IntentInReview, IntentFailed, false},
 		{"merged is absorbing", IntentMerged, IntentPlanning, false},
@@ -101,7 +106,6 @@ func TestCanTransitionIntentExamples(t *testing.T) {
 		{"failed revives only to planning", IntentFailed, IntentBuilding, false},
 		{"failed is not closed again", IntentFailed, IntentClosed, false},
 		{"failed is not blocked", IntentFailed, IntentBlocked, false},
-		{"blocked cannot merge", IntentBlocked, IntentMerged, false},
 		{"blocked cannot fail", IntentBlocked, IntentFailed, false},
 	}
 	for _, c := range cases {
@@ -206,6 +210,8 @@ func TestSetIntentPhaseCompletedAt(t *testing.T) {
 		wantCompleted bool
 	}{
 		{IntentInReview, IntentMerged, true},
+		{IntentRevising, IntentMerged, true},
+		{IntentBlocked, IntentMerged, true},
 		{IntentInReview, IntentClosed, true},
 		{IntentPending, IntentClosed, true},
 		{IntentPlanning, IntentFailed, true},

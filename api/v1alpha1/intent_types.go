@@ -61,8 +61,9 @@ const (
 	// Re-evaluated when the Project changes, so raising a limit resumes the
 	// intent in the phase it was blocked from (IntentBlockedFrom).
 	IntentBlocked IntentPhase = "Blocked"
-	// IntentMerged: every pull request merged; the issue is closed as
-	// completed. Terminal.
+	// IntentMerged: every pull request merged — from InReview, or by a
+	// human mid-round or while Blocked; the issue is closed as completed.
+	// Terminal.
 	IntentMerged IntentPhase = "Merged"
 	// IntentClosed: a human closed the issue or ran /patchy cancel, every
 	// pull request was closed unmerged, or the trigger was not an
@@ -96,6 +97,12 @@ const (
 //   - Revising→InReview: the round pushed, or failed (a condition is set and
 //     a notice posted; a failed round never fails the intent).
 //   - InReview→Merged: every pull request merged.
+//   - Revising→Merged, Blocked→Merged: every pull request merged by a human
+//     during a round or while the intent was blocked (pull request state is
+//     polled in both). A merge is the human's final word, so the intent
+//     completes directly: the running round's Job is deleted through the
+//     finalizer, and no false resume through InReview is recorded while a
+//     block still holds. These mirror the edges to Closed.
 //   - every non-terminal phase→Blocked: a limit or precondition stopped it.
 //   - Blocked→the phase it was blocked from: the Project changed and the
 //     block no longer holds (IntentBlockedFrom names the target).
@@ -109,10 +116,10 @@ var intentTransitions = map[IntentPhase][]IntentPhase{
 	IntentAwaitingApproval: {IntentBuilding, IntentPlanning, IntentBlocked, IntentClosed},
 	IntentBuilding:         {IntentInReview, IntentBlocked, IntentClosed, IntentFailed},
 	IntentInReview:         {IntentRevising, IntentMerged, IntentBlocked, IntentClosed},
-	IntentRevising:         {IntentInReview, IntentBlocked, IntentClosed},
+	IntentRevising:         {IntentInReview, IntentMerged, IntentBlocked, IntentClosed},
 	IntentBlocked: {
 		IntentPending, IntentPlanning, IntentAwaitingApproval,
-		IntentBuilding, IntentInReview, IntentRevising, IntentClosed,
+		IntentBuilding, IntentInReview, IntentRevising, IntentMerged, IntentClosed,
 	},
 	IntentMerged: nil,
 	IntentClosed: nil,

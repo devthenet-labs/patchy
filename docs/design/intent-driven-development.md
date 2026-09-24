@@ -263,7 +263,10 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
   returns to `InReview` with a condition set and a notice posted.
 - Any non-terminal phase → `Blocked` on `maxRevisions`, the cost ceiling, a missing or rejected repository image, or a
   tripped breaker. `Blocked` is re-evaluated when the Project changes, so raising a limit resumes the intent.
-- `InReview` → `Merged` when every PR is merged.
+- `InReview` → `Merged` when every PR is merged. A human may also merge during a revise round or while the intent is
+  `Blocked`, so `Revising` → `Merged` and `Blocked` → `Merged` exist too, mirroring the edges to `Closed`. PR state is
+  polled in both phases. The running round's Job is deleted through the finalizer, and no false resume through
+  `InReview` is recorded while a block still holds.
 - Any non-terminal phase → `Closed` when a human closes the intent issue or runs `/patchy cancel`, or when every PR is
   closed unmerged.
 - `Planning` or `Building` → `Failed` when attempts are exhausted or the plan is invalid twice. `Failed` stamps

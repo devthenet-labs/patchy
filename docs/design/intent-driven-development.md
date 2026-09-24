@@ -515,7 +515,8 @@ there is one grammar, and everything else is an alias for it.
   account (verified 2026-09-24). A 404 means no such account and counts as no access.
 
 - **One acknowledgement.** A command that is seen gets a 👀 reaction, then exactly one reply with the outcome: done, not
-  available in this phase (listing what is), or not allowed. An unknown verb gets the list of verbs available there.
+  available in this phase (listing what is), or not allowed. The authorisation rule applies to an unknown verb too, and
+  first: an actor who passes it gets the list of verbs available there, and anyone else is answered not allowed.
   Commands and events from the App's own bot login are ignored. That login is `<slug>[bot]`, with the slug from
   `GET /app`, and the actor type is `Bot`. Label events carry `performed_via_github_app: null` even when the App applied
   the label, so the actor is the only way to recognise them. An answered action is consumed whatever the outcome, so it
@@ -545,11 +546,13 @@ Anyone who can comment reaches the pending list before GitHub is asked about the
 without write access can do. The 8 pending slots are shared by account (2 undecided each at most, since a decided
 command only waits on its answer; when all 8 are held, a new command takes the slot of a decided refusal, which loses
 only its answer, or else a doubled-up account's newest undecided one). A refusal is not kept in `consumed`, so spam
-cannot push a maintainer's command out of it, and each account gets one refusal reply per finding and then only the
-reaction. A `suspend` or `resume` that arrives after a later one was applied is answered as superseded (`lastToggle`),
-so the order they were written in holds past the pending list. One limit remains: a command that finds no slot (its
-account already has 2 undecided, or every slot holds an account's only undecided command or a decided command from an
-account with write access) is not recorded, and so is never answered; it is logged. That is the price of the bound.
+cannot push a maintainer's command out of it, and each account without write access gets one refusal reply per finding
+and then only the reaction. The write-access check comes before the verb is looked up, so an unknown verb from such an
+account is a refusal too, and one from a maintainer is answered with the help and never quietens that maintainer's later
+answers. A `suspend` or `resume` that arrives after a later one was applied is answered as superseded (`lastToggle`), so
+the order they were written in holds past the pending list. One limit remains: a command that finds no slot (its account
+already has 2 undecided, or every slot holds an account's only undecided command or a decided command from an account
+with write access) is not recorded, and so is never answered; it is logged. That is the price of the bound.
 
 ### Why polling rather than webhooks
 

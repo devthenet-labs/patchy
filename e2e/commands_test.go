@@ -60,8 +60,9 @@ func commandReplies(gh *fakegithub.Server, number int, id int64) []string {
 // applies the approval, and answers with an eyes reaction and exactly one
 // reply. A drive-by commenter (read, as every account is on a public
 // repository) is refused, and refused again with the reaction alone; a
-// maintainer with write access releases the hold — even with the delivery
-// arriving twice.
+// maintainer's mistyped verb gets the help without the maintainer being
+// remembered as refused; and a maintainer with write access releases the
+// hold — even with the delivery arriving twice.
 func TestFindingCommands(t *testing.T) {
 	cl := startCluster(t)
 	gh := fakegithub.New()
@@ -171,9 +172,27 @@ func TestFindingCommands(t *testing.T) {
 		t.Errorf("replies to the repeated refusal = %d, want the reaction alone", n)
 	}
 
-	// A maintainer with write access approves; GitHub delivers it twice.
+	// A maintainer with write access mistypes a verb: it is authorised like
+	// any command, so the maintainer gets the help and is not remembered as
+	// refused, and its later answers are never quietened.
 	gh.SetRole("maintainer", "write")
 	maintainer := fakegithub.Actor{Login: "maintainer", ID: 300002, Type: "User"}
+	typo := gh.CommentAs(number, "/patchy frobnicate", maintainer)
+	deliver(t, webhookURL, "issue_comment",
+		commentDelivery(t, tracking.URL, number, typo, "/patchy frobnicate", maintainer))
+	eventually(t, "the maintainer's unknown verb to be answered with the help", func() bool {
+		return slices.Equal(gh.Reactions(typo), []string{"eyes"}) &&
+			len(commandReplies(gh, number, typo)) == 1 && consumed(typo)
+	})
+	if reply := commandReplies(gh, number, typo)[0]; !strings.Contains(reply,
+		"@maintainer `/patchy frobnicate` is not a command patchy knows") {
+		t.Errorf("unknown-verb reply:\n%s", reply)
+	}
+	if cmds := get().Status.Commands; slices.Contains(cmds.RefusedActors, maintainer.ID) {
+		t.Errorf("refusedActors = %v: the maintainer's unknown verb was taken for a refusal", cmds.RefusedActors)
+	}
+
+	// The maintainer approves; GitHub delivers it twice.
 	approved := gh.CommentAs(number, "/patchy approve ship it", maintainer)
 	payload := commentDelivery(t, tracking.URL, number, approved, "/patchy approve ship it", maintainer)
 	deliver(t, webhookURL, "issue_comment", payload)
@@ -194,6 +213,6 @@ func TestFindingCommands(t *testing.T) {
 	}
 	consistently(t, "exactly one reply to each command, and none to the repeated refusal", func() bool {
 		return len(commandReplies(gh, number, refused)) == 1 && len(commandReplies(gh, number, approved)) == 1 &&
-			len(commandReplies(gh, number, again)) == 0
+			len(commandReplies(gh, number, again)) == 0 && len(commandReplies(gh, number, typo)) == 1
 	})
 }

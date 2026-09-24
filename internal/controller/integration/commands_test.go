@@ -254,28 +254,47 @@ func TestCommandSettles(t *testing.T) {
 			},
 		},
 		{
-			name: "an unknown verb gets the help, and GitHub is not asked who wrote it",
+			// Not a refusal: its author passed the write-access check, so
+			// its id is consumed and its author is not remembered as refused.
+			name: "an unknown verb from write access gets the help",
 			fnd:  func() *v1alpha1.Finding { return trackedFinding(v1alpha1.PhaseAwaitingApproval) },
-			body: "/patchy frobnicate now",
+			perm: ghclient.PermissionWrite, body: "/patchy frobnicate now",
 			wantReply: []string{
 				"`/patchy frobnicate` is not a command patchy knows",
 				"- `/patchy approve [note]`", "- `/patchy retry`", "- `/patchy expedite`",
 				"- `/patchy suspend`", "- `/patchy resume`",
 			},
-			noPermRead: true,
-			check:      wantApprovalBy(""),
-			refused:    true,
+			check: wantApprovalBy(""),
+		},
+		{
+			name: "an unknown verb without write access is not allowed, and gets no help",
+			fnd:  func() *v1alpha1.Finding { return trackedFinding(v1alpha1.PhaseAwaitingApproval) },
+			body: "/patchy frobnicate now",
+			wantReply: []string{
+				"@maintainer you may not use `/patchy frobnicate` here", "need write access to acme/orders",
+			},
+			wantNot: []string{"not a command patchy knows", "- `/patchy approve [note]`"},
+			check:   wantApprovalBy(""),
+			refused: true,
 		},
 		{
 			name: "a verb that is not a word is not echoed",
 			fnd:  func() *v1alpha1.Finding { return trackedFinding(v1alpha1.PhaseAwaitingApproval) },
-			body: "/patchy <b>approve</b>",
+			perm: ghclient.PermissionWrite, body: "/patchy <b>approve</b>",
 			wantReply: []string{
 				"@maintainer that is not a command patchy knows.", "- `/patchy approve [note]`",
 			},
-			wantNot:    []string{"<b>"},
-			noPermRead: true,
-			refused:    true,
+			wantNot: []string{"<b>"},
+		},
+		{
+			name: "a verb that is not a word is not echoed in a refusal either",
+			fnd:  func() *v1alpha1.Finding { return trackedFinding(v1alpha1.PhaseAwaitingApproval) },
+			body: "/patchy <b>approve</b>",
+			wantReply: []string{
+				"@maintainer you may not use `/patchy` here", "need write access to acme/orders",
+			},
+			wantNot: []string{"<b>", "`/patchy `", "not a command patchy knows"},
+			refused: true,
 		},
 		{
 			name: "the legacy approve comment approves as before, with the deprecation noted",
@@ -405,10 +424,7 @@ type commandCase struct {
 	wantNot   []string
 	// check inspects the finding once the command is answered.
 	check func(t *testing.T, f *v1alpha1.Finding)
-	// noPermRead: the command is answered without asking GitHub who the
-	// commenter is.
-	noPermRead bool
-	// refused: the answer is a refusal (NotAllowed or UnknownVerb), whose
+	// refused: the answer is a refusal (NotAllowed: no write access), whose
 	// id is not consumed and whose author is remembered as refused.
 	refused bool
 }
@@ -450,8 +466,15 @@ func (tc commandCase) run(t *testing.T) {
 			t.Errorf("reply holds %q:\n%s", w, reply)
 		}
 	}
-	if got := len(tracker.permReads) == 0; got != tc.noPermRead {
-		t.Errorf("permission reads = %v, want none: %v", tracker.permReads, tc.noPermRead)
+	// Every command, whatever its verb, is authorised first, and once.
+	if !slices.Equal(tracker.permReads, []string{maintainer}) {
+		t.Errorf("permission reads = %v, want the commenter's, once", tracker.permReads)
+	}
+	if !tc.refused {
+		if cmds := f.Status.Commands; slices.Contains(cmds.RefusedActors, accountID(maintainer)) {
+			t.Errorf("refusedActors = %v: an answer that was no refusal remembered its author as refused",
+				cmds.RefusedActors)
+		}
 	}
 	// One writer per edge: a command writes spec, never the phase.
 	if f.Status.Phase != before.Status.Phase ||
@@ -606,30 +629,47 @@ func TestCommandsInCommentOrder(t *testing.T) {
 // TestCommandTransientPermissionFailure: GitHub fails the permission read,
 // and the delivery is long answered, so nothing would redeliver it. The
 // command stays pending, undecided, until the read succeeds; nothing is
-// guessed, and nothing is replied until then.
+// guessed, and nothing is replied until then. A verb patchy does not know
+// waits on the read like any other: whether it earns the help or a refusal
+// depends on the answer.
 func TestCommandTransientPermissionFailure(t *testing.T) {
-	s, r, tracker, c := newReview(t, trackedFinding(v1alpha1.PhaseAwaitingApproval))
-	tracker.perms[maintainer] = ghclient.PermissionWrite
-	tracker.permErrs = []error{badGateway("collaborator permission"), badGateway("collaborator permission")}
-	handle(t, s, "issue_comment", commentPayload(t, 41, "/patchy approve"))
-
-	for range 2 {
-		if _, err := reconcileOnce(t, r); err == nil {
-			t.Fatal("Reconcile = nil, want the permission failure returned for the backoff")
-		}
-		f := get(t, c, "finding-aa-1")
-		if p := f.Status.Commands.Pending; len(p) != 1 || p[0].Outcome != "" {
-			t.Fatalf("pending = %+v, want the command kept undecided", p)
-		}
-		if f.Spec.Approval != nil || len(tracker.comments) != 0 || len(tracker.reactions) != 0 {
-			t.Fatal("the command acted on or answered without GitHub's answer")
-		}
+	cases := []struct {
+		name, body string
+		wantReply  string
+		wantBy     string // the approval's author once answered; "" for none
+	}{
+		{"a verb the issue offers", "/patchy approve", "is done", maintainer},
+		{"a verb patchy does not know", "/patchy frobnicate", "`/patchy frobnicate` is not a command patchy knows", ""},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, r, tracker, c := newReview(t, trackedFinding(v1alpha1.PhaseAwaitingApproval))
+			tracker.perms[maintainer] = ghclient.PermissionWrite
+			tracker.permErrs = []error{badGateway("collaborator permission"), badGateway("collaborator permission")}
+			handle(t, s, "issue_comment", commentPayload(t, 41, tc.body))
 
-	settleAll(t, r, c)
-	f := get(t, c, "finding-aa-1")
-	assertAnswered(t, tracker, f, 41, "is done")
-	wantApprovalBy(maintainer)(t, f)
+			for range 2 {
+				if _, err := reconcileOnce(t, r); err == nil {
+					t.Fatal("Reconcile = nil, want the permission failure returned for the backoff")
+				}
+				f := get(t, c, "finding-aa-1")
+				if p := f.Status.Commands.Pending; len(p) != 1 || p[0].Outcome != "" {
+					t.Fatalf("pending = %+v, want the command kept undecided", p)
+				}
+				if f.Spec.Approval != nil || len(tracker.comments) != 0 || len(tracker.reactions) != 0 {
+					t.Fatal("the command acted on or answered without GitHub's answer")
+				}
+			}
+
+			settleAll(t, r, c)
+			f := get(t, c, "finding-aa-1")
+			assertAnswered(t, tracker, f, 41, tc.wantReply)
+			wantApprovalBy(tc.wantBy)(t, f)
+			if len(tracker.permReads) != 3 {
+				t.Errorf("permission reads = %v, want two failed and one answered", tracker.permReads)
+			}
+		})
+	}
 }
 
 // TestCommandTransientAcknowledgementFailure: a suspend is decided and
@@ -921,17 +961,30 @@ func TestCommandSlotGivenUp(t *testing.T) {
 		}
 	})
 
-	t.Run("a command decided for an account with write access keeps its slot", func(t *testing.T) {
-		fnd := trackedFinding(v1alpha1.PhaseQueued)
-		fnd.Status.Commands = &v1alpha1.FindingCommands{Pending: decidedCommands(v1alpha1.CommandDone, "expedite")}
-		s, _, _, c := newReview(t, fnd)
-		handle(t, s, "issue_comment", commentPayload(t, 200, "/patchy suspend"))
-		handle(t, s, "issue_comment", commentBy(t, 201, "/patchy suspend", "account-0"))
-		if got := pendingIDs(t, c); slices.Contains(got, 200) || slices.Contains(got, 201) ||
-			len(got) != v1alpha1.MaxPendingCommands {
-			t.Errorf("pending = %v, want every command decided Done kept, and neither new one recorded", got)
-		}
-	})
+	// An unknown verb is decided only once its author's write access is
+	// confirmed, so it keeps its slot as any other such command does.
+	for _, d := range []struct {
+		outcome v1alpha1.CommandOutcome
+		verb    string
+	}{
+		{v1alpha1.CommandDone, "expedite"},
+		{v1alpha1.CommandUnavailable, "retry"},
+		{v1alpha1.CommandUnknownVerb, "frobnicate"},
+	} {
+		t.Run("a command decided "+string(d.outcome)+" for an account with write access keeps its slot",
+			func(t *testing.T) {
+				fnd := trackedFinding(v1alpha1.PhaseQueued)
+				fnd.Status.Commands = &v1alpha1.FindingCommands{Pending: decidedCommands(d.outcome, d.verb)}
+				s, _, _, c := newReview(t, fnd)
+				handle(t, s, "issue_comment", commentPayload(t, 200, "/patchy suspend"))
+				handle(t, s, "issue_comment", commentBy(t, 201, "/patchy suspend", "account-0"))
+				if got := pendingIDs(t, c); slices.Contains(got, 200) || slices.Contains(got, 201) ||
+					len(got) != v1alpha1.MaxPendingCommands {
+					t.Errorf("pending = %v, want every command decided %s kept, and neither new one recorded",
+						got, d.outcome)
+				}
+			})
+	}
 }
 
 // decidedCommands is a full pending list of verb commands decided outcome
@@ -1091,12 +1144,13 @@ func TestLateCommandAfterRefusalFlood(t *testing.T) {
 	wantApprovalBy(maintainer)(t, f)
 }
 
-// TestRefusalRepliedOncePerAccount: an account refused once on a finding is
-// not replied to again there, whatever the refusal (not allowed, or a verb
-// patchy does not know): later refusals get the reaction alone, so
-// commenting cannot make patchy post a reply per comment. Another account
-// gets its own first reply, and a write-access commenter's answers are never
-// quietened.
+// TestRefusalRepliedOncePerAccount: an account refused once on a finding
+// for lacking write access is not replied to again there, whatever the verb
+// it used (one the issue offers, or one patchy does not know): later
+// refusals get the reaction alone, so commenting cannot make patchy post a
+// reply per comment. Another account gets its own first reply, and a
+// write-access commenter is never refused, so none of its answers is
+// quietened: not an unknown verb's help, and not "not available".
 func TestRefusalRepliedOncePerAccount(t *testing.T) {
 	s, r, tracker, c := newReview(t, trackedFinding(v1alpha1.PhaseAwaitingApproval))
 	tracker.perms[maintainer] = ghclient.PermissionWrite
@@ -1117,10 +1171,26 @@ func TestRefusalRepliedOncePerAccount(t *testing.T) {
 		settleAll(t, r, c)
 	}
 	f := get(t, c, "finding-aa-1")
-	assertRefused(t, tracker, f, 41, "stranger", "@stranger you may not use")
-	assertRefused(t, tracker, f, 44, "passer-by", "@passer-by you may not use")
-	assertRefused(t, tracker, f, 45, maintainer, "not a command patchy knows")
-	for _, id := range []int64{42, 43, 46} {
+	assertRefused(t, tracker, f, 41, "stranger", "@stranger you may not use `/patchy approve`")
+	assertRefused(t, tracker, f, 44, "passer-by", "@passer-by you may not use `/patchy approve`")
+	assertQuiet(t, tracker, f, 42, 43)
+	// Neither an unknown verb nor Unavailable is a refusal of a maintainer:
+	// each is answered in full, and consumed.
+	assertAnswered(t, tracker, f, 45, "`/patchy frobnicate` is not a command patchy knows")
+	assertAnswered(t, tracker, f, 46, "`/patchy frobnicate` is not a command patchy knows")
+	assertAnswered(t, tracker, f, 47, "`/patchy retry` is not available")
+	assertAnswered(t, tracker, f, 48, "`/patchy retry` is not available")
+	want := []int64{accountID("stranger"), accountID("passer-by")}
+	if got := f.Status.Commands.RefusedActors; !slices.Equal(got, want) {
+		t.Errorf("refusedActors = %v, want only the accounts without write access %v", got, want)
+	}
+}
+
+// assertQuiet checks each of ids was refused with the reaction alone: no
+// reply, no longer pending, and not consumed.
+func assertQuiet(t *testing.T, tracker *fakeTracker, f *v1alpha1.Finding, ids ...int64) {
+	t.Helper()
+	for _, id := range ids {
 		if n := len(replies(tracker, id)); n != 0 {
 			t.Errorf("replies to repeated refusal %d = %d, want the reaction alone", id, n)
 		}
@@ -1131,9 +1201,75 @@ func TestRefusalRepliedOncePerAccount(t *testing.T) {
 			t.Errorf("repeated refusal %d still pending or consumed: %+v", id, f.Status.Commands)
 		}
 	}
-	// Unavailable is not a refusal: each is answered in full.
-	assertAnswered(t, tracker, f, 47, "`/patchy retry` is not available")
-	assertAnswered(t, tracker, f, 48, "`/patchy retry` is not available")
+}
+
+// TestUnknownVerbAuthorisedFirst: a verb patchy does not know is authorised
+// before it is answered, like every other, so the one-refusal-reply rule
+// reaches only accounts that failed the write-access check. The regression:
+// a repository admin's "/patchy frobnicate" got the help and put the admin
+// on refusedActors, so the admin's later refusals on that finding would have
+// been answered with the reaction alone.
+func TestUnknownVerbAuthorisedFirst(t *testing.T) {
+	t.Run("a maintainer's unknown verb gets the help, and later answers in full", func(t *testing.T) {
+		s, r, tracker, c := newReview(t, trackedFinding(v1alpha1.PhaseAwaitingApproval))
+		tracker.perms[maintainer] = ghclient.PermissionAdmin
+		handle(t, s, "issue_comment", commentPayload(t, 41, "/patchy frobnicate"))
+		settleAll(t, r, c)
+		// retry means nothing on a held finding: "not available".
+		handle(t, s, "issue_comment", commentPayload(t, 42, "/patchy retry"))
+		settleAll(t, r, c)
+
+		f := get(t, c, "finding-aa-1")
+		assertAnswered(t, tracker, f, 41, "@maintainer `/patchy frobnicate` is not a command patchy knows",
+			"- `/patchy approve [note]`")
+		assertAnswered(t, tracker, f, 42, "@maintainer `/patchy retry` is not available", "- `/patchy approve [note]`")
+		if got := f.Status.Commands.RefusedActors; len(got) != 0 {
+			t.Errorf("refusedActors = %v, want none: the maintainer was refused nothing", got)
+		}
+		if !slices.Equal(tracker.permReads, []string{maintainer, maintainer}) {
+			t.Errorf("permission reads = %v, want the maintainer's for each command", tracker.permReads)
+		}
+	})
+
+	// Consumed, where a refusal is not: delivered again (a redelivery, or a
+	// demo replay), it records nothing, so the help is not posted twice.
+	t.Run("a maintainer's unknown verb delivered again is answered once", func(t *testing.T) {
+		s, r, tracker, c := newReview(t, trackedFinding(v1alpha1.PhaseAwaitingApproval))
+		tracker.perms[maintainer] = ghclient.PermissionWrite
+		payload := commentPayload(t, 41, "/patchy frobnicate")
+		handle(t, s, "issue_comment", payload)
+		settleAll(t, r, c)
+		handle(t, s, "issue_comment", payload)
+		if p := get(t, c, "finding-aa-1").Status.Commands.Pending; len(p) != 0 {
+			t.Fatalf("pending = %+v after the redelivery, want nothing recorded", p)
+		}
+		settleAll(t, r, c)
+		assertAnswered(t, tracker, get(t, c, "finding-aa-1"), 41, "not a command patchy knows")
+		if len(tracker.permReads) != 1 {
+			t.Errorf("permission reads = %v, want one", tracker.permReads)
+		}
+	})
+
+	t.Run("an unknown verb without write access is not allowed, then quiet", func(t *testing.T) {
+		s, r, tracker, c := newReview(t, trackedFinding(v1alpha1.PhaseAwaitingApproval))
+		tracker.perms["stranger"] = ghclient.PermissionRead
+		handle(t, s, "issue_comment", commentBy(t, 41, "/patchy frobnicate", "stranger"))
+		settleAll(t, r, c)
+		handle(t, s, "issue_comment", commentBy(t, 42, "/patchy frobnicate", "stranger"))
+		settleAll(t, r, c)
+
+		f := get(t, c, "finding-aa-1")
+		assertRefused(t, tracker, f, 41, "stranger",
+			"@stranger you may not use `/patchy frobnicate` here", "need write access to acme/orders")
+		if reply := replies(tracker, 41)[0]; strings.Contains(reply, "not a command patchy knows") ||
+			strings.Contains(reply, "- `/patchy approve [note]`") {
+			t.Errorf("the refusal gives the help:\n%s", reply)
+		}
+		assertQuiet(t, tracker, f, 42)
+		if !slices.Equal(tracker.permReads, []string{"stranger", "stranger"}) {
+			t.Errorf("permission reads = %v, want the stranger's for each command", tracker.permReads)
+		}
+	})
 }
 
 // TestLateToggleSuperseded: a suspend or resume delivered after a later one

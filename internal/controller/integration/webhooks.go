@@ -261,11 +261,11 @@ func slotVictim(pending []v1alpha1.FindingCommand) int {
 // dropCost ranks what dropping p from pending loses, least first; 0 means p
 // is never dropped. A refusal already decided had no effect, and loses only
 // its answer: 1 for a Quiet one, answered by the reaction alone; 2 for any
-// other, whose reply goes to an account without write access, or names a
-// verb that does not exist. 3 for the undecided command of an account
-// holding more than one undecided, which loses the command but leaves the
-// account one. Any other decided command is never dropped: it came from an
-// account with write access, and its effect may already be on the spec.
+// other, whose reply goes to an account without write access, whatever the
+// verb it named. 3 for the undecided command of an account holding more
+// than one undecided, which loses the command but leaves the account one.
+// Any other decided command is never dropped: it came from an account with
+// write access, and its effect may already be on the spec.
 func dropCost(pending []v1alpha1.FindingCommand, p *v1alpha1.FindingCommand) int {
 	switch {
 	case refusal(p.Outcome) && p.Quiet:

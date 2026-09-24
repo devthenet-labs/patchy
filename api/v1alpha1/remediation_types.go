@@ -37,6 +37,11 @@ type RemediationSpec struct {
 	// Revival marks a remediate-only run reviving a handed-off finding.
 	// +optional
 	Revival bool `json:"revival,omitempty"`
+	// PreviousAttempt is the failed remediation this one retries (or the
+	// one whose pull request was closed unmerged), rendered into the prompt
+	// so the agent does not repeat the failure. Nil on a first attempt.
+	// +optional
+	PreviousAttempt *PreviousAttempt `json:"previousAttempt,omitempty"`
 }
 
 // PullRequestRef is the opened pull request. Its lifecycle (merge/close)

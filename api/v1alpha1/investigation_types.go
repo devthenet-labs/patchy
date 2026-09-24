@@ -34,6 +34,11 @@ type InvestigationSpec struct {
 	// Parameters bound this run (clamped controller-side).
 	// +optional
 	Parameters AgentParameters `json:"parameters,omitempty"`
+	// PreviousAttempt is the failed investigation this one retries,
+	// rendered into the prompt so the agent does not repeat the failure.
+	// Nil on a first attempt.
+	// +optional
+	PreviousAttempt *PreviousAttempt `json:"previousAttempt,omitempty"`
 }
 
 // InvestigationStatus records the analysis results. Written only by

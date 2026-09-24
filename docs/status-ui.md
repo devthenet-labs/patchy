@@ -95,8 +95,9 @@ surface the human used.
 **Retry** recovers a `Failed` finding to the state immediately before the failure: a failed investigation reverts to
 `Enhanced` (the gate opens the next attempt), a failed remediation — or a pull request closed without merging — re-
 queues to `Queued` (the spawner creates the next attempt). Each edge keeps its single writer: the investigation gate
-drives `Failed → Enhanced`, the remediation spawner `Failed → Queued`. A retry is consumed by the recovery itself; if
-the finding fails again, another retry is required.
+drives `Failed → Enhanced`, the remediation spawner `Failed → Queued`. The new attempt is told how the last one ended —
+its outcome and detail, or that its pull request was closed unmerged — so it does not repeat it. A retry is consumed by
+the recovery itself; if the finding fails again, another retry is required.
 
 **Expedite** marks the finding urgent for its whole lifetime: the investigation gate skips the accumulation window and
 minimum-age wait, and both schedulers rank the finding's runs ahead of all non-expedited work. It does not bypass an

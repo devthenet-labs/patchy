@@ -257,6 +257,11 @@ type Spec struct {
 	// omits it. This package deliberately does not know its shape — it is
 	// prompt garnish, not job configuration.
 	Calibration string
+	// PreviousAttempt is pre-serialized JSON describing the failed run this
+	// one retries, passed opaquely to the stage prompt. Empty omits it. Like
+	// Calibration its shape is not this package's business, and the text
+	// inside it is untrusted — the prompt fences it.
+	PreviousAttempt string
 	// RunnerImage is the digest-pinned repository-declared image from the
 	// Repository's status (name@sha256:...), copied by the launching
 	// controller; empty runs the harness's runner image. It is honoured only
@@ -918,9 +923,9 @@ func (c *Client) agentEnv(runner Runner, spec Spec) []corev1.EnvVar {
 		env = append(env, corev1.EnvVar{Name: modelEnv, Value: spec.Model})
 	}
 
-	// The per-run budget grant and the estimate calibration. Both are decided
-	// per Job, so like harness and model they are injected from the Spec
-	// rather than the controller-global Env.
+	// The per-run budget grant, the estimate calibration and the previous
+	// attempt. All are decided per Job, so like harness and model they are
+	// injected from the Spec rather than the controller-global Env.
 	if spec.MaxTurns > 0 {
 		env = append(env, corev1.EnvVar{
 			Name: "PATCHY_GRANTED_MAX_TURNS", Value: strconv.FormatInt(int64(spec.MaxTurns), 10)})
@@ -931,6 +936,9 @@ func (c *Client) agentEnv(runner Runner, spec Spec) []corev1.EnvVar {
 	}
 	if spec.Calibration != "" {
 		env = append(env, corev1.EnvVar{Name: "PATCHY_CALIBRATION", Value: spec.Calibration})
+	}
+	if spec.PreviousAttempt != "" {
+		env = append(env, corev1.EnvVar{Name: "PATCHY_PREVIOUS_ATTEMPT", Value: spec.PreviousAttempt})
 	}
 
 	// The controller-global Env under the full reserved filter, then the

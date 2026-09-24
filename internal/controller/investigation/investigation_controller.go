@@ -232,6 +232,8 @@ func (r *InvestigationReconciler) launch(ctx context.Context, inv *v1alpha1.Inve
 		ArtifactURL:    repo.Status.Artifact.URL,
 		ArtifactDigest: repo.Status.Artifact.Digest,
 		Calibration:    r.calibration(ctx, repoName),
+		// What the attempt this one retries failed with, from its own spec.
+		PreviousAttempt: agentresult.EncodePreviousAttempt(inv.Spec.PreviousAttempt),
 	}
 	if skipped := r.Images.Pin(&spec, &repo, &fnd); skipped != "" {
 		r.log().LogAttrs(ctx, slog.LevelInfo, "not running the repository-declared runner image",
@@ -689,11 +691,15 @@ func (r *InvestigationReconciler) stampChild(
 				}
 			}
 		}
+		// The message is capped like the stage detail: the envelope's detail
+		// is unbounded (a full git status, a stderr tail), and the CRD
+		// refuses a condition message over 32768 bytes by rejecting the
+		// whole status write, which would leave the run Running.
 		meta.SetStatusCondition(&cur.Status.Conditions, metav1.Condition{
 			Type:               v1alpha1.ConditionComplete,
 			Status:             metav1.ConditionTrue,
 			Reason:             nonEmpty(string(result.Outcome), "Unknown"),
-			Message:            result.Detail,
+			Message:            agentresult.TruncateDetail(result.Detail),
 			ObservedGeneration: cur.Generation,
 		})
 		if refused {

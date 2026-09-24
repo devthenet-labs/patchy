@@ -203,6 +203,36 @@ func TestGoldens(t *testing.T) {
 				CommitScriptPath:  "/workspace/commit.sh",
 			})
 		}},
+		// A retry after the live failure that motivated the section: the
+		// first attempt's go build overwrote a binary the repository tracks,
+		// so commit.sh left the tree dirty.
+		{"prompt_remediate_retry.md", func() (string, error) {
+			return RenderRemediatePrompt(RemediatePrompt{
+				IssuePath:         "/workspace/input/issue.md",
+				InvestigationPath: "/workspace/input/investigation.md",
+				ReportPath:        "/workspace/reports/remediation.md",
+				CommitScriptPath:  "/workspace/commit.sh",
+				PreviousAttempt: &PreviousAttempt{
+					Attempt: 1, Outcome: "commit_failed",
+					Detail: "working tree not clean after commit.sh:\nM patchy-target",
+				},
+			})
+		}},
+		{"prompt_investigate_retry.md", func() (string, error) {
+			return RenderInvestigatePrompt(InvestigatePrompt{
+				IssuePath:         "/workspace/input/issue.md",
+				ReportPath:        "/workspace/reports/investigation.md",
+				AllowedModels:     []string{"claude-sonnet-5", "claude-opus-5"},
+				AutoMaxTurns:      80,
+				AutoTokenBudget:   400000,
+				ManualMaxTurns:    240,
+				ManualTokenBudget: 1200000,
+				PreviousAttempt: &PreviousAttempt{
+					Attempt: 1, Outcome: "report_invalid",
+					Detail: "frontmatter: yaml: line 3: mapping values are not allowed in this context",
+				},
+			})
+		}},
 		// A cloud finding's description, carrying every optional block, so the
 		// goldens pin the whole shape rather than the happy subset.
 		{"finding_gcp_scc.md", func() (string, error) { return RenderSCCDescription(testSCCFinding()) }},
@@ -272,5 +302,44 @@ func TestEnrichmentProjection(t *testing.T) {
 	got := RenderEnrichmentProjection(v1alpha1.Enrichment{Enhancer: "cmdb", Markdown: "**Owners:** @octocat"})
 	if !strings.Contains(got, "<!-- patchy:enrichment cmdb -->") || !strings.Contains(got, "@octocat") {
 		t.Errorf("projection = %q", got)
+	}
+}
+
+// TestRemediatePromptStatesCleanTree: every remediation prompt, a first
+// attempt's included, states in the commit.sh contract the post-condition
+// the runner enforces after the script (agentrun.verifyCommitted) — a clean
+// tree and a new commit — and what to do with what verification left
+// behind. Live, attempt 1 of a finding was never told, let `go build`
+// overwrite a binary the repository tracks, and failed commit_failed; only
+// its retry learned why.
+func TestRemediatePromptStatesCleanTree(t *testing.T) {
+	for _, prev := range []*PreviousAttempt{
+		nil,
+		{Attempt: 1, Outcome: "timeout", Detail: "stage timed out"},
+		{Attempt: 1, Outcome: "commit_failed", Detail: "working tree not clean after commit.sh:\nM patchy-target"},
+	} {
+		got, err := RenderRemediatePrompt(RemediatePrompt{
+			IssuePath:         "/workspace/input/issue.md",
+			InvestigationPath: "/workspace/input/investigation.md",
+			ReportPath:        "/workspace/reports/remediation.md",
+			CommitScriptPath:  "/workspace/commit.sh",
+			PreviousAttempt:   prev,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, contract, ok := strings.Cut(got, "a POSIX sh script that commits your fix. The contract:")
+		if !ok {
+			t.Fatalf("no commit.sh contract in the prompt:\n%s", got)
+		}
+		for _, want := range []string{
+			"`git status --porcelain` must print nothing",
+			"at least one new commit",
+			"`git checkout -- <path>`",
+		} {
+			if !strings.Contains(contract, want) {
+				t.Errorf("previous attempt %+v: commit.sh contract lacks %q:\n%s", prev, want, contract)
+			}
+		}
 	}
 }

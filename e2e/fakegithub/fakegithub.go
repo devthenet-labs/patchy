@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 // Package fakegithub is an in-memory GitHub REST API good enough to run the
-// patchy controllers against: code-scanning alerts, issues, labels,
-// comments, issue events, reactions, search, the Git Data surface (refs,
-// blobs, trees, commits) the API push uses, and the App endpoints (GET /app,
-// installation tokens, collaborator permission). It exists so the e2e suite
-// can drive the real binaries end to end with no network and no credentials.
+// patchy controllers against: code-scanning alerts, issues, labels (on
+// issues and the repository's own), comments, issue events, reactions,
+// search, pull requests, the Git Data surface (refs, blobs, trees, commits)
+// the API push uses, repository tarballs, the rate-limit budget, and the App
+// endpoints (GET /app, installation tokens, collaborator permission). It
+// exists so the e2e suite can drive the real binaries end to end with no
+// network and no credentials.
 //
 // Where GitHub's behaviour was verified live (2026-09-24) the fake mirrors
 // it exactly: conditional list requests (ETag, 304), the Git refs 422
@@ -103,9 +105,20 @@ type comment struct {
 	User      Actor     `json:"user"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// HTMLURL is the comment's anchor on its issue's page.
+	HTMLURL string `json:"html_url,omitempty"`
 	// ViaApp is set on the App's own comments — unlike label events,
 	// comments do carry performed_via_github_app.
 	ViaApp *appRef `json:"performed_via_github_app"`
+}
+
+// Comment is a snapshot of one stored comment, for assertions.
+type Comment struct {
+	ID        int64
+	Body      string
+	User      Actor
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Server is the fake API.
@@ -151,26 +164,37 @@ type Server struct {
 	// minted maps each token handed out to the scope it is held to.
 	tokens []TokenRequest
 	minted map[string]TokenRequest
+	// repoLabels are the labels each repository defines, by repoKey.
+	repoLabels  map[string][]RepoLabel
+	nextLabelID int64
+	// repoFiles are files a test added to a repository's tree, by repoKey
+	// then path: served in its tarball beside the fixed ones.
+	repoFiles map[string]map[string]string
+	// rateRemaining is the core budget GET /rate_limit reports.
+	rateRemaining int
 	// Now stamps created_at; tests override it to age issues instantly.
 	Now func() time.Time
 }
 
 func newState() (*Server, *http.ServeMux) {
 	s := &Server{
-		issues:    make(map[int]*Issue),
-		comments:  make(map[int][]comment),
-		dismissed: make(map[int]string),
-		parents:   make(map[string]string),
-		moved:     make(map[int]movedAlert),
-		pulls:     make(map[int]*pull),
-		git:       newGitData(),
-		next:      100,
-		events:    make(map[int][]issueEvent),
-		reactions: make(map[int64][]reaction),
-		roles:     make(map[string]string),
-		missing:   make(map[string]bool),
-		minted:    make(map[string]TokenRequest),
-		Now:       time.Now,
+		issues:        make(map[int]*Issue),
+		comments:      make(map[int][]comment),
+		dismissed:     make(map[int]string),
+		parents:       make(map[string]string),
+		moved:         make(map[int]movedAlert),
+		pulls:         make(map[int]*pull),
+		git:           newGitData(),
+		next:          100,
+		events:        make(map[int][]issueEvent),
+		reactions:     make(map[int64][]reaction),
+		roles:         make(map[string]string),
+		missing:       make(map[string]bool),
+		minted:        make(map[string]TokenRequest),
+		repoLabels:    make(map[string][]RepoLabel),
+		repoFiles:     make(map[string]map[string]string),
+		rateRemaining: defaultRateRemaining,
+		Now:           time.Now,
 	}
 	mux := http.NewServeMux()
 	s.routes(mux)
@@ -216,6 +240,17 @@ func (s *Server) Comments(number int) []string {
 	out := make([]string, 0, len(s.comments[number]))
 	for _, c := range s.comments[number] {
 		out = append(out, c.Body)
+	}
+	return out
+}
+
+// IssueComments returns an issue's comments, oldest first.
+func (s *Server) IssueComments(number int) []Comment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Comment, 0, len(s.comments[number]))
+	for _, c := range s.comments[number] {
+		out = append(out, Comment{ID: c.ID, Body: c.Body, User: c.User, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt})
 	}
 	return out
 }
@@ -278,8 +313,8 @@ func (s *Server) Age(d time.Duration) {
 
 // routes registers every endpoint, each repository route with the
 // installation-token permission it needs (scoped). The App's own endpoints
-// take its JWT, and search and the tarball download hold no repository
-// permission, so those are registered bare.
+// take its JWT, and search, the rate-limit budget and the tarball download
+// hold no repository permission, so those are registered bare.
 func (s *Server) routes(mux *http.ServeMux) {
 	handle := func(pattern, perm string, h http.HandlerFunc) { mux.HandleFunc(pattern, s.scoped(perm, h)) }
 	handle("GET /repos/{owner}/{repo}/code-scanning/alerts/{number}", permSecurityEvents, s.getAlert)
@@ -299,7 +334,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	handle("POST /repos/{owner}/{repo}/issues/{number}/labels", permIssues, s.addLabels)
 	handle("DELETE /repos/{owner}/{repo}/issues/{number}/labels/{name}", permIssues, s.removeLabel)
 	handle("POST /repos/{owner}/{repo}/issues/{number}/assignees", permIssues, s.addAssignees)
+	handle("GET /repos/{owner}/{repo}/labels/{name}", permIssues, s.getRepoLabel)
+	handle("POST /repos/{owner}/{repo}/labels", permIssues, s.createRepoLabel)
 	handle("GET /repos/{owner}/{repo}/collaborators/{login}/permission", permMetadata, s.permission)
+	mux.HandleFunc("GET /rate_limit", s.rateLimit)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", s.installation)
 	mux.HandleFunc("GET /app", s.getApp)
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", s.accessToken)
@@ -674,6 +712,15 @@ func (s *Server) addComment(number int, body string, author Actor) comment {
 	c := comment{ID: s.nextCommentID, Body: body, User: author, CreatedAt: now, UpdatedAt: now}
 	if author == Bot {
 		c.ViaApp = viaApp
+	}
+	page := ""
+	if is, ok := s.issues[number]; ok {
+		page = is.HTMLURL
+	} else if p, ok := s.pulls[number]; ok {
+		page = p.HTMLURL
+	}
+	if page != "" {
+		c.HTMLURL = fmt.Sprintf("%s#issuecomment-%d", page, c.ID)
 	}
 	s.comments[number] = append(s.comments[number], c)
 	if is, ok := s.issues[number]; ok {

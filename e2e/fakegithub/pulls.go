@@ -15,6 +15,7 @@ import (
 // pull is the fake's pull-request record.
 type pull struct {
 	Number         int        `json:"number"`
+	NodeID         string     `json:"node_id"`
 	HTMLURL        string     `json:"html_url"`
 	State          string     `json:"state"`
 	Title          string     `json:"title"`
@@ -24,6 +25,48 @@ type pull struct {
 	Merged         bool       `json:"merged"`
 	MergedAt       *time.Time `json:"merged_at"`
 	MergeCommitSHA string     `json:"merge_commit_sha,omitempty"`
+	// repository is "owner/repo" of a pull request opened through the API.
+	repository string
+}
+
+// PullRequest is a snapshot of one pull request, for assertions.
+type PullRequest struct {
+	Number int
+	// Repository is "owner/repo", empty for a pull request a test
+	// fabricated with OpenPull or MergePull.
+	Repository     string
+	NodeID         string
+	Title          string
+	Body           string
+	Head           string
+	HeadSHA        string
+	Base           string
+	State          string
+	Merged         bool
+	MergeCommitSHA string
+}
+
+// pullNodeID is a pull request's global node id: GitHub never gives two
+// pull requests the same one.
+func pullNodeID(number int) string { return fmt.Sprintf("PR_fake%d", number) }
+
+// headSHA is where a branch points now: its pushed head, or the fixed base
+// for a branch never pushed. Callers hold s.mu.
+func (s *Server) headSHA(branch string) string {
+	if sha, ok := s.git.refs["heads/"+branch]; ok {
+		return sha
+	}
+	return BaseSHA
+}
+
+// rendered is p as GitHub renders it now: an open pull request's head
+// follows its branch. Callers hold s.mu.
+func (s *Server) rendered(p *pull) pull {
+	out := *p
+	if out.State == "open" {
+		out.Head.SHA = s.headSHA(out.Head.Ref)
+	}
+	return out
 }
 
 // MergePull records pull request number, from branch head, as merged into
@@ -34,9 +77,10 @@ func (s *Server) MergePull(number int, head, mergeCommitSHA string) {
 	defer s.mu.Unlock()
 	p, ok := s.pulls[number]
 	if !ok {
-		p = &pull{Number: number, Head: ref{Ref: head}, Base: ref{Ref: "main"}}
+		p = &pull{Number: number, NodeID: pullNodeID(number), Head: ref{Ref: head}, Base: ref{Ref: "main"}}
 		s.pulls[number] = p
 	}
+	p.Head.SHA = s.headSHA(p.Head.Ref)
 	at := s.Now().UTC().Truncate(time.Second)
 	p.State, p.Merged, p.MergedAt, p.MergeCommitSHA = "closed", true, &at, mergeCommitSHA
 }
@@ -46,7 +90,9 @@ func (s *Server) MergePull(number int, head, mergeCommitSHA string) {
 func (s *Server) OpenPull(number int, head string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pulls[number] = &pull{Number: number, State: "open", Head: ref{Ref: head}, Base: ref{Ref: "main"}}
+	s.pulls[number] = &pull{
+		Number: number, NodeID: pullNodeID(number), State: "open", Head: ref{Ref: head}, Base: ref{Ref: "main"},
+	}
 }
 
 // FailPullReads makes the next n reads of a single pull request answer 502,
@@ -76,7 +122,7 @@ func (s *Server) getPull(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.pulls[n]
 	var out pull
 	if ok {
-		out = *p
+		out = s.rendered(p)
 	}
 	s.mu.Unlock()
 	if !ok {
@@ -86,8 +132,11 @@ func (s *Server) getPull(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, &out)
 }
 
+// ref is a pull request's head or base: the branch, and for the head the
+// commit it points at.
 type ref struct {
 	Ref string `json:"ref"`
+	SHA string `json:"sha,omitempty"`
 }
 
 // Pulls returns a snapshot of every pull request, ordered by number.
@@ -113,7 +162,24 @@ func (s *Server) Pulls() []struct {
 	return out
 }
 
-// createPull answers POST /repos/{o}/{r}/pulls.
+// Pull returns a snapshot of pull request number, as GitHub renders it now.
+func (s *Server) Pull(number int) (PullRequest, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.pulls[number]
+	if !ok {
+		return PullRequest{}, false
+	}
+	out := s.rendered(p)
+	return PullRequest{
+		Number: out.Number, Repository: out.repository, NodeID: out.NodeID, Title: out.Title, Body: out.Body,
+		Head: out.Head.Ref, HeadSHA: out.Head.SHA, Base: out.Base.Ref, State: out.State, Merged: out.Merged,
+		MergeCommitSHA: out.MergeCommitSHA,
+	}, true
+}
+
+// createPull answers POST /repos/{o}/{r}/pulls: the pull request opened
+// from its head branch as that branch stands, with its own node id.
 func (s *Server) createPull(w http.ResponseWriter, r *http.Request) {
 	owner, repo := r.PathValue("owner"), r.PathValue("repo")
 	var body struct {
@@ -130,19 +196,22 @@ func (s *Server) createPull(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.next++
 	p := &pull{
-		Number:  s.next,
-		HTMLURL: fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, s.next),
-		State:   "open",
-		Title:   body.Title,
-		Body:    body.Body,
-		Head:    ref{Ref: body.Head},
-		Base:    ref{Ref: body.Base},
+		Number:     s.next,
+		NodeID:     pullNodeID(s.next),
+		HTMLURL:    fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, s.next),
+		State:      "open",
+		Title:      body.Title,
+		Body:       body.Body,
+		Head:       ref{Ref: body.Head},
+		Base:       ref{Ref: body.Base},
+		repository: owner + "/" + repo,
 	}
 	s.pulls[p.Number] = p
+	out := s.rendered(p)
 	s.mu.Unlock()
 
 	w.WriteHeader(http.StatusCreated)
-	writeJSON(w, p)
+	writeJSON(w, &out)
 }
 
 // listPulls answers GET /repos/{o}/{r}/pulls — enough of the list API for
@@ -156,7 +225,7 @@ func (s *Server) listPulls(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]*pull, 0, len(s.pulls))
+	out := make([]pull, 0, len(s.pulls))
 	for _, p := range s.pulls {
 		if state != "" && state != "all" && p.State != state {
 			continue
@@ -164,7 +233,7 @@ func (s *Server) listPulls(w http.ResponseWriter, r *http.Request) {
 		if head != "" && p.Head.Ref != head {
 			continue
 		}
-		out = append(out, p)
+		out = append(out, s.rendered(p))
 	}
 	writeJSON(w, out)
 }

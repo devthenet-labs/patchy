@@ -22,6 +22,7 @@ type pull struct {
 	Body           string     `json:"body"`
 	Head           ref        `json:"head"`
 	Base           ref        `json:"base"`
+	User           Actor      `json:"user"` // who opened it: the create's caller
 	Merged         bool       `json:"merged"`
 	MergedAt       *time.Time `json:"merged_at"`
 	MergeCommitSHA string     `json:"merge_commit_sha,omitempty"`
@@ -133,10 +134,16 @@ func (s *Server) getPull(w http.ResponseWriter, r *http.Request) {
 }
 
 // ref is a pull request's head or base: the branch, and for the head the
-// commit it points at.
+// commit it points at and the repository the branch lives in.
 type ref struct {
-	Ref string `json:"ref"`
-	SHA string `json:"sha,omitempty"`
+	Ref  string   `json:"ref"`
+	SHA  string   `json:"sha,omitempty"`
+	Repo *refRepo `json:"repo,omitempty"`
+}
+
+// refRepo is the repository of a pull request's head.
+type refRepo struct {
+	FullName string `json:"full_name"`
 }
 
 // Pulls returns a snapshot of every pull request, ordered by number.
@@ -182,6 +189,7 @@ func (s *Server) Pull(number int) (PullRequest, bool) {
 // from its head branch as that branch stands, with its own node id.
 func (s *Server) createPull(w http.ResponseWriter, r *http.Request) {
 	owner, repo := r.PathValue("owner"), r.PathValue("repo")
+	author := s.caller(r) // before s.mu: caller takes it
 	var body struct {
 		Title string `json:"title"`
 		Head  string `json:"head"`
@@ -202,8 +210,9 @@ func (s *Server) createPull(w http.ResponseWriter, r *http.Request) {
 		State:      "open",
 		Title:      body.Title,
 		Body:       body.Body,
-		Head:       ref{Ref: body.Head},
+		Head:       ref{Ref: body.Head, Repo: &refRepo{FullName: owner + "/" + repo}},
 		Base:       ref{Ref: body.Base},
+		User:       author,
 		repository: owner + "/" + repo,
 	}
 	s.pulls[p.Number] = p
@@ -215,10 +224,12 @@ func (s *Server) createPull(w http.ResponseWriter, r *http.Request) {
 }
 
 // listPulls answers GET /repos/{o}/{r}/pulls — enough of the list API for
-// FindPRByHead (state + head filters; head arrives as "owner:branch").
+// FindPRByHead and FindOpenPR (state, head and base filters; head arrives as
+// "owner:branch").
 func (s *Server) listPulls(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	head := r.URL.Query().Get("head")
+	base := r.URL.Query().Get("base")
 	if _, branch, ok := strings.Cut(head, ":"); ok {
 		head = branch
 	}
@@ -231,6 +242,9 @@ func (s *Server) listPulls(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if head != "" && p.Head.Ref != head {
+			continue
+		}
+		if base != "" && p.Base.Ref != base {
 			continue
 		}
 		out = append(out, s.rendered(p))

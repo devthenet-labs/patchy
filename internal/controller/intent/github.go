@@ -55,7 +55,8 @@ type GitHub interface {
 	HeadSHA(ctx context.Context, repoURL, branch string) (string, error)
 	CreateCommit(ctx context.Context, repoURL string, req ghclient.CommitRequest) (string, error)
 	CreateBranchRef(ctx context.Context, repoURL, branch, sha string) error
-	FindPullRequest(ctx context.Context, repoURL, head string) (*ghclient.PR, error)
+	// FindPullRequest is the open pull request from head into base, or nil.
+	FindPullRequest(ctx context.Context, repoURL, head, base string) (*ghclient.PR, error)
 	CreatePullRequest(ctx context.Context, repoURL string, req ghclient.PRRequest) (*ghclient.PR, error)
 	GetPullRequest(ctx context.Context, repoURL string, number int64) (*ghclient.PullRequest, error)
 }
@@ -444,12 +445,12 @@ func (g *forgeGitHub) CreateBranchRef(ctx context.Context, repoURL, branch, sha 
 	return c.CreateBranchRef(ctx, repo, branch, sha)
 }
 
-func (g *forgeGitHub) FindPullRequest(ctx context.Context, repoURL, head string) (*ghclient.PR, error) {
+func (g *forgeGitHub) FindPullRequest(ctx context.Context, repoURL, head, base string) (*ghclient.PR, error) {
 	c, repo, err := g.client(ctx, repoURL, pullsRead)
 	if err != nil {
 		return nil, err
 	}
-	return c.FindPRByHead(ctx, repo, head)
+	return c.FindOpenPR(ctx, repo, head, base)
 }
 
 func (g *forgeGitHub) CreatePullRequest(ctx context.Context, repoURL string, req ghclient.PRRequest) (

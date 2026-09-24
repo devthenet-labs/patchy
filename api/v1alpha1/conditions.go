@@ -85,8 +85,10 @@ const (
 	// ConditionBranchConflict marks a Blocked Intent whose branch
 	// patchy-intent/<intent> is not patchy's to use: it exists at a commit
 	// none of the Intent's runs pushed (left by an earlier Intent under the
-	// same name, or made by someone else; reason BranchExists). Nothing is
-	// forced: the block lifts once the branch is gone.
+	// same name, or made by someone else; reason BranchExists), or an open
+	// pull request patchy did not open already holds it (reason
+	// ForeignPullRequest). Nothing is forced and nothing foreign adopted: the
+	// block lifts once the branch, or that pull request, is gone.
 	ConditionBranchConflict = "BranchConflict"
 
 	// ConditionPushHeld marks a Running build IntentRun whose Job has

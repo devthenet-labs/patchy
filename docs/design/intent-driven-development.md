@@ -419,7 +419,10 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
      2. Persist `pushedCommit`.
      3. `CreateRef patchy-intent/<intent>`. This is create-only. A 422 is adopted only when the ref already points at
         `pushedCommit`; otherwise the outcome is `branch_exists`. Nothing is ever forced.
-   - Open the PR against the default branch with a controller-rendered body.
+   - Open the PR against the default branch with a controller-rendered body. An open PR already found from the branch
+     into the default branch (one a failed pass opened) is adopted only when patchy's bot opened it from the repository
+     itself: anyone can open a PR from an existing branch of a public repository, with any body. Any other blocks the
+     Intent with `BranchConflict` until it is closed, since GitHub keeps one open PR per head and base.
    - Record the PR's `{repository, number, url, nodeID, headSHA}`, move to `InReview`, and link the PR from the status
      comment.
 9. **Review.** While in `InReview`, poll the PR's reviews and its state every 60 s. A new `CHANGES_REQUESTED` review

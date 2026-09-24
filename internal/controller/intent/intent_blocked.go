@@ -23,9 +23,15 @@ var blockingConditions = []string{
 	v1alpha1.ConditionBudgetExhausted, v1alpha1.ConditionImageRequired, v1alpha1.ConditionBranchConflict,
 }
 
-// ReasonBranchExists is the BranchConflict reason for patchy-intent/<intent>
-// existing at a commit none of the Intent's runs pushed.
-const ReasonBranchExists = "BranchExists"
+// BranchConflict reasons.
+const (
+	// ReasonBranchExists: patchy-intent/<intent> exists at a commit none of
+	// the Intent's runs pushed.
+	ReasonBranchExists = "BranchExists"
+	// ReasonForeignPullRequest: an open pull request patchy did not open
+	// holds patchy-intent/<intent> against the default branch.
+	ReasonForeignPullRequest = "ForeignPullRequest"
+)
 
 // block moves the Intent to Blocked with the condition saying why, in one
 // status write, and remembers the Project generation it was blocked under.
@@ -145,6 +151,10 @@ func (p *pass) branchBlockHolds(ctx context.Context) (bool, error) {
 	}
 	if ok, err := p.rateOK(ctx, repo.URL); err != nil || !ok {
 		return true, err
+	}
+	if c.Reason == ReasonForeignPullRequest {
+		pr, own, _, err := p.findPullRequest(ctx, repo.URL)
+		return pr != nil && !own, err
 	}
 	sha, err := p.branchConflict(ctx, repo.URL)
 	return sha != "", err

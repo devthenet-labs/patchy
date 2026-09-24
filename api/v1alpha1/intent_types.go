@@ -62,8 +62,8 @@ const (
 	IntentRevising IntentPhase = "Revising"
 	// IntentBlocked: a limit or a precondition stops progress (revision
 	// limit, cost ceiling, missing or rejected repository image, tripped
-	// sandbox breaker, an intent branch that is not patchy's, repeated check
-	// failure); the conditions say which.
+	// sandbox breaker, an intent branch or pull request that is not patchy's,
+	// repeated check failure); the conditions say which.
 	// Re-evaluated when the Project changes, so raising a limit resumes the
 	// intent in the phase it was blocked from (IntentBlockedFrom).
 	IntentBlocked IntentPhase = "Blocked"

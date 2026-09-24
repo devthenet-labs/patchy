@@ -22,6 +22,7 @@ import (
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/envelope"
+	"github.com/bitwise-media-group/patchy/internal/ghclient"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/runnerguard"
 	"github.com/bitwise-media-group/patchy/internal/transcript"
@@ -1410,6 +1411,75 @@ func TestEndedIntentPushesNothing(t *testing.T) {
 			}
 			if !contains(e.jobs.deleted, run.Status.JobRef.Name) {
 				t.Errorf("the build's Job %s was not deleted (%v)", run.Status.JobRef.Name, e.jobs.deleted)
+			}
+		})
+	}
+}
+
+// TestPullRequestAdoption: an open pull request from the intent branch is
+// adopted only when patchy opened it (a pass that failed after opening it),
+// into the default branch, from the repository itself. Anyone can open one
+// from an existing branch of a public repository, with any body (a closing
+// keyword aimed at a Finding's tracking issue included): such a pull request
+// is never recorded or linked, the intent blocks on BranchConflict without
+// opening its own beside it, and resumes, opening patchy's own, once it is
+// closed. One into another base does not stand in the way.
+func TestPullRequestAdoption(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		found fakePR
+		// adopted: the found pull request is taken as patchy's; blocked: the
+		// intent blocks on it.
+		adopted, blocked bool
+	}{
+		{name: "patchy's own, left by a failed pass", adopted: true,
+			found: fakePR{author: testBot, base: "main", headRepo: "acme/app"}},
+		{name: "an outsider's", blocked: true,
+			found: fakePR{author: "mallory", base: "main", headRepo: "acme/app", body: "Fixes #3"}},
+		{name: "from a fork", blocked: true,
+			found: fakePR{author: testBot, base: "main", headRepo: "acme/app-fork"}},
+		{name: "into another base", found: fakePR{author: "mallory", base: "release", headRepo: "acme/app"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newEnv(t, testProject())
+			name := e.awaiting()
+			found := tt.found
+			found.head, found.url = "patchy-intent/"+name, appRepoURL+"/pull/1"
+			found.pr = ghclient.PullRequest{Number: 1, State: "open", NodeID: "PR_1"}
+			e.gh.prs[1] = &found
+			e.gh.label(1, "patchy:approved", approver)
+			if tt.blocked {
+				in := e.drive(name, v1alpha1.IntentBlocked, repoImage)
+				c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionBranchConflict)
+				if c == nil || c.Reason != ReasonForeignPullRequest || !strings.Contains(c.Message, found.url) {
+					t.Fatalf("BranchConflict = %+v, want the foreign pull request named", c)
+				}
+				if len(in.Status.PullRequests) != 0 || e.gh.calls["CreatePullRequest"] != 0 {
+					t.Fatalf("pull requests %+v, creates %d; want none recorded and none opened",
+						in.Status.PullRequests, e.gh.calls["CreatePullRequest"])
+				}
+				e.settleActions(name)
+				if in := e.get(name); in.Status.Phase != v1alpha1.IntentBlocked {
+					t.Fatalf("phase = %s while the foreign pull request is open", in.Status.Phase)
+				}
+				e.gh.mu.Lock()
+				found.pr.State = "closed"
+				e.gh.mu.Unlock()
+			}
+			in := e.drive(name, v1alpha1.IntentInReview, repoImage)
+			if n := len(e.runsOf(name, v1alpha1.IntentStageBuild)); n != 1 {
+				t.Errorf("build runs = %d, want the one", n)
+			}
+			rec := in.Status.PullRequests[0]
+			if tt.adopted {
+				if rec.Number != 1 || e.gh.calls["CreatePullRequest"] != 0 {
+					t.Errorf("recorded #%d after %d creates, want patchy's own #1 adopted", rec.Number,
+						e.gh.calls["CreatePullRequest"])
+				}
+				return
+			}
+			if rec.Number == 1 || e.gh.prs[rec.Number].author != testBot || e.gh.prs[rec.Number].base != "main" {
+				t.Errorf("recorded #%d, want patchy's own, opened into main", rec.Number)
 			}
 		})
 	}

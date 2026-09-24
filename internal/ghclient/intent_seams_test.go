@@ -6,6 +6,7 @@ package ghclient
 import (
 	"context"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -125,5 +126,36 @@ func TestPullRequestIdentity(t *testing.T) {
 	got, err := c.GetPullRequest(ctx, testRepo, 12)
 	if err != nil || got.NodeID != "PR_kw1" || got.HeadSHA != head {
 		t.Errorf("GetPullRequest() = %+v, %v", got, err)
+	}
+}
+
+// TestFindOpenPR: the open pull request from a branch into a base is found by
+// both, and carries who opened it, what it merges into and which repository
+// its head lives in, which a caller reads before taking it for its own.
+func TestFindOpenPR(t *testing.T) {
+	mux, c := newFakeClient(t)
+	mux.HandleFunc("GET /repos/o/r/pulls", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("state") != "open" || q.Get("head") != "o:patchy-intent/x-1" || q.Get("base") != "main" {
+			t.Errorf("query = %v, want the open pull request from o:patchy-intent/x-1 into main", q)
+		}
+		writeJSON(t, w, `[{"number":7,"html_url":"https://gh/o/r/pull/7","node_id":"PR_7","state":"open",`+
+			`"user":{"login":"mallory"},"base":{"ref":"main"},`+
+			`"head":{"sha":"2222222222222222222222222222222222222222","repo":{"full_name":"o/r-fork"}}}]`)
+	})
+	got, err := c.FindOpenPR(context.Background(), testRepo, "patchy-intent/x-1", "main")
+	if err != nil {
+		t.Fatalf("FindOpenPR() error = %v", err)
+	}
+	want := &PR{Number: 7, HTMLURL: "https://gh/o/r/pull/7", NodeID: "PR_7",
+		HeadSHA: "2222222222222222222222222222222222222222", Author: "mallory", Base: "main", HeadRepo: "o/r-fork"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("FindOpenPR() = %+v, want %+v", got, want)
+	}
+
+	none, c2 := newFakeClient(t)
+	none.HandleFunc("GET /repos/o/r/pulls", func(w http.ResponseWriter, _ *http.Request) { writeJSON(t, w, `[]`) })
+	if got, err := c2.FindOpenPR(context.Background(), testRepo, "b", "main"); err != nil || got != nil {
+		t.Errorf("FindOpenPR() with none open = %+v, %v; want nil, nil", got, err)
 	}
 }

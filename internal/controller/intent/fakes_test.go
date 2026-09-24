@@ -119,6 +119,15 @@ type fakePR struct {
 	head string
 	url  string
 	body string
+	// author opened it, base is what it merges into, headRepo is where its
+	// head branch lives ("acme/app", or a fork).
+	author, base, headRepo string
+}
+
+// view is the pull request as the list and create answers render it.
+func (p *fakePR) view(n int64) *ghclient.PR {
+	return &ghclient.PR{Number: int(n), HTMLURL: p.url, NodeID: p.pr.NodeID, HeadSHA: p.pr.HeadSHA,
+		Author: p.author, Base: p.base, HeadRepo: p.headRepo}
 }
 
 // fakeGitHub is an in-memory GitHub over one intent repository and one app
@@ -656,15 +665,15 @@ func (f *fakeGitHub) CreateBranchRef(_ context.Context, _, branch, sha string) e
 	return nil
 }
 
-func (f *fakeGitHub) FindPullRequest(_ context.Context, _, head string) (*ghclient.PR, error) {
+func (f *fakeGitHub) FindPullRequest(_ context.Context, _, head, base string) (*ghclient.PR, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("FindPullRequest"); err != nil {
 		return nil, err
 	}
 	for n, pr := range f.prs {
-		if pr.head == head && pr.pr.State == "open" {
-			return &ghclient.PR{Number: int(n), HTMLURL: pr.url, NodeID: pr.pr.NodeID, HeadSHA: pr.pr.HeadSHA}, nil
+		if pr.head == head && pr.base == base && pr.pr.State == "open" {
+			return pr.view(n), nil
 		}
 	}
 	return nil, nil
@@ -681,9 +690,10 @@ func (f *fakeGitHub) CreatePullRequest(_ context.Context, _ string, req ghclient
 		head: req.Head, url: fmt.Sprintf("%s/pull/%d", appRepoURL, n), body: req.Body,
 		pr: ghclient.PullRequest{Number: int(n), State: "open", NodeID: fmt.Sprintf("PR_%d", n),
 			HeadSHA: f.branches[req.Head]},
+		author: f.bot, base: req.Base, headRepo: "acme/app",
 	}
 	f.prs[n] = pr
-	return &ghclient.PR{Number: int(n), HTMLURL: pr.url, NodeID: pr.pr.NodeID, HeadSHA: pr.pr.HeadSHA}, nil
+	return pr.view(n), nil
 }
 
 func (f *fakeGitHub) GetPullRequest(_ context.Context, _ string, number int64) (*ghclient.PullRequest, error) {

@@ -95,22 +95,29 @@ func (p *pass) building(ctx context.Context) (bool, error) {
 }
 
 // openPullRequest opens the pull request for a build that pushed the intent
-// branch, or adopts the one a failed pass opened (found by its head, in the
-// repository itself, never a fork), records it, and moves to InReview. The
-// title and body are patchy's own, from the approved plan: the body says
-// "Part of" the intent issue and holds no closing keyword.
+// branch, or adopts the one a failed pass opened, records it, and moves to
+// InReview. Only patchy's own is adopted (ownPullRequest); an open pull
+// request from the branch that is anyone else's blocks the Intent on
+// BranchConflict until it is closed, since GitHub keeps one open pull request
+// per head and base. The title and body are patchy's own, from the approved
+// plan: the body says "Part of" the intent issue and holds no closing
+// keyword.
 func (p *pass) openPullRequest(ctx context.Context, run *v1alpha1.IntentRun) (bool, error) {
 	repoURL := run.Spec.Repository.URL
 	branch := branchName(p.in.Name)
-	pr, err := p.r.GitHub.FindPullRequest(ctx, repoURL, branch)
+	pr, own, base, err := p.findPullRequest(ctx, repoURL)
 	if err != nil {
-		return false, fmt.Errorf("find the pull request: %w", err)
+		return false, err
+	}
+	if pr != nil && !own {
+		p.r.log().LogAttrs(ctx, slog.LevelWarn, "an open pull request patchy did not open holds the intent branch",
+			slog.String("intent", p.in.Name), slog.String("pullRequest", pr.HTMLURL), slog.String("author", pr.Author))
+		return true, p.block(ctx, v1alpha1.ConditionBranchConflict, ReasonForeignPullRequest,
+			fmt.Sprintf("an open pull request patchy did not open, %s (by %s, from %s into %s), already holds the "+
+				"branch %s; patchy neither adopts it nor opens its own beside it. Close it to resume.",
+				pr.HTMLURL, pr.Author, pr.HeadRepo, pr.Base, branch))
 	}
 	if pr == nil {
-		base, err := p.r.GitHub.DefaultBranch(ctx, repoURL)
-		if err != nil {
-			return false, fmt.Errorf("read the default branch: %w", err)
-		}
 		ap, pl := p.in.Status.Approval, p.in.Status.Plan
 		body, err := templates.RenderIntentPRBody(templates.IntentPRBody{
 			IntentRepository: repoSlug(p.repo()), IssueNumber: p.number(), Summary: pl.Summary,
@@ -138,6 +145,45 @@ func (p *pass) openPullRequest(ctx context.Context, run *v1alpha1.IntentRun) (bo
 		cur.Status.PullRequests = []v1alpha1.IntentPullRequest{rec}
 		cur.Status.ActiveRun = nil
 	})
+}
+
+// findPullRequest reads the default branch of repoURL and the open pull
+// request from the intent branch into it, if any, and whether it is patchy's
+// own.
+func (p *pass) findPullRequest(ctx context.Context, repoURL string) (pr *ghclient.PR, own bool, base string,
+	err error) {
+	base, err = p.r.GitHub.DefaultBranch(ctx, repoURL)
+	if err != nil {
+		return nil, false, "", fmt.Errorf("read the default branch: %w", err)
+	}
+	pr, err = p.r.GitHub.FindPullRequest(ctx, repoURL, branchName(p.in.Name), base)
+	if err != nil || pr == nil {
+		if err != nil {
+			err = fmt.Errorf("find the pull request: %w", err)
+		}
+		return nil, false, base, err
+	}
+	own, err = p.ownPullRequest(ctx, repoURL, pr, base)
+	return pr, own, base, err
+}
+
+// ownPullRequest reports a pull request found open from the intent branch
+// that patchy opened: one a pass that failed after opening it left behind.
+// On a public repository anyone can open a pull request from an existing
+// branch, with any title, body and base, so it is patchy's only when
+// patchy's bot opened it, into the default branch, from the repository itself
+// (never a fork). With a personal access token there is no bot identity (dev
+// only), and only the base and the head repository are checked. Its head
+// commit is not: humans may push to the branch.
+func (p *pass) ownPullRequest(ctx context.Context, repoURL string, pr *ghclient.PR, base string) (bool, error) {
+	if pr.Base != base || !strings.EqualFold(pr.HeadRepo, repoSlug(repoURL)) {
+		return false, nil
+	}
+	bot, err := p.r.GitHub.BotLogin(ctx, repoURL)
+	if err != nil {
+		return false, fmt.Errorf("read the App's bot login: %w", err)
+	}
+	return bot == "" || strings.EqualFold(pr.Author, bot), nil
 }
 
 // review polls the recorded pull requests, by repository and number, and

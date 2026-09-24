@@ -43,10 +43,11 @@ func (s *Server) getComment(w http.ResponseWriter, r *http.Request) {
 }
 
 // createReaction answers POST /repos/{o}/{r}/issues/comments/{id}/reactions
-// as the App: 201 with a new reaction, 200 with the existing one when the
-// App already reacted so (GitHub's idempotent answer), 422 for a content
+// as the caller: 201 with a new reaction, 200 with the existing one when the
+// caller already reacted so (GitHub's idempotent answer), 422 for a content
 // GitHub does not know, 404 for an unknown comment.
 func (s *Server) createReaction(w http.ResponseWriter, r *http.Request) {
+	actor := s.caller(r)
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		notFound(w)
@@ -71,7 +72,7 @@ func (s *Server) createReaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, re := range s.reactions[id] {
-		if re.User == Bot && re.Content == body.Content {
+		if re.User == actor && re.Content == body.Content {
 			writeJSON(w, re)
 			return
 		}
@@ -80,7 +81,7 @@ func (s *Server) createReaction(w http.ResponseWriter, r *http.Request) {
 	re := reaction{
 		ID:        s.nextReactionID,
 		NodeID:    fmt.Sprintf("REA_fake%d", s.nextReactionID),
-		User:      Bot,
+		User:      actor,
 		Content:   body.Content,
 		CreatedAt: s.now(),
 	}

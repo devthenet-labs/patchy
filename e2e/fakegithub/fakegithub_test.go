@@ -8,9 +8,12 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"net/http"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -61,6 +64,56 @@ func newFake(t *testing.T) (*fakegithub.Server, *ghclient.Client, *clock) {
 	return srv, c, clk
 }
 
+// appKey is one throwaway App private key for the whole package.
+var appKey = sync.OnceValues(func() ([]byte, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, err
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), nil
+})
+
+// newApp authenticates as the fake's App.
+func newApp(t *testing.T, srv *fakegithub.Server) *ghclient.App {
+	t.Helper()
+	key, err := appKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	app, err := ghclient.NewApp(ghclient.AppConfig{AppID: 1, PrivateKey: key, BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("NewApp() error = %v", err)
+	}
+	return app
+}
+
+// botClient is an installation client on the fake: an unscoped installation
+// token, whose writes are the App's bot's.
+func botClient(t *testing.T, srv *fakegithub.Server) *ghclient.Client {
+	t.Helper()
+	c, err := newApp(t, srv).Installation(context.Background(), intents)
+	if err != nil {
+		t.Fatalf("Installation() error = %v", err)
+	}
+	return c
+}
+
+// scopedClient is a client holding one token minted for repo and perms.
+func scopedClient(t *testing.T, srv *fakegithub.Server, app *ghclient.App,
+	repo ghclient.Repo, perms ghclient.TokenPerms,
+) *ghclient.Client {
+	t.Helper()
+	tok, _, err := app.ScopedToken(context.Background(), repo, perms)
+	if err != nil {
+		t.Fatalf("ScopedToken(%s, %+v) error = %v", repo, perms, err)
+	}
+	c, err := ghclient.NewToken(tok, srv.URL)
+	if err != nil {
+		t.Fatalf("NewToken() error = %v", err)
+	}
+	return c
+}
+
 func TestConditionalIssueList(t *testing.T) {
 	srv, c, _ := newFake(t)
 	ctx := context.Background()
@@ -107,57 +160,83 @@ func TestConditionalIssueList(t *testing.T) {
 	}
 }
 
-// TestIssueEventActors: a human's label carries the human; everything the
-// client does carries the App's bot, and label events carry no App slug.
+// TestIssueEventActors: a human's label carries the human; everything an
+// installation token does carries the App's bot, everything a PAT does its
+// user (as GitHub attributes them), and label events carry no App slug.
 func TestIssueEventActors(t *testing.T) {
-	srv, c, _ := newFake(t)
-	ctx := context.Background()
-	n := srv.OpenIssue(intents.Owner, intents.Name, "t", "b", []string{"patchy:target"}, human)
-	if err := c.AddLabels(ctx, intents, n, []string{"patchy:approved"}); err != nil {
-		t.Fatalf("AddLabels() error = %v", err)
+	asActor := func(a fakegithub.Actor) ghclient.Actor {
+		return ghclient.Actor{Login: a.Login, ID: a.ID, Type: a.Type}
 	}
-	if err := c.RemoveLabel(ctx, intents, n, "patchy:approved"); err != nil {
-		t.Fatalf("RemoveLabel() error = %v", err)
+	tests := []struct {
+		name   string
+		client func(*testing.T, *fakegithub.Server, *ghclient.Client) *ghclient.Client
+		want   ghclient.Actor
+	}{
+		{
+			name: "installation token",
+			client: func(t *testing.T, srv *fakegithub.Server, _ *ghclient.Client) *ghclient.Client {
+				return botClient(t, srv)
+			},
+			want: asActor(fakegithub.Bot),
+		},
+		{
+			name:   "personal access token",
+			client: func(_ *testing.T, _ *fakegithub.Server, pat *ghclient.Client) *ghclient.Client { return pat },
+			want:   asActor(fakegithub.PATUser),
+		},
 	}
-	if err := c.RemoveLabel(ctx, intents, n, "patchy:approved"); err != nil {
-		t.Fatalf("RemoveLabel(absent) error = %v, want the 404 as success", err)
-	}
-	if err := c.CloseIssue(ctx, intents, n, ghclient.CloseCompleted); err != nil {
-		t.Fatalf("CloseIssue() error = %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, pat, _ := newFake(t)
+			c := tt.client(t, srv, pat)
+			ctx := context.Background()
+			n := srv.OpenIssue(intents.Owner, intents.Name, "t", "b", []string{"patchy:target"}, human)
+			if err := c.AddLabels(ctx, intents, n, []string{"patchy:approved"}); err != nil {
+				t.Fatalf("AddLabels() error = %v", err)
+			}
+			if err := c.RemoveLabel(ctx, intents, n, "patchy:approved"); err != nil {
+				t.Fatalf("RemoveLabel() error = %v", err)
+			}
+			if err := c.RemoveLabel(ctx, intents, n, "patchy:approved"); err != nil {
+				t.Fatalf("RemoveLabel(absent) error = %v, want the 404 as success", err)
+			}
+			if err := c.CloseIssue(ctx, intents, n, ghclient.CloseCompleted); err != nil {
+				t.Fatalf("CloseIssue() error = %v", err)
+			}
 
-	events, err := c.ListIssueEvents(ctx, intents, n)
-	if err != nil {
-		t.Fatalf("ListIssueEvents() error = %v", err)
-	}
-	bot := ghclient.Actor{Login: fakegithub.BotLogin, ID: fakegithub.BotUserID, Type: "Bot"}
-	type seen struct {
-		event, label string
-		actor        ghclient.Actor
-	}
-	got := make([]seen, 0, len(events))
-	for _, ev := range events {
-		if ev.ID == 0 || ev.NodeID == "" || ev.CreatedAt.IsZero() || ev.ViaApp != "" {
-			t.Errorf("event %+v: want id, node_id, created_at and no performed_via_github_app", *ev)
-		}
-		got = append(got, seen{ev.Event, ev.Label, ev.Actor})
-	}
-	want := []seen{
-		{"labeled", "patchy:target", ghclient.Actor{Login: "peter", ID: 42, Type: "User"}},
-		{"labeled", "patchy:approved", bot},
-		{"unlabeled", "patchy:approved", bot},
-		{"closed", "", bot},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("events = %+v, want %+v", got, want)
-	}
+			events, err := c.ListIssueEvents(ctx, intents, n)
+			if err != nil {
+				t.Fatalf("ListIssueEvents() error = %v", err)
+			}
+			type seen struct {
+				event, label string
+				actor        ghclient.Actor
+			}
+			got := make([]seen, 0, len(events))
+			for _, ev := range events {
+				if ev.ID == 0 || ev.NodeID == "" || ev.CreatedAt.IsZero() || ev.ViaApp != "" {
+					t.Errorf("event %+v: want id, node_id, created_at and no performed_via_github_app", *ev)
+				}
+				got = append(got, seen{ev.Event, ev.Label, ev.Actor})
+			}
+			want := []seen{
+				{"labeled", "patchy:target", asActor(human)},
+				{"labeled", "patchy:approved", tt.want},
+				{"unlabeled", "patchy:approved", tt.want},
+				{"closed", "", tt.want},
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("events = %+v, want %+v", got, want)
+			}
 
-	is, err := c.GetIssue(ctx, intents, n)
-	if err != nil {
-		t.Fatalf("GetIssue() error = %v", err)
-	}
-	if is.State != "closed" {
-		t.Errorf("issue state = %q, want closed", is.State)
+			is, err := c.GetIssue(ctx, intents, n)
+			if err != nil {
+				t.Fatalf("GetIssue() error = %v", err)
+			}
+			if is.State != "closed" {
+				t.Errorf("issue state = %q, want closed", is.State)
+			}
+		})
 	}
 }
 
@@ -165,7 +244,8 @@ func TestIssueEventActors(t *testing.T) {
 // neither; since filters on last update, so an edit brings an older comment
 // back, and a re-read shows the edit.
 func TestCommentsSince(t *testing.T) {
-	srv, c, clk := newFake(t)
+	srv, _, clk := newFake(t)
+	c := botClient(t, srv)
 	ctx := context.Background()
 	n := srv.OpenIssue(intents.Owner, intents.Name, "t", "b", nil, human)
 
@@ -372,18 +452,7 @@ func TestCollaboratorPermissions(t *testing.T) {
 // tokens — work against the fake, which records each token's scope.
 func TestAppAuth(t *testing.T) {
 	srv, _, _ := newFake(t)
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-	app, err := ghclient.NewApp(ghclient.AppConfig{
-		AppID:      1,
-		PrivateKey: pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}),
-		BaseURL:    srv.URL,
-	})
-	if err != nil {
-		t.Fatalf("NewApp() error = %v", err)
-	}
+	app := newApp(t, srv)
 	ctx := context.Background()
 	if login, err := app.BotLogin(ctx); err != nil || login != fakegithub.BotLogin {
 		t.Errorf("BotLogin() = %q, %v, want %s", login, err, fakegithub.BotLogin)
@@ -411,4 +480,204 @@ func TestAppAuth(t *testing.T) {
 	if len(reqs[1].Repositories) != 0 || len(reqs[1].Permissions) != 0 {
 		t.Errorf("installation token request = %+v, want unscoped", reqs[1])
 	}
+}
+
+// TestScopedTokenEnforcement: a minted token reaches only the repository and
+// permissions it was minted for — GitHub's 403 "Resource not accessible by
+// integration" anywhere else — while metadata is always readable and a
+// pull_requests grant also covers the issues endpoints for a pull request.
+func TestScopedTokenEnforcement(t *testing.T) {
+	srv, pat, _ := newFake(t)
+	app := newApp(t, srv)
+	ctx := context.Background()
+	intentIssue := srv.OpenIssue(intents.Owner, intents.Name, "t", "b", nil, human)
+	targetIssue := srv.OpenIssue(target.Owner, target.Name, "t", "b", nil, human)
+	issueComment := srv.CommentAs(targetIssue, "on the issue", human)
+	pr, err := pat.CreatePR(ctx, target, ghclient.PRRequest{Title: "t", Head: "patchy-intent/target-1", Base: "main"})
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	prComment := srv.CommentAs(pr.Number, "on the PR", human)
+
+	issuesWrite := scopedClient(t, srv, app, intents, ghclient.TokenPerms{Issues: ghclient.PermWrite})
+	issuesRead := scopedClient(t, srv, app, intents, ghclient.TokenPerms{Issues: ghclient.PermRead})
+	contentsWrite := scopedClient(t, srv, app, target, ghclient.TokenPerms{Contents: ghclient.PermWrite})
+	pullsWrite := scopedClient(t, srv, app, target, ghclient.TokenPerms{PullRequests: ghclient.PermWrite})
+
+	commit := func(c *ghclient.Client, repo ghclient.Repo) error {
+		_, err := c.CreateCommit(ctx, repo, ghclient.CommitRequest{
+			BaseSHA: fakegithub.BaseSHA, Message: "m",
+			Files: []ghclient.CommitFile{{Path: "a.go", Mode: "100644", Content: []byte("a")}},
+		})
+		return err
+	}
+	comment := func(c *ghclient.Client, repo ghclient.Repo, n int) error {
+		_, err := c.CreateComment(ctx, repo, n, "hi")
+		return err
+	}
+	openPR := func(c *ghclient.Client) error {
+		_, err := c.CreatePR(ctx, target, ghclient.PRRequest{Title: "t", Head: "patchy-intent/target-2", Base: "main"})
+		return err
+	}
+	tests := []struct {
+		name          string
+		call          func() error
+		wantForbidden bool
+	}{
+		{name: "issues write labels", call: func() error {
+			return issuesWrite.AddLabels(ctx, intents, intentIssue, []string{"patchy:approved"})
+		}},
+		{name: "issues write comments", call: func() error { return comment(issuesWrite, intents, intentIssue) }},
+		{name: "issues write reads repository metadata", call: func() error {
+			_, err := issuesWrite.DefaultBranch(ctx, intents)
+			return err
+		}},
+		{name: "issues write reads a collaborator permission", call: func() error {
+			_, err := issuesWrite.CollaboratorPermission(ctx, intents, "octocat")
+			return err
+		}},
+		{name: "issues write in another repository", wantForbidden: true,
+			call: func() error { return comment(issuesWrite, target, targetIssue) }},
+		{name: "issues write pushes", wantForbidden: true, call: func() error { return commit(issuesWrite, intents) }},
+		{name: "issues read lists", call: func() error {
+			_, err := issuesRead.ListIssues(ctx, intents, nil, "open", "")
+			return err
+		}},
+		{name: "issues read comments", wantForbidden: true,
+			call: func() error { return comment(issuesRead, intents, intentIssue) }},
+		{name: "contents write pushes", call: func() error { return commit(contentsWrite, target) }},
+		{name: "contents write reads a branch", call: func() error {
+			_, err := contentsWrite.HeadSHA(ctx, target, "main")
+			return err
+		}},
+		{name: "contents write in another repository", wantForbidden: true,
+			call: func() error { return commit(contentsWrite, intents) }},
+		{name: "contents write comments", wantForbidden: true,
+			call: func() error { return comment(contentsWrite, target, targetIssue) }},
+		{name: "contents write opens a PR", wantForbidden: true, call: func() error { return openPR(contentsWrite) }},
+		{name: "pull requests write opens a PR", call: func() error { return openPR(pullsWrite) }},
+		{name: "pull requests write comments on a PR", call: func() error { return comment(pullsWrite, target, pr.Number) }},
+		{name: "pull requests write reacts on a PR comment", call: func() error {
+			return pullsWrite.CreateIssueCommentReaction(ctx, target, prComment, ghclient.ReactionEyes)
+		}},
+		{name: "pull requests write comments on an issue", wantForbidden: true,
+			call: func() error { return comment(pullsWrite, target, targetIssue) }},
+		{name: "pull requests write reacts on an issue comment", wantForbidden: true, call: func() error {
+			return pullsWrite.CreateIssueCommentReaction(ctx, target, issueComment, ghclient.ReactionEyes)
+		}},
+		{name: "pull requests write reads a branch", wantForbidden: true, call: func() error {
+			_, err := pullsWrite.HeadSHA(ctx, target, "main")
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		err := tt.call()
+		switch {
+		case !tt.wantForbidden && err != nil:
+			t.Errorf("%s: error = %v, want success", tt.name, err)
+		case tt.wantForbidden && (!ghclient.IsForbidden(err) ||
+			!strings.Contains(err.Error(), "Resource not accessible by integration")):
+			t.Errorf("%s: error = %v, want 403 Resource not accessible by integration", tt.name, err)
+		}
+	}
+	// The refused calls changed nothing.
+	if got := srv.Comments(targetIssue); !reflect.DeepEqual(got, []string{"on the issue"}) {
+		t.Errorf("target issue comments = %q, want only the human's", got)
+	}
+	if got := srv.Reactions(issueComment); len(got) != 0 {
+		t.Errorf("issue comment reactions = %v, want none", got)
+	}
+}
+
+// TestIssueListOrder: the listing honours GitHub's sort and direction —
+// ghclient's most-recently-updated-first among them — and a new comment
+// moves an issue's updated_at and comment count, so the listing's tag moves
+// and the issue comes to the top.
+func TestIssueListOrder(t *testing.T) {
+	srv, c, clk := newFake(t)
+	ctx := context.Background()
+	trigger := []string{"patchy:target"}
+	open := func(title string) int {
+		clk.advance(time.Minute)
+		return srv.OpenIssue(intents.Owner, intents.Name, title, "b", trigger, human)
+	}
+	a, b, d := open("a"), open("b"), open("d")
+	numbers := func(list *ghclient.IssueList) []int {
+		out := make([]int, 0, len(list.Issues))
+		for _, is := range list.Issues {
+			out = append(out, is.Number)
+		}
+		return out
+	}
+
+	first, err := c.ListIssues(ctx, intents, trigger, "open", "")
+	if err != nil {
+		t.Fatalf("ListIssues() error = %v", err)
+	}
+	if got := numbers(first); !reflect.DeepEqual(got, []int{d, b, a}) {
+		t.Errorf("ListIssues() = %v, want most recently updated first %v", got, []int{d, b, a})
+	}
+
+	clk.advance(time.Minute)
+	srv.CommentAs(a, "a question", human)
+	afterComment, err := c.ListIssues(ctx, intents, trigger, "open", first.ETag)
+	if err != nil {
+		t.Fatalf("ListIssues() after comment error = %v", err)
+	}
+	if afterComment.NotModified || afterComment.ETag == first.ETag {
+		t.Fatalf("ListIssues() after comment = NotModified %v, want a fresh listing", afterComment.NotModified)
+	}
+	if got := numbers(afterComment); !reflect.DeepEqual(got, []int{a, d, b}) {
+		t.Errorf("ListIssues() after comment = %v, want the commented issue first %v", got, []int{a, d, b})
+	}
+
+	clk.advance(time.Minute)
+	srv.LabelIssue(b, "patchy:approved", human)
+	afterLabel, err := c.ListIssues(ctx, intents, trigger, "open", afterComment.ETag)
+	if err != nil {
+		t.Fatalf("ListIssues() after label error = %v", err)
+	}
+	if got := numbers(afterLabel); !reflect.DeepEqual(got, []int{b, a, d}) {
+		t.Errorf("ListIssues() after label = %v, want the labelled issue first %v", got, []int{b, a, d})
+	}
+
+	// The other orders, on the raw endpoint.
+	for query, want := range map[string][]int{
+		"":                              {d, b, a}, // GitHub's default: created, desc
+		"?direction=asc":                {a, b, d},
+		"?sort=updated&direction=asc":   {d, a, b},
+		"?sort=comments":                {a, d, b}, // one comment; ties newest number first
+		"?sort=nonsense&direction=desc": {d, b, a},
+	} {
+		got := rawIssueNumbers(t, srv.URL+"/api/v3/repos/devthenet-labs/intents/issues"+query)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("GET issues%s = %v, want %v", query, got, want)
+		}
+	}
+}
+
+// rawIssueNumbers GETs an issue listing and returns its issue numbers in
+// order.
+func rawIssueNumbers(t *testing.T, url string) []int {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, http.NoBody)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var issues []struct {
+		Number int `json:"number"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&issues); err != nil {
+		t.Fatalf("decode %s: %v", url, err)
+	}
+	out := make([]int, 0, len(issues))
+	for _, is := range issues {
+		out = append(out, is.Number)
+	}
+	return out
 }

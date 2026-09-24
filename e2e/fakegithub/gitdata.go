@@ -81,13 +81,15 @@ func (s *Server) BranchFiles(branch string) (files map[string][]byte, message st
 	return files, commit.Message, true
 }
 
-func (s *Server) gitRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /repos/{owner}/{repo}/git/ref/{ref...}", s.getRef)
-	mux.HandleFunc("POST /repos/{owner}/{repo}/git/blobs", s.createBlob)
-	mux.HandleFunc("POST /repos/{owner}/{repo}/git/trees", s.createTree)
-	mux.HandleFunc("POST /repos/{owner}/{repo}/git/commits", s.createCommit)
-	mux.HandleFunc("POST /repos/{owner}/{repo}/git/refs", s.createRef)
-	mux.HandleFunc("PATCH /repos/{owner}/{repo}/git/refs/{ref...}", s.updateRef)
+// gitRoutes registers the Git Data endpoints, all under the contents
+// permission.
+func (s *Server) gitRoutes(handle func(pattern, perm string, h http.HandlerFunc)) {
+	handle("GET /repos/{owner}/{repo}/git/ref/{ref...}", permContents, s.getRef)
+	handle("POST /repos/{owner}/{repo}/git/blobs", permContents, s.createBlob)
+	handle("POST /repos/{owner}/{repo}/git/trees", permContents, s.createTree)
+	handle("POST /repos/{owner}/{repo}/git/commits", permContents, s.createCommit)
+	handle("POST /repos/{owner}/{repo}/git/refs", permContents, s.createRef)
+	handle("PATCH /repos/{owner}/{repo}/git/refs/{ref...}", permContents, s.updateRef)
 }
 
 func (s *Server) getRef(w http.ResponseWriter, r *http.Request) {

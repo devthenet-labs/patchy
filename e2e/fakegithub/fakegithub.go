@@ -14,6 +14,13 @@
 // and the public-repository permission answers ("read" for anyone, "none"
 // for the App's bot, 404 for a nonexistent login). Issue numbers, refs and
 // permissions are global to the fake, not per repository.
+//
+// Credentials matter as they do on GitHub: an installation token the fake
+// minted is held to the repositories and permissions it was minted with
+// (403 "Resource not accessible by integration" outside them), and its
+// writes are the App's bot's; a PAT's writes are PATUser's. The listings
+// order as GitHub's do (sort, direction), and an issue's updated_at moves
+// with every change to it.
 package fakegithub
 
 import (
@@ -30,8 +37,9 @@ import (
 	"time"
 )
 
-// The fake App's identity: every API write is made as its bot user, the
-// actor GitHub records on everything an installation token does.
+// The fake App's identity: every API write made with an installation token
+// is made as its bot user, the actor GitHub records on everything an
+// installation token does (a PAT's writes are PATUser's).
 const (
 	AppSlug   = "patchy"
 	BotLogin  = AppSlug + "[bot]"
@@ -50,6 +58,12 @@ type Issue struct {
 	Labels    []label   `json:"labels"`
 	Assignees []Actor   `json:"assignees"`
 	CreatedAt time.Time `json:"created_at"`
+	// UpdatedAt moves with every change to the issue — its state, labels,
+	// assignees, body, or a new comment — as GitHub's does, so the listing
+	// sorted by it and its ETag move too.
+	UpdatedAt time.Time `json:"updated_at"`
+	// Comments is the issue's comment count.
+	Comments int `json:"comments"`
 	// RepositoryURL lets the client recover owner/name from search results.
 	RepositoryURL string `json:"repository_url"`
 	// HTMLURL is the issue's page.
@@ -133,8 +147,10 @@ type Server struct {
 	// are logins with no GitHub account. Everyone else reads as "read".
 	roles   map[string]string
 	missing map[string]bool
-	// tokens are the installation-token requests answered, in order.
+	// tokens are the installation-token requests answered, in order;
+	// minted maps each token handed out to the scope it is held to.
 	tokens []TokenRequest
+	minted map[string]TokenRequest
 	// Now stamps created_at; tests override it to age issues instantly.
 	Now func() time.Time
 }
@@ -153,6 +169,7 @@ func newState() (*Server, *http.ServeMux) {
 		reactions: make(map[int64][]reaction),
 		roles:     make(map[string]string),
 		missing:   make(map[string]bool),
+		minted:    make(map[string]TokenRequest),
 		Now:       time.Now,
 	}
 	mux := http.NewServeMux()
@@ -235,8 +252,17 @@ func (s *Server) LabelsOf(number int) []string {
 func (s *Server) SetIssueState(number int, state string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if is, ok := s.issues[number]; ok {
+	if is, ok := s.issues[number]; ok && is.State != state {
 		is.State = state
+		s.touch(is)
+	}
+}
+
+// touch moves an issue's updated_at to now, never backwards (created_at
+// carries sub-second precision, now does not). Callers hold s.mu.
+func (s *Server) touch(is *Issue) {
+	if now := s.now(); now.After(is.UpdatedAt) {
+		is.UpdatedAt = now
 	}
 }
 
@@ -250,37 +276,42 @@ func (s *Server) Age(d time.Duration) {
 	}
 }
 
+// routes registers every endpoint, each repository route with the
+// installation-token permission it needs (scoped). The App's own endpoints
+// take its JWT, and search and the tarball download hold no repository
+// permission, so those are registered bare.
 func (s *Server) routes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /repos/{owner}/{repo}/code-scanning/alerts/{number}", s.getAlert)
-	mux.HandleFunc("PATCH /repos/{owner}/{repo}/code-scanning/alerts/{number}", s.updateAlert)
-	mux.HandleFunc("GET /repos/{owner}/{repo}/code-scanning/alerts", s.listRepoAlerts)
-	mux.HandleFunc("GET /orgs/{org}/code-scanning/alerts", s.listOrgAlerts)
-	mux.HandleFunc("GET /repos/{owner}/{repo}/issues", s.listIssues)
-	mux.HandleFunc("POST /repos/{owner}/{repo}/issues", s.createIssue)
-	mux.HandleFunc("GET /repos/{owner}/{repo}/issues/{number}", s.getIssue)
-	mux.HandleFunc("PATCH /repos/{owner}/{repo}/issues/{number}", s.editIssue)
+	handle := func(pattern, perm string, h http.HandlerFunc) { mux.HandleFunc(pattern, s.scoped(perm, h)) }
+	handle("GET /repos/{owner}/{repo}/code-scanning/alerts/{number}", permSecurityEvents, s.getAlert)
+	handle("PATCH /repos/{owner}/{repo}/code-scanning/alerts/{number}", permSecurityEvents, s.updateAlert)
+	handle("GET /repos/{owner}/{repo}/code-scanning/alerts", permSecurityEvents, s.listRepoAlerts)
+	handle("GET /orgs/{org}/code-scanning/alerts", permSecurityEvents, s.listOrgAlerts)
+	handle("GET /repos/{owner}/{repo}/issues", permIssues, s.listIssues)
+	handle("POST /repos/{owner}/{repo}/issues", permIssues, s.createIssue)
+	handle("GET /repos/{owner}/{repo}/issues/{number}", permIssues, s.getIssue)
+	handle("PATCH /repos/{owner}/{repo}/issues/{number}", permIssues, s.editIssue)
 	// GET issues/{number}/comments, issues/{number}/events and
 	// issues/comments/{id} overlap as mux patterns; one handler splits them.
-	mux.HandleFunc("GET /repos/{owner}/{repo}/issues/{number}/{sub}", s.getIssueSub)
-	mux.HandleFunc("POST /repos/{owner}/{repo}/issues/{number}/comments", s.createComment)
-	mux.HandleFunc("PATCH /repos/{owner}/{repo}/issues/comments/{id}", s.editComment)
-	mux.HandleFunc("POST /repos/{owner}/{repo}/issues/comments/{id}/reactions", s.createReaction)
-	mux.HandleFunc("POST /repos/{owner}/{repo}/issues/{number}/labels", s.addLabels)
-	mux.HandleFunc("DELETE /repos/{owner}/{repo}/issues/{number}/labels/{name}", s.removeLabel)
-	mux.HandleFunc("POST /repos/{owner}/{repo}/issues/{number}/assignees", s.addAssignees)
-	mux.HandleFunc("GET /repos/{owner}/{repo}/collaborators/{login}/permission", s.permission)
+	handle("GET /repos/{owner}/{repo}/issues/{number}/{sub}", permIssues, s.getIssueSub)
+	handle("POST /repos/{owner}/{repo}/issues/{number}/comments", permIssues, s.createComment)
+	handle("PATCH /repos/{owner}/{repo}/issues/comments/{id}", permIssues, s.editComment)
+	handle("POST /repos/{owner}/{repo}/issues/comments/{id}/reactions", permIssues, s.createReaction)
+	handle("POST /repos/{owner}/{repo}/issues/{number}/labels", permIssues, s.addLabels)
+	handle("DELETE /repos/{owner}/{repo}/issues/{number}/labels/{name}", permIssues, s.removeLabel)
+	handle("POST /repos/{owner}/{repo}/issues/{number}/assignees", permIssues, s.addAssignees)
+	handle("GET /repos/{owner}/{repo}/collaborators/{login}/permission", permMetadata, s.permission)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", s.installation)
 	mux.HandleFunc("GET /app", s.getApp)
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", s.accessToken)
-	mux.HandleFunc("GET /repos/{owner}/{repo}", s.getRepo)
-	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{spec}", s.compare)
-	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls", s.listPulls)
-	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}", s.getPull)
-	mux.HandleFunc("POST /repos/{owner}/{repo}/pulls", s.createPull)
-	mux.HandleFunc("GET /repos/{owner}/{repo}/tarball/{ref...}", s.tarballRedirect)
+	handle("GET /repos/{owner}/{repo}", permMetadata, s.getRepo)
+	handle("GET /repos/{owner}/{repo}/compare/{spec}", permContents, s.compare)
+	handle("GET /repos/{owner}/{repo}/pulls", permPullRequests, s.listPulls)
+	handle("GET /repos/{owner}/{repo}/pulls/{number}", permPullRequests, s.getPull)
+	handle("POST /repos/{owner}/{repo}/pulls", permPullRequests, s.createPull)
+	handle("GET /repos/{owner}/{repo}/tarball/{ref...}", permContents, s.tarballRedirect)
 	mux.HandleFunc("GET /_tarball/{owner}/{repo}/{ref...}", s.tarball)
 	mux.HandleFunc("GET /search/issues", s.searchIssues)
-	s.gitRoutes(mux)
+	s.gitRoutes(handle)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("fakegithub: unhandled %s %s", r.Method, r.URL.Path), http.StatusNotFound)
 	})
@@ -432,11 +463,16 @@ func (s *Server) updateAlert(w http.ResponseWriter, r *http.Request) {
 
 // listIssues answers GET /repos/{o}/{r}/issues: the issues carrying every
 // label in the filter, in the requested state (GitHub's default, open;
-// "closed"; "all"), ordered by number. The listing is ETag-tagged and a
-// matching If-None-Match answers 304, as GitHub does.
+// "closed"; "all"), ordered as GitHub orders them — sort "created" (the
+// default), "updated" or "comments", direction "desc" (the default) or
+// "asc", ties broken by number the same way. The listing is ETag-tagged and
+// a matching If-None-Match answers 304, as GitHub does; since it renders
+// each issue's updated_at and comment count, any change to a listed issue
+// changes the tag.
 func (s *Server) listIssues(w http.ResponseWriter, r *http.Request) {
-	want := splitLabels(r.URL.Query().Get("labels"))
-	state := r.URL.Query().Get("state")
+	q := r.URL.Query()
+	want := splitLabels(q.Get("labels"))
+	state := q.Get("state")
 	if state == "" {
 		state = "open"
 	}
@@ -449,8 +485,30 @@ func (s *Server) listIssues(w http.ResponseWriter, r *http.Request) {
 			out = append(out, is)
 		}
 	}
-	slices.SortFunc(out, func(a, b *Issue) int { return a.Number - b.Number })
+	slices.SortFunc(out, issueOrder(q.Get("sort"), q.Get("direction")))
 	writeJSONTagged(w, r, out)
+}
+
+// issueOrder is the issue listing's comparison for GitHub's sort and
+// direction parameters; an unknown sort falls back to created.
+func issueOrder(sort, direction string) func(a, b *Issue) int {
+	key := func(a, b *Issue) int { return a.CreatedAt.Compare(b.CreatedAt) }
+	switch sort {
+	case "updated":
+		key = func(a, b *Issue) int { return a.UpdatedAt.Compare(b.UpdatedAt) }
+	case "comments":
+		key = func(a, b *Issue) int { return a.Comments - b.Comments }
+	}
+	sign := -1 // desc, GitHub's default
+	if direction == "asc" {
+		sign = 1
+	}
+	return func(a, b *Issue) int {
+		if c := key(a, b); c != 0 {
+			return sign * c
+		}
+		return sign * (a.Number - b.Number)
+	}
 }
 
 func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {
@@ -465,8 +523,9 @@ func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	actor := s.caller(r)
 	s.mu.Lock()
-	is := s.openIssue(owner, repo, body.Title, body.Body, body.Labels, Bot)
+	is := s.openIssue(owner, repo, body.Title, body.Body, body.Labels, actor)
 	s.mu.Unlock()
 
 	w.WriteHeader(http.StatusCreated)
@@ -478,9 +537,11 @@ func (s *Server) createIssue(w http.ResponseWriter, r *http.Request) {
 // opener). Callers hold s.mu.
 func (s *Server) openIssue(owner, repo, title, body string, labels []string, author Actor) *Issue {
 	s.next++
+	now := s.Now()
 	is := &Issue{
 		Number: s.next, Title: title, Body: body, State: "open",
-		CreatedAt:     s.Now(),
+		CreatedAt:     now,
+		UpdatedAt:     now,
 		RepositoryURL: fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo),
 		HTMLURL:       fmt.Sprintf("https://github.com/%s/%s/issues/%d", owner, repo, s.next),
 		User:          author,
@@ -520,6 +581,7 @@ func (s *Server) editIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	actor := s.caller(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	is, ok := s.issues[number]
@@ -527,15 +589,16 @@ func (s *Server) editIssue(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if body.Body != nil {
+	if body.Body != nil && *body.Body != is.Body {
 		is.Body = *body.Body
+		s.touch(is)
 	}
 	if body.State != nil {
 		reason := ""
 		if body.StateReason != nil {
 			reason = *body.StateReason
 		}
-		s.setState(is, *body.State, reason, Bot)
+		s.setState(is, *body.State, reason, actor)
 	}
 	writeJSON(w, is)
 }
@@ -548,6 +611,7 @@ func (s *Server) setState(is *Issue, state, reason string, actor Actor) {
 	}
 	is.State = state
 	is.StateReason = reason
+	s.touch(is)
 	switch state {
 	case "closed":
 		s.recordEvent(is.Number, "closed", "", actor)
@@ -592,8 +656,9 @@ func (s *Server) createComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	actor := s.caller(r)
 	s.mu.Lock()
-	c := s.addComment(number, body.Body, Bot)
+	c := s.addComment(number, body.Body, actor)
 	s.mu.Unlock()
 
 	w.WriteHeader(http.StatusCreated)
@@ -601,7 +666,8 @@ func (s *Server) createComment(w http.ResponseWriter, r *http.Request) {
 }
 
 // addComment records a comment by author; the App's own carry
-// performed_via_github_app. Callers hold s.mu.
+// performed_via_github_app. A comment counts toward the issue's comments and
+// moves its updated_at. Callers hold s.mu.
 func (s *Server) addComment(number int, body string, author Actor) comment {
 	s.nextCommentID++
 	now := s.now()
@@ -610,6 +676,10 @@ func (s *Server) addComment(number int, body string, author Actor) comment {
 		c.ViaApp = viaApp
 	}
 	s.comments[number] = append(s.comments[number], c)
+	if is, ok := s.issues[number]; ok {
+		is.Comments++
+		s.touch(is)
+	}
 	return c
 }
 
@@ -654,6 +724,7 @@ func (s *Server) addLabels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	actor := s.caller(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	is, ok := s.issues[number]
@@ -662,7 +733,7 @@ func (s *Server) addLabels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, name := range names {
-		s.label(is, name, Bot)
+		s.label(is, name, actor)
 	}
 	writeJSON(w, is.Labels)
 }
@@ -675,6 +746,7 @@ func (s *Server) label(is *Issue, name string, actor Actor) {
 		return
 	}
 	is.Labels = append(is.Labels, label{Name: name})
+	s.touch(is)
 	s.recordEvent(is.Number, "labeled", name, actor)
 }
 
@@ -686,6 +758,7 @@ func (s *Server) unlabel(is *Issue, name string, actor Actor) bool {
 	if len(is.Labels) == before {
 		return false
 	}
+	s.touch(is)
 	s.recordEvent(is.Number, "unlabeled", name, actor)
 	return true
 }
@@ -694,6 +767,7 @@ func (s *Server) removeLabel(w http.ResponseWriter, r *http.Request) {
 	number, _ := strconv.Atoi(r.PathValue("number"))
 	name := r.PathValue("name")
 
+	actor := s.caller(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	is, ok := s.issues[number]
@@ -701,7 +775,7 @@ func (s *Server) removeLabel(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if !s.unlabel(is, name, Bot) {
+	if !s.unlabel(is, name, actor) {
 		// GitHub 404s an absent label; the client treats that as success.
 		http.NotFound(w, r)
 		return
@@ -728,6 +802,9 @@ func (s *Server) addAssignees(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, login := range body.Assignees {
 		is.Assignees = append(is.Assignees, Actor{Login: login})
+	}
+	if len(body.Assignees) > 0 {
+		s.touch(is)
 	}
 	writeJSON(w, is)
 }

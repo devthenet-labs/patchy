@@ -125,11 +125,8 @@ func (inv *Investigation) validate() error {
 	if !slices.Contains(validLevels, inv.Severity) {
 		errs = append(errs, fmt.Errorf("severity %q is not low, medium, high, or critical", inv.Severity))
 	}
-	switch {
-	case inv.Confidence == nil:
-		errs = append(errs, errors.New("confidence is required"))
-	case *inv.Confidence < 0 || *inv.Confidence > 1:
-		errs = append(errs, fmt.Errorf("confidence %v is outside [0, 1]", *inv.Confidence))
+	if err := checkConfidence(inv.Confidence); err != nil {
+		errs = append(errs, err)
 	}
 	if inv.Recommendation == RecommendRemediate {
 		if inv.Model == "" {

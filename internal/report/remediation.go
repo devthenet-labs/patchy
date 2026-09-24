@@ -43,11 +43,8 @@ func (r *Remediation) validate() error {
 	if r.Success == nil {
 		errs = append(errs, errors.New("success is required"))
 	}
-	switch {
-	case r.Confidence == nil:
-		errs = append(errs, errors.New("confidence is required"))
-	case *r.Confidence < 0 || *r.Confidence > 1:
-		errs = append(errs, fmt.Errorf("confidence %v is outside [0, 1]", *r.Confidence))
+	if err := checkConfidence(r.Confidence); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }

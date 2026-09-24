@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 
@@ -49,6 +50,23 @@ func decodeStrict(block []byte, out any) error {
 	dec.KnownFields(true)
 	if err := dec.Decode(out); err != nil {
 		return fmt.Errorf("report: frontmatter: %w", err)
+	}
+	return nil
+}
+
+// checkConfidence validates the confidence both report kinds carry: present,
+// finite, and in [0, 1]. YAML spells NaN and the infinities as floats
+// (.nan, .inf, -.inf), and NaN compares false against both bounds, so the
+// range check alone would accept it — and a NaN cannot be encoded onto the
+// envelope the verdict leaves the pod on.
+func checkConfidence(c *float64) error {
+	switch {
+	case c == nil:
+		return errors.New("confidence is required")
+	case math.IsNaN(*c) || math.IsInf(*c, 0):
+		return fmt.Errorf("confidence %v is not a finite number", *c)
+	case *c < 0 || *c > 1:
+		return fmt.Errorf("confidence %v is outside [0, 1]", *c)
 	}
 	return nil
 }

@@ -40,3 +40,7 @@ it did not work. This report is posted to the tracking issue and the pull reques
   commit groups). Use a [Conventional Commits](https://www.conventionalcommits.org) message, e.g.
   `fix(security): sanitize user input in render path`.
 - No other commands: no push, no branch/checkout/config/remote/network operations, no file mutations.
+- After it runs, `git status --porcelain` must print nothing and the branch must carry at least one new commit, or
+  the fix is rejected. So stage every file that is part of the fix, and before you finish, restore
+  (`git checkout -- <path>`) or delete anything else your verification created or changed — build output, caches, a
+  binary the repository tracks that a build overwrote. Never commit those.

@@ -304,3 +304,38 @@ func TestEnrichmentProjection(t *testing.T) {
 		t.Errorf("projection = %q", got)
 	}
 }
+
+// TestRemediatePromptStatesCleanTree: every remediation prompt, a first
+// attempt's included, states in the commit.sh contract the post-condition
+// the runner enforces after the script (agentrun.verifyCommitted) — a clean
+// tree and a new commit — and what to do with what verification left
+// behind. Live, attempt 1 of a finding was never told, let `go build`
+// overwrite a binary the repository tracks, and failed commit_failed; only
+// its retry learned why.
+func TestRemediatePromptStatesCleanTree(t *testing.T) {
+	for _, prev := range []*PreviousAttempt{nil, {Attempt: 1, Outcome: "timeout", Detail: "stage timed out"}} {
+		got, err := RenderRemediatePrompt(RemediatePrompt{
+			IssuePath:         "/workspace/input/issue.md",
+			InvestigationPath: "/workspace/input/investigation.md",
+			ReportPath:        "/workspace/reports/remediation.md",
+			CommitScriptPath:  "/workspace/commit.sh",
+			PreviousAttempt:   prev,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, contract, ok := strings.Cut(got, "a POSIX sh script that commits your fix. The contract:")
+		if !ok {
+			t.Fatalf("no commit.sh contract in the prompt:\n%s", got)
+		}
+		for _, want := range []string{
+			"`git status --porcelain` must print nothing",
+			"at least one new commit",
+			"`git checkout -- <path>`",
+		} {
+			if !strings.Contains(contract, want) {
+				t.Errorf("previous attempt %+v: commit.sh contract lacks %q:\n%s", prev, want, contract)
+			}
+		}
+	}
+}

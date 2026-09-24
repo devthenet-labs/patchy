@@ -84,7 +84,7 @@ func TestIntentKindsDeepCopy(t *testing.T) {
 		}},
 		{"intent run", func() runtime.Object {
 			return &IntentRun{Spec: IntentRunSpec{
-				Inputs:          IntentRunInputs{ReviewIDs: []int64{1}, CheckRunIDs: []int64{2}},
+				Inputs:          IntentRunInputs{ReviewIDs: []int64{1}, CheckRunIDs: []int64{2}, StatusIDs: []int64{3}},
 				ImageFrom:       &ObjectReference{Name: "r0"},
 				PreviousAttempt: &PreviousAttempt{Name: "a1", Attempt: 1, Outcome: "timeout"},
 			}, Status: IntentRunStatus{
@@ -97,6 +97,7 @@ func TestIntentKindsDeepCopy(t *testing.T) {
 			r := o.(*IntentRun)
 			r.Spec.Inputs.ReviewIDs[0] = 9
 			r.Spec.Inputs.CheckRunIDs[0] = 9
+			r.Spec.Inputs.StatusIDs[0] = 9
 			r.Spec.ImageFrom.Name = "head"
 			r.Spec.PreviousAttempt.Outcome = "ok"
 			r.Status.JobRef.Name = "other"

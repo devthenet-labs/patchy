@@ -83,6 +83,16 @@ const (
 	// after a check-fix round with the same failure signature (slice 1b).
 	ConditionChecksFailing = "ChecksFailing"
 
+	// ConditionIntentNameConflict marks a Project, True while one of its
+	// trigger-labelled issues cannot become an Intent because the name
+	// <project>-<issue> is held by an Intent for an issue of another
+	// repository: a Project deleted and recreated, under the same name, on a
+	// different intent repository (spec.intentRepository is immutable, so
+	// only a recreate can do it). The message names the issue and the Intent;
+	// the issue is skipped, never silently, until that Intent is deleted or
+	// expires. Set by intent-controller's project reconciler.
+	ConditionIntentNameConflict = "IntentNameConflict"
+
 	// Per-scope rollup markers. A scope's finalizer is removed only when its
 	// condition is True and deletion is underway — remaining finalizers show
 	// exactly which scopes still owe aggregation.

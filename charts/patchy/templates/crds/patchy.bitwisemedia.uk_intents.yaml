@@ -372,14 +372,19 @@ spec:
                 description: |-
                   LastTrigger is the newest trigger action consumed after the one that
                   created the intent (spec.requestedBy, which is immutable): the
-                  trigger label re-applied, or /patchy replan. It is recorded whether
-                  the action was acted on (a replan from AwaitingApproval, a revival
-                  from Failed) or refused with its one notice (not an approver's). A
+                  trigger label re-applied, or /patchy replan. Every trigger action the
+                  controller answers is consumed and recorded here, whatever the
+                  answer: acted on (a replan from AwaitingApproval, a revival from
+                  Failed), refused as not an approver's, or answered "not available in
+                  this phase" (a replan asked for while Planning or Building, say). A
                   later poll considers only trigger actions newer than it (newer than
                   spec.requestedBy while it is nil), comparing GitHub's own created_at
-                  and never the controller's phaseTimes or completedAt. So a revival
-                  whose plan fails again, posting no plan to anchor on, cannot
-                  re-consume the action that revived it.
+                  and never the controller's phaseTimes or completedAt. So an action
+                  that was answered is never acted on later: a replan refused while
+                  Building does not revive the intent when the build then fails, a
+                  replan refused while Planning does not replay once the plan is
+                  posted, and a revival whose plan fails again, posting no plan to
+                  anchor on, cannot re-consume the action that revived it.
                 properties:
                   at:
                     description: At is the action's created_at, as GitHub reports

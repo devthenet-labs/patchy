@@ -211,9 +211,11 @@ type ProjectLimits struct {
 // ProjectChecks configures automatic fix rounds on failed CI checks of the
 // pull requests patchy opened (slice 1b).
 type ProjectChecks struct {
-	// Fix names the checks (check-run or commit-status names, e.g. "test",
-	// "lint") whose failure on patchy's own head starts a fix round without
-	// a human. Empty means patchy never auto-fixes: a failing check is
+	// Fix names the checks (check-run names or commit-status contexts, e.g.
+	// "test", "lint") whose failure on patchy's own head starts a fix round
+	// without a human; the round records the failed check runs and commit
+	// statuses it consumed, each by its own id (IntentRunInputs.CheckRunIDs
+	// and StatusIDs). Empty means patchy never auto-fixes: a failing check is
 	// reported on the intent issue and an approver can run /patchy revise.
 	// The list is explicit so a flaky or unrelated check cannot burn
 	// budget.
@@ -242,10 +244,16 @@ type ProjectSpec struct {
 	// IntentRepository is the https URL of the repository whose issues are
 	// this Project's intents (e.g. https://github.com/acme/intents). Several
 	// Projects may share one, told apart by their trigger labels. The App
-	// must be installed on it and it must resolve to exactly one Forge.
+	// must be installed on it and it must resolve to exactly one Forge. It
+	// is immutable (CEL-enforced): an Intent is named <project>-<issue>,
+	// which leaves the repository out, so a Project moved to another intent
+	// repository would find its new issues' names held by the old
+	// repository's Intents. To move a project, create a new Project, under a
+	// new name, on the new repository.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=256
 	// +kubebuilder:validation:Pattern=`^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec.intentRepository is immutable: Intent names leave the repository out, so create a new Project to use another intent repository"
 	IntentRepository string `json:"intentRepository"`
 	// Labels names the trigger and approve labels.
 	// +optional
@@ -299,7 +307,9 @@ type ProjectStatus struct {
 	// resolves to exactly one Forge, the App is installed on the intent
 	// repository and every app repository, and the labels exist; False
 	// reasons include ForgeUnresolved, AppNotInstalled and
-	// AmbiguousIntentRepository.
+	// AmbiguousIntentRepository. IntentNameConflict is True while a
+	// trigger-labelled issue cannot become an Intent because its name is
+	// held by an Intent for an issue of another repository.
 	// +optional
 	// +listType=map
 	// +listMapKey=type

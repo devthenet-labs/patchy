@@ -4,6 +4,7 @@
 package v1alpha1_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	patchyv1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
@@ -61,12 +64,66 @@ func schemaProject(name string) *patchyv1.Project {
 
 // testProjectSchema exercises the Project schema: the defaults a minimal
 // Project is completed with, every bound at and past its edge, the label
-// rule, the name rule, and a status round-trip.
+// rule, the name rule, the immutable intent repository, and a status
+// round-trip.
 func testProjectSchema(ctx context.Context, t *testing.T, c client.Client) {
 	t.Helper()
 	testProjectDefaults(ctx, t, c)
 	testProjectBounds(ctx, t, c)
+	testProjectUpdates(ctx, t, c)
 	testProjectStatus(ctx, t, c)
+}
+
+// testProjectUpdates: the intent repository is immutable — an Intent is
+// named <project>-<issue>, leaving the repository out, so a moved Project's
+// new issues would collide with the old repository's Intents — while the
+// rest of the spec stays editable.
+func testProjectUpdates(ctx context.Context, t *testing.T, c client.Client) {
+	t.Helper()
+	p := schemaProject("proj-updates")
+	if err := c.Create(ctx, p); err != nil {
+		t.Fatalf("Create(project) = %v", err)
+	}
+	for _, tt := range []struct {
+		name    string
+		mutate  func(*patchyv1.ProjectSpec)
+		wantErr bool
+	}{
+		{"the intent repository moved", func(s *patchyv1.ProjectSpec) {
+			s.IntentRepository = "https://github.com/acme/shop-intents"
+		}, true},
+		// No normalisation: even a change of case is a change.
+		{"the intent repository recased", func(s *patchyv1.ProjectSpec) {
+			s.IntentRepository = "https://github.com/Acme/Intents"
+		}, true},
+		{"the approvers", func(s *patchyv1.ProjectSpec) {
+			s.Approvers.Logins = []string{"octocat", "hubot"}
+		}, false},
+		{"the repositories", func(s *patchyv1.ProjectSpec) {
+			s.Repositories[0].URL = "https://github.com/acme/store"
+		}, false},
+		{"the limits", func(s *patchyv1.ProjectSpec) { s.Limits.MaxActiveIntents = 5 }, false},
+		{"suspend", func(s *patchyv1.ProjectSpec) { s.Suspend = true }, false},
+	} {
+		t.Run("update "+tt.name, func(t *testing.T) {
+			got := &patchyv1.Project{}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(p), got); err != nil {
+				t.Fatalf("Get(project) = %v", err)
+			}
+			tt.mutate(&got.Spec)
+			if err := c.Update(ctx, got); (err != nil) != tt.wantErr {
+				t.Errorf("Update(project: %s) = %v, wantErr %v", tt.name, err, tt.wantErr)
+			}
+		})
+	}
+	got := &patchyv1.Project{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(p), got); err != nil {
+		t.Fatalf("Get(project) = %v", err)
+	}
+	if got.Spec.IntentRepository != p.Spec.IntentRepository {
+		t.Errorf("intentRepository = %q after the refused updates, want %q",
+			got.Spec.IntentRepository, p.Spec.IntentRepository)
+	}
 }
 
 // testProjectDefaults: a minimal Project is completed with the design's
@@ -638,12 +695,25 @@ func testIntentRunSchema(ctx context.Context, t *testing.T, c client.Client) {
 		{"a checks trigger", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
 			s.Trigger, s.Inputs.ReviewIDs, s.Inputs.CheckRunIDs = patchyv1.IntentRunTriggerChecks, nil, ids(32)
 		}, false},
+		// A check CI reports as a commit status is consumed by its status
+		// id, in its own list: status and check-run ids are separate id
+		// spaces.
+		{"a checks round consuming commit statuses only", patchyv1.IntentStageRevise,
+			func(s *patchyv1.IntentRunSpec) {
+				s.Trigger, s.Inputs.ReviewIDs, s.Inputs.StatusIDs = patchyv1.IntentRunTriggerChecks, nil, ids(32)
+			}, false},
+		{"a checks round consuming check runs and commit statuses", patchyv1.IntentStageRevise,
+			func(s *patchyv1.IntentRunSpec) {
+				s.Trigger, s.Inputs.ReviewIDs = patchyv1.IntentRunTriggerChecks, nil
+				s.Inputs.CheckRunIDs, s.Inputs.StatusIDs = ids(1), ids(1)
+			}, false},
 		{"a review round without its reviews", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
 			s.Inputs.ReviewIDs = nil
 		}, true},
-		{"a checks round without its check runs", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
-			s.Trigger, s.Inputs.ReviewIDs = patchyv1.IntentRunTriggerChecks, nil
-		}, true},
+		{"a checks round without its check runs or commit statuses", patchyv1.IntentStageRevise,
+			func(s *patchyv1.IntentRunSpec) {
+				s.Trigger, s.Inputs.ReviewIDs = patchyv1.IntentRunTriggerChecks, nil
+			}, true},
 		{"a command round without its command", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
 			s.Trigger = patchyv1.IntentRunTriggerCommand
 		}, true},
@@ -652,6 +722,12 @@ func testIntentRunSchema(ctx context.Context, t *testing.T, c client.Client) {
 		}, true},
 		{"a review round consuming check runs", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
 			s.Inputs.CheckRunIDs = ids(1)
+		}, true},
+		{"a review round consuming commit statuses", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.StatusIDs = ids(1)
+		}, true},
+		{"a command round consuming commit statuses", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Trigger, s.Inputs.CommandID, s.Inputs.StatusIDs = patchyv1.IntentRunTriggerCommand, 9001, ids(1)
 		}, true},
 		{"a review round consuming a command", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
 			s.Inputs.CommandID = 9001
@@ -664,6 +740,17 @@ func testIntentRunSchema(ctx context.Context, t *testing.T, c client.Client) {
 		}, true},
 		{"a build run consuming a command", patchyv1.IntentStageBuild, func(s *patchyv1.IntentRunSpec) {
 			s.Inputs.CommandID = 9001
+		}, true},
+		{"a build run consuming commit statuses", patchyv1.IntentStageBuild, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.StatusIDs = ids(1)
+		}, true},
+		// The UID is what an adoption on AlreadyExists compares, and what
+		// pins a revise run's image source: neither may be left out.
+		{"an intent ref without its uid", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) {
+			s.IntentRef.UID = ""
+		}, true},
+		{"a revise run whose image source has no uid", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.ImageFrom.UID = ""
 		}, true},
 		{"a plan run at round 0", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) { s.Round = 0 }, true},
 		{"a build run at round 0", patchyv1.IntentStageBuild, func(s *patchyv1.IntentRunSpec) {
@@ -718,6 +805,12 @@ func testIntentRunSchema(ctx context.Context, t *testing.T, c client.Client) {
 		{"33 consumed check runs", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
 			s.Trigger, s.Inputs.ReviewIDs, s.Inputs.CheckRunIDs = patchyv1.IntentRunTriggerChecks, nil, ids(33)
 		}, true},
+		{"33 consumed commit statuses", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Trigger, s.Inputs.ReviewIDs, s.Inputs.StatusIDs = patchyv1.IntentRunTriggerChecks, nil, ids(33)
+		}, true},
+		{"a commit status consumed twice", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Trigger, s.Inputs.ReviewIDs, s.Inputs.StatusIDs = patchyv1.IntentRunTriggerChecks, nil, []int64{7, 7}
+		}, true},
 		{"a review consumed twice", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
 			s.Inputs.ReviewIDs = []int64{7, 7}
 		}, true},
@@ -736,6 +829,37 @@ func testIntentRunSchema(ctx context.Context, t *testing.T, c client.Client) {
 			tt.mutate(&r.Spec)
 			if err := c.Create(ctx, r); (err != nil) != tt.wantErr {
 				t.Errorf("Create(intent run: %s) = %v, wantErr %v", tt.name, err, tt.wantErr)
+			}
+		})
+	}
+
+	// A typed client omits an empty uid, which the cases above cover; an
+	// explicitly empty one passes has(), so the rules refuse it by size.
+	// The first case, which blanks nothing, is the control: the same
+	// unstructured path accepts a valid run.
+	for _, tt := range []struct {
+		field   string
+		wantErr bool
+	}{{"", false}, {"intentRef", true}, {"imageFrom", true}} {
+		name := "create unstructured with every uid set"
+		if tt.field != "" {
+			name = fmt.Sprintf("create unstructured with spec.%s.uid blanked", tt.field)
+		}
+		t.Run(name, func(t *testing.T) {
+			r := schemaIntentRun("target-1-uid-"+cmp.Or(strings.ToLower(tt.field), "control"), patchyv1.IntentStageRevise)
+			obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(r)
+			if err != nil {
+				t.Fatalf("ToUnstructured(intent run) = %v", err)
+			}
+			u := &unstructured.Unstructured{Object: obj}
+			u.SetGroupVersionKind(patchyv1.GroupVersion.WithKind("IntentRun"))
+			if tt.field != "" {
+				if err := unstructured.SetNestedField(u.Object, "", "spec", tt.field, "uid"); err != nil {
+					t.Fatalf("set spec.%s.uid: %v", tt.field, err)
+				}
+			}
+			if err := c.Create(ctx, u); (err != nil) != tt.wantErr {
+				t.Errorf("Create(intent run, spec.%s.uid blanked) = %v, wantErr %v", tt.field, err, tt.wantErr)
 			}
 		})
 	}

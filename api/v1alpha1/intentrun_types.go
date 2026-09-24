@@ -21,9 +21,12 @@ import (
 // round, attempt, and for build and revise runs repoKey) give distinct names,
 // and inside the name budget
 // every name is at most 63 characters, a valid label value. A name can still
-// equal a run name of a different Intent whose project name happens to embed
-// such a suffix, so a controller adopting an existing run on AlreadyExists
-// checks its spec.intentRef UID. An unknown stage returns "".
+// equal a run name of a different Intent: one whose project name happens to
+// embed such a suffix, or the same-named Intent recreated for the issue after
+// the TTL deleted the first, whose runs may still be terminating. So a
+// controller adopting an existing run on AlreadyExists checks its
+// spec.intentRef UID, which the schema requires, and never adopts a run whose
+// UID is not its Intent's. An unknown stage returns "".
 func IntentRunName(intent string, stage IntentStage, round int32, repoKey string, attempt int32) string {
 	switch stage {
 	case IntentStagePlan:
@@ -89,11 +92,12 @@ type IntentRunRepository struct {
 // same feedback twice. What a revise round consumed is recorded on the
 // immutable spec — that record is the exactly-once guarantee — so the
 // schema requires each trigger's own record (reviewIDs for a review round,
-// checkRunIDs for a checks round, commandID for a command round) and keeps
-// each record to the rounds it belongs to: a command round may also consume
-// the approver reviews since the last round as its feedback, while a checks
-// round consumes check runs only, so it is never counted against
-// maxRevisions.
+// checkRunIDs or statusIDs for a checks round, commandID for a command
+// round) and keeps each record to the rounds it belongs to: a command round
+// may also consume the approver reviews since the last round as its
+// feedback, while a checks round consumes failed checks only — check runs
+// and commit statuses, each in its own id space — so it is never counted
+// against maxRevisions.
 type IntentRunInputs struct {
 	// ConfigMap names the run's own input ConfigMap (owned by this run):
 	// the issue.md and investigation.md handed to the Job — the intent
@@ -127,13 +131,27 @@ type IntentRunInputs struct {
 	// +kubebuilder:validation:MaxItems=32
 	ReviewIDs []int64 `json:"reviewIDs,omitempty"`
 	// CheckRunIDs are the check-run ids whose failure a checks round
-	// consumed (slice 1b), so a check failure is consumed exactly once.
-	// Required on a checks round, and on no other.
+	// consumed (slice 1b), so a check failure is consumed exactly once. A
+	// checks round records at least one of CheckRunIDs and StatusIDs, and
+	// no other round records either.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=32
 	CheckRunIDs []int64 `json:"checkRunIDs,omitempty"`
+	// StatusIDs are the commit-status ids whose failure (state failure or
+	// error) a checks round consumed (slice 1b), for a named check that CI
+	// reports as a commit status (its context) rather than a check run.
+	// Commit statuses and check runs are separate GitHub id spaces, so a
+	// status id is never recorded in CheckRunIDs, where it could equal, and
+	// mark consumed, an unrelated check run. A checks round records at
+	// least one of CheckRunIDs and StatusIDs, and no other round records
+	// either.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	StatusIDs []int64 `json:"statusIDs,omitempty"`
 	// CommandID is the GitHub id of the issue comment carrying the /patchy
 	// command (revise, or retry) a command round consumed (slice 1b), so
 	// a command starts at most one round. Required on a command round, and
@@ -176,22 +194,27 @@ type IntentRunGrant struct {
 //
 // Beyond immutability the schema holds the stage invariants the design's
 // security posture rests on, so a malformed run record is refused at
-// admission rather than launched: a build or revise run always pins an
-// approved plan, and a revise run always names its trigger, records what
-// that trigger consumed (IntentRunInputs), and takes its image from the build
-// round's Repository.
+// admission rather than launched: every run names its Intent by UID, a build
+// or revise run always pins an approved plan, and a revise run always names
+// its trigger, records what that trigger consumed (IntentRunInputs), and
+// takes its image from the build round's Repository, named by UID.
 //
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec is immutable; create a new IntentRun for a new attempt"
+// +kubebuilder:validation:XValidation:rule="has(self.intentRef.uid) && size(self.intentRef.uid) > 0",message="spec.intentRef.uid is required: a run is adopted on AlreadyExists only by its Intent's UID"
+// +kubebuilder:validation:XValidation:rule="!has(self.imageFrom) || (has(self.imageFrom.uid) && size(self.imageFrom.uid) > 0)",message="spec.imageFrom.uid is required: a revise run's image source is pinned by UID"
 // +kubebuilder:validation:XValidation:rule="self.stage != 'build' || (has(self.inputs.planRevision) && self.round == self.inputs.planRevision)",message="a build run's round is the approved plan revision it builds (inputs.planRevision)"
 // +kubebuilder:validation:XValidation:rule="self.stage == 'plan' || (has(self.inputs.planRevision) && self.inputs.planRevision >= 1 && has(self.inputs.planDigest))",message="build and revise runs pin the approved plan (inputs.planRevision and inputs.planDigest)"
 // +kubebuilder:validation:XValidation:rule="(self.stage == 'revise') == has(self.trigger)",message="spec.trigger is set on revise runs, and only on them"
 // +kubebuilder:validation:XValidation:rule="(self.stage == 'revise') == has(self.imageFrom)",message="spec.imageFrom is set on revise runs, and only on them"
-// +kubebuilder:validation:XValidation:rule="!has(self.trigger) || (self.trigger == 'review' ? has(self.inputs.reviewIDs) : self.trigger == 'checks' ? has(self.inputs.checkRunIDs) : has(self.inputs.commandID))",message="a revise run records what its trigger consumed: inputs.reviewIDs for a review round, inputs.checkRunIDs for a checks round, inputs.commandID for a command round"
+// +kubebuilder:validation:XValidation:rule="!has(self.trigger) || (self.trigger == 'review' ? has(self.inputs.reviewIDs) : self.trigger == 'checks' ? (has(self.inputs.checkRunIDs) || has(self.inputs.statusIDs)) : has(self.inputs.commandID))",message="a revise run records what its trigger consumed: inputs.reviewIDs for a review round, inputs.checkRunIDs or inputs.statusIDs for a checks round, inputs.commandID for a command round"
 // +kubebuilder:validation:XValidation:rule="!has(self.inputs.reviewIDs) || (has(self.trigger) && self.trigger != 'checks')",message="inputs.reviewIDs are consumed only by review and command rounds"
 // +kubebuilder:validation:XValidation:rule="!has(self.inputs.checkRunIDs) || (has(self.trigger) && self.trigger == 'checks')",message="inputs.checkRunIDs are consumed only by checks rounds"
+// +kubebuilder:validation:XValidation:rule="!has(self.inputs.statusIDs) || (has(self.trigger) && self.trigger == 'checks')",message="inputs.statusIDs are consumed only by checks rounds"
 // +kubebuilder:validation:XValidation:rule="!has(self.inputs.commandID) || (has(self.trigger) && self.trigger == 'command')",message="inputs.commandID is consumed only by command rounds"
 type IntentRunSpec struct {
-	// IntentRef is the owning Intent (UID-pinned).
+	// IntentRef is the owning Intent. Its UID is required (CEL-enforced):
+	// run names can repeat across Intents (see IntentRunName), so the UID is
+	// what a controller adopting an existing run on AlreadyExists compares.
 	IntentRef ObjectReference `json:"intentRef"`
 	// Stage the run executes.
 	Stage IntentStage `json:"stage"`
@@ -228,10 +251,11 @@ type IntentRunSpec struct {
 	Attempt int32 `json:"attempt"`
 	// Inputs pin what the run was given.
 	Inputs IntentRunInputs `json:"inputs"`
-	// ImageFrom is the build round's Repository (UID-pinned), whose
-	// accepted runner image a revise run launches on — never the image the
-	// pull request head declares, since an agent could otherwise choose its
-	// own next sandbox. Set on every revise run and on no other.
+	// ImageFrom is the build round's Repository, whose accepted runner image
+	// a revise run launches on — never the image the pull request head
+	// declares, since an agent could otherwise choose its own next sandbox.
+	// Set on every revise run and on no other, always with its UID
+	// (CEL-enforced), so a same-named Repository can never stand in for it.
 	// +optional
 	ImageFrom *ObjectReference `json:"imageFrom,omitempty"`
 	// Grant bounds the run.

@@ -67,11 +67,14 @@ const (
 	IntentMerged IntentPhase = "Merged"
 	// IntentClosed: a human closed the issue or ran /patchy cancel, every
 	// pull request was closed unmerged, or the trigger was not an
-	// approver's. Terminal.
+	// approver's. Terminal. The issue is left without its trigger: closed
+	// (by the human, or by intent-controller for cancel and closed pull
+	// requests), or, after a refused trigger, with the label removed.
 	IntentClosed IntentPhase = "Closed"
 	// IntentFailed: plan or build attempts exhausted, or the plan was
-	// invalid twice. Stamps completedAt, but an approver re-applying the
-	// trigger label revives it to Planning.
+	// invalid twice. Stamps completedAt, and the trigger label is removed
+	// from the issue on entry; an approver applying it again revives the
+	// intent to Planning.
 	IntentFailed IntentPhase = "Failed"
 )
 
@@ -108,7 +111,8 @@ const (
 //     block no longer holds (IntentBlockedFrom names the target).
 //   - every non-terminal phase→Closed: a human closed the issue or ran
 //     /patchy cancel, or every pull request was closed unmerged.
-//   - Failed→Planning: revival — an approver re-applied the trigger label.
+//   - Failed→Planning: revival — an approver applied the trigger label again
+//     (it was removed on entry to Failed).
 var intentTransitions = map[IntentPhase][]IntentPhase{
 	"":                     {IntentPending},
 	IntentPending:          {IntentPlanning, IntentBlocked, IntentClosed},
@@ -522,14 +526,19 @@ type IntentStatus struct {
 	Approval *IntentApproval `json:"approval,omitempty"`
 	// LastTrigger is the newest trigger action consumed after the one that
 	// created the intent (spec.requestedBy, which is immutable): the
-	// trigger label re-applied, or /patchy replan. It is recorded whether
-	// the action was acted on (a replan from AwaitingApproval, a revival
-	// from Failed) or refused with its one notice (not an approver's). A
+	// trigger label re-applied, or /patchy replan. Every trigger action the
+	// controller answers is consumed and recorded here, whatever the
+	// answer: acted on (a replan from AwaitingApproval, a revival from
+	// Failed), refused as not an approver's, or answered "not available in
+	// this phase" (a replan asked for while Planning or Building, say). A
 	// later poll considers only trigger actions newer than it (newer than
 	// spec.requestedBy while it is nil), comparing GitHub's own created_at
-	// and never the controller's phaseTimes or completedAt. So a revival
-	// whose plan fails again, posting no plan to anchor on, cannot
-	// re-consume the action that revived it.
+	// and never the controller's phaseTimes or completedAt. So an action
+	// that was answered is never acted on later: a replan refused while
+	// Building does not revive the intent when the build then fails, a
+	// replan refused while Planning does not replay once the plan is
+	// posted, and a revival whose plan fails again, posting no plan to
+	// anchor on, cannot re-consume the action that revived it.
 	// +optional
 	LastTrigger *IntentAction `json:"lastTrigger,omitempty"`
 	// Branch is the branch every pull request of the intent is opened from:

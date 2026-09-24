@@ -666,7 +666,7 @@
                     "description": "Checks configures automatic check-fix rounds (slice 1b).",
                     "properties": {
                         "fix": {
-                            "description": "Fix names the checks (check-run or commit-status names, e.g. \"test\",\n\"lint\") whose failure on patchy's own head starts a fix round without\na human. Empty means patchy never auto-fixes: a failing check is\nreported on the intent issue and an approver can run /patchy revise.\nThe list is explicit so a flaky or unrelated check cannot burn\nbudget.",
+                            "description": "Fix names the checks (check-run names or commit-status contexts, e.g.\n\"test\", \"lint\") whose failure on patchy's own head starts a fix round\nwithout a human; the round records the failed check runs and commit\nstatuses it consumed, each by its own id (IntentRunInputs.CheckRunIDs\nand StatusIDs). Empty means patchy never auto-fixes: a failing check is\nreported on the intent issue and an approver can run /patchy revise.\nThe list is explicit so a flaky or unrelated check cannot burn\nbudget.",
                             "items": {
                                 "maxLength": 128,
                                 "minLength": 1,
@@ -686,7 +686,7 @@
                     "additionalProperties": false
                 },
                 "intentRepository": {
-                    "description": "IntentRepository is the https URL of the repository whose issues are\nthis Project's intents (e.g. https://github.com/acme/intents). Several\nProjects may share one, told apart by their trigger labels. The App\nmust be installed on it and it must resolve to exactly one Forge.",
+                    "description": "IntentRepository is the https URL of the repository whose issues are\nthis Project's intents (e.g. https://github.com/acme/intents). Several\nProjects may share one, told apart by their trigger labels. The App\nmust be installed on it and it must resolve to exactly one Forge. It\nis immutable (CEL-enforced): an Intent is named <project>-<issue>,\nwhich leaves the repository out, so a Project moved to another intent\nrepository would find its new issues' names held by the old\nrepository's Intents. To move a project, create a new Project, under a\nnew name, on the new repository.",
                     "maxLength": 256,
                     "minLength": 1,
                     "pattern": "^https://[^/\\s@?#]+/[^/\\s?#]+/[^/\\s?#]+$",

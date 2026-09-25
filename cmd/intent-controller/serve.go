@@ -61,6 +61,9 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.Int("intent-build-max-turns", 150, "most agent turns a build run may take (a Project may lower it)")
 	f.Int("intent-build-token-budget", 800000, "most output tokens a build run may spend (a Project may lower it)")
 	f.Duration("intent-build-timeout", 60*time.Minute, "wall-clock limit of a build run")
+	f.Int("intent-revise-max-turns", 80, "most agent turns a revise or check-fix run may take (a Project may lower it)")
+	f.Int("intent-revise-token-budget", 400000, "most output tokens a revise or check-fix run may spend")
+	f.Duration("intent-revise-timeout", 45*time.Minute, "wall-clock limit of a revise or check-fix run")
 	f.String("intent-plan-model", "anthropic/claude-sonnet-5", "canonical model the plan stage runs")
 	f.String("intent-build-model", "anthropic/claude-sonnet-5", "canonical model the build stage runs")
 
@@ -94,6 +97,11 @@ func settings(opts *cli.Options, namespace, agentNS string) (intent.Settings, er
 			TokenBudget: int64(opts.Int("intent-build-token-budget")),
 			Timeout:     opts.Duration("intent-build-timeout"),
 		},
+		Revise: intent.StageCeiling{
+			MaxTurns:    int32(opts.Int("intent-revise-max-turns")),
+			TokenBudget: int64(opts.Int("intent-revise-token-budget")),
+			Timeout:     opts.Duration("intent-revise-timeout"),
+		},
 	}
 	for _, c := range []struct {
 		name string
@@ -109,12 +117,15 @@ func settings(opts *cli.Options, namespace, agentNS string) (intent.Settings, er
 		{"--intent-build-max-turns", s.Build.MaxTurns > 0},
 		{"--intent-build-token-budget", s.Build.TokenBudget > 0},
 		{"--intent-build-timeout", s.Build.Timeout > 0},
+		{"--intent-revise-max-turns", s.Revise.MaxTurns > 0},
+		{"--intent-revise-token-budget", s.Revise.TokenBudget > 0},
+		{"--intent-revise-timeout", s.Revise.Timeout > 0},
 	} {
 		if !c.ok {
 			return intent.Settings{}, fmt.Errorf("%s must be positive", c.name)
 		}
 	}
-	if deadline := opts.Duration("intent-job-deadline"); deadline < max(s.Plan.Timeout, s.Build.Timeout) {
+	if deadline := opts.Duration("intent-job-deadline"); deadline < max(s.Plan.Timeout, s.Build.Timeout, s.Revise.Timeout) {
 		return intent.Settings{}, fmt.Errorf("--intent-job-deadline %s is shorter than a stage's timeout", deadline)
 	}
 	return s, nil
@@ -126,7 +137,7 @@ func settings(opts *cli.Options, namespace, agentNS string) (intent.Settings, er
 func harness(ctx context.Context, opts *cli.Options, cs kubernetes.Interface, agentNS string,
 	runners map[string]jobs.Runner) (string, error) {
 	planModel, buildModel := opts.String("intent-plan-model"), opts.String("intent-build-model")
-	enabled, err := runnercfg.Resolve(ctx, opts, cs, agentNS, runners, runnercfg.Restrict(opts),
+	enabled, err := runnercfg.ResolveWithoutBrokerProbe(ctx, opts, cs, agentNS, runners, runnercfg.Restrict(opts),
 		[]string{planModel, buildModel}, planModel, buildModel)
 	if err != nil {
 		return "", err

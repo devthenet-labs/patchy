@@ -57,6 +57,9 @@ other binary binds, so the shared kustomize ConfigMap cannot set one by accident
 | `--intent-build-max-turns`        | `PATCHY_INTENT_BUILD_MAX_TURNS`        | `150`                       | Most agent turns a build run may take                                                            |
 | `--intent-build-token-budget`     | `PATCHY_INTENT_BUILD_TOKEN_BUDGET`     | `800000`                    | Most output tokens a build run may spend                                                         |
 | `--intent-build-timeout`          | `PATCHY_INTENT_BUILD_TIMEOUT`          | `60m`                       | Wall-clock limit of a build run                                                                  |
+| `--intent-revise-max-turns`       | `PATCHY_INTENT_REVISE_MAX_TURNS`       | `80`                        | Most agent turns a revise or check-fix run may take                                              |
+| `--intent-revise-token-budget`    | `PATCHY_INTENT_REVISE_TOKEN_BUDGET`    | `400000`                    | Most output tokens a revise or check-fix run may spend                                           |
+| `--intent-revise-timeout`         | `PATCHY_INTENT_REVISE_TIMEOUT`         | `45m`                       | Wall-clock limit of a revise or check-fix run                                                    |
 | `--agent-namespace`               | `PATCHY_AGENT_NAMESPACE`               | `patchy-agents`             | Namespace the agent Jobs run in                                                                  |
 | `--agent-service-account`         | `PATCHY_AGENT_SERVICE_ACCOUNT`         | `patchy-agent`              | Service account the agent Jobs run as                                                            |
 | `--job-ttl`                       | `PATCHY_JOB_TTL`                       | `1h`                        | `ttlSecondsAfterFinished` on a finished agent Job                                                |

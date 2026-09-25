@@ -51,6 +51,9 @@ const (
 	// itself (an admission policy or webhook denying it, an invalid Job, a
 	// missing namespace). It counts as an attempt.
 	OutcomeLaunchRefused = "launch_refused"
+	// OutcomeHeadMoved: the PR branch changed after the revise run pinned it.
+	// The stale result is never pushed and may be retried on the new head.
+	OutcomeHeadMoved = "head_moved"
 )
 
 // roundRuns are one stage's runs of one round, by attempt.
@@ -110,6 +113,7 @@ func (rs roundRuns) counted(refused func(*v1alpha1.IntentRun) bool) int32 {
 // image_required or hold_expired (podOutcome).
 func uncounted(run *v1alpha1.IntentRun) bool {
 	return run.Status.Outcome == OutcomeImageRequired || run.Status.Outcome == OutcomeHoldExpired ||
+		run.Status.Outcome == OutcomeHeadMoved ||
 		runnerguard.Refused(run.Status.Conditions)
 }
 
@@ -301,6 +305,9 @@ func (p *pass) ensureActive(ctx context.Context, run *v1alpha1.IntentRun) (bool,
 // (a same-named earlier Intent's remains, or someone else's object) is left
 // alone and the pass retried after a backoff.
 func (p *pass) ensureRunChildren(ctx context.Context, run *v1alpha1.IntentRun) error {
+	if run.Spec.Stage == v1alpha1.IntentStageRevise {
+		return p.ensureReviseChildren(ctx, run)
+	}
 	var cm corev1.ConfigMap
 	err := p.r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.Inputs.ConfigMap}, &cm)
 	switch {
@@ -392,6 +399,9 @@ func (p *pass) runInput(ctx context.Context, run *v1alpha1.IntentRun) (map[strin
 	raw, err := p.planBytes(ctx, pl)
 	if err != nil {
 		return nil, err
+	}
+	if run.Spec.Stage == v1alpha1.IntentStageRevise {
+		return p.reviseInput(ctx, run, raw)
 	}
 	// The build reads the approved plan and nothing else of the request:
 	// its issue.md is empty, which agent-runner requires.

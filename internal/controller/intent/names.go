@@ -45,6 +45,9 @@ const (
 	// keyInvestigation is a build run's approved plan, the Job's
 	// investigation.md.
 	keyInvestigation = "investigation.md"
+	// keyApprovedPlan keeps the exact approved prefix of a revise handoff.
+	keyApprovedPlan   = "approved-plan.md"
+	keyCheckSignature = "check-signature"
 	// keyPlan is the plan report exactly as the planner wrote it.
 	keyPlan = "plan.md"
 	// The input snapshot's parts, kept beside the rendered request so an
@@ -135,9 +138,9 @@ type Settings struct {
 	RateLimitFloor int
 	// MaxAttempts bounds the counted attempts of one stage's round.
 	MaxAttempts int32
-	// Plan and Build are the per-stage ceilings: a Project's limits are
+	// Plan, Build and Revise are the per-stage ceilings: a Project's limits are
 	// clamped to them, and the Job's stage configuration carries them.
-	Plan, Build StageCeiling
+	Plan, Build, Revise StageCeiling
 }
 
 // StageCeiling bounds one agent stage.
@@ -179,8 +182,10 @@ func (s Settings) withDefaults() Settings {
 // ceiling), and the ceiling's wall clock.
 func (s Settings) grant(p *v1alpha1.Project, stage v1alpha1.IntentStage) v1alpha1.IntentRunGrant {
 	ceiling, limits := s.Plan, p.Spec.Limits.Plan
-	if stage != v1alpha1.IntentStagePlan {
+	if stage == v1alpha1.IntentStageBuild {
 		ceiling, limits = s.Build, p.Spec.Limits.Build
+	} else if stage == v1alpha1.IntentStageRevise {
+		ceiling, limits = s.Revise, p.Spec.Limits.Revise
 	}
 	turns := ceiling.MaxTurns
 	if limits.MaxTurns > 0 && limits.MaxTurns < turns {

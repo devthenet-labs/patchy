@@ -212,6 +212,9 @@ is its own: a build stage alone may take an hour.
 {{- $_ := set $data (print $prefix "TOKEN_BUDGET") $s.tokenBudget }}
 {{- $_ := set $data (print $prefix "TIMEOUT") $s.timeout }}
 {{- end }}
+{{- $_ := set $data "PATCHY_INTENT_REVISE_MAX_TURNS" $own.revise.maxTurns }}
+{{- $_ := set $data "PATCHY_INTENT_REVISE_TOKEN_BUDGET" $own.revise.tokenBudget }}
+{{- $_ := set $data "PATCHY_INTENT_REVISE_TIMEOUT" $own.revise.timeout }}
 {{- $ri := $root.Values.agent.repositoryImages | default dict }}
 {{- if $ri.enabled }}
 {{/*

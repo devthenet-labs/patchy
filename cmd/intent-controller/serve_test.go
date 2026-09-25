@@ -4,19 +4,25 @@
 package main
 
 import (
+	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes/fake"
 	"sigs.k8s.io/yaml"
 
 	"github.com/bitwise-media-group/patchy/internal/cli"
 	"github.com/bitwise-media-group/patchy/internal/controller/intent"
+	"github.com/bitwise-media-group/patchy/internal/runnercfg"
 )
 
 // componentConfigMap is the kustomize component's own ConfigMap; the chart's
@@ -127,6 +133,7 @@ func TestComponentConfigReachesSettings(t *testing.T) {
 		MaxAttempts:          intent.DefaultMaxAttempts,
 		Plan:                 intent.StageCeiling{MaxTurns: 7, TokenBudget: 200000, Timeout: 20 * time.Minute},
 		Build:                intent.StageCeiling{MaxTurns: 150, TokenBudget: 800000, Timeout: 61 * time.Minute},
+		Revise:               intent.StageCeiling{MaxTurns: 80, TokenBudget: 400000, Timeout: 45 * time.Minute},
 	}
 	if s != want {
 		t.Errorf("settings = %+v, want %+v", s, want)
@@ -148,5 +155,35 @@ func TestSettingsRefusesADeadlineShorterThanAStage(t *testing.T) {
 	}
 	if _, err := settings(opts, "patchy", "patchy-agents"); err == nil {
 		t.Fatal("settings accepted a 59m Job deadline under a 60m build timeout")
+	}
+}
+
+// The intent controller cannot reach the broker under its NetworkPolicy.
+// Agent pods can, so its startup must validate configuration without making
+// even an advisory controller-side broker request.
+func TestHarnessSkipsBrokerProbe(t *testing.T) {
+	var calls atomic.Int32
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer broker.Close()
+	opts, root, _ := command(t, "--claude-agent-image=claude:1", "--broker-url="+broker.URL)
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	runners, err := runnercfg.Runners(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := harness(context.Background(), opts, fake.NewClientset(), "patchy-agents", runners)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "claude" {
+		t.Errorf("harness = %q, want claude", got)
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("intent controller made %d broker readiness requests, want none", n)
 	}
 }

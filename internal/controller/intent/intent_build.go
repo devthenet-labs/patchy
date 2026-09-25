@@ -277,6 +277,15 @@ func (p *pass) reviewNow(ctx context.Context) (bool, error) {
 			return nil
 		})
 	}
+	if p.in.Status.Phase == v1alpha1.IntentInReview && len(prs) == 1 && prs[0].State == prOpen {
+		if started, err := p.reviewRound(ctx, &prs[0]); started || err != nil {
+			return started, err
+		}
+		if started, err := p.commandRound(ctx, &prs[0]); started || err != nil {
+			return started, err
+		}
+		return p.checkRound(ctx, &prs[0])
+	}
 	return false, nil
 }
 

@@ -62,6 +62,12 @@ func TestStageEnv(t *testing.T) {
 		build["PATCHY_REMEDIATE_AUTO_MAX_TURNS"] != "150" {
 		t.Errorf("build env = %v", build)
 	}
+	revise := stageEnv(v1alpha1.IntentStageRevise, testSettings(), v1alpha1.IntentRunGrant{})
+	if revise["PATCHY_REMEDIATE_TIMEOUT"] != "45m0s" ||
+		revise["PATCHY_REMEDIATE_MANUAL_MAX_TURNS"] != "80" ||
+		revise["PATCHY_REMEDIATE_MANUAL_TOKEN_BUDGET"] != "400000" {
+		t.Errorf("revise env = %v", revise)
+	}
 }
 
 // TestProjectLimitsLowerTheGrant: a Project's per-stage limits lower a run's

@@ -21,6 +21,7 @@ import (
 // blockingConditions are the conditions that hold an Intent Blocked.
 var blockingConditions = []string{
 	v1alpha1.ConditionBudgetExhausted, v1alpha1.ConditionImageRequired, v1alpha1.ConditionBranchConflict,
+	v1alpha1.ConditionRevisionLimitReached, v1alpha1.ConditionChecksFailing,
 }
 
 // BranchConflict reasons.
@@ -133,6 +134,27 @@ func (p *pass) blockHolds(ctx context.Context) (bool, error) {
 	if meta.IsStatusConditionTrue(p.in.Status.Conditions, v1alpha1.ConditionBudgetExhausted) &&
 		p.in.Status.Usage.CostMicroUSD >= maxCostMicroUSD(p.proj) {
 		return true, nil
+	}
+	if meta.IsStatusConditionTrue(p.in.Status.Conditions, v1alpha1.ConditionRevisionLimitReached) &&
+		p.revisionRounds() >= maxRevisions(p.proj) {
+		return true, nil
+	}
+	if c := meta.FindStatusCondition(p.in.Status.Conditions, v1alpha1.ConditionChecksFailing); c != nil &&
+		c.Status == metav1.ConditionTrue {
+		limit := v1alpha1.DefaultMaxCheckFixes
+		if p.proj.Spec.Limits.MaxCheckFixes != nil {
+			limit = *p.proj.Spec.Limits.MaxCheckFixes
+		}
+		if c.Reason == "MaxCheckFixes" && p.checkFixRounds() >= limit {
+			return true, nil
+		}
+		if c.Reason == "RepeatedFailure" {
+			var blockedGeneration int64
+			_, _ = fmt.Sscanf(c.Message, "project-generation=%d", &blockedGeneration)
+			if blockedGeneration == p.proj.Generation {
+				return true, nil
+			}
+		}
 	}
 	if holds, err := p.branchBlockHolds(ctx); holds || err != nil {
 		return holds, err

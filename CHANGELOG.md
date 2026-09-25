@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.4](https://github.com/devthenet-labs/patchy/compare/v0.12.3...v0.12.4) (2026-09-25)
+
+
+### Bug Fixes
+
+* **intent:** use GraphQL edit history for review feedback ([#61](https://github.com/devthenet-labs/patchy/issues/61)) ([4c1a9ed](https://github.com/devthenet-labs/patchy/commit/4c1a9edbc3576ec2e155b44492fb9248b09e82be))
+
 ## [0.12.3](https://github.com/devthenet-labs/patchy/compare/v0.12.2...v0.12.3) (2026-09-25)
 
 

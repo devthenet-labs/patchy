@@ -596,13 +596,7 @@ func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (c
 	}
 	st, err := r.Jobs.Status(ctx, run.Status.JobRef.Name)
 	if kerrors.IsNotFound(err) {
-		if pushHeld(run) {
-			return ctrl.Result{}, r.settle(ctx, run, result{outcome: OutcomeHoldExpired, keep: true,
-				detail: "the build finished while its intent was suspended, and its Job expired before the " +
-					"suspension was lifted, taking the unpushed changeset with it; the attempt does not count"})
-		}
-		return ctrl.Result{}, r.settle(ctx, run, result{outcome: OutcomeAborted,
-			detail: "agent job vanished before reporting"})
+		return ctrl.Result{}, r.settleMissingJob(ctx, run)
 	}
 	if err != nil {
 		return ctrl.Result{}, err
@@ -643,6 +637,30 @@ func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (c
 		return ctrl.Result{}, r.collectPlan(ctx, run, out.Events, transcript)
 	}
 	return r.heldOr(r.collectBuild(ctx, run, out.Events, transcript))
+}
+
+// settleMissingJob recovers a pre-fix revise run whose Job expired while the
+// controller was disabled. Only the exact stored legacy empty-review handoff
+// qualifies; all other missing Jobs retain their normal failure outcome.
+func (r *RunReconciler) settleMissingJob(ctx context.Context, run *v1alpha1.IntentRun) error {
+	if pushHeld(run) {
+		return r.settle(ctx, run, result{outcome: OutcomeHoldExpired, keep: true,
+			detail: "the build finished while its intent was suspended, and its Job expired before the " +
+				"suspension was lifted, taking the unpushed changeset with it; the attempt does not count"})
+	}
+	if run.Spec.Stage == v1alpha1.IntentStageRevise && run.Spec.Trigger == v1alpha1.IntentRunTriggerReview {
+		empty, err := r.legacyEmptyReviseFeedback(ctx, run)
+		if err != nil {
+			return fmt.Errorf("check expired revise Job's stored feedback: %w", err)
+		}
+		if empty {
+			return r.settle(ctx, run, result{outcome: OutcomeNoUsableFeedback,
+				detail: "the agent Job expired before collection; its stored review handoff had no usable " +
+					"feedback, and no change was pushed"})
+		}
+	}
+	return r.settle(ctx, run, result{outcome: OutcomeAborted,
+		detail: "agent job vanished before reporting"})
 }
 
 // heldOr is the result of a collect that ended with err: a build held for a

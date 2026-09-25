@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.3](https://github.com/devthenet-labs/patchy/compare/v0.12.2...v0.12.3) (2026-09-25)
+
+
+### Features
+
+* **intent:** bounded revise and check-fix rounds ([#59](https://github.com/devthenet-labs/patchy/issues/59)) ([925bf57](https://github.com/devthenet-labs/patchy/commit/925bf579846e670ec536c1c109f24d437f45f35b))
+
 ## [0.12.2](https://github.com/devthenet-labs/patchy/compare/v0.12.1...v0.12.2) (2026-09-25)
 
 

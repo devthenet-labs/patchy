@@ -39,6 +39,7 @@ const (
 )
 
 var errInputUnavailable = errors.New("revise input unavailable")
+var errNoUsableFeedback = errors.New("no usable feedback was found after filtering; no agent was launched")
 
 // revising follows its active round while independently observing a human
 // merge or close. A failed round returns to InReview; it never fails the
@@ -105,7 +106,8 @@ func (p *pass) missingPendingReviseBranch(ctx context.Context, run *v1alpha1.Int
 }
 
 func (p *pass) failedRevise(ctx context.Context, run *v1alpha1.IntentRun, rs roundRuns) (bool, error) {
-	if run.Status.Outcome == OutcomeInputUnavailable || run.Status.Outcome == OutcomeImageRequired {
+	if run.Status.Outcome == OutcomeInputUnavailable || run.Status.Outcome == OutcomeImageRequired ||
+		run.Status.Outcome == OutcomeNoUsableFeedback {
 		return p.endReviseRound(ctx, run)
 	}
 	if run.Status.Outcome == OutcomeHeadMoved && run.Spec.Trigger != v1alpha1.IntentRunTriggerChecks &&
@@ -175,6 +177,14 @@ func (p *pass) finishPRRound(ctx context.Context, run *v1alpha1.IntentRun) error
 		}
 	}
 	body := marker + "\nRevision round finished without a push. The pull request remains open for review."
+	if run.Status.Outcome == OutcomeNoUsableFeedback {
+		body = marker + "\nRevision round stopped: no usable feedback was found after filtering. " +
+			"The pull request remains open for review."
+		if run.Status.JobRef == nil {
+			body = marker + "\nRevision round stopped: no usable feedback was found after filtering. " +
+				"No agent was launched for this round; the pull request remains open for review."
+		}
+	}
 	if run.Status.Phase == v1alpha1.RunComplete {
 		if err := p.r.GitHub.RequestReviewers(ctx, pr.Repository, pr.Number,
 			p.proj.Spec.Approvers.Logins); err != nil {
@@ -273,7 +283,9 @@ func (p *pass) ensureReviseChildren(ctx context.Context, run *v1alpha1.IntentRun
 		return err
 	}
 	data, err := p.runInput(ctx, run)
-	if errors.Is(err, errInputUnavailable) {
+	if errors.Is(err, errNoUsableFeedback) {
+		data = map[string]string{keyNoFeedback: err.Error()}
+	} else if errors.Is(err, errInputUnavailable) {
 		data = map[string]string{keyInputRefusal: capVisible(err.Error(), 512)}
 	} else if err != nil {
 		return err
@@ -312,6 +324,9 @@ func (p *pass) reviseInput(ctx context.Context, run *v1alpha1.IntentRun, plan []
 			return nil, fmt.Errorf("%w: GitHub refused the round's feedback: %v", errInputUnavailable, err)
 		}
 		return nil, err
+	}
+	if run.Spec.Trigger != v1alpha1.IntentRunTriggerChecks && feedback == "" {
+		return nil, errNoUsableFeedback
 	}
 	build := p.round(v1alpha1.IntentStageBuild, run.Spec.Inputs.PlanRevision).latest()
 	if build == nil || build.Status.BaseSHA == "" {
@@ -436,9 +451,11 @@ func (p *pass) reviewFeedback(ctx context.Context, run *v1alpha1.IntentRun, pr v
 		if edited {
 			return nil, fmt.Errorf("%w: consumed review %d was edited", errInputUnavailable, id)
 		}
-		items = append(items, reviseFeedbackItem{at: r.SubmittedAt, text: fmt.Sprintf(
-			"Review %d by %s (%s):\n%s", id, visibleFeedback(r.Author.Login),
-			visibleFeedback(r.State), visibleFeedback(r.Body))})
+		if strings.TrimSpace(r.Body) != "" {
+			items = append(items, reviseFeedbackItem{at: r.SubmittedAt, text: fmt.Sprintf(
+				"Review %d by %s (%s):\n%s", id, visibleFeedback(r.Author.Login),
+				visibleFeedback(r.State), visibleFeedback(r.Body))})
+		}
 	}
 	return items, nil
 }
@@ -459,7 +476,7 @@ func (p *pass) inlineFeedback(ctx context.Context, pr v1alpha1.IntentPullRequest
 	var items []reviseFeedbackItem
 	for _, c := range inline {
 		if c.ID < 1 || c.NodeID == "" || c.CreatedAt.Before(cutoff) || c.CreatedAt.After(upper) ||
-			c.UpdatedAt.Truncate(time.Second).After(c.CreatedAt.Truncate(time.Second)) {
+			strings.TrimSpace(c.Body) == "" {
 			continue
 		}
 		approved, _, err := p.authorizeIn(ctx, pr.Repository, c.Author)
@@ -509,12 +526,15 @@ func (p *pass) prCommentFeedback(ctx context.Context, run *v1alpha1.IntentRun, p
 	if commandComment != nil {
 		// Reserve a place for the command itself even if a busy PR has more
 		// than forty newer comments. It is the round's explicit trigger.
-		items = append(items, reviseFeedbackItem{at: upper.Add(time.Nanosecond), text: fmt.Sprintf(
-			"PR command %d by %s:\n%s", commandComment.ID, visibleFeedback(commandComment.UserLogin),
-			visibleFeedback(commandComment.Body))})
+		if cmd, ok := prCommandParser.Parse(commandComment.Body); ok && strings.TrimSpace(cmd.Note) != "" {
+			items = append(items, reviseFeedbackItem{at: upper.Add(time.Nanosecond), text: fmt.Sprintf(
+				"PR command %d by %s:\n%s", commandComment.ID, visibleFeedback(commandComment.UserLogin),
+				visibleFeedback(cmd.Note))})
+		}
 	}
 	for _, c := range comments {
-		if c.ID < 1 || c.NodeID == "" || c.CreatedAt.Before(cutoff) || c.CreatedAt.After(upper) || edited(c) {
+		if c.ID < 1 || c.NodeID == "" || c.CreatedAt.Before(cutoff) || c.CreatedAt.After(upper) ||
+			strings.TrimSpace(c.Body) == "" {
 			continue
 		}
 		approved, _, err := p.authorizeIn(ctx, pr.Repository, c.Author())
@@ -551,7 +571,7 @@ func (p *pass) verifyPRCommand(ctx context.Context, run *v1alpha1.IntentRun,
 	if err != nil {
 		return nil, err
 	}
-	if c.NodeID == "" || edited(c) || c.CreatedAt.Before(cutoff) || c.CreatedAt.After(upper) {
+	if c.NodeID == "" || c.CreatedAt.Before(cutoff) || c.CreatedAt.After(upper) {
 		return nil, fmt.Errorf("%w: PR command %d changed", errInputUnavailable, c.ID)
 	}
 	approved, _, err := p.authorizeIn(ctx, pr.Repository, c.Author())
@@ -627,7 +647,7 @@ func (p *pass) commandRound(ctx context.Context, pr *v1alpha1.IntentPullRequest)
 
 func (p *pass) eligiblePRCommand(ctx context.Context, pr *v1alpha1.IntentPullRequest,
 	c *ghclient.Comment, cutoff time.Time) (bool, error) {
-	if c.ID < 1 || c.NodeID == "" || c.CreatedAt.Before(cutoff) || edited(c) {
+	if c.ID < 1 || c.NodeID == "" || c.CreatedAt.Before(cutoff) {
 		return false, nil
 	}
 	parsed, ok := prCommandParser.Parse(c.Body)
@@ -863,12 +883,17 @@ func maxRevisions(proj *v1alpha1.Project) int32 {
 	return v1alpha1.DefaultMaxRevisions
 }
 
-// revisionRounds counts leased review/command rounds, including failed
-// rounds. A failed agent must not create an unbounded free retry loophole.
+// revisionRounds counts leased review/command rounds, including agent failures.
+// A round refused before launch for lack of usable feedback does not spend
+// this allowance; the independent MaxIntentRound still bounds such rounds.
 func (p *pass) revisionRounds() int32 {
 	seen := map[int32]bool{}
 	for _, run := range p.runs {
 		if run.Spec.Stage == v1alpha1.IntentStageRevise && run.Spec.Trigger != v1alpha1.IntentRunTriggerChecks {
+			if latest := p.round(v1alpha1.IntentStageRevise, run.Spec.Round).latest(); latest != nil &&
+				latest.Status.Phase == v1alpha1.RunFailed && latest.Status.Outcome == OutcomeNoUsableFeedback {
+				continue
+			}
 			seen[run.Spec.Round] = true
 		}
 	}

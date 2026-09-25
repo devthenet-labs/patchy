@@ -49,6 +49,7 @@ const (
 	keyApprovedPlan   = "approved-plan.md"
 	keyCheckSignature = "check-signature"
 	keyInputRefusal   = "input-refusal"
+	keyNoFeedback     = "no-usable-feedback"
 	// keyPlan is the plan report exactly as the planner wrote it.
 	keyPlan = "plan.md"
 	// The input snapshot's parts, kept beside the rendered request so an

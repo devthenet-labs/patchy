@@ -75,10 +75,10 @@
 // "read" for everyone), and not be a bot; actions by the App's own bot are
 // never answered. A comment edited after it was posted is never a command:
 // GitHub lets anyone with write access edit anyone's comment and still
-// names the original author. The listing's updated_at shows most edits, and
-// before a command is acted on GitHub's own edit record (GraphQL
-// lastEditedAt) is read too, since an edit in the second of the comment's
-// posting leaves updated_at equal to created_at. For the same reason an
+// names the original author. REST updated_at is not an edit verdict: it may
+// move when a pending review is submitted, and a same-second edit may leave
+// it unchanged. Before a command is acted on, GitHub's own edit record
+// (GraphQL lastEditedAt/includesCreatedEdit) is read. For the same reason an
 // edited comment never reaches a replan's snapshot. An approval is accepted
 // only if it is newer than the plan comment, the plan comment re-fetched
 // still hashes to the digest recorded when it was posted and was never

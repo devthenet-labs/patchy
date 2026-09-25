@@ -119,14 +119,14 @@ func (p *pass) feedbackSince(ctx context.Context, since time.Time) ([]*ghclient.
 	var out []*ghclient.Comment
 	for _, c := range p.comments {
 		if !c.CreatedAt.After(since) || p.isOwn(c) || p.isOwnLogin(c.UserLogin) || c.Author().IsBot() ||
-			!isApprover(p.proj, c.UserLogin) || edited(c) {
+			!isApprover(p.proj, c.UserLogin) {
 			continue
 		}
 		out = append(out, c)
 	}
 	// The renderer can include only the newest maxFeedbackItems. Ask GitHub
-	// about those comments' edit history too: REST timestamps cannot reveal
-	// an edit made in the second a comment was posted.
+	// about those comments' edit history. REST updated_at may move for reasons
+	// other than an edit and cannot make this decision.
 	if len(out) > maxFeedbackItems {
 		out = out[len(out)-maxFeedbackItems:]
 	}
@@ -334,7 +334,14 @@ func (p *pass) writeBack(ctx context.Context, run *v1alpha1.IntentRun) (bool, er
 	if err != nil {
 		return false, err
 	}
-	if c == nil || c.Body != body || edited(c) {
+	changed := c == nil || c.Body != body
+	if !changed {
+		changed, err = p.everEdited(ctx, c)
+		if err != nil {
+			return false, err
+		}
+	}
+	if changed {
 		// Not found, or found edited before it was recorded (even back to
 		// its original bytes, which an approval would refuse): post the plan
 		// afresh, so what is recorded is what patchy posted, unedited. No

@@ -541,6 +541,9 @@ func (r *RunReconciler) stageSpec(run *v1alpha1.IntentRun, spec *jobs.Spec, cm *
 		return requireImage, nil
 	case v1alpha1.IntentStageRevise:
 		spec.Model = r.BuildModel
+		if reason := cm.Data[keyNoFeedback]; reason != "" {
+			return true, &result{outcome: OutcomeNoUsableFeedback, detail: reason}
+		}
 		if reason := cm.Data[keyInputRefusal]; reason != "" {
 			return true, &result{outcome: OutcomeInputUnavailable, detail: reason}
 		}
@@ -873,6 +876,20 @@ func (r *RunReconciler) collectBuild(ctx context.Context, run *v1alpha1.IntentRu
 			transcript: transcript})
 	}
 	res := result{stage: &ev.Stage, transcript: transcript, report: ev.ReportMarkdown}
+	if run.Spec.Stage == v1alpha1.IntentStageRevise && ev.Outcome == envelope.OutcomeOK && !ev.Success {
+		// Before no-feedback refusal existed, a review with an empty body
+		// produced a handoff containing only its verdict. An agent could not
+		// act on that, but the resulting not_built would spend a revision.
+		// Recognise only that exact legacy handoff, and only on failure.
+		empty, err := r.legacyEmptyReviseFeedback(ctx, run)
+		if err != nil {
+			return err
+		}
+		if empty {
+			res.outcome, res.detail = OutcomeNoUsableFeedback, errNoUsableFeedback.Error()
+			return r.settle(ctx, run, res)
+		}
+	}
 	switch {
 	case ev.Outcome != envelope.OutcomeOK:
 		res.outcome, res.detail = podOutcome(ev.Outcome, ev.Detail)
@@ -893,6 +910,61 @@ func (r *RunReconciler) collectBuild(ctx context.Context, run *v1alpha1.IntentRu
 		return r.settle(ctx, run, res)
 	}
 	return r.push(ctx, run, ev, res)
+}
+
+func (r *RunReconciler) legacyEmptyReviseFeedback(ctx context.Context, run *v1alpha1.IntentRun) (bool, error) {
+	var cm corev1.ConfigMap
+	if err := r.APIReader.Get(ctx, runInputKey(run), &cm); err != nil {
+		if kerrors.IsNotFound(err) {
+			return false, nil // migration hint is gone; settle the agent's result normally
+		}
+		return false, err
+	}
+	return legacyEmptyReviewHandoff(cm.Data[keyInvestigation]), nil
+}
+
+// legacyEmptyReviewHandoff recognises only the old rendered form of one or
+// more bare review verdicts. It is not used to admit input: only to avoid
+// charging a failed, already-launched pre-fix run against maxRevisions.
+func legacyEmptyReviewHandoff(handoff string) bool {
+	const start = "### Approver feedback\n\n"
+	const end = "\n\n### Compare patch\n\n"
+	i := strings.LastIndex(handoff, start)
+	if i < 0 {
+		return false
+	}
+	feedback, _, ok := strings.Cut(handoff[i+len(start):], end)
+	if !ok {
+		return false
+	}
+	count := 0
+	for _, block := range strings.Split(feedback, "\n\n") {
+		line, ok := strings.CutPrefix(block, "```text\n")
+		if !ok {
+			return false
+		}
+		line, ok = strings.CutSuffix(line, "\n```")
+		if !ok {
+			return false
+		}
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "\n") {
+			return false
+		}
+		rest, ok := strings.CutPrefix(line, "Review ")
+		if !ok || !strings.HasSuffix(rest, "):") {
+			return false
+		}
+		id, _, ok := strings.Cut(rest, " by ")
+		if !ok {
+			return false
+		}
+		if n, err := strconv.ParseInt(id, 10, 64); err != nil || n < 1 {
+			return false
+		}
+		count++
+	}
+	return count > 0
 }
 
 // push creates the build's commit (the controller composes its message; the

@@ -76,9 +76,38 @@ func (s *Server) AddReview(number int, author Actor, state, body, commitSHA stri
 	defer s.mu.Unlock()
 	s.nextReviewID++
 	id := s.nextReviewID
+	var submitted time.Time
+	if state != "PENDING" {
+		submitted = s.now()
+	}
 	s.reviews[number] = append(s.reviews[number], review{ID: id, NodeID: fmt.Sprintf("PRR_fake%d", id), User: author, State: state,
-		Body: body, CommitID: commitSHA, SubmittedAt: s.now()})
+		Body: body, CommitID: commitSHA, SubmittedAt: submitted})
 	return id
+}
+
+// SubmitReview moves a pending review and its inline comments to the
+// submitted state. GitHub advances the comments' REST updated_at when the
+// review is submitted, without recording a comment edit in GraphQL.
+func (s *Server) SubmitReview(id int64, state string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for number := range s.reviews {
+		for i := range s.reviews[number] {
+			r := &s.reviews[number][i]
+			if r.ID != id || r.State != "PENDING" {
+				continue
+			}
+			r.State, r.SubmittedAt = state, s.now()
+			for j := range s.reviewComments[number] {
+				c := &s.reviewComments[number][j]
+				if c.PullRequestReviewID == id {
+					c.UpdatedAt = r.SubmittedAt
+				}
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // AddReviewComment records an inline comment and returns its comment ID.

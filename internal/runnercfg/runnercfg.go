@@ -350,6 +350,20 @@ func SplitList(s string) []string {
 // sorted enabled harness ids.
 func Resolve(ctx context.Context, opts *cli.Options, cs kubernetes.Interface, namespace string,
 	runners map[string]jobs.Runner, restrict, allowlist []string, requiredModels ...string) ([]string, error) {
+	return resolve(ctx, opts, cs, namespace, runners, restrict, allowlist, true, requiredModels...)
+}
+
+// ResolveWithoutBrokerProbe performs the same startup validation as Resolve
+// without a controller-side readiness request to the broker. Use it where a
+// NetworkPolicy deliberately allows agent pods, but not the controller, to
+// reach the broker. Broker reachability is not a launch or readiness gate.
+func ResolveWithoutBrokerProbe(ctx context.Context, opts *cli.Options, cs kubernetes.Interface, namespace string,
+	runners map[string]jobs.Runner, restrict, allowlist []string, requiredModels ...string) ([]string, error) {
+	return resolve(ctx, opts, cs, namespace, runners, restrict, allowlist, false, requiredModels...)
+}
+
+func resolve(ctx context.Context, opts *cli.Options, cs kubernetes.Interface, namespace string,
+	runners map[string]jobs.Runner, restrict, allowlist []string, probe bool, requiredModels ...string) ([]string, error) {
 	enabled, err := jobs.ResolveRunners(ctx, cs, namespace, runners, restrict)
 	if err != nil {
 		return nil, err
@@ -382,7 +396,9 @@ func Resolve(ctx context.Context, opts *cli.Options, cs kubernetes.Interface, na
 		if err := provider.ValidateCoverage(pcfg, model.Builtins(), mm, required); err != nil {
 			return nil, err
 		}
-		probeBroker(ctx, pcfg.BrokerURL, opts.Log)
+		if probe {
+			probeBroker(ctx, pcfg.BrokerURL, opts.Log)
+		}
 	}
 	return enabled, nil
 }

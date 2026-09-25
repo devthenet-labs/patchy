@@ -76,11 +76,15 @@ func stageEnv(stage v1alpha1.IntentStage, s Settings, build v1alpha1.IntentRunGr
 			"PATCHY_REMEDIATE_AUTO_TOKEN_BUDGET":   n(build.TokenBudget),
 		}
 	}
+	ceiling := s.Build
+	if stage == v1alpha1.IntentStageRevise {
+		ceiling = s.Revise
+	}
 	return map[string]string{
-		"PATCHY_REMEDIATE_TIMEOUT":             s.Build.Timeout.String(),
-		"PATCHY_REMEDIATE_MANUAL_MAX_TURNS":    n(int64(s.Build.MaxTurns)),
-		"PATCHY_REMEDIATE_MANUAL_TOKEN_BUDGET": n(s.Build.TokenBudget),
-		"PATCHY_REMEDIATE_AUTO_MAX_TURNS":      n(int64(s.Build.MaxTurns)),
-		"PATCHY_REMEDIATE_AUTO_TOKEN_BUDGET":   n(s.Build.TokenBudget),
+		"PATCHY_REMEDIATE_TIMEOUT":             ceiling.Timeout.String(),
+		"PATCHY_REMEDIATE_MANUAL_MAX_TURNS":    n(int64(ceiling.MaxTurns)),
+		"PATCHY_REMEDIATE_MANUAL_TOKEN_BUDGET": n(ceiling.TokenBudget),
+		"PATCHY_REMEDIATE_AUTO_MAX_TURNS":      n(int64(ceiling.MaxTurns)),
+		"PATCHY_REMEDIATE_AUTO_TOKEN_BUDGET":   n(ceiling.TokenBudget),
 	}
 }

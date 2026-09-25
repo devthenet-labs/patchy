@@ -60,6 +60,9 @@ data:
     PATCHY_INTENT_BUILD_MAX_TURNS: "150"
     PATCHY_INTENT_BUILD_TOKEN_BUDGET: "800000"
     PATCHY_INTENT_BUILD_TIMEOUT: 60m
+    PATCHY_INTENT_REVISE_MAX_TURNS: "80"
+    PATCHY_INTENT_REVISE_TOKEN_BUDGET: "400000"
+    PATCHY_INTENT_REVISE_TIMEOUT: 45m
 
     # ---- repository-declared images -----------------------------------------
     # A build runs only on an accepted repository-declared image. The base

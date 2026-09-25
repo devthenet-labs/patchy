@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -52,8 +53,9 @@ var stagePriority = map[v1alpha1.IntentStage]int32{
 
 // jobPhase is the agentrun phase each stage's Job runs.
 var jobPhase = map[v1alpha1.IntentStage]string{
-	v1alpha1.IntentStagePlan:  "plan",
-	v1alpha1.IntentStageBuild: "build",
+	v1alpha1.IntentStagePlan:   "plan",
+	v1alpha1.IntentStageBuild:  "build",
+	v1alpha1.IntentStageRevise: "build",
 }
 
 // irunGVK is the owner TypeMeta a run's transcript carries.
@@ -202,7 +204,8 @@ func (r *RunReconciler) launchable(ctx context.Context, run *v1alpha1.IntentRun)
 // Project explicitly opts out of the repository image.
 func imageStallIgnored(run *v1alpha1.IntentRun, repo *v1alpha1.Repository, requireImage bool) bool {
 	if (run.Spec.Stage != v1alpha1.IntentStagePlan &&
-		(run.Spec.Stage != v1alpha1.IntentStageBuild || requireImage)) ||
+		(run.Spec.Stage != v1alpha1.IntentStageRevise &&
+			(run.Spec.Stage != v1alpha1.IntentStageBuild || requireImage))) ||
 		repo.Status.Artifact == nil || repo.Status.ResolvedSHA == "" {
 		return false
 	}
@@ -345,7 +348,6 @@ func (r *RunReconciler) intentEnded(ctx context.Context, run *v1alpha1.IntentRun
 // usable, or the Job reports it ran the default image, the Job is deleted
 // and the run fails image_required, which blocks its Intent.
 func (r *RunReconciler) launch(ctx context.Context, run *v1alpha1.IntentRun) error {
-	settings := r.Settings.withDefaults()
 	var in v1alpha1.Intent
 	if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name}, &in); err != nil {
 		return err
@@ -381,6 +383,17 @@ func (r *RunReconciler) launch(ctx context.Context, run *v1alpha1.IntentRun) err
 		return r.settle(ctx, run, result{outcome: OutcomeAborted,
 			detail: fmt.Sprintf("input ConfigMap %s is not this run's own; nothing was launched", cm.Name)})
 	}
+	imageRepo := &repo
+	if stage := run.Spec.Stage; stage == v1alpha1.IntentStageRevise {
+		source, refusal, sourceErr := r.reviseSource(ctx, run, &repo)
+		if sourceErr != nil {
+			return sourceErr
+		}
+		if refusal != nil {
+			return r.settle(ctx, run, *refusal)
+		}
+		imageRepo = source
+	}
 
 	stage := run.Spec.Stage
 	spec := jobs.Spec{
@@ -399,11 +412,18 @@ func (r *RunReconciler) launch(ctx context.Context, run *v1alpha1.IntentRun) err
 		TokenBudget:     run.Spec.Grant.TokenBudget,
 		PreviousAttempt: agentresult.EncodePreviousAttempt(run.Spec.PreviousAttempt),
 	}
-	requireImage, refusal := r.stageSpec(run, &spec, &cm, &proj, &repo)
+	requireImage, refusal := r.stageSpec(run, &spec, &cm, &proj, imageRepo)
 	if refusal != nil {
 		return r.settle(ctx, run, *refusal)
 	}
-	build := settings.grant(&proj, v1alpha1.IntentStageBuild)
+	return r.launchJob(ctx, run, &proj, spec, requireImage)
+}
+
+func (r *RunReconciler) launchJob(ctx context.Context, run *v1alpha1.IntentRun,
+	proj *v1alpha1.Project, spec jobs.Spec, requireImage bool) error {
+	settings := r.Settings.withDefaults()
+	stage := run.Spec.Stage
+	build := settings.grant(proj, v1alpha1.IntentStageBuild)
 	jobName, image, err := r.Jobs.Create(ctx, spec, stageEnv(stage, settings, build))
 	switch {
 	case launchRefused(err):
@@ -425,9 +445,46 @@ func (r *RunReconciler) launch(ctx context.Context, run *v1alpha1.IntentRun) err
 		now := metav1.NewTime(r.now())
 		cur.Status.JobRef = &v1alpha1.JobReference{Namespace: settings.AgentNamespace, Name: jobName}
 		cur.Status.RunnerImage = &image
-		cur.Status.BaseSHA = repo.Status.ResolvedSHA
+		cur.Status.BaseSHA = spec.BaseSHA
 		cur.Status.StartedAt = &now
 	})
+}
+
+// reviseSource rechecks the exact PR branch pin and the build round's image
+// before any agent Job is launched. It never falls back to the default image.
+func (r *RunReconciler) reviseSource(ctx context.Context, run *v1alpha1.IntentRun,
+	repo *v1alpha1.Repository) (*v1alpha1.Repository, *result, error) {
+	branch := branchName(run.Spec.IntentRef.Name)
+	if repo.Spec.Ref.Branch != branch {
+		return nil, &result{outcome: OutcomeAborted,
+			detail: "revise Repository does not point at this intent's PR branch; nothing was launched"}, nil
+	}
+	head, err := r.GitHub.HeadSHA(ctx, run.Spec.Repository.URL, branch)
+	if ghclient.IsNotFound(err) {
+		return nil, &result{outcome: OutcomeHeadMoved,
+			detail: "intent PR branch was deleted before the revise launch"}, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("read intent PR head before revise launch: %w", err)
+	}
+	if head != repo.Status.ResolvedSHA {
+		return nil, &result{outcome: OutcomeHeadMoved,
+			detail: fmt.Sprintf("intent PR head moved from pinned %s to %s before launch", repo.Status.ResolvedSHA, head)}, nil
+	}
+	if run.Spec.ImageFrom == nil {
+		return nil, &result{outcome: OutcomeImageRequired,
+			detail: "revise run has no build-round image source"}, nil
+	}
+	var pinned v1alpha1.Repository
+	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: run.Namespace,
+		Name: run.Spec.ImageFrom.Name}, &pinned); err != nil {
+		return nil, nil, fmt.Errorf("read revise run's build-round image source: %w", err)
+	}
+	if pinned.UID != run.Spec.ImageFrom.UID || pinned.Status.RunnerImage == nil {
+		return nil, &result{outcome: OutcomeImageRequired,
+			detail: "revise run's build-round image pin is absent or changed"}, nil
+	}
+	return &pinned, nil, nil
 }
 
 // launchRefused reports a Job create the API server refused for itself: a
@@ -482,6 +539,26 @@ func (r *RunReconciler) stageSpec(run *v1alpha1.IntentRun, spec *jobs.Spec, cm *
 			return true, &result{outcome: OutcomeImageRequired, detail: skipped}
 		}
 		return requireImage, nil
+	case v1alpha1.IntentStageRevise:
+		spec.Model = r.BuildModel
+		if reason := cm.Data[keyInputRefusal]; reason != "" {
+			return true, &result{outcome: OutcomeInputUnavailable, detail: reason}
+		}
+		approved := cm.Data[keyApprovedPlan]
+		if got := digest([]byte(approved)); got != run.Spec.Inputs.PlanDigest ||
+			!strings.HasPrefix(cm.Data[keyInvestigation], approved) || spec.IssueMarkdown != "" {
+			return true, &result{outcome: OutcomeAborted,
+				detail: "revise handoff does not begin with the exact approved plan, or request is not empty"}
+		}
+		if _, err := report.ParsePlanInput([]byte(cm.Data[keyInvestigation])); err != nil {
+			return true, &result{outcome: OutcomeAborted,
+				detail: "revise handoff holds text that could not be shown: " + err.Error()}
+		}
+		spec.InvestigationMarkdown = cm.Data[keyInvestigation]
+		if skipped := r.Images.PinFor(spec, repo); skipped != "" {
+			return true, &result{outcome: OutcomeImageRequired, detail: skipped}
+		}
+		return true, nil
 	}
 	return false, &result{outcome: OutcomeAborted,
 		detail: fmt.Sprintf("stage %q is not run by this controller", run.Spec.Stage)}
@@ -496,6 +573,9 @@ func (r *RunReconciler) requeuePending(ctx context.Context, run *v1alpha1.Intent
 func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (ctrl.Result, error) {
 	if run.Status.PushedCommit != "" {
 		// The commit was created and recorded; only the branch may be owed.
+		if run.Spec.Stage == v1alpha1.IntentStageRevise {
+			return r.heldOr(r.advanceBranch(ctx, run))
+		}
 		return r.heldOr(r.createBranch(ctx, run))
 	}
 	if pushHeld(run) {
@@ -599,6 +679,19 @@ func (r *RunReconciler) pushGate(ctx context.Context, run *v1alpha1.IntentRun) e
 		return errIntentEnded
 	case in.Spec.Suspend:
 		return errHeld
+	}
+	if run.Spec.Stage == v1alpha1.IntentStageRevise {
+		if in.Status.Phase != v1alpha1.IntentRevising || len(in.Status.PullRequests) != 1 {
+			return errIntentEnded
+		}
+		pr := in.Status.PullRequests[0]
+		live, err := r.GitHub.GetPullRequest(ctx, pr.Repository, pr.Number)
+		if err != nil {
+			return fmt.Errorf("verify revise PR before push: %w", err)
+		}
+		if live.State != prOpen || live.Merged || pr.NodeID != "" && live.NodeID != pr.NodeID {
+			return errIntentEnded
+		}
 	}
 	return nil
 }
@@ -858,7 +951,57 @@ func (r *RunReconciler) push(ctx context.Context, run *v1alpha1.IntentRun, ev *e
 	}); err != nil {
 		return err
 	}
+	if run.Spec.Stage == v1alpha1.IntentStageRevise {
+		return r.advanceBranch(ctx, run)
+	}
 	return r.createBranch(ctx, run)
+}
+
+// advanceBranch moves an intent PR head only when the current branch still
+// points at the SHA the revise run cloned. GitHub's update is non-forcing,
+// so a concurrent human push can never be overwritten.
+func (r *RunReconciler) advanceBranch(ctx context.Context, run *v1alpha1.IntentRun) error {
+	switch err := r.pushGate(ctx, run); {
+	case errors.Is(err, errIntentEnded):
+		return r.endedBeforePush(ctx, run, result{keep: true})
+	case errors.Is(err, errHeld):
+		return r.hold(ctx, run, nil)
+	case err != nil:
+		return err
+	}
+	branch := branchName(run.Spec.IntentRef.Name)
+	head, err := r.GitHub.HeadSHA(ctx, run.Spec.Repository.URL, branch)
+	if ghclient.IsNotFound(err) {
+		return r.settle(ctx, run, result{outcome: OutcomeHeadMoved, keep: true,
+			detail: "intent PR branch was deleted before the revise fast-forward"})
+	}
+	if ghclient.IsRefused(err) {
+		return r.settle(ctx, run, result{outcome: OutcomePushRefused, keep: true,
+			detail: "GitHub refused to read the intent PR head before fast-forward: " + err.Error()})
+	}
+	if err != nil {
+		return fmt.Errorf("read intent PR head before advancing: %w", err)
+	}
+	if head != run.Status.BaseSHA {
+		return r.settle(ctx, run, result{outcome: OutcomeHeadMoved, keep: true,
+			detail: fmt.Sprintf("intent PR head moved from %s to %s; the stale revise result was not pushed",
+				run.Status.BaseSHA, head)})
+	}
+	err = r.GitHub.FastForwardRef(ctx, run.Spec.Repository.URL, branch, run.Status.PushedCommit)
+	switch {
+	case errors.Is(err, ghclient.ErrRefNotFound):
+		return r.settle(ctx, run, result{outcome: OutcomeHeadMoved, keep: true,
+			detail: "intent PR branch was deleted during the fast-forward"})
+	case errors.Is(err, ghclient.ErrNotFastForward):
+		return r.settle(ctx, run, result{outcome: OutcomeHeadMoved, keep: true,
+			detail: "intent PR head moved during the fast-forward; the stale revise result was not pushed"})
+	case ghclient.IsRefused(err):
+		return r.settle(ctx, run, result{outcome: OutcomePushRefused, keep: true,
+			detail: "GitHub refused the intent PR fast-forward: " + err.Error()})
+	case err != nil:
+		return fmt.Errorf("fast-forward intent PR head: %w", err)
+	}
+	return r.settle(ctx, run, result{outcome: string(envelope.OutcomeOK), complete: true, keep: true})
 }
 
 // createBranch creates patchy-intent/<intent> at the recorded commit,

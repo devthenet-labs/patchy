@@ -557,6 +557,15 @@ type IntentStatus struct {
 	// ObservedGeneration is the last spec generation acted on.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// ChecksObservedHeadSHA is a pushed PR head whose named checks settled,
+	// or whose check-poll timeout elapsed without an observed failure. Once
+	// recorded, this head is not polled again; a new pushed head resets it.
+	// +optional
+	ChecksObservedHeadSHA string `json:"checksObservedHeadSHA,omitempty"`
+	// ChecksObservedProjectGeneration is the Project generation whose check
+	// names were observed at that head. Changing checks.fix resumes polling.
+	// +optional
+	ChecksObservedProjectGeneration int64 `json:"checksObservedProjectGeneration,omitempty"`
 	// Input is the current issue snapshot.
 	// +optional
 	Input *IntentInput `json:"input,omitempty"`

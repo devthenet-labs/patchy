@@ -232,6 +232,8 @@ func (p *pass) step(ctx context.Context) (bool, error) {
 		return p.building(ctx)
 	case v1alpha1.IntentInReview:
 		return p.review(ctx)
+	case v1alpha1.IntentRevising:
+		return p.revising(ctx)
 	case v1alpha1.IntentBlocked:
 		return p.blocked(ctx)
 	}
@@ -262,7 +264,7 @@ func (p *pass) nextWake() time.Duration {
 	if wake <= 0 {
 		wake = p.pollInterval()
 	}
-	if p.in.Status.Phase == v1alpha1.IntentInReview {
+	if p.in.Status.Phase == v1alpha1.IntentInReview || p.in.Status.Phase == v1alpha1.IntentRevising {
 		var last time.Time
 		p.r.memo(func() { last = p.r.prPolled[p.in.Name] })
 		if pr := last.Add(p.set.PRPollInterval).Sub(p.now); pr > 0 && pr < wake {

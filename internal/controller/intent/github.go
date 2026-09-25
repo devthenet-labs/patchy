@@ -60,10 +60,22 @@ type GitHub interface {
 	HeadSHA(ctx context.Context, repoURL, branch string) (string, error)
 	CreateCommit(ctx context.Context, repoURL string, req ghclient.CommitRequest) (string, error)
 	CreateBranchRef(ctx context.Context, repoURL, branch, sha string) error
+	FastForwardRef(ctx context.Context, repoURL, branch, sha string) error
 	// FindPullRequest is the open pull request from head into base, or nil.
 	FindPullRequest(ctx context.Context, repoURL, head, base string) (*ghclient.PR, error)
 	CreatePullRequest(ctx context.Context, repoURL string, req ghclient.PRRequest) (*ghclient.PR, error)
 	GetPullRequest(ctx context.Context, repoURL string, number int64) (*ghclient.PullRequest, error)
+	ListPullRequestReviews(ctx context.Context, repoURL string, number int64) ([]ghclient.Review, error)
+	ListPullRequestReviewComments(ctx context.Context, repoURL string, number int64) ([]ghclient.ReviewComment, error)
+	ReviewEdited(ctx context.Context, repoURL, nodeID string) (bool, error)
+	ReviewCommentEdited(ctx context.Context, repoURL, nodeID string) (bool, error)
+	ComparePatch(ctx context.Context, repoURL, base, head string) (string, error)
+	RequestReviewers(ctx context.Context, repoURL string, number int64, logins []string) error
+	ListCheckRuns(ctx context.Context, repoURL, sha string) ([]ghclient.CheckRun, error)
+	ListCheckAnnotations(ctx context.Context, repoURL string, id int64, limit int) ([]ghclient.CheckAnnotation, error)
+	ListCommitStatuses(ctx context.Context, repoURL, sha string) ([]ghclient.CommitStatus, error)
+	ListWorkflowJobs(ctx context.Context, repoURL string, runID int64) ([]ghclient.WorkflowJob, error)
+	GetJobLogTail(ctx context.Context, repoURL string, jobID int64, tailBytes int) (string, error)
 }
 
 // The permission set of each token. Every token requests exactly one
@@ -76,6 +88,9 @@ var (
 	contentsWrite = ghclient.TokenPerms{Contents: ghclient.PermWrite}
 	pullsRead     = ghclient.TokenPerms{PullRequests: ghclient.PermRead}
 	pullsWrite    = ghclient.TokenPerms{PullRequests: ghclient.PermWrite}
+	checksRead    = ghclient.TokenPerms{Checks: ghclient.PermRead}
+	statusesRead  = ghclient.TokenPerms{Statuses: ghclient.PermRead}
+	actionsRead   = ghclient.TokenPerms{Actions: ghclient.PermRead}
 )
 
 // rateCacheTTL is how long one rate-limit reading stands for its
@@ -458,6 +473,14 @@ func (g *forgeGitHub) CreateBranchRef(ctx context.Context, repoURL, branch, sha 
 	return c.CreateBranchRef(ctx, repo, branch, sha)
 }
 
+func (g *forgeGitHub) FastForwardRef(ctx context.Context, repoURL, branch, sha string) error {
+	c, repo, err := g.client(ctx, repoURL, contentsWrite)
+	if err != nil {
+		return err
+	}
+	return c.FastForwardRef(ctx, repo, branch, sha)
+}
+
 func (g *forgeGitHub) FindPullRequest(ctx context.Context, repoURL, head, base string) (*ghclient.PR, error) {
 	c, repo, err := g.client(ctx, repoURL, pullsRead)
 	if err != nil {
@@ -482,6 +505,99 @@ func (g *forgeGitHub) GetPullRequest(ctx context.Context, repoURL string, number
 		return nil, err
 	}
 	return c.GetPullRequest(ctx, repo, int(number))
+}
+
+func (g *forgeGitHub) ListPullRequestReviews(ctx context.Context, repoURL string, number int64) (
+	[]ghclient.Review, error) {
+	c, repo, err := g.client(ctx, repoURL, pullsRead)
+	if err != nil {
+		return nil, err
+	}
+	return c.ListPullRequestReviews(ctx, repo, int(number))
+}
+
+func (g *forgeGitHub) ListPullRequestReviewComments(ctx context.Context, repoURL string, number int64) (
+	[]ghclient.ReviewComment, error) {
+	c, repo, err := g.client(ctx, repoURL, pullsRead)
+	if err != nil {
+		return nil, err
+	}
+	return c.ListPullRequestReviewComments(ctx, repo, int(number))
+}
+
+func (g *forgeGitHub) ReviewEdited(ctx context.Context, repoURL, nodeID string) (bool, error) {
+	c, _, err := g.client(ctx, repoURL, pullsRead)
+	if err != nil {
+		return false, err
+	}
+	return c.ReviewEdited(ctx, nodeID)
+}
+
+func (g *forgeGitHub) ReviewCommentEdited(ctx context.Context, repoURL, nodeID string) (bool, error) {
+	c, _, err := g.client(ctx, repoURL, pullsRead)
+	if err != nil {
+		return false, err
+	}
+	return c.ReviewCommentEdited(ctx, nodeID)
+}
+
+func (g *forgeGitHub) ComparePatch(ctx context.Context, repoURL, base, head string) (string, error) {
+	c, repo, err := g.client(ctx, repoURL, contentsRead)
+	if err != nil {
+		return "", err
+	}
+	return c.ComparePatch(ctx, repo, base, head)
+}
+
+func (g *forgeGitHub) RequestReviewers(ctx context.Context, repoURL string, number int64, logins []string) error {
+	c, repo, err := g.client(ctx, repoURL, pullsWrite)
+	if err != nil {
+		return err
+	}
+	return c.RequestReviewers(ctx, repo, int(number), logins)
+}
+
+func (g *forgeGitHub) ListCheckRuns(ctx context.Context, repoURL, sha string) ([]ghclient.CheckRun, error) {
+	c, repo, err := g.client(ctx, repoURL, checksRead)
+	if err != nil {
+		return nil, err
+	}
+	return c.ListCheckRuns(ctx, repo, sha)
+}
+
+func (g *forgeGitHub) ListCheckAnnotations(ctx context.Context, repoURL string, id int64, limit int) (
+	[]ghclient.CheckAnnotation, error) {
+	c, repo, err := g.client(ctx, repoURL, checksRead)
+	if err != nil {
+		return nil, err
+	}
+	return c.ListCheckAnnotations(ctx, repo, id, limit)
+}
+
+func (g *forgeGitHub) ListCommitStatuses(ctx context.Context, repoURL, sha string) (
+	[]ghclient.CommitStatus, error) {
+	c, repo, err := g.client(ctx, repoURL, statusesRead)
+	if err != nil {
+		return nil, err
+	}
+	return c.ListCommitStatuses(ctx, repo, sha)
+}
+
+func (g *forgeGitHub) ListWorkflowJobs(ctx context.Context, repoURL string, runID int64) (
+	[]ghclient.WorkflowJob, error) {
+	c, repo, err := g.client(ctx, repoURL, actionsRead)
+	if err != nil {
+		return nil, err
+	}
+	return c.ListWorkflowJobs(ctx, repo, runID)
+}
+
+func (g *forgeGitHub) GetJobLogTail(ctx context.Context, repoURL string, jobID int64, tailBytes int) (string, error) {
+	c, repo, err := g.client(ctx, repoURL, actionsRead)
+	if err != nil {
+		return "", err
+	}
+	return c.GetJobLogTail(ctx, repo, jobID, tailBytes)
 }
 
 // installationRefused reports a token GitHub will not mint for the

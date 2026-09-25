@@ -1070,7 +1070,8 @@
                         "intentTTL",
                         "jobDeadline",
                         "plan",
-                        "build"
+                        "build",
+                        "revise"
                     ],
                     "properties": {
                         "pollInterval": {
@@ -1142,6 +1143,29 @@
                                     "minLength": 1,
                                     "description": "Canonical model id; must resolve to the claude harness"
                                 },
+                                "maxTurns": {
+                                    "type": "integer",
+                                    "minimum": 1
+                                },
+                                "tokenBudget": {
+                                    "type": "integer",
+                                    "minimum": 1
+                                },
+                                "timeout": {
+                                    "$ref": "#/definitions/duration"
+                                }
+                            }
+                        },
+                        "revise": {
+                            "type": "object",
+                            "description": "The revise and check-fix stage's ceilings: workspace-write, on the build round's pinned repository image",
+                            "additionalProperties": false,
+                            "required": [
+                                "maxTurns",
+                                "tokenBudget",
+                                "timeout"
+                            ],
+                            "properties": {
                                 "maxTurns": {
                                     "type": "integer",
                                     "minimum": 1

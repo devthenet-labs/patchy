@@ -532,6 +532,10 @@ intentController:
             maxTurns: 150
             tokenBudget: 800000
             timeout: 60m
+        revise:
+            maxTurns: 80
+            tokenBudget: 400000
+            timeout: 45m
         # Extra PATCHY_* keys for the intent controller only.
         extra: {}
     # The Secrets your Forges reference (spec.secretRef): intent-controller's

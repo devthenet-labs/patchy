@@ -21,6 +21,7 @@ import (
 // blockingConditions are the conditions that hold an Intent Blocked.
 var blockingConditions = []string{
 	v1alpha1.ConditionBudgetExhausted, v1alpha1.ConditionImageRequired, v1alpha1.ConditionBranchConflict,
+	v1alpha1.ConditionRevisionLimitReached, v1alpha1.ConditionChecksFailing,
 }
 
 // BranchConflict reasons.
@@ -134,6 +135,27 @@ func (p *pass) blockHolds(ctx context.Context) (bool, error) {
 		p.in.Status.Usage.CostMicroUSD >= maxCostMicroUSD(p.proj) {
 		return true, nil
 	}
+	if meta.IsStatusConditionTrue(p.in.Status.Conditions, v1alpha1.ConditionRevisionLimitReached) &&
+		p.revisionRounds() >= maxRevisions(p.proj) {
+		return true, nil
+	}
+	if c := meta.FindStatusCondition(p.in.Status.Conditions, v1alpha1.ConditionChecksFailing); c != nil &&
+		c.Status == metav1.ConditionTrue {
+		limit := v1alpha1.DefaultMaxCheckFixes
+		if p.proj.Spec.Limits.MaxCheckFixes != nil {
+			limit = *p.proj.Spec.Limits.MaxCheckFixes
+		}
+		if c.Reason == "MaxCheckFixes" && p.checkFixRounds() >= limit {
+			return true, nil
+		}
+		if c.Reason == "RepeatedFailure" {
+			var blockedGeneration int64
+			_, _ = fmt.Sscanf(c.Message, "project-generation=%d", &blockedGeneration)
+			if blockedGeneration == p.proj.Generation {
+				return true, nil
+			}
+		}
+	}
 	if holds, err := p.branchBlockHolds(ctx); holds || err != nil {
 		return holds, err
 	}
@@ -169,25 +191,36 @@ func (p *pass) branchBlockHolds(ctx context.Context) (bool, error) {
 		return pr != nil && !own, err
 	}
 	if c.Reason == ReasonBranchMissing || c.Reason == ReasonBranchChanged {
-		ap := p.in.Status.Approval
-		if ap == nil {
-			return true, nil
-		}
-		run := p.round(v1alpha1.IntentStageBuild, ap.PlanRevision).latest()
-		if run == nil || run.Status.PushedCommit == "" {
-			return true, nil
-		}
-		head, err := p.r.GitHub.HeadSHA(ctx, repo.URL, branchName(p.in.Name))
-		if ghclient.IsNotFound(err) {
-			return true, nil
-		}
-		if err != nil {
-			return true, err
-		}
-		return head != run.Status.PushedCommit, nil
+		return p.branchRestoreHolds(ctx, repo.URL, c.Reason)
 	}
 	sha, err := p.branchConflict(ctx, repo.URL)
 	return sha != "", err
+}
+
+func (p *pass) branchRestoreHolds(ctx context.Context, repoURL, reason string) (bool, error) {
+	if v1alpha1.IntentBlockedFrom(p.in) == v1alpha1.IntentRevising && reason == ReasonBranchMissing {
+		_, err := p.r.GitHub.HeadSHA(ctx, repoURL, branchName(p.in.Name))
+		if ghclient.IsNotFound(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	ap := p.in.Status.Approval
+	if ap == nil {
+		return true, nil
+	}
+	run := p.round(v1alpha1.IntentStageBuild, ap.PlanRevision).latest()
+	if run == nil || run.Status.PushedCommit == "" {
+		return true, nil
+	}
+	head, err := p.r.GitHub.HeadSHA(ctx, repoURL, branchName(p.in.Name))
+	if ghclient.IsNotFound(err) {
+		return true, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	return head != run.Status.PushedCommit, nil
 }
 
 // imageBlockHolds reports an ImageRequired block still in force.

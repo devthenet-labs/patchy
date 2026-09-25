@@ -187,13 +187,20 @@ func refusedLocally(proj *v1alpha1.Project, actor ghclient.Actor) bool {
 // for being a bot. A GitHub failure other than "no such user" or a refused
 // lookup is returned, so nothing is decided without GitHub's answer.
 func (p *pass) authorize(ctx context.Context, actor ghclient.Actor) (ok, bot bool, err error) {
+	return p.authorizeIn(ctx, p.repo(), actor)
+}
+
+// authorizeIn applies the same approver and write-permission rule on the
+// repository where an action happened. PR reviews and commands are checked
+// against the application repository, not the intent issue repository.
+func (p *pass) authorizeIn(ctx context.Context, repoURL string, actor ghclient.Actor) (ok, bot bool, err error) {
 	if isBot(actor) {
 		return false, true, nil
 	}
 	if !isApprover(p.proj, actor.Login) {
 		return false, false, nil
 	}
-	perm, err := p.r.GitHub.Permission(ctx, p.repo(), actor.Login)
+	perm, err := p.r.GitHub.Permission(ctx, repoURL, actor.Login)
 	switch {
 	case errors.Is(err, ghclient.ErrNoSuchUser):
 		return false, false, nil

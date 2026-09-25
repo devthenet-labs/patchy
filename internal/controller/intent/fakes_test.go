@@ -155,10 +155,23 @@ type fakeGitHub struct {
 	// whatever their updated_at says.
 	edited map[int64]bool
 
-	commits  []ghclient.CommitRequest
-	branches map[string]string
-	prs      map[int64]*fakePR
-	heads    map[string]string
+	commits            []ghclient.CommitRequest
+	parents            map[string]string
+	branches           map[string]string
+	prs                map[int64]*fakePR
+	heads              map[string]string
+	reviews            map[int64][]ghclient.Review
+	inline             map[int64][]ghclient.ReviewComment
+	prComments         map[int64][]*ghclient.Comment
+	reviewEdits        map[string]bool
+	inlineEdits        map[string]bool
+	patch              string
+	checks             map[string][]ghclient.CheckRun
+	statuses           map[string][]ghclient.CommitStatus
+	annotations        map[int64][]ghclient.CheckAnnotation
+	workflowJobs       map[int64][]ghclient.WorkflowJob
+	jobLogs            map[int64]string
+	requestedReviewers map[int64][]string
 
 	resolveErr   error
 	installedErr error
@@ -171,18 +184,30 @@ type fakeGitHub struct {
 func newFakeGitHub(clock *fakeClock) *fakeGitHub {
 	return &fakeGitHub{
 		clock: clock, nextID: 1000, bot: testBot,
-		perms:     map[string]string{approver: ghclient.PermissionAdmin},
-		remaining: 5000,
-		labels:    map[string]bool{},
-		issues:    map[int64]*fakeIssue{},
-		reactions: map[int64]int{},
-		closes:    map[int64][]string{},
-		edited:    map[int64]bool{},
-		branches:  map[string]string{},
-		prs:       map[int64]*fakePR{},
-		heads:     map[string]string{"main": baseSHA},
-		errs:      map[string][]error{},
-		calls:     map[string]int{},
+		perms:              map[string]string{approver: ghclient.PermissionAdmin},
+		remaining:          5000,
+		labels:             map[string]bool{},
+		issues:             map[int64]*fakeIssue{},
+		reactions:          map[int64]int{},
+		closes:             map[int64][]string{},
+		edited:             map[int64]bool{},
+		branches:           map[string]string{},
+		parents:            map[string]string{},
+		prs:                map[int64]*fakePR{},
+		heads:              map[string]string{"main": baseSHA},
+		reviews:            map[int64][]ghclient.Review{},
+		inline:             map[int64][]ghclient.ReviewComment{},
+		prComments:         map[int64][]*ghclient.Comment{},
+		reviewEdits:        map[string]bool{},
+		inlineEdits:        map[string]bool{},
+		checks:             map[string][]ghclient.CheckRun{},
+		statuses:           map[string][]ghclient.CommitStatus{},
+		annotations:        map[int64][]ghclient.CheckAnnotation{},
+		workflowJobs:       map[int64][]ghclient.WorkflowJob{},
+		jobLogs:            map[int64]string{},
+		requestedReviewers: map[int64][]string{},
+		errs:               map[string][]error{},
+		calls:              map[string]int{},
 	}
 }
 
@@ -536,7 +561,7 @@ func (f *fakeGitHub) ListIssueEvents(_ context.Context, _ string, number int64) 
 	return out, nil
 }
 
-func (f *fakeGitHub) ListIssueComments(_ context.Context, _ string, number int64, since time.Time) (
+func (f *fakeGitHub) ListIssueComments(_ context.Context, repoURL string, number int64, since time.Time) (
 	[]*ghclient.Comment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -544,12 +569,21 @@ func (f *fakeGitHub) ListIssueComments(_ context.Context, _ string, number int64
 		return nil, err
 	}
 	f.sinces = append(f.sinces, since)
-	is, err := f.issue(number)
-	if err != nil {
-		return nil, err
+	var comments []*ghclient.Comment
+	if repoURL == appRepoURL {
+		if _, ok := f.prs[number]; !ok {
+			return nil, ghError(http.StatusNotFound, "Not Found")
+		}
+		comments = f.prComments[number]
+	} else {
+		is, err := f.issue(number)
+		if err != nil {
+			return nil, err
+		}
+		comments = is.comments
 	}
 	var out []*ghclient.Comment
-	for _, c := range is.comments {
+	for _, c := range comments {
 		if since.IsZero() || !c.UpdatedAt.Before(since) {
 			cp := *c
 			out = append(out, &cp)
@@ -558,11 +592,22 @@ func (f *fakeGitHub) ListIssueComments(_ context.Context, _ string, number int64
 	return out, nil
 }
 
-func (f *fakeGitHub) GetIssueComment(_ context.Context, _ string, id int64) (*ghclient.Comment, error) {
+func (f *fakeGitHub) GetIssueComment(_ context.Context, repoURL string, id int64) (*ghclient.Comment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("GetIssueComment"); err != nil {
 		return nil, err
+	}
+	if repoURL == appRepoURL {
+		for _, comments := range f.prComments {
+			for _, c := range comments {
+				if c.ID == id {
+					cp := *c
+					return &cp, nil
+				}
+			}
+		}
+		return nil, ghError(http.StatusNotFound, "Not Found")
 	}
 	for _, is := range f.issues {
 		for _, c := range is.comments {
@@ -575,11 +620,21 @@ func (f *fakeGitHub) GetIssueComment(_ context.Context, _ string, id int64) (*gh
 	return nil, ghError(http.StatusNotFound, "Not Found")
 }
 
-func (f *fakeGitHub) CommentEdited(_ context.Context, _, nodeID string) (bool, error) {
+func (f *fakeGitHub) CommentEdited(_ context.Context, repoURL, nodeID string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("CommentEdited"); err != nil {
 		return false, err
+	}
+	if repoURL == appRepoURL {
+		for _, comments := range f.prComments {
+			for _, c := range comments {
+				if c.NodeID == nodeID && nodeID != "" {
+					return f.edited[c.ID], nil
+				}
+			}
+		}
+		return false, fmt.Errorf("comment %q: %w", nodeID, ghclient.ErrNodeNotFound)
 	}
 	for _, is := range f.issues {
 		for _, c := range is.comments {
@@ -591,12 +646,25 @@ func (f *fakeGitHub) CommentEdited(_ context.Context, _, nodeID string) (bool, e
 	return false, fmt.Errorf("comment %q: %w", nodeID, ghclient.ErrNodeNotFound)
 }
 
-func (f *fakeGitHub) CreateIssueComment(_ context.Context, _ string, number int64, body string) (
+func (f *fakeGitHub) CreateIssueComment(_ context.Context, repoURL string, number int64, body string) (
 	*ghclient.Comment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("CreateIssueComment"); err != nil {
 		return nil, err
+	}
+	if repoURL == appRepoURL {
+		if _, ok := f.prs[number]; !ok {
+			return nil, ghError(http.StatusNotFound, "Not Found")
+		}
+		id := f.id()
+		a := actorOf(f.bot)
+		c := &ghclient.Comment{ID: id, NodeID: fmt.Sprintf("IC_%d", id), Body: body,
+			UserLogin: a.Login, UserID: a.ID, UserType: a.Type,
+			CreatedAt: f.clock.Now(), UpdatedAt: f.clock.Now()}
+		f.prComments[number] = append(f.prComments[number], c)
+		cp := *c
+		return &cp, nil
 	}
 	if _, err := f.issue(number); err != nil {
 		return nil, err
@@ -689,7 +757,9 @@ func (f *fakeGitHub) CreateCommit(_ context.Context, _ string, req ghclient.Comm
 		return "", err
 	}
 	f.commits = append(f.commits, req)
-	return fmt.Sprintf("%040x", 0xc0ffee00+len(f.commits)), nil
+	sha := fmt.Sprintf("%040x", 0xc0ffee00+len(f.commits))
+	f.parents[sha] = req.BaseSHA
+	return sha, nil
 }
 
 func (f *fakeGitHub) CreateBranchRef(_ context.Context, _, branch, sha string) error {
@@ -702,6 +772,28 @@ func (f *fakeGitHub) CreateBranchRef(_ context.Context, _, branch, sha string) e
 		return fmt.Errorf("create branch %s: it is at %s: %w", branch, cur, ghclient.ErrBranchExists)
 	}
 	f.branches[branch] = sha
+	return nil
+}
+
+func (f *fakeGitHub) FastForwardRef(_ context.Context, _, branch, sha string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("FastForwardRef"); err != nil {
+		return err
+	}
+	cur, ok := f.branches[branch]
+	if !ok {
+		return ghclient.ErrRefNotFound
+	}
+	if cur != sha && f.parents[sha] != cur {
+		return ghclient.ErrNotFastForward
+	}
+	f.branches[branch] = sha
+	for _, pr := range f.prs {
+		if pr.head == branch && pr.pr.State == "open" {
+			pr.pr.HeadSHA = sha
+		}
+	}
 	return nil
 }
 
@@ -748,6 +840,104 @@ func (f *fakeGitHub) GetPullRequest(_ context.Context, _ string, number int64) (
 	}
 	cp := pr.pr
 	return &cp, nil
+}
+
+func (f *fakeGitHub) ListPullRequestReviews(_ context.Context, _ string, number int64) ([]ghclient.Review, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("ListPullRequestReviews"); err != nil {
+		return nil, err
+	}
+	return slices.Clone(f.reviews[number]), nil
+}
+
+func (f *fakeGitHub) ListPullRequestReviewComments(_ context.Context, _ string, number int64) (
+	[]ghclient.ReviewComment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("ListPullRequestReviewComments"); err != nil {
+		return nil, err
+	}
+	return slices.Clone(f.inline[number]), nil
+}
+
+func (f *fakeGitHub) ReviewEdited(_ context.Context, _, nodeID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reviewEdits[nodeID], f.call("ReviewEdited")
+}
+
+func (f *fakeGitHub) ReviewCommentEdited(_ context.Context, _, nodeID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.inlineEdits[nodeID], f.call("ReviewCommentEdited")
+}
+
+func (f *fakeGitHub) ComparePatch(context.Context, string, string, string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.patch, f.call("ComparePatch")
+}
+
+func (f *fakeGitHub) RequestReviewers(_ context.Context, _ string, number int64, logins []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("RequestReviewers"); err != nil {
+		return err
+	}
+	f.requestedReviewers[number] = append(f.requestedReviewers[number], logins...)
+	return nil
+}
+
+func (f *fakeGitHub) ListCheckRuns(_ context.Context, _, sha string) ([]ghclient.CheckRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("ListCheckRuns"); err != nil {
+		return nil, err
+	}
+	return slices.Clone(f.checks[sha]), nil
+}
+
+func (f *fakeGitHub) ListCheckAnnotations(_ context.Context, _ string, id int64, limit int) (
+	[]ghclient.CheckAnnotation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("ListCheckAnnotations"); err != nil {
+		return nil, err
+	}
+	a := slices.Clone(f.annotations[id])
+	return a[:min(len(a), limit)], nil
+}
+
+func (f *fakeGitHub) ListCommitStatuses(_ context.Context, _, sha string) ([]ghclient.CommitStatus, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("ListCommitStatuses"); err != nil {
+		return nil, err
+	}
+	return slices.Clone(f.statuses[sha]), nil
+}
+
+func (f *fakeGitHub) ListWorkflowJobs(_ context.Context, _ string, runID int64) ([]ghclient.WorkflowJob, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("ListWorkflowJobs"); err != nil {
+		return nil, err
+	}
+	return slices.Clone(f.workflowJobs[runID]), nil
+}
+
+func (f *fakeGitHub) GetJobLogTail(_ context.Context, _ string, jobID int64, tailBytes int) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("GetJobLogTail"); err != nil {
+		return "", err
+	}
+	log := f.jobLogs[jobID]
+	if len(log) > tailBytes {
+		log = log[len(log)-tailBytes:]
+	}
+	return log, nil
 }
 
 // ---- jobs ----
@@ -922,8 +1112,9 @@ func testSettings() Settings {
 		Namespace: testNS, AgentNamespace: "patchy-agents",
 		PollInterval: time.Minute, ApprovalPollInterval: 30 * time.Second, PRPollInterval: time.Minute,
 		RateLimitFloor: 1000, MaxAttempts: 2,
-		Plan:  StageCeiling{MaxTurns: 40, TokenBudget: 200000, Timeout: 20 * time.Minute},
-		Build: StageCeiling{MaxTurns: 150, TokenBudget: 800000, Timeout: time.Hour},
+		Plan:   StageCeiling{MaxTurns: 40, TokenBudget: 200000, Timeout: 20 * time.Minute},
+		Build:  StageCeiling{MaxTurns: 150, TokenBudget: 800000, Timeout: time.Hour},
+		Revise: StageCeiling{MaxTurns: 80, TokenBudget: 400000, Timeout: 45 * time.Minute},
 	}
 }
 
@@ -1082,7 +1273,15 @@ func (e *env) readyRepositories(image string) {
 		if repo.Status.ResolvedSHA != "" {
 			continue
 		}
-		repo.Status.ResolvedSHA = baseSHA
+		sha := baseSHA
+		if repo.Spec.Ref.Branch != "" {
+			var err error
+			sha, err = e.gh.HeadSHA(ctx, repo.Spec.URL, repo.Spec.Ref.Branch)
+			if err != nil {
+				e.t.Fatal(err)
+			}
+		}
+		repo.Status.ResolvedSHA = sha
 		repo.Status.Artifact = &v1alpha1.Artifact{URL: "http://artifacts/x.tar.gz", Digest: "sha256:aa"}
 		repo.Status.Conditions = []metav1.Condition{{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue,
 			Reason: "Ready", LastTransitionTime: metav1.NewTime(e.clock.Now())}}

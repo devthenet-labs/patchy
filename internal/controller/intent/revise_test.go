@@ -208,7 +208,7 @@ func TestApproverPRCommandStartsOneRevision(t *testing.T) {
 		UserLogin: approver, UserID: actorOf(approver).ID, UserType: "User",
 		Body:      "/patchy revise Please check the response header.",
 		CreatedAt: e.clock.Now(), UpdatedAt: e.clock.Now()}}
-	for i := range 50 {
+	for i := range 250 {
 		at := e.clock.Now().Add(time.Duration(i+1) * time.Microsecond)
 		e.gh.prComments[pr.Number] = append(e.gh.prComments[pr.Number], &ghclient.Comment{
 			ID: int64(20000 + i), NodeID: "later-approver-comment", UserLogin: approver,

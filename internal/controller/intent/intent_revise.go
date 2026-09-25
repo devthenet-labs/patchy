@@ -588,7 +588,11 @@ func (p *pass) commandRound(ctx context.Context, pr *v1alpha1.IntentPullRequest)
 		return false, err
 	}
 	comments = slices.DeleteFunc(comments, func(c *ghclient.Comment) bool {
-		return !isApprover(p.proj, c.UserLogin)
+		if !isApprover(p.proj, c.UserLogin) {
+			return true
+		}
+		parsed, ok := prCommandParser.Parse(c.Body)
+		return !ok || parsed.Verb != action.VerbRevise && parsed.Verb != action.VerbRetry
 	})
 	if len(comments) > maxFeedbackCandidates {
 		comments = comments[len(comments)-maxFeedbackCandidates:]

@@ -22,7 +22,9 @@ import (
 const defaultChecksTimeout = 30 * time.Minute
 
 func (p *pass) checkRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (bool, error) {
-	if len(p.proj.Spec.Checks.Fix) == 0 || pr.HeadSHA == "" {
+	if len(p.proj.Spec.Checks.Fix) == 0 || pr.HeadSHA == "" ||
+		p.in.Status.ChecksObservedHeadSHA == pr.HeadSHA &&
+			p.in.Status.ChecksObservedProjectGeneration == p.proj.Generation {
 		return false, nil
 	}
 	latest := p.latestPushedRun()
@@ -47,7 +49,11 @@ func (p *pass) checkRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (
 		return false, nil
 	}
 	if len(failed.checkIDs) == 0 && len(failed.statusIDs) == 0 {
-		return false, nil
+		return true, p.update(ctx, func(cur *v1alpha1.Intent) error {
+			cur.Status.ChecksObservedHeadSHA = pr.HeadSHA
+			cur.Status.ChecksObservedProjectGeneration = p.proj.Generation
+			return nil
+		})
 	}
 	if p.checksConsumed(failed) {
 		return false, nil
@@ -56,6 +62,11 @@ func (p *pass) checkRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (
 	if err != nil {
 		return false, err
 	}
+	return p.startCheckFix(ctx, pr, failed, signature)
+}
+
+func (p *pass) startCheckFix(ctx context.Context, pr *v1alpha1.IntentPullRequest,
+	failed failedChecks, signature string) (bool, error) {
 	for _, prior := range p.runs {
 		if prior.Spec.Trigger != v1alpha1.IntentRunTriggerChecks || prior.Status.Phase != v1alpha1.RunComplete {
 			continue
@@ -67,7 +78,8 @@ func (p *pass) checkRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (
 		}
 		if cm.Data[keyCheckSignature] == signature {
 			return true, p.block(ctx, v1alpha1.ConditionChecksFailing, "RepeatedFailure",
-				fmt.Sprintf("project-generation=%d: a named check failed again with the same diagnostic after a check-fix round; review the PR manually", p.proj.Generation))
+				fmt.Sprintf("project-generation=%d: a named check failed again with the same diagnostic "+
+					"after a check-fix round; review the PR manually", p.proj.Generation))
 		}
 	}
 	limit := v1alpha1.DefaultMaxCheckFixes
@@ -163,12 +175,28 @@ func (p *pass) latestPushedRun() *v1alpha1.IntentRun {
 		if run.Status.Phase != v1alpha1.RunComplete || run.Status.PushedCommit == "" {
 			continue
 		}
-		if latest == nil || run.Status.FinishedAt != nil &&
-			(latest.Status.FinishedAt == nil || run.Status.FinishedAt.After(latest.Status.FinishedAt.Time)) {
+		if latest == nil || pushedAfter(run, latest) {
 			latest = run
 		}
 	}
 	return latest
+}
+
+func pushedAfter(a, b *v1alpha1.IntentRun) bool {
+	if a.Status.FinishedAt != nil && b.Status.FinishedAt != nil {
+		if d := a.Status.FinishedAt.Compare(b.Status.FinishedAt.Time); d != 0 {
+			return d > 0
+		}
+	} else if a.Status.FinishedAt != nil || b.Status.FinishedAt != nil {
+		return a.Status.FinishedAt != nil
+	}
+	if a.Spec.Stage != b.Spec.Stage {
+		return a.Spec.Stage == v1alpha1.IntentStageRevise
+	}
+	if a.Spec.Round != b.Spec.Round {
+		return a.Spec.Round > b.Spec.Round
+	}
+	return a.Spec.Attempt > b.Spec.Attempt
 }
 
 func (p *pass) checksConsumed(f failedChecks) bool {
@@ -220,45 +248,23 @@ func (p *pass) checkDiagnostics(ctx context.Context, repo, sha string, f failedC
 		if !selectedChecks[r.ID] || r.HeadSHA != sha || !failedConclusion(r.Conclusion) {
 			continue
 		}
-		var b strings.Builder
-		fmt.Fprintf(&b, "Check %s: %s\nTitle: %s\nSummary: %s\nText: %s\n", r.Name, r.Conclusion,
-			r.Output.Title, r.Output.Summary, r.Output.Text)
-		annotations, err := p.r.GitHub.ListCheckAnnotations(ctx, repo, r.ID, 50)
+		part, err := p.checkRunDiagnostic(ctx, repo, sha, r)
 		if err != nil {
 			return "", "", err
 		}
-		for _, a := range annotations {
-			fmt.Fprintf(&b, "Annotation %s:%d: %s\n", a.Path, a.Line, a.Message)
-		}
-		if strings.EqualFold(r.AppSlug, "github-actions") {
-			if runID := actionRunID(r.DetailsURL); runID != 0 {
-				jobs, err := p.r.GitHub.ListWorkflowJobs(ctx, repo, runID)
-				if err != nil {
-					return "", "", err
-				}
-				for _, job := range jobs {
-					if job.CheckRunID != r.ID || job.HeadSHA != sha || !failedConclusion(job.Conclusion) {
-						continue
-					}
-					log, err := p.r.GitHub.GetJobLogTail(ctx, repo, job.ID, 32<<10)
-					if err != nil {
-						return "", "", err
-					}
-					fmt.Fprintf(&b, "Actions job %s log tail:\n%s\n", job.Name, log)
-				}
-			}
-		}
-		parts = append(parts, capVisible(visibleFeedback(b.String()), 48<<10))
+		parts = append(parts, part)
 	}
 	for _, s := range statuses {
 		if !selectedStatuses[s.ID] || (s.State != "failure" && s.State != "error") {
 			continue
 		}
-		parts = append(parts, capVisible(visibleFeedback(fmt.Sprintf("Commit status %s: %s\n%s",
-			s.Context, s.State, s.Description)), 48<<10))
+		parts = append(parts, capVisible(fmt.Sprintf("Commit status %s: %s\n%s",
+			visibleDiagnostic(s.Context, 2<<10), visibleDiagnostic(s.State, 256),
+			visibleDiagnostic(s.Description, 8<<10)), 48<<10))
 	}
 	if len(parts) == 0 {
-		return "", "", fmt.Errorf("the failed checks recorded for %s vanished before the round's handoff", sha)
+		return "", "", fmt.Errorf("%w: the failed checks recorded for %s vanished before the round's handoff",
+			errInputUnavailable, sha)
 	}
 	slices.Sort(parts)
 	var b strings.Builder
@@ -273,6 +279,55 @@ func (p *pass) checkDiagnostics(ctx context.Context, repo, sha string, f failedC
 	}
 	visible := capVisible(b.String(), 48<<10)
 	return visible, digest([]byte(visible)), nil
+}
+
+// A field is cut before visible escaping, and again after it. This keeps a
+// malicious or malformed provider response from expanding without bound.
+func visibleDiagnostic(s string, maxBytes int) string {
+	return capVisible(visibleFeedback(cutBytes(s, maxBytes)), maxBytes)
+}
+
+func (p *pass) checkRunDiagnostic(ctx context.Context, repo, sha string, r ghclient.CheckRun) (string, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Check %s: %s\nTitle: %s\nSummary: %s\nText: %s\n",
+		visibleDiagnostic(r.Name, 2<<10), visibleDiagnostic(r.Conclusion, 256),
+		visibleDiagnostic(r.Output.Title, 4<<10), visibleDiagnostic(r.Output.Summary, 8<<10),
+		visibleDiagnostic(r.Output.Text, 8<<10))
+	annotations, err := p.r.GitHub.ListCheckAnnotations(ctx, repo, r.ID, 50)
+	if err != nil {
+		return "", err
+	}
+	for _, a := range annotations {
+		if b.Len() >= 40<<10 {
+			break
+		}
+		fmt.Fprintf(&b, "Annotation %s:%d: %s\n", visibleDiagnostic(a.Path, 512), a.Line,
+			visibleDiagnostic(a.Message, 1<<10))
+	}
+	if !strings.EqualFold(r.AppSlug, "github-actions") {
+		return capVisible(b.String(), 48<<10), nil
+	}
+	runID := actionRunID(r.DetailsURL)
+	if runID == 0 {
+		return capVisible(b.String(), 48<<10), nil
+	}
+	jobs, err := p.r.GitHub.ListWorkflowJobs(ctx, repo, runID)
+	if err != nil {
+		return "", err
+	}
+	for _, job := range jobs {
+		if job.CheckRunID != r.ID || job.HeadSHA != sha || !failedConclusion(job.Conclusion) {
+			continue
+		}
+		logTail, err := p.r.GitHub.GetJobLogTail(ctx, repo, job.ID, 32<<10)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&b, "Actions job %s log tail:\n%s\n", visibleDiagnostic(job.Name, 1<<10),
+			visibleDiagnostic(logTail, 32<<10))
+		break // one Actions job owns a check run
+	}
+	return capVisible(b.String(), 48<<10), nil
 }
 
 func actionRunID(raw string) int64 {

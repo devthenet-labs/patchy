@@ -191,25 +191,36 @@ func (p *pass) branchBlockHolds(ctx context.Context) (bool, error) {
 		return pr != nil && !own, err
 	}
 	if c.Reason == ReasonBranchMissing || c.Reason == ReasonBranchChanged {
-		ap := p.in.Status.Approval
-		if ap == nil {
-			return true, nil
-		}
-		run := p.round(v1alpha1.IntentStageBuild, ap.PlanRevision).latest()
-		if run == nil || run.Status.PushedCommit == "" {
-			return true, nil
-		}
-		head, err := p.r.GitHub.HeadSHA(ctx, repo.URL, branchName(p.in.Name))
-		if ghclient.IsNotFound(err) {
-			return true, nil
-		}
-		if err != nil {
-			return true, err
-		}
-		return head != run.Status.PushedCommit, nil
+		return p.branchRestoreHolds(ctx, repo.URL, c.Reason)
 	}
 	sha, err := p.branchConflict(ctx, repo.URL)
 	return sha != "", err
+}
+
+func (p *pass) branchRestoreHolds(ctx context.Context, repoURL, reason string) (bool, error) {
+	if v1alpha1.IntentBlockedFrom(p.in) == v1alpha1.IntentRevising && reason == ReasonBranchMissing {
+		_, err := p.r.GitHub.HeadSHA(ctx, repoURL, branchName(p.in.Name))
+		if ghclient.IsNotFound(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	ap := p.in.Status.Approval
+	if ap == nil {
+		return true, nil
+	}
+	run := p.round(v1alpha1.IntentStageBuild, ap.PlanRevision).latest()
+	if run == nil || run.Status.PushedCommit == "" {
+		return true, nil
+	}
+	head, err := p.r.GitHub.HeadSHA(ctx, repoURL, branchName(p.in.Name))
+	if ghclient.IsNotFound(err) {
+		return true, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	return head != run.Status.PushedCommit, nil
 }
 
 // imageBlockHolds reports an ImageRequired block still in force.

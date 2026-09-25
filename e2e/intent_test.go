@@ -592,6 +592,7 @@ func TestIntentLifecycle(t *testing.T) {
 	if len(status) != 1 || !strings.Contains(status[0].Body, fmt.Sprintf("#%d", rec.Number)) {
 		t.Errorf("status comments = %+v, want one, linking the pull request", status)
 	}
+	e.exerciseReviseAndCheckFix(t, name, int(rec.Number), pushed)
 
 	// 10. A human merges: the intent completes, patchy sums it up once and
 	//     closes the issue as completed.
@@ -626,6 +627,90 @@ func TestIntentLifecycle(t *testing.T) {
 		}
 		return e.intent(t, name).Status.Phase == v1alpha1.IntentMerged
 	})
+}
+
+// The first PR revision is requested by a real approver command; the next
+// comes from a failed named check on the pushed head. Both use the shipped
+// controllers, source-controller, fake GitHub HTTP API and agent Job path.
+func (e *intentEnv) exerciseReviseAndCheckFix(t *testing.T, name string, number int, buildSHA string) {
+	t.Helper()
+	ctx := context.Background()
+	e.gh.SetComparePatch(fakegithub.BaseSHA, buildSHA, "diff --git a/VERSION b/VERSION\n+0.1.0\n")
+	e.gh.CommentAs(number, "/patchy revise Please test the VERSION contents.", approver)
+	e.waitPhase(t, name, v1alpha1.IntentRevising)
+	reviseName := v1alpha1.IntentRunName(name, v1alpha1.IntentStageRevise, 1, appRepo, 1)
+	runJobName := jobs.NameFor(reviseName, intentRunKind, 1)
+	job := e.kubelet.waitRun(t, "the revision Job to run", func(r agentRun) bool {
+		return r.Job.Name == runJobName && phaseIs("build")(r)
+	})
+	if job.Job.Annotations[runnerImageSourceAnnotation] != v1alpha1.RunnerImageSourceRepository {
+		t.Errorf("revision Job image source = %q, want repository",
+			job.Job.Annotations[runnerImageSourceAnnotation])
+	}
+	e.checkCredentialless(t, job)
+	if !strings.Contains(string(job.Investigation), "Please test the VERSION contents.") ||
+		!strings.Contains(string(job.Investigation), "### Compare patch") {
+		t.Errorf("revision handoff omitted approver feedback or compare patch: %q", job.Investigation)
+	}
+	in := e.waitPhase(t, name, v1alpha1.IntentInReview)
+	revise := e.run(t, reviseName)
+	if revise.Status.Phase != v1alpha1.RunComplete || revise.Status.BaseSHA != buildSHA ||
+		revise.Status.PushedCommit == "" || in.Status.Revisions != 1 {
+		t.Fatalf("revision result = %+v, revisions %d", revise.Status, in.Status.Revisions)
+	}
+	if got := len(e.own(number, fmt.Sprintf("<!-- patchy:intent-pr-round:%s:1 -->", name))); got != 1 {
+		t.Errorf("revision round comments = %d, want one", got)
+	}
+	writes := e.gh.RefWrites()
+	if last := writes[len(writes)-1]; last.Op != "update" || last.Force || last.SHA != revise.Status.PushedCommit ||
+		last.Status != 200 {
+		t.Errorf("revision ref write = %+v, want non-forcing fast-forward", last)
+	}
+
+	var project v1alpha1.Project
+	if err := e.cl.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: projectName}, &project); err != nil {
+		t.Fatal(err)
+	}
+	project.Spec.Checks.Fix = []string{"test"}
+	if err := e.cl.client.Update(ctx, &project); err != nil {
+		t.Fatal(err)
+	}
+	head := revise.Status.PushedCommit
+	e.gh.SetComparePatch(fakegithub.BaseSHA, head, "diff --git a/VERSION b/VERSION\n+0.1.0\n")
+	e.gh.SetCheckRun(head, fakegithub.CheckRun{ID: 71, Name: "test", Status: "completed", Conclusion: "failure",
+		Title: "Go test failed", Summary: "VERSION regression", RunID: 72,
+		Annotations: []fakegithub.CheckAnnotation{{Path: "version_test.go", Line: 10, Message: "want VERSION"}}})
+	e.gh.SetWorkflowJob(72, fakegithub.WorkflowJob{ID: 73, CheckRunID: 71, HeadSHA: head,
+		Name: "go test", Conclusion: "failure", Log: "go test ./...\nFAIL VERSION regression"})
+	e.waitPhase(t, name, v1alpha1.IntentRevising)
+	fixName := v1alpha1.IntentRunName(name, v1alpha1.IntentStageRevise, 2, appRepo, 1)
+	fixJobName := jobs.NameFor(fixName, intentRunKind, 1)
+	fixJob := e.kubelet.waitRun(t, "the check-fix Job to run", func(r agentRun) bool {
+		return r.Job.Name == fixJobName && phaseIs("build")(r)
+	})
+	if fixJob.Job.Annotations[runnerImageSourceAnnotation] != v1alpha1.RunnerImageSourceRepository {
+		t.Errorf("check-fix Job image source = %q, want repository",
+			fixJob.Job.Annotations[runnerImageSourceAnnotation])
+	}
+	e.checkCredentialless(t, fixJob)
+	if !strings.Contains(string(fixJob.Investigation), "FAIL VERSION regression") ||
+		!strings.Contains(string(fixJob.Investigation), "version_test.go:10") {
+		t.Errorf("check-fix handoff omitted bounded CI diagnostics: %q", fixJob.Investigation)
+	}
+	in = e.waitPhase(t, name, v1alpha1.IntentInReview)
+	fix := e.run(t, fixName)
+	if fix.Status.Phase != v1alpha1.RunComplete || fix.Status.BaseSHA != head ||
+		fix.Status.PushedCommit == "" || in.Status.CheckFixes != 1 || in.Status.Revisions != 1 {
+		t.Errorf("check-fix result = %+v, counters fixes=%d revisions=%d",
+			fix.Status, in.Status.CheckFixes, in.Status.Revisions)
+	}
+	if got := len(e.own(number, fmt.Sprintf("<!-- patchy:intent-pr-round:%s:2 -->", name))); got != 1 {
+		t.Errorf("check-fix round comments = %d, want one", got)
+	}
+	writes = e.gh.RefWrites()
+	if last := writes[len(writes)-1]; last.Op != "update" || last.Force || last.SHA != fix.Status.PushedCommit {
+		t.Errorf("check-fix ref write = %+v, want non-forcing fast-forward", last)
+	}
 }
 
 // issue reads one issue off the fake.

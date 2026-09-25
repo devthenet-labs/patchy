@@ -54,6 +54,9 @@ const (
 	// OutcomeHeadMoved: the PR branch changed after the revise run pinned it.
 	// The stale result is never pushed and may be retried on the new head.
 	OutcomeHeadMoved = "head_moved"
+	// OutcomeInputUnavailable: the feedback named by an immutable round
+	// vanished or ceased to be authorised before the agent could read it.
+	OutcomeInputUnavailable = "input_unavailable"
 )
 
 // roundRuns are one stage's runs of one round, by attempt.

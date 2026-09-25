@@ -48,6 +48,7 @@ const (
 	// keyApprovedPlan keeps the exact approved prefix of a revise handoff.
 	keyApprovedPlan   = "approved-plan.md"
 	keyCheckSignature = "check-signature"
+	keyInputRefusal   = "input-refusal"
 	// keyPlan is the plan report exactly as the planner wrote it.
 	keyPlan = "plan.md"
 	// The input snapshot's parts, kept beside the rendered request so an
@@ -182,9 +183,10 @@ func (s Settings) withDefaults() Settings {
 // ceiling), and the ceiling's wall clock.
 func (s Settings) grant(p *v1alpha1.Project, stage v1alpha1.IntentStage) v1alpha1.IntentRunGrant {
 	ceiling, limits := s.Plan, p.Spec.Limits.Plan
-	if stage == v1alpha1.IntentStageBuild {
+	switch stage {
+	case v1alpha1.IntentStageBuild:
 		ceiling, limits = s.Build, p.Spec.Limits.Build
-	} else if stage == v1alpha1.IntentStageRevise {
+	case v1alpha1.IntentStageRevise:
 		ceiling, limits = s.Revise, p.Spec.Limits.Revise
 	}
 	turns := ceiling.MaxTurns

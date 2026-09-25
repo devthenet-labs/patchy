@@ -241,23 +241,9 @@ func (p *pass) reviewNow(ctx context.Context) (bool, error) {
 	if len(prs) == 0 {
 		return false, nil
 	}
-	merged, closed := 0, 0
-	var mergedAt time.Time
-	for i := range prs {
-		rec := &prs[i]
-		readable, err := p.readPullRequest(ctx, rec)
-		if err != nil || !readable {
-			return false, err
-		}
-		switch rec.State {
-		case prMerged:
-			merged++
-			if rec.MergedAt != nil && (mergedAt.IsZero() || rec.MergedAt.Time.Before(mergedAt)) {
-				mergedAt = rec.MergedAt.Time
-			}
-		case prClosed:
-			closed++
-		}
+	merged, closed, mergedAt, readable, err := p.readReviewPRStates(ctx, prs)
+	if err != nil || !readable {
+		return false, err
 	}
 	switch {
 	case merged == len(prs):
@@ -287,6 +273,27 @@ func (p *pass) reviewNow(ctx context.Context) (bool, error) {
 		return p.checkRound(ctx, &prs[0])
 	}
 	return false, nil
+}
+
+func (p *pass) readReviewPRStates(ctx context.Context, prs []v1alpha1.IntentPullRequest) (
+	merged, closed int, mergedAt time.Time, readable bool, err error) {
+	for i := range prs {
+		rec := &prs[i]
+		ok, err := p.readPullRequest(ctx, rec)
+		if err != nil || !ok {
+			return 0, 0, time.Time{}, false, err
+		}
+		switch rec.State {
+		case prMerged:
+			merged++
+			if rec.MergedAt != nil && (mergedAt.IsZero() || rec.MergedAt.Time.Before(mergedAt)) {
+				mergedAt = rec.MergedAt.Time
+			}
+		case prClosed:
+			closed++
+		}
+	}
+	return merged, closed, mergedAt, true, nil
 }
 
 // readPullRequest reads one recorded pull request by its repository and

@@ -125,7 +125,9 @@ func settings(opts *cli.Options, namespace, agentNS string) (intent.Settings, er
 			return intent.Settings{}, fmt.Errorf("%s must be positive", c.name)
 		}
 	}
-	if deadline := opts.Duration("intent-job-deadline"); deadline < max(s.Plan.Timeout, s.Build.Timeout, s.Revise.Timeout) {
+	deadline := opts.Duration("intent-job-deadline")
+	longestStage := max(s.Plan.Timeout, s.Build.Timeout, s.Revise.Timeout)
+	if deadline < longestStage {
 		return intent.Settings{}, fmt.Errorf("--intent-job-deadline %s is shorter than a stage's timeout", deadline)
 	}
 	return s, nil

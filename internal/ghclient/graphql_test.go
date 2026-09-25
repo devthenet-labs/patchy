@@ -78,3 +78,57 @@ func TestCommentEdited(t *testing.T) {
 		t.Errorf("CommentEdited(\"\") error = %v, want ErrNodeNotFound", err)
 	}
 }
+
+func TestPullRequestFeedbackEdited(t *testing.T) {
+	for _, tt := range []struct {
+		name, kind, nodeID, typename string
+		edited                       bool
+		wrong                        bool
+	}{
+		{"review pristine", "review", "PRR_1", "PullRequestReview", false, false},
+		{"review edited", "review", "PRR_1", "PullRequestReview", true, false},
+		{"review wrong node", "review", "PRR_1", "PullRequestReviewComment", false, true},
+		{"inline pristine", "inline", "PRRC_1", "PullRequestReviewComment", false, false},
+		{"inline edited", "inline", "PRRC_1", "PullRequestReviewComment", true, false},
+		{"inline wrong node", "inline", "PRRC_1", "PullRequestReview", false, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, c := newFakeGraphQLClient(t, func(w http.ResponseWriter, r *http.Request) {
+				body := decodeBody[struct {
+					Query     string         `json:"query"`
+					Variables map[string]any `json:"variables"`
+				}](t, r)
+				wantFragment := "... on PullRequestReview {"
+				if tt.kind == "inline" {
+					wantFragment = "... on PullRequestReviewComment {"
+				}
+				if body.Variables["id"] != tt.nodeID || !strings.Contains(body.Query, wantFragment) {
+					t.Errorf("query = %+v, want %s %s", body, tt.nodeID, wantFragment)
+				}
+				last := "null"
+				if tt.edited {
+					last = `"2026-09-24T10:00:00Z"`
+				}
+				response := `{"data":{"node":{"__typename":"` + tt.typename + `","lastEditedAt":` +
+					last + `,"includesCreatedEdit":false}}}`
+				writeJSON(t, w, response)
+			})
+			var got bool
+			var err error
+			if tt.kind == "review" {
+				got, err = c.ReviewEdited(context.Background(), tt.nodeID)
+			} else {
+				got, err = c.ReviewCommentEdited(context.Background(), tt.nodeID)
+			}
+			if tt.wrong {
+				if !errors.Is(err, ErrNodeNotFound) {
+					t.Fatalf("edited error = %v, want ErrNodeNotFound", err)
+				}
+				return
+			}
+			if err != nil || got != tt.edited {
+				t.Fatalf("edited = %v, %v; want %v", got, err, tt.edited)
+			}
+		})
+	}
+}

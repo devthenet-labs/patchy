@@ -108,3 +108,49 @@ func (c *Client) CommentEdited(ctx context.Context, nodeID string) (bool, error)
 	}
 	return out.Node.LastEditedAt != nil || out.Node.IncludesCreatedEdit, nil
 }
+
+const reviewEditedQuery = `query($id: ID!) {
+  node(id: $id) {
+    __typename
+    ... on PullRequestReview { lastEditedAt includesCreatedEdit }
+  }
+}`
+
+const reviewCommentEditedQuery = `query($id: ID!) {
+  node(id: $id) {
+    __typename
+    ... on PullRequestReviewComment { lastEditedAt includesCreatedEdit }
+  }
+}`
+
+// ReviewEdited reports whether a PR review's body was ever edited. An edit
+// makes the review ineligible as approver-authored feedback, even when REST
+// still attributes its body to the original reviewer.
+func (c *Client) ReviewEdited(ctx context.Context, nodeID string) (bool, error) {
+	return c.pullFeedbackEdited(ctx, nodeID, "PullRequestReview", reviewEditedQuery)
+}
+
+// ReviewCommentEdited is the same check for an inline review comment.
+func (c *Client) ReviewCommentEdited(ctx context.Context, nodeID string) (bool, error) {
+	return c.pullFeedbackEdited(ctx, nodeID, "PullRequestReviewComment", reviewCommentEditedQuery)
+}
+
+func (c *Client) pullFeedbackEdited(ctx context.Context, nodeID, kind, query string) (bool, error) {
+	if strings.TrimSpace(nodeID) == "" {
+		return false, fmt.Errorf("ghclient: %s edited: no node id: %w", kind, ErrNodeNotFound)
+	}
+	var out struct {
+		Node *struct {
+			Typename            string     `json:"__typename"`
+			LastEditedAt        *time.Time `json:"lastEditedAt"`
+			IncludesCreatedEdit bool       `json:"includesCreatedEdit"`
+		} `json:"node"`
+	}
+	if err := c.graphQL(ctx, query, map[string]any{"id": nodeID}, &out); err != nil {
+		return false, fmt.Errorf("ghclient: %s edited %s: %w", kind, nodeID, err)
+	}
+	if out.Node == nil || out.Node.Typename != kind {
+		return false, fmt.Errorf("ghclient: %s edited %s: wrong node kind: %w", kind, nodeID, ErrNodeNotFound)
+	}
+	return out.Node.LastEditedAt != nil || out.Node.IncludesCreatedEdit, nil
+}

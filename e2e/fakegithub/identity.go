@@ -90,6 +90,9 @@ const (
 	permPullRequests   = "pull_requests"
 	permMetadata       = "metadata"
 	permSecurityEvents = "security_events"
+	permChecks         = "checks"
+	permStatuses       = "statuses"
+	permActions        = "actions"
 
 	permRead  = "read"
 	permWrite = "write"

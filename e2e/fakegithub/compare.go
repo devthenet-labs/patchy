@@ -4,10 +4,20 @@
 package fakegithub
 
 import (
+	"io"
 	"maps"
 	"net/http"
 	"strings"
 )
+
+// SetComparePatch supplies the patch returned for base...head when requested
+// with GitHub's patch media type. Tests can show the exact diff the revise
+// round is allowed to see without giving its pod a second source tree.
+func (s *Server) SetComparePatch(base, head, patch string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.patches[base+"..."+head] = patch
+}
 
 // SetParents records commit ancestry for the compare endpoint: each commit
 // mapped to its parent. A linear history is all the flows need; commits it
@@ -45,6 +55,16 @@ func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.compares++
+	if strings.Contains(r.Header.Get("Accept"), "patch") {
+		patch, ok := s.patches[base+"..."+head]
+		if !ok {
+			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, patch)
+		return
+	}
 	base, head = s.resolve(base), s.resolve(head)
 	status, ahead, behind := "diverged", 0, 0
 	switch {

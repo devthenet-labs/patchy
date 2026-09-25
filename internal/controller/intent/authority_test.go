@@ -605,6 +605,67 @@ func TestEditedWithinTheSecondIsNoCommand(t *testing.T) {
 	}
 }
 
+func TestIssueCommentRESTTimestampDoesNotProveEdit(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	id := e.gh.comment(approver, "/patchy approve")
+	e.gh.mu.Lock()
+	for _, c := range e.gh.issues[1].comments {
+		if c.ID == id {
+			c.UpdatedAt = c.CreatedAt.Add(6 * time.Second)
+		}
+	}
+	e.gh.mu.Unlock()
+	in := e.drive(name, v1alpha1.IntentInReview, repoImage)
+	if in.Status.Approval == nil || in.Status.Approval.EventID != id {
+		t.Fatalf("unedited approval comment was refused: %+v", in.Status.Approval)
+	}
+}
+
+func TestPlanCommentRESTTimestampDoesNotProveEdit(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	planID := e.get(name).Status.Plan.CommentID
+	e.gh.mu.Lock()
+	for _, c := range e.gh.issues[1].comments {
+		if c.ID == planID {
+			c.UpdatedAt = c.CreatedAt.Add(6 * time.Second)
+		}
+	}
+	e.gh.mu.Unlock()
+	e.gh.label(1, "patchy:approved", approver)
+	in := e.drive(name, v1alpha1.IntentInReview, repoImage)
+	if in.Status.Approval == nil || in.Status.Plan.CommentID != planID {
+		t.Fatalf("unedited plan comment was rejected or reposted: plan %+v, approval %+v",
+			in.Status.Plan, in.Status.Approval)
+	}
+}
+
+func TestReplanFeedbackRESTTimestampDoesNotProveEdit(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	id := e.gh.comment(approver, "Include the unedited comment.")
+	e.gh.mu.Lock()
+	for _, c := range e.gh.issues[1].comments {
+		if c.ID == id {
+			c.UpdatedAt = c.CreatedAt.Add(6 * time.Second)
+		}
+	}
+	e.gh.mu.Unlock()
+	e.gh.removeTrigger()
+	e.gh.label(1, "patchy:target", approver)
+	e.settleActions(name)
+	in := e.get(name)
+	var snap corev1.ConfigMap
+	if err := e.c.Get(context.Background(), types.NamespacedName{Namespace: testNS,
+		Name: in.Status.Input.ConfigMap}, &snap); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(snap.Data[keyIssue], "Include the unedited comment.") {
+		t.Fatal("unedited replan feedback was dropped because REST updated_at moved")
+	}
+}
+
 // TestAnsweredCommandStaysAnswered: an approver's /patchy approve refused
 // because the issue changed stays refused after the issue is restored and
 // patchy's refusal deleted: the answered comment is never read again.

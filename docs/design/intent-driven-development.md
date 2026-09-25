@@ -539,14 +539,12 @@ there is one grammar, and everything else is an alias for it.
   a comment at or before it, so a command is never answered twice even after patchy's reply is deleted, and each poll
   lists the thread only from there.
 - **Edited comments are not commands.** GitHub lets anyone with write access edit anyone's comment, and the comment
-  still names its original author. So a comment whose `updated_at` is later than its `created_at` is never taken as a
-  command: it gets one reply saying so, and its author can post the command again. An edited approver comment is also
-  left out of a replan's snapshot. For the same reason a plan comment edited in place is refused for approval even when
-  its text was restored, since GitHub moves `updated_at` on every edit. Both timestamps are to the second, so an edit
-  made in the second a comment was posted leaves them equal: before an approver's `approve`, `replan` or `cancel` is
-  acted on, and when the plan comment is re-read at approval, patchy also asks GitHub's GraphQL API for the comment's
-  `lastEditedAt`, which is null only for a comment never edited (one query by the comment's `node_id`, with an
-  `issues: read` token). A comment gone by then counts as edited.
+  still names its original author. REST `updated_at` is only a hint: it can move when a pending review is submitted
+  without an edit, and a same-second edit can leave it equal to `created_at`. Patchy decides edited or unedited only
+  from GraphQL `lastEditedAt` and `includesCreatedEdit` for issue comments, PR conversation comments, reviews and inline
+  review comments. An edited command gets one reply saying so, and its author can post the command again. Edited
+  approver comments are left out of replan and revise feedback; a plan comment edited in place is refused for approval
+  even when its text was restored. A comment gone by verification time counts as edited.
 - **Refusals are bounded per account.** On an intent issue, a command from an account that is not an approver (or is a
   bot) is refused whatever it says, an unknown verb or an edited comment included. Its author gets the reaction and the
   refusal once per intent (`status.commands.refusedActors`, the latest 32 accounts), and nothing after that: no
@@ -736,7 +734,9 @@ closes the intent issue itself.
   ZWJ) or check output. CRLF passes as it is: GitHub returns comment bodies CRLF-terminated.
 - **Idempotency.** Consumed review IDs, and the command comment ID of a `/patchy revise`, are recorded on the IntentRun
   spec, so a restart or a repeated poll never runs a round twice. The round's number comes from the Intent's `rounds`
-  ordinal, which a failed round advances too, so a later round never reuses a failed round's run name.
+  ordinal, which a failed round advances too, so a later round never reuses a failed round's run name. When filtering
+  leaves no substantive, authorised feedback, the round returns to `InReview` with one notice and no agent launch. It
+  advances the ordinal but does not spend `maxRevisions`; a new review or command is needed to try again.
 - **Bounds:**
   - `maxRevisions` (default 3);
   - the per-intent ceiling;

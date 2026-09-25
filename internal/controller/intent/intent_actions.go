@@ -318,7 +318,7 @@ func (p *pass) commands() []humanAction {
 			continue
 		}
 		a := humanAction{source: v1alpha1.IntentActionCommand, id: c.ID, at: c.CreatedAt, actor: c.Author(),
-			verb: cmd.Verb, edited: edited(c), comment: c}
+			verb: cmd.Verb, comment: c}
 		if p.hasOwnNotice(a.key()) {
 			// Answered. A refusal to an account refused without asking
 			// GitHub is remembered here too, in case the pass that posted
@@ -455,10 +455,9 @@ func (p *pass) settle(ctx context.Context, a humanAction, issue *ghclient.Issue)
 	if err := p.r.GitHub.React(ctx, p.repo(), a.id); err != nil && !ghclient.IsNotFound(err) {
 		return false, fmt.Errorf("react to comment %d: %w", a.id, err)
 	}
-	if !local && !a.recorded && !a.edited && acts(a.verb) && a.comment != nil {
+	if !local && !a.recorded && acts(a.verb) && a.comment != nil {
 		// About to act on an approver's authority: confirm with GitHub that
-		// the comment was never edited, which the listing's timestamps
-		// cannot show for an edit in the second of its posting.
+		// the comment was never edited. REST updated_at cannot decide this.
 		e, err := p.everEdited(ctx, a.comment)
 		if err != nil {
 			return false, err
@@ -757,10 +756,8 @@ func (p *pass) settleApprove(ctx context.Context, a humanAction, issue *ghclient
 }
 
 // approvalChanged reports whether the plan comment was edited since patchy
-// posted it (re-fetched, it no longer hashes to what was recorded, or GitHub
-// dates an edit after its posting: patchy never edits a plan comment, and an
-// edit restoring the original bytes still moves updated_at, so a plan shown
-// edited for a while and then put back is caught; deleted counts), and
+// posted it (re-fetched, it no longer hashes to what was recorded, or GraphQL
+// records an edit, including one restoring the original bytes; deleted counts), and
 // whether the issue changed since the plan was made (re-read, its title and
 // body no longer render to the input snapshot's digest).
 func (p *pass) approvalChanged(ctx context.Context, issue *ghclient.Issue) (planChanged, issueChanged bool, err error) {
@@ -774,9 +771,8 @@ func (p *pass) approvalChanged(ctx context.Context, issue *ghclient.Issue) (plan
 	case digest([]byte(c.Body)) != pl.CommentDigest:
 		planChanged = true
 	default:
-		// Its bytes match, but an edit put back within the second the plan
-		// was posted leaves updated_at at created_at: GitHub's record of the
-		// comment's edits decides.
+		// Its bytes match, but an edit put back can leave them unchanged:
+		// GitHub's edit record decides.
 		if planChanged, err = p.everEdited(ctx, c); err != nil {
 			return false, false, err
 		}

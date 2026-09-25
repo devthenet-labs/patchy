@@ -44,9 +44,8 @@ type GitHub interface {
 	ListIssueComments(ctx context.Context, repoURL string, number int64, since time.Time) ([]*ghclient.Comment, error)
 	GetIssueComment(ctx context.Context, repoURL string, id int64) (*ghclient.Comment, error)
 	// CommentEdited reports whether the comment with GraphQL node id nodeID
-	// was ever edited (ghclient.CommentEdited): GitHub's own fact, where
-	// REST's second-resolution updated_at cannot tell an edit made in the
-	// second the comment was posted.
+	// was ever edited (ghclient.CommentEdited): GitHub's own fact. REST
+	// updated_at can move without an edit or miss one within the same second.
 	CommentEdited(ctx context.Context, repoURL, nodeID string) (bool, error)
 	CreateIssueComment(ctx context.Context, repoURL string, number int64, body string) (*ghclient.Comment, error)
 	EditIssueComment(ctx context.Context, repoURL string, id int64, body string) error

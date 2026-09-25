@@ -7,6 +7,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bitwise-media-group/patchy/e2e/fakegithub"
 	"github.com/bitwise-media-group/patchy/internal/ghclient"
@@ -83,6 +84,37 @@ func TestReviseAPISurfaceAndScope(t *testing.T) {
 	}
 	if _, err := read.ListCheckRuns(ctx, intents, "abc"); err == nil {
 		t.Error("target-only token read other repository")
+	}
+}
+
+func TestPendingReviewSubmissionMovesRESTTimestampWithoutEditing(t *testing.T) {
+	srv, c, clk := newFake(t)
+	ctx := context.Background()
+	srv.OpenPull(8, "patchy-intent/target-3")
+	reviewID := srv.AddReview(8, human, "PENDING", "", "abc")
+	srv.AddReviewComment(8, human, reviewID, "main.go", 8, "RIGHT", "Please fix this line.", "@@ hunk")
+	pending, err := c.ListPullRequestReviews(ctx, target, 8)
+	if err != nil || len(pending) != 1 || pending[0].State != "PENDING" || !pending[0].SubmittedAt.IsZero() {
+		t.Fatalf("pending review = %+v, %v", pending, err)
+	}
+	before, err := c.ListPullRequestReviewComments(ctx, target, 8)
+	if err != nil || len(before) != 1 {
+		t.Fatalf("pending inline comments = %+v, %v", before, err)
+	}
+	clk.advance(6 * time.Second)
+	if !srv.SubmitReview(reviewID, "CHANGES_REQUESTED") {
+		t.Fatal("pending review not submitted")
+	}
+	reviews, err := c.ListPullRequestReviews(ctx, target, 8)
+	if err != nil || len(reviews) != 1 || reviews[0].State != "CHANGES_REQUESTED" || reviews[0].SubmittedAt.IsZero() {
+		t.Fatalf("submitted review = %+v, %v", reviews, err)
+	}
+	after, err := c.ListPullRequestReviewComments(ctx, target, 8)
+	if err != nil || len(after) != 1 || !after[0].UpdatedAt.After(after[0].CreatedAt) {
+		t.Fatalf("submitted inline comment = %+v, %v; want updated_at after created_at", after, err)
+	}
+	if edited, err := c.ReviewCommentEdited(ctx, after[0].NodeID); err != nil || edited {
+		t.Fatalf("GraphQL says edited = %t, %v; want unedited", edited, err)
 	}
 }
 

@@ -15,7 +15,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/envelope"
 	"github.com/bitwise-media-group/patchy/internal/ghclient"
+	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/report"
 )
 
@@ -92,6 +94,219 @@ func TestRequestedChangesStartsPinnedReviseRound(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertReviseHandoff(t, cm.Data[keyInvestigation])
+}
+
+func TestSubmittedPendingReviewInlineFeedbackIsUsed(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	in := e.drive(name, v1alpha1.IntentInReview, repoImage)
+	prNumber := in.Status.PullRequests[0].Number
+	created := e.clock.Now()
+	e.gh.reviews[prNumber] = []ghclient.Review{{ID: 2001, NodeID: "review-2001",
+		Author: actorOf(approver), State: "CHANGES_REQUESTED", SubmittedAt: created.Add(6 * time.Second)}}
+	e.gh.inline[prNumber] = []ghclient.ReviewComment{{ID: 2002, NodeID: "inline-2002", ReviewID: 2001,
+		Author: actorOf(approver), Body: "The response needs this assertion.", Path: "health_test.go",
+		Line: 12, Side: "RIGHT", CreatedAt: created, UpdatedAt: created.Add(6 * time.Second)},
+		{ID: 2005, NodeID: "inline-2005", ReviewID: 2001, Author: actorOf(approver),
+			Body: "FORGED-EDITED-INLINE", Path: "health_test.go", Line: 13, Side: "RIGHT",
+			CreatedAt: created, UpdatedAt: created.Add(6 * time.Second)}}
+	e.gh.inlineEdits["inline-2005"] = true
+	e.clock.Advance(3 * time.Minute)
+	e.drive(name, v1alpha1.IntentRevising, repoImage)
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	runs := e.runsOf(name, v1alpha1.IntentStageRevise)
+	if len(runs) != 1 {
+		t.Fatalf("revise runs = %d, want one", len(runs))
+	}
+	var cm corev1.ConfigMap
+	if err := e.c.Get(context.Background(), types.NamespacedName{Namespace: testNS,
+		Name: runs[0].Spec.Inputs.ConfigMap}, &cm); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cm.Data[keyInvestigation], "The response needs this assertion.") {
+		t.Fatal("submitted pending-review inline comment was dropped from agent input")
+	}
+	if strings.Contains(cm.Data[keyInvestigation], "FORGED-EDITED-INLINE") {
+		t.Fatal("GraphQL-edited inline comment reached the agent")
+	}
+}
+
+func TestPRCommentRESTTimestampDoesNotProveEdit(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	in := e.drive(name, v1alpha1.IntentInReview, repoImage)
+	prNumber := in.Status.PullRequests[0].Number
+	created := e.clock.Now()
+	e.gh.reviews[prNumber] = []ghclient.Review{{ID: 2003, NodeID: "review-2003",
+		Author: actorOf(approver), State: "CHANGES_REQUESTED", Body: "Please inspect this.", SubmittedAt: created}}
+	e.gh.prComments[prNumber] = []*ghclient.Comment{{ID: 2004, NodeID: "comment-2004",
+		UserLogin: approver, UserID: actorOf(approver).ID, UserType: "User", Body: "Add an assertion.",
+		CreatedAt: created, UpdatedAt: created.Add(6 * time.Second)}}
+	e.clock.Advance(3 * time.Minute)
+	e.drive(name, v1alpha1.IntentRevising, repoImage)
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	run := e.runsOf(name, v1alpha1.IntentStageRevise)[0]
+	var cm corev1.ConfigMap
+	if err := e.c.Get(context.Background(), types.NamespacedName{Namespace: testNS,
+		Name: run.Spec.Inputs.ConfigMap}, &cm); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(cm.Data[keyInvestigation], "Add an assertion.") {
+		t.Fatal("unedited PR comment was dropped because REST updated_at moved")
+	}
+}
+
+func TestEmptyFilteredReviewDoesNotLaunchOrSpendRevision(t *testing.T) {
+	project := testProject()
+	project.Spec.Limits.MaxRevisions = new(int32)
+	*project.Spec.Limits.MaxRevisions = 1
+	e := newEnv(t, project)
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	in := e.drive(name, v1alpha1.IntentInReview, repoImage)
+	prNumber := in.Status.PullRequests[0].Number
+	jobsBefore := len(e.jobs.launched())
+	e.gh.reviews[prNumber] = []ghclient.Review{{ID: 2011, NodeID: "review-2011",
+		Author: actorOf(approver), State: "CHANGES_REQUESTED", SubmittedAt: e.clock.Now()}}
+	e.clock.Advance(3 * time.Minute)
+	e.drive(name, v1alpha1.IntentRevising, repoImage)
+	in = e.drive(name, v1alpha1.IntentInReview, repoImage)
+	runs := e.runsOf(name, v1alpha1.IntentStageRevise)
+	if len(runs) != 1 || runs[0].Status.Outcome != "no_usable_feedback" {
+		t.Fatalf("empty-feedback run = %+v, want one no-usable-feedback result", runs)
+	}
+	if in.Status.Revisions != 0 {
+		t.Errorf("revisions = %d, want 0", in.Status.Revisions)
+	}
+	if got := len(e.jobs.launched()); got != jobsBefore {
+		t.Fatalf("empty feedback launched %d additional agent Jobs", got-jobsBefore)
+	}
+	notices := 0
+	for _, c := range e.gh.prComments[prNumber] {
+		if strings.Contains(c.Body, "patchy:intent-pr-round:") {
+			notices++
+			if !strings.Contains(c.Body, "no usable feedback") {
+				t.Errorf("round notice does not explain empty feedback: %q", c.Body)
+			}
+		}
+	}
+	if notices != 1 {
+		t.Errorf("round notices = %d, want one", notices)
+	}
+	for range 3 {
+		e.clock.Advance(time.Minute)
+		e.mustIntent(name)
+	}
+	if got := len(e.runsOf(name, v1alpha1.IntentStageRevise)); got != 1 {
+		t.Fatalf("empty review retriggered without new feedback: %d runs", got)
+	}
+	again := 0
+	for _, c := range e.gh.prComments[prNumber] {
+		if strings.Contains(c.Body, "patchy:intent-pr-round:") {
+			again++
+		}
+	}
+	if again != 1 {
+		t.Errorf("round notices after repeated polls = %d, want one", again)
+	}
+	e.gh.reviews[prNumber] = append(e.gh.reviews[prNumber], ghclient.Review{ID: 2012,
+		NodeID: "review-2012", Author: actorOf(approver), State: "CHANGES_REQUESTED",
+		Body: "Please add an assertion.", SubmittedAt: e.clock.Now()})
+	e.clock.Advance(3 * time.Minute)
+	e.drive(name, v1alpha1.IntentRevising, repoImage)
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	if got := len(e.runsOf(name, v1alpha1.IntentStageRevise)); got != 2 {
+		t.Errorf("revise runs after fresh feedback = %d, want 2 despite maxRevisions=1", got)
+	}
+}
+
+func TestLegacyEmptyReviewHandoffIsRecognisedNarrowly(t *testing.T) {
+	const prefix = "approved plan\n\n## Revise round 1\n\n### Approver feedback\n\n```text\n"
+	const suffix = "\n```\n\n### Compare patch\n\n```text\npatch\n```\n"
+	for _, tc := range []struct {
+		name, feedback string
+		empty          bool
+	}{
+		{name: "bare verdict", feedback: "Review 5322844306 by brvtl (CHANGES_REQUESTED):", empty: true},
+		{name: "two bare verdicts", feedback: "Review 5322844306 by brvtl (CHANGES_REQUESTED):\n```\n\n" +
+			"```text\nReview 5322844307 by brvtl (CHANGES_REQUESTED):", empty: true},
+		{name: "review body", feedback: "Review 5322844306 by brvtl (CHANGES_REQUESTED):\nPlease fix it.", empty: false},
+		{name: "inline body", feedback: "Review 5322844306 by brvtl (CHANGES_REQUESTED):\n\n" +
+			"Inline comment 41 by brvtl at health.go:12 (RIGHT):\nFix it", empty: false},
+		{name: "not review feedback", feedback: "PR comment 41 by brvtl:\nFix it", empty: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := legacyEmptyReviewHandoff(prefix + tc.feedback + suffix); got != tc.empty {
+				t.Errorf("legacyEmptyReviewHandoff() = %t, want %t", got, tc.empty)
+			}
+		})
+	}
+}
+
+func TestAlreadyLaunchedLegacyEmptyReviewDoesNotSpendRevision(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	in := e.drive(name, v1alpha1.IntentInReview, repoImage)
+	prNumber := in.Status.PullRequests[0].Number
+	e.gh.reviews[prNumber] = []ghclient.Review{{ID: 2013, NodeID: "review-2013",
+		Author: actorOf(approver), State: "CHANGES_REQUESTED", SubmittedAt: e.clock.Now()}}
+	e.clock.Advance(3 * time.Minute)
+	e.drive(name, v1alpha1.IntentRevising, repoImage)
+	run := e.runsOf(name, v1alpha1.IntentStageRevise)[0]
+	var cm corev1.ConfigMap
+	key := types.NamespacedName{Namespace: testNS, Name: run.Spec.Inputs.ConfigMap}
+	for range 8 {
+		e.mustIntent(name)
+		e.readyRepositories(repoImage)
+		if err := e.c.Get(context.Background(), key, &cm); err == nil {
+			break
+		}
+	}
+	if cm.Name == "" {
+		t.Fatal("revise input ConfigMap was not created")
+	}
+	cm.Data = map[string]string{keyApprovedPlan: validPlan, keyIssue: "",
+		keyInvestigation: validPlan + "\n\n## Revise round 1\n\n### Approver feedback\n\n```text\n" +
+			"Review 2013 by peter (CHANGES_REQUESTED):\n```\n\n### Compare patch\n\n```text\npatch\n```\n"}
+	if err := e.c.Update(context.Background(), &cm); err != nil {
+		t.Fatal(err)
+	}
+	e.jobs.output = func(spec jobs.Spec) jobs.RunOutput {
+		if spec.Phase != "build" {
+			return defaultOutput(spec)
+		}
+		return jobs.RunOutput{Events: []envelope.Event{{V: envelope.Version, Type: envelope.TypeRemediation,
+			Remediation: &envelope.Remediation{Stage: envelope.Stage{Outcome: envelope.OutcomeOK},
+				ReportMarkdown: "---\nsuccess: false\nreason: no feedback\n---\n", Success: false}}}}
+	}
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	runs := e.runsOf(name, v1alpha1.IntentStageRevise)
+	if len(runs) != 1 || runs[0].Status.Outcome != OutcomeNoUsableFeedback {
+		t.Fatalf("legacy failed run = %+v, want no_usable_feedback", runs)
+	}
+	if in = e.get(name); in.Status.Revisions != 0 {
+		t.Errorf("legacy failure spent revision: %d", in.Status.Revisions)
+	}
+	for _, c := range e.gh.prComments[prNumber] {
+		if strings.Contains(c.Body, "patchy:intent-pr-round:") &&
+			strings.Contains(c.Body, "No agent was launched") {
+			t.Errorf("legacy round notice denied the agent that already ran: %q", c.Body)
+		}
+	}
+}
+
+func TestLegacyMissingInputDoesNotStrandCollection(t *testing.T) {
+	e := newEnv(t, testProject())
+	run := &v1alpha1.IntentRun{}
+	run.Namespace = testNS
+	run.Spec.Inputs.ConfigMap = "already-gone"
+	empty, err := e.runs.legacyEmptyReviseFeedback(context.Background(), run)
+	if err != nil || empty {
+		t.Fatalf("missing legacy input = %t, %v; want no hint and no error", empty, err)
+	}
 }
 
 func assertReviseHandoff(t *testing.T, handoff string) {
@@ -207,7 +422,7 @@ func TestApproverPRCommandStartsOneRevision(t *testing.T) {
 	e.gh.prComments[pr.Number] = []*ghclient.Comment{{ID: 940, NodeID: "comment-940",
 		UserLogin: approver, UserID: actorOf(approver).ID, UserType: "User",
 		Body:      "/patchy revise Please check the response header.",
-		CreatedAt: e.clock.Now(), UpdatedAt: e.clock.Now()}}
+		CreatedAt: e.clock.Now(), UpdatedAt: e.clock.Now().Add(6 * time.Second)}}
 	for i := range 250 {
 		at := e.clock.Now().Add(time.Duration(i+1) * time.Microsecond)
 		e.gh.prComments[pr.Number] = append(e.gh.prComments[pr.Number], &ghclient.Comment{

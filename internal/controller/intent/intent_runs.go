@@ -57,6 +57,11 @@ const (
 	// OutcomeInputUnavailable: the feedback named by an immutable round
 	// vanished or ceased to be authorised before the agent could read it.
 	OutcomeInputUnavailable = "input_unavailable"
+	// OutcomeNoUsableFeedback: the review or command supplied no unedited,
+	// authorised, substantive feedback. No new agent runs on this outcome;
+	// legacy already-launched rounds may be classified here at collection.
+	// The round does not spend the Project's maxRevisions allowance.
+	OutcomeNoUsableFeedback = "no_usable_feedback"
 )
 
 // roundRuns are one stage's runs of one round, by attempt.

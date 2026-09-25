@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.2](https://github.com/devthenet-labs/patchy/compare/v0.12.1...v0.12.2) (2026-09-25)
+
+
+### Features
+
+* **ghclient:** expose PR feedback and check read seams ([#57](https://github.com/devthenet-labs/patchy/issues/57)) ([4e13b11](https://github.com/devthenet-labs/patchy/commit/4e13b116c545183988d065b929e655008e57ab8c))
+
 ## [0.12.1](https://github.com/devthenet-labs/patchy/compare/v0.12.0...v0.12.1) (2026-09-24)
 
 

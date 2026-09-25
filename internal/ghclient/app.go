@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -24,9 +25,10 @@ type AppConfig struct {
 
 // App mints installation-scoped clients and tokens for a GitHub App.
 type App struct {
-	atr     *ghinstallation.AppsTransport
-	gh      *github.Client // authenticated as the app (JWT)
-	baseURL string         // cfg.BaseURL, propagated to installation clients
+	atr          *ghinstallation.AppsTransport
+	gh           *github.Client    // authenticated as the app (JWT)
+	logTransport http.RoundTripper // the proxy-aware, credential-free base transport
+	baseURL      string            // cfg.BaseURL, propagated to installation clients
 
 	mu            sync.Mutex
 	installations map[Repo]int64    // repo → installation ID
@@ -43,7 +45,8 @@ func NewApp(cfg AppConfig) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	atr, err := ghinstallation.NewAppsTransport(newRetryTransport(proxy), cfg.AppID, cfg.PrivateKey)
+	transport := newRetryTransport(proxy)
+	atr, err := ghinstallation.NewAppsTransport(transport, cfg.AppID, cfg.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("ghclient: app transport: %w", err)
 	}
@@ -57,6 +60,7 @@ func NewApp(cfg AppConfig) (*App, error) {
 	return &App{
 		atr:           atr,
 		gh:            gh,
+		logTransport:  transport,
 		baseURL:       cfg.BaseURL,
 		installations: make(map[Repo]int64),
 		clients:       make(map[int64]*Client),
@@ -88,7 +92,7 @@ func (a *App) clientFor(id int64) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ghclient: installation client %d: %w", id, err)
 	}
-	c := &Client{gh: gh}
+	c := &Client{gh: gh, logHTTP: logClient(a.logTransport)}
 	a.clients[id] = c
 	return c, nil
 }
@@ -171,6 +175,9 @@ type TokenPerms struct {
 	Contents     string
 	Issues       string
 	PullRequests string
+	Checks       string
+	Statuses     string
+	Actions      string
 }
 
 // Validate reports a permission set a scoped token must not be minted with:
@@ -182,10 +189,18 @@ func (p TokenPerms) Validate() error {
 	}
 	for _, perm := range []struct{ name, level string }{
 		{"contents", p.Contents}, {"issues", p.Issues}, {"pull_requests", p.PullRequests},
+		{"checks", p.Checks}, {"statuses", p.Statuses}, {"actions", p.Actions},
 	} {
 		if perm.level != "" && perm.level != PermRead && perm.level != PermWrite {
 			return fmt.Errorf("ghclient: token permissions: %s %q is neither %s nor %s",
 				perm.name, perm.level, PermRead, PermWrite)
+		}
+	}
+	for _, perm := range []struct{ name, level string }{
+		{"checks", p.Checks}, {"statuses", p.Statuses}, {"actions", p.Actions},
+	} {
+		if perm.level != "" && perm.level != PermRead {
+			return fmt.Errorf("ghclient: token permissions: %s is read-only", perm.name)
 		}
 	}
 	return nil
@@ -203,6 +218,15 @@ func (p TokenPerms) installationPermissions() *github.InstallationPermissions {
 	}
 	if p.PullRequests != "" {
 		out.PullRequests = new(p.PullRequests)
+	}
+	if p.Checks != "" {
+		out.Checks = new(p.Checks)
+	}
+	if p.Statuses != "" {
+		out.Statuses = new(p.Statuses)
+	}
+	if p.Actions != "" {
+		out.Actions = new(p.Actions)
 	}
 	return out
 }

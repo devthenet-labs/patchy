@@ -146,10 +146,19 @@ type Server struct {
 	// (each commit mapped to its parent); compares counts its calls.
 	parents  map[string]string
 	compares int
+	patches  map[string]string
 	// moved are alerts a later analysis moved without a webhook (SetAlert):
 	// their state and most recent instance, by number.
-	moved map[int]movedAlert
-	pulls map[int]*pull
+	moved               map[int]movedAlert
+	pulls               map[int]*pull
+	reviews             map[int][]review
+	reviewComments      map[int][]reviewComment
+	nextReviewID        int64
+	nextReviewCommentID int64
+	checkRuns           map[string][]CheckRun
+	statuses            map[string][]CommitStatus
+	workflowJobs        map[int64][]WorkflowJob
+	jobLogs             map[int64]string
 	// pullReadFailures is how many single-PR reads still answer 502.
 	pullReadFailures int
 	git              gitData
@@ -182,23 +191,30 @@ type Server struct {
 
 func newState() (*Server, *http.ServeMux) {
 	s := &Server{
-		issues:        make(map[int]*Issue),
-		comments:      make(map[int][]comment),
-		dismissed:     make(map[int]string),
-		parents:       make(map[string]string),
-		moved:         make(map[int]movedAlert),
-		pulls:         make(map[int]*pull),
-		git:           newGitData(),
-		next:          100,
-		events:        make(map[int][]issueEvent),
-		reactions:     make(map[int64][]reaction),
-		roles:         make(map[string]string),
-		missing:       make(map[string]bool),
-		minted:        make(map[string]TokenRequest),
-		repoLabels:    make(map[string][]RepoLabel),
-		repoFiles:     make(map[string]map[string]string),
-		rateRemaining: defaultRateRemaining,
-		Now:           time.Now,
+		issues:         make(map[int]*Issue),
+		comments:       make(map[int][]comment),
+		dismissed:      make(map[int]string),
+		parents:        make(map[string]string),
+		patches:        make(map[string]string),
+		moved:          make(map[int]movedAlert),
+		pulls:          make(map[int]*pull),
+		reviews:        make(map[int][]review),
+		reviewComments: make(map[int][]reviewComment),
+		checkRuns:      make(map[string][]CheckRun),
+		statuses:       make(map[string][]CommitStatus),
+		workflowJobs:   make(map[int64][]WorkflowJob),
+		jobLogs:        make(map[int64]string),
+		git:            newGitData(),
+		next:           100,
+		events:         make(map[int][]issueEvent),
+		reactions:      make(map[int64][]reaction),
+		roles:          make(map[string]string),
+		missing:        make(map[string]bool),
+		minted:         make(map[string]TokenRequest),
+		repoLabels:     make(map[string][]RepoLabel),
+		repoFiles:      make(map[string]map[string]string),
+		rateRemaining:  defaultRateRemaining,
+		Now:            time.Now,
 	}
 	mux := http.NewServeMux()
 	s.routes(mux)
@@ -350,6 +366,15 @@ func (s *Server) routes(mux *http.ServeMux) {
 	handle("GET /repos/{owner}/{repo}/pulls", permPullRequests, s.listPulls)
 	handle("GET /repos/{owner}/{repo}/pulls/{number}", permPullRequests, s.getPull)
 	handle("POST /repos/{owner}/{repo}/pulls", permPullRequests, s.createPull)
+	handle("GET /repos/{owner}/{repo}/pulls/{number}/reviews", permPullRequests, s.listReviews)
+	handle("GET /repos/{owner}/{repo}/pulls/{number}/comments", permPullRequests, s.listReviewComments)
+	handle("POST /repos/{owner}/{repo}/pulls/{number}/requested_reviewers", permPullRequests, s.requestReviewers)
+	handle("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", permChecks, s.listCheckRuns)
+	handle("GET /repos/{owner}/{repo}/check-runs/{id}/annotations", permChecks, s.listCheckAnnotations)
+	handle("GET /repos/{owner}/{repo}/commits/{sha}/statuses", permStatuses, s.listCommitStatuses)
+	handle("GET /repos/{owner}/{repo}/actions/runs/{id}/jobs", permActions, s.listWorkflowJobs)
+	handle("GET /repos/{owner}/{repo}/actions/jobs/{id}/logs", permActions, s.jobLogRedirect)
+	mux.HandleFunc("GET /_logs/{id}", s.jobLogDownload)
 	handle("GET /repos/{owner}/{repo}/tarball/{ref...}", permContents, s.tarballRedirect)
 	mux.HandleFunc("GET /_tarball/{owner}/{repo}/{ref...}", s.tarball)
 	mux.HandleFunc("GET /search/issues", s.searchIssues)

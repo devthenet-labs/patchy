@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/google/go-github/v90/github"
 )
@@ -25,6 +26,10 @@ func (r Repo) String() string { return r.Owner + "/" + r.Name }
 // surface. Construct one with NewToken or App.Installation.
 type Client struct {
 	gh *github.Client
+	// logHTTP downloads an Actions log from GitHub's redirect destination.
+	// It deliberately has no auth wrapper: installation/PAT tokens must never
+	// be sent to a signed object-store URL.
+	logHTTP *http.Client
 	// token is the personal access token a dev-mode client authenticates
 	// with; empty for installation clients, whose credentials are minted
 	// per request by the App transport.
@@ -82,11 +87,19 @@ func NewToken(token, baseURL string, opts ...Option) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	gh, err := newGitHub(newRetryTransport(proxy), baseURL, github.WithAuthToken(token))
+	transport := newRetryTransport(proxy)
+	gh, err := newGitHub(transport, baseURL, github.WithAuthToken(token))
 	if err != nil {
 		return nil, fmt.Errorf("ghclient: token client: %w", err)
 	}
-	return &Client{gh: gh, token: token}, nil
+	return &Client{gh: gh, token: token, logHTTP: logClient(transport)}, nil
+}
+
+func logClient(transport http.RoundTripper) *http.Client {
+	return &http.Client{Transport: transport, Timeout: 30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}}
 }
 
 // newGitHub builds a go-github client on transport, pointed at baseURL

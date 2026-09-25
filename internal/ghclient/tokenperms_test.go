@@ -40,6 +40,21 @@ func TestScopedTokenPermissionSets(t *testing.T) {
 			perms: TokenPerms{Contents: PermWrite, Issues: PermRead, PullRequests: PermRead},
 			want:  map[string]any{"contents": "write", "issues": "read", "pull_requests": "read"},
 		},
+		{
+			name:  "checks only",
+			perms: TokenPerms{Checks: PermRead},
+			want:  map[string]any{"checks": "read"},
+		},
+		{
+			name:  "statuses only",
+			perms: TokenPerms{Statuses: PermRead},
+			want:  map[string]any{"statuses": "read"},
+		},
+		{
+			name:  "actions only",
+			perms: TokenPerms{Actions: PermRead},
+			want:  map[string]any{"actions": "read"},
+		},
 		// Minting with no permissions key would grant everything the
 		// installation holds — the widening the design rules out.
 		{name: "none requested", perms: TokenPerms{}, wantErr: true},
@@ -97,6 +112,12 @@ func TestTokenPermsValidate(t *testing.T) {
 		{name: "admin level", perms: TokenPerms{Issues: "admin"}, wantErr: true},
 		{name: "capitalised level", perms: TokenPerms{PullRequests: "Write"}, wantErr: true},
 		{name: "one bad among good", perms: TokenPerms{Contents: PermRead, Issues: "none"}, wantErr: true},
+		{name: "checks read", perms: TokenPerms{Checks: PermRead}},
+		{name: "statuses read", perms: TokenPerms{Statuses: PermRead}},
+		{name: "actions read", perms: TokenPerms{Actions: PermRead}},
+		{name: "checks write denied", perms: TokenPerms{Checks: PermWrite}, wantErr: true},
+		{name: "statuses write denied", perms: TokenPerms{Statuses: PermWrite}, wantErr: true},
+		{name: "actions write denied", perms: TokenPerms{Actions: PermWrite}, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -14,18 +14,19 @@ import (
 
 // pull is the fake's pull-request record.
 type pull struct {
-	Number         int        `json:"number"`
-	NodeID         string     `json:"node_id"`
-	HTMLURL        string     `json:"html_url"`
-	State          string     `json:"state"`
-	Title          string     `json:"title"`
-	Body           string     `json:"body"`
-	Head           ref        `json:"head"`
-	Base           ref        `json:"base"`
-	User           Actor      `json:"user"` // who opened it: the create's caller
-	Merged         bool       `json:"merged"`
-	MergedAt       *time.Time `json:"merged_at"`
-	MergeCommitSHA string     `json:"merge_commit_sha,omitempty"`
+	Number             int        `json:"number"`
+	NodeID             string     `json:"node_id"`
+	HTMLURL            string     `json:"html_url"`
+	State              string     `json:"state"`
+	Title              string     `json:"title"`
+	Body               string     `json:"body"`
+	Head               ref        `json:"head"`
+	Base               ref        `json:"base"`
+	User               Actor      `json:"user"` // who opened it: the create's caller
+	Merged             bool       `json:"merged"`
+	MergedAt           *time.Time `json:"merged_at"`
+	MergeCommitSHA     string     `json:"merge_commit_sha,omitempty"`
+	RequestedReviewers []Actor    `json:"requested_reviewers,omitempty"`
 	// repository is "owner/repo" of a pull request opened through the API.
 	repository string
 }
@@ -183,6 +184,21 @@ func (s *Server) Pull(number int) (PullRequest, bool) {
 		Head: out.Head.Ref, HeadSHA: out.Head.SHA, Base: out.Base.Ref, State: out.State, Merged: out.Merged,
 		MergeCommitSHA: out.MergeCommitSHA,
 	}, true
+}
+
+// RequestedReviewers returns the logins requested on a pull request.
+func (s *Server) RequestedReviewers(number int) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.pulls[number]
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(p.RequestedReviewers))
+	for _, a := range p.RequestedReviewers {
+		out = append(out, a.Login)
+	}
+	return out
 }
 
 // createPull answers POST /repos/{o}/{r}/pulls: the pull request opened

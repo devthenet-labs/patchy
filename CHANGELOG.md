@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.7](https://github.com/devthenet-labs/patchy/compare/v0.12.6...v0.12.7) (2026-09-26)
+
+
+### Bug Fixes
+
+* **web:** bind status authentication cookies to their host ([#67](https://github.com/devthenet-labs/patchy/issues/67)) ([b7a7336](https://github.com/devthenet-labs/patchy/commit/b7a73364bb2a07f43339324a427446b727d2d950))
+
 ## [0.12.6](https://github.com/devthenet-labs/patchy/compare/v0.12.5...v0.12.6) (2026-09-26)
 
 

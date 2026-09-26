@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.6](https://github.com/devthenet-labs/patchy/compare/v0.12.5...v0.12.6) (2026-09-26)
+
+
+### Bug Fixes
+
+* **intent:** scope PR feedback and persist round notices ([#65](https://github.com/devthenet-labs/patchy/issues/65)) ([68f40a1](https://github.com/devthenet-labs/patchy/commit/68f40a15b6d03a8826937b6b9f0ae15e896c31c9))
+
 ## [0.12.5](https://github.com/devthenet-labs/patchy/compare/v0.12.4...v0.12.5) (2026-09-26)
 
 

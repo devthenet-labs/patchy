@@ -674,6 +674,28 @@ func (f *fakeGitHub) CreateIssueComment(_ context.Context, repoURL string, numbe
 	return &cp, nil
 }
 
+func (f *fakeGitHub) ListPullRequestComments(ctx context.Context, repoURL string, number int64, since time.Time) (
+	[]*ghclient.Comment, error) {
+	return f.ListIssueComments(ctx, repoURL, number, since)
+}
+
+func (f *fakeGitHub) GetPullRequestComment(ctx context.Context, repoURL string, id int64) (*ghclient.Comment, error) {
+	return f.GetIssueComment(ctx, repoURL, id)
+}
+
+func (f *fakeGitHub) PullRequestCommentEdited(ctx context.Context, repoURL, nodeID string) (bool, error) {
+	return f.CommentEdited(ctx, repoURL, nodeID)
+}
+
+func (f *fakeGitHub) CreatePullRequestComment(ctx context.Context, repoURL string, number int64, body string) (
+	*ghclient.Comment, error) {
+	return f.CreateIssueComment(ctx, repoURL, number, body)
+}
+
+func (f *fakeGitHub) ReactPullRequestComment(ctx context.Context, repoURL string, id int64) error {
+	return f.React(ctx, repoURL, id)
+}
+
 func (f *fakeGitHub) EditIssueComment(_ context.Context, _ string, id int64, body string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

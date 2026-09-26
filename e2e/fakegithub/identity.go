@@ -103,8 +103,10 @@ const (
 // one the token names, and the token must grant perm — at read for GET, at
 // write otherwise. A token minted with no repositories covers them all and
 // one minted with no permissions holds the installation's full set. Every
-// token reads metadata. The issues endpoints also serve a pull request to a
-// pull_requests grant (documented; the grant PR comments are posted with).
+// token reads metadata. Issues endpoints targeting a PR require pull_requests,
+// not issues (including comments and reactions, verified live). Public read
+// fallback is deliberately not modelled: a public fixture must not mask the
+// wrong scope for a private project.
 //
 // Anything else — a PAT, the App's JWT, no credential — passes: a PAT's reach
 // is its user's, which the fake does not model. A refusal is 403 "Resource
@@ -141,6 +143,9 @@ func (s *Server) permits(r *http.Request, perm string) bool {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		need = permRead
 	}
+	if perm == permIssues && s.targetsPull(r) {
+		perm = permPullRequests
+	}
 	switch {
 	case perm == permMetadata:
 		return need == permRead
@@ -149,7 +154,7 @@ func (s *Server) permits(r *http.Request, perm string) bool {
 	case grants(scope.Permissions[perm], need):
 		return true
 	}
-	return perm == permIssues && s.targetsPull(r) && grants(scope.Permissions[permPullRequests], need)
+	return false
 }
 
 // grants reports whether a granted level covers the needed one.

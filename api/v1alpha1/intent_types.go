@@ -626,6 +626,14 @@ type IntentStatus struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=999
 	Rounds int32 `json:"rounds,omitempty"`
+	// RoundNoticesThrough is the last contiguous revise round whose PR
+	// notice was posted or adopted by marker. Zero also recovers notices
+	// lost by older controllers. Only intent-controller writes this cursor;
+	// pending deliveries survive phase changes and prevent TTL expiry.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=999
+	RoundNoticesThrough int32 `json:"roundNoticesThrough,omitempty"`
 	// Revisions counts completed review-driven revise rounds, against the
 	// Project's maxRevisions.
 	// +optional

@@ -263,6 +263,9 @@ func (p *pass) reviewNow(ctx context.Context) (bool, error) {
 			return nil
 		})
 	}
+	if changed, err := p.syncPRRoundNotices(ctx); changed || err != nil {
+		return changed, err
+	}
 	if p.in.Status.Phase == v1alpha1.IntentInReview && len(prs) == 1 && prs[0].State == prOpen {
 		if started, err := p.reviewRound(ctx, &prs[0]); started || err != nil {
 			return started, err

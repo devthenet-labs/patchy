@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.5](https://github.com/devthenet-labs/patchy/compare/v0.12.4...v0.12.5) (2026-09-26)
+
+
+### Bug Fixes
+
+* **intent:** preserve empty-review exemption after job expiry ([#63](https://github.com/devthenet-labs/patchy/issues/63)) ([0f87e76](https://github.com/devthenet-labs/patchy/commit/0f87e76eb76d7ee17976970b1b2af08bcbcfbd20))
+
 ## [0.12.4](https://github.com/devthenet-labs/patchy/compare/v0.12.3...v0.12.4) (2026-09-25)
 
 

@@ -2,6 +2,35 @@
 
 ## Latest checkpoint — 2026-09-26
 
+Slice 1a/1b code is merged and live on **0.12.6**, patchy revision **33**, patchy-config revision **19**, intents
+enabled. PR #65 fixed PR-comment permissions and durable notices; the missing round-1 notice on target PR #46 was
+recovered exactly once. The new human review completed a successful revision
+($0.295620), the owner merged PR #46, target-2
+reached Merged, and intents issue #2 closed as completed with one summary. Its total reported cost was $1.150306.
+The automatic check-fix path remains **unexercised live**: the revision's checks passed on its first push.
+
+The post-demo fresh-Finding gate passed: alert 30, `finding-514becf18f-5`, issue #53, repair PR #54, merge
+`bf707b46c24c68889288e6b3d91e1709ffaef247`. Go/CodeQL checks were green, the Finding reached Remediated with its merge
+SHA and no ReviewClosePending, the issue closed with the remediated label, markers were unique, and main's CodeQL
+re-analysis fixed the alert without a duplicate Finding. No manual correction was needed for this gate.
+
+**Slice 2 is approved, starting with prerequisite PRs, cookies first.** The owner approved the new benign repository
+`devthenet-labs/patchy-preview-demo`, Project `preview-demo`, and the light-use incremental budget of ~$25–35/month
+(including the two-AZ ALB's public IPv4 charges, assuming existing node capacity). Preview inbound CIDRs must be exactly
+`75.70.97.14/32`. Never preview patchy-target.
+
+- Check in with the owner **before each infrastructure apply**, including Helm upgrades; the general approval does not
+  authorise unattended applies. Record current rollback revisions again before every upgrade.
+- Before any preview namespace exists: release/gate the `__Host-` cookie prerequisite, then restrict the existing `alb`
+  IngressClassParams to namespace `patchy`. Verify unchanged ALB identity, successful **2xx GitHub App Recent
+  Deliveries** to patchy.devthe.net, and that status.patchy.devthe.net loads after that change.
+- Runtime image builds have no credentials and **no id-token access**. Fork PRs must never publish. The separate
+  publisher must never execute PR code and can write only its own immutable runtime ECR repository, never app-envs.
+- Use reviewable draft PRs, full local/CI gates, a separate security/liveness review, releases and fresh-Finding gates.
+  No preview infrastructure has been applied yet. Cookie work starts on `fix/status-host-cookies` from main `be00e9a`.
+
+## Historical checkpoint — before the 0.12.6 release
+
 This checkpoint supersedes the historical implementation status below; the permissions, gates and security invariants
 still apply. Slice 1a and slice 1b are merged. PRs #61 and #63 repaired GraphQL-only edit detection, empty feedback and
 the expired legacy Job. Both releases passed fresh-Finding gates. Live is 0.12.5, patchy revision 31 and config revision

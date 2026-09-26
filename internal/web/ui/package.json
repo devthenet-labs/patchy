@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Patchy finding status page (embedded into the status-server binary).",
   "scripts": {
+    "test": "node --test tests/*.test.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",

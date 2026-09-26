@@ -47,7 +47,7 @@ present-but-invalid file is a startup error: a broken configuration never silent
 ```yaml
 mode: oidc # none | anonymous | oidc
 sessionDuration: 168h # absolute session lifetime (default 7 days)
-# insecure: true               # drop the cookies' Secure flag — plain-HTTP local dev ONLY
+# insecure: true               # separate non-Secure cookies — plain-HTTP local dev ONLY
 anonymous: # mode: anonymous only
   username: status-viewer
   groups: [patchy-viewers]
@@ -78,10 +78,25 @@ oidc: # mode: oidc only
 
 There is no server-side session store. The ID token, refresh token, and session start are sealed with AES-256-GCM — the
 key is derived (HKDF-SHA256) from the OIDC client secret, so **rotating the client secret signs everyone out** — and
-stored in chunked `HttpOnly` cookies (`patchy-auth`, `patchy-auth-1`, …). Every request re-verifies the ID token; an
-expired token is renewed via the refresh token in place, but never past `sessionDuration` from the original sign-in.
-Three small SPA-readable cookies carry no secrets: `patchy-auth-provider` (how sign-in works), `patchy-auth-error` (the
-last failure), `patchy-auth-logout` (pauses `autoLogin` after an explicit sign-out).
+stored in chunked `HttpOnly` cookies (`__Host-patchy-auth`, `__Host-patchy-auth-1`, …). Every request re-verifies the ID
+token; an expired token is renewed via the refresh token in place, but never past `sessionDuration` from the original
+sign-in. Three small SPA-readable cookies carry no secrets: `__Host-patchy-auth-provider` (how sign-in works),
+`__Host-patchy-auth-error` (the last failure), `__Host-patchy-auth-logout` (pauses `autoLogin` after an explicit
+sign-out).
+
+All production cookies, including the short-lived `__Host-patchy-oauth2-state` CSRF cookie, use `Secure`, `Path=/` and
+no `Domain`. The browser-enforced `__Host-` prefix prevents a sibling preview host from injecting a parent-domain cookie
+with the same name. Expiry and SPA deletion use the same attributes. See the
+[cookie prefix requirements](https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html#name-the-__host-prefix).
+
+Upgrading from the old unprefixed names requires signing in again; an in-flight sign-in must also restart. Legacy
+cookies are never accepted as a fallback. Old host-only cookies are expired when encountered, including the old OAuth
+state's `/oauth2/` path. Parent-domain cookies cannot be reliably identified from a request and remain ignored.
+
+For explicit `insecure: true` local development over **HTTP only**, both server and SPA use separate `patchy-dev-*`
+names without `Secure`. Production never reads these names. Do not set `insecure` behind an HTTPS ingress; the SPA
+selects its cookie namespace from the browser's protocol, while the server uses operator configuration, not forwarded
+headers.
 
 The callback URL is derived from `X-Forwarded-Proto` / `X-Forwarded-Host` (or the Host header), which assumes a trusted
 fronting proxy — set `oidc.redirectURL` explicitly if yours cannot be trusted to strip those.

@@ -131,6 +131,7 @@ func (a *oidcAuthenticator) redirectURL(r *http.Request) string {
 // token, and nonce sealed into the state blob, the CSRF half double-submitted
 // via a short-lived cookie, then off to the provider.
 func (a *oidcAuthenticator) handleAuthorize(w http.ResponseWriter, r *http.Request) {
+	clearLegacyCookies(w, r, a.secure())
 	csrf, err1 := randomToken()
 	nonce, err2 := randomToken()
 	if err := errors.Join(err1, err2); err != nil {
@@ -150,9 +151,9 @@ func (a *oidcAuthenticator) handleAuthorize(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     cookieOAuthState,
+		Name:     cookieName(cookieOAuthState, a.secure()),
 		Value:    csrf,
-		Path:     "/oauth2/",
+		Path:     "/",
 		MaxAge:   int(stateTTL.Seconds()),
 		HttpOnly: true,
 		Secure:   a.secure(),
@@ -172,6 +173,7 @@ func (a *oidcAuthenticator) handleAuthorize(w http.ResponseWriter, r *http.Reque
 // code exchange with the PKCE verifier, ID-token + nonce verification, then
 // the session cookie and the guarded redirect home.
 func (a *oidcAuthenticator) handleCallback(w http.ResponseWriter, r *http.Request) {
+	clearLegacyCookies(w, r, a.secure())
 	q := r.URL.Query()
 	clearCookie(w, cookieOAuthState, a.secure())
 	if e := q.Get("error"); e != "" {
@@ -188,7 +190,7 @@ func (a *oidcAuthenticator) handleCallback(w http.ResponseWriter, r *http.Reques
 		a.fail(w, r, "sign-in took too long, try again", nil)
 		return
 	}
-	csrf, err := r.Cookie(cookieOAuthState)
+	csrf, err := r.Cookie(cookieName(cookieOAuthState, a.secure()))
 	if err != nil || csrf.Value == "" || csrf.Value != st.CSRF {
 		a.fail(w, r, "sign-in state mismatch, try again", errors.New("csrf double-submit failed"))
 		return
@@ -234,6 +236,7 @@ func (a *oidcAuthenticator) handleCallback(w http.ResponseWriter, r *http.Reques
 // handleLogout drops the session and pauses autoLogin until the SPA consumes
 // the marker.
 func (a *oidcAuthenticator) handleLogout(w http.ResponseWriter, r *http.Request) {
+	clearLegacyCookies(w, r, a.secure())
 	clearChunked(w, a.secure())
 	_ = setJSONCookie(w, CookieLogout, true, time.Hour, a.secure())
 	a.setProviderCookie(w, r, false)
@@ -245,6 +248,7 @@ func (a *oidcAuthenticator) handleLogout(w http.ResponseWriter, r *http.Request)
 // Every failure path clears the session and reports "no session" — a broken
 // cookie must land the user on the sign-in panel, not a 500.
 func (a *oidcAuthenticator) Identify(w http.ResponseWriter, r *http.Request) (*Identity, error) {
+	clearLegacyCookies(w, r, a.secure())
 	s, ok := a.readSession(r)
 	if !ok {
 		a.setProviderCookie(w, r, false)
@@ -311,7 +315,7 @@ func (a *oidcAuthenticator) identityFrom(idToken *gooidc.IDToken) (*Identity, er
 func (a *oidcAuthenticator) setProviderCookie(w http.ResponseWriter, r *http.Request, authenticated bool) {
 	want := providerState{Provider: "oidc", Authenticated: authenticated, AutoLogin: a.oc.AutoLogin}
 	var have providerState
-	if readJSONCookie(r, CookieProvider, &have) && have == want {
+	if readJSONCookie(r, CookieProvider, &have, a.secure()) && have == want {
 		return
 	}
 	_ = setJSONCookie(w, CookieProvider, want, 0, a.secure())

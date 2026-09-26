@@ -49,7 +49,7 @@ func TestChunkedCookiesRoundTrip(t *testing.T) {
 					}
 				}
 			}
-			if got := readChunked(carry(t, rec)); got != value {
+			if got := readChunked(carry(t, rec), true); got != value {
 				t.Errorf("round trip lost data: got %d bytes, want %d", len(got), len(value))
 			}
 		})
@@ -93,7 +93,7 @@ func TestWriteChunkedClearsLeftovers(t *testing.T) {
 	for name, value := range jar {
 		merged.AddCookie(&http.Cookie{Name: name, Value: value})
 	}
-	if got := readChunked(merged); got != "short" {
+	if got := readChunked(merged, true); got != "short" {
 		t.Errorf("after shrink read %q, want %q", got, "short")
 	}
 }
@@ -132,7 +132,7 @@ func TestJSONCookieRoundTrip(t *testing.T) {
 		}
 	}
 	var got providerState
-	if !readJSONCookie(carry(t, rec), CookieProvider, &got) || got != want {
+	if !readJSONCookie(carry(t, rec), CookieProvider, &got, true) || got != want {
 		t.Errorf("round trip = %+v, want %+v", got, want)
 	}
 }

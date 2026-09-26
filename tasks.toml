@@ -98,10 +98,12 @@ sources = [
   "internal/web/ui/vite.config.ts",
   "internal/web/ui/tsconfig.json",
   "internal/web/ui/src/**/*",
+  "internal/web/ui/tests/**/*",
 ]
 outputs = ["internal/web/ui/dist/index.html"]
 run = [
   "npm --prefix internal/web/ui ci --no-fund --no-audit",
+  "npm --prefix internal/web/ui test",
   "npm --prefix internal/web/ui run build",
 ]
 

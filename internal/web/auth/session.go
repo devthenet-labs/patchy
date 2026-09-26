@@ -40,7 +40,7 @@ func (a *oidcAuthenticator) writeSession(w http.ResponseWriter, s session) error
 // readSession reads and unseals the session cookie; ok is false when there
 // is no (valid) session.
 func (a *oidcAuthenticator) readSession(r *http.Request) (session, bool) {
-	blob := readChunked(r)
+	blob := readChunked(r, a.secure())
 	if blob == "" {
 		return session{}, false
 	}

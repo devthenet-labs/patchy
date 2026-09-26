@@ -2,10 +2,12 @@
 // sign-in works through three small SPA-readable cookies; the session itself
 // lives in HttpOnly cookies the client never touches:
 //
-//   patchy-auth-provider — {provider, authenticated, autoLogin} (base64url
-//                          JSON). Absent means sign-in is not configured.
-//   patchy-auth-error    — human-readable sign-in failure, shown once.
-//   patchy-auth-logout   — marker set by sign-out; suppresses autoLogin.
+//   __Host-patchy-auth-provider — {provider, authenticated, autoLogin}
+//                                (base64url JSON). Absent means unconfigured.
+//   __Host-patchy-auth-error    — human-readable sign-in failure, shown once.
+//   __Host-patchy-auth-logout   — sign-out marker; suppresses autoLogin.
+// HTTP local development uses patchy-dev-* instead. HTTPS never falls back
+// to dev or legacy cookies: a sibling preview could inject those names.
 
 export interface AuthProvider {
   provider: string;
@@ -13,14 +15,18 @@ export interface AuthProvider {
   autoLogin?: boolean;
 }
 
-const PROVIDER_COOKIE = "patchy-auth-provider";
-const ERROR_COOKIE = "patchy-auth-error";
-const LOGOUT_COOKIE = "patchy-auth-logout";
+const PROVIDER_COOKIE = "auth-provider";
+const ERROR_COOKIE = "auth-error";
+const LOGOUT_COOKIE = "auth-logout";
+
+function cookieName(name: string): string {
+  return (location.protocol === "https:" ? "__Host-patchy-" : "patchy-dev-") + name;
+}
 
 function readCookie(name: string): string | null {
   for (const part of document.cookie.split(";")) {
     const [key, ...rest] = part.trim().split("=");
-    if (key === name && rest.length) return rest.join("=");
+    if (key === cookieName(name) && rest.length) return rest.join("=");
   }
   return null;
 }
@@ -36,7 +42,8 @@ function readJSONCookie<T>(name: string): T | null {
 }
 
 function deleteCookie(name: string): void {
-  document.cookie = `${name}=; path=/; max-age=0`;
+  const secure = location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `${cookieName(name)}=; Path=/; Max-Age=0; SameSite=Lax${secure}`;
 }
 
 // readProvider returns the sign-in surface descriptor, or null when the

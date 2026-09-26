@@ -16,21 +16,34 @@ import (
 // Cookie names. The session and state cookies are HttpOnly and carry sealed
 // data; the provider/error/logout cookies are SPA-visible and carry no
 // secrets — they only tell the client what the sign-in surface looks like.
+// __Host- requires Secure, Path=/ and no Domain, so a sibling preview host
+// cannot inject parent-domain cookies under these names.
 const (
 	// cookieSession is the chunked session cookie; chunks after the first
 	// are cookieSession-1, cookieSession-2, ….
-	cookieSession = "patchy-auth"
+	cookieSession = "__Host-patchy-auth"
 	// cookieOAuthState carries the CSRF half of the state double-submit
 	// during one authorization round trip.
-	cookieOAuthState = "patchy-oauth2-state"
+	cookieOAuthState = "__Host-patchy-oauth2-state"
 	// CookieProvider tells the SPA whether and how sign-in works:
 	// {"provider","authenticated","autoLogin"}, base64url JSON.
-	CookieProvider = "patchy-auth-provider"
+	CookieProvider = "__Host-patchy-auth-provider"
 	// CookieAuthError carries a human-readable sign-in failure to the SPA.
-	CookieAuthError = "patchy-auth-error"
+	CookieAuthError = "__Host-patchy-auth-error"
 	// CookieLogout marks an explicit sign-out so autoLogin pauses for it.
-	CookieLogout = "patchy-auth-logout"
+	CookieLogout = "__Host-patchy-auth-logout"
 )
+
+// cookieName selects exactly one namespace from operator configuration,
+// never request headers. Plain-HTTP development cannot use __Host- cookies;
+// its separate names are never read as a fallback in production. Keep the
+// SPA's cookieName in auth.ts in sync.
+func cookieName(name string, secure bool) string {
+	if !secure {
+		return strings.Replace(name, "__Host-patchy-", "patchy-dev-", 1)
+	}
+	return name
+}
 
 // chunkSize keeps each cookie under the 4KB browser limit with headroom for
 // the name and attributes; maxChunks bounds a session at ~35KB, enough for
@@ -70,7 +83,7 @@ func writeChunked(w http.ResponseWriter, value string, maxAge time.Duration, sec
 		}
 		end := min(start+chunkSize, len(value))
 		http.SetCookie(w, &http.Cookie{
-			Name:     chunkName(i),
+			Name:     cookieName(chunkName(i), secure),
 			Value:    value[start:end],
 			Path:     "/",
 			MaxAge:   int(maxAge.Seconds()),
@@ -83,10 +96,10 @@ func writeChunked(w http.ResponseWriter, value string, maxAge time.Duration, sec
 }
 
 // readChunked reassembles the session cookie value; "" means no session.
-func readChunked(r *http.Request) string {
+func readChunked(r *http.Request, secure bool) string {
 	var b strings.Builder
 	for i := range maxChunks {
-		c, err := r.Cookie(chunkName(i))
+		c, err := r.Cookie(cookieName(chunkName(i), secure))
 		if err != nil || c.Value == "" {
 			break
 		}
@@ -102,19 +115,44 @@ func clearChunked(w http.ResponseWriter, secure bool) {
 	}
 }
 
-// clearCookie expires one cookie. Deletion matches on name and path only, so
-// the hardened attributes here never prevent the clear — they just keep the
-// expiring replacement as locked down as what it removes.
+// clearCookie expires one cookie with the same name and scope used to set
+// it. __Host- prefix validation applies to deletions too.
 func clearCookie(w http.ResponseWriter, name string, secure bool) {
+	expireCookie(w, cookieName(name, secure), "/", secure)
+}
+
+func expireCookie(w http.ResponseWriter, name, path string, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    "",
-		Path:     "/",
+		Path:     path,
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+// clearLegacyCookies removes old host-only cookies when encountered, without
+// trusting their contents or accepting them for authentication. A request
+// does not reveal Domain: do not guess parent domains to clear cookies a
+// sibling might have injected. Those remain inert and are never read.
+func clearLegacyCookies(w http.ResponseWriter, r *http.Request, secure bool) {
+	names := [maxChunks + 4]string{cookieOAuthState, CookieProvider, CookieAuthError, CookieLogout}
+	for i := range maxChunks {
+		names[i+4] = chunkName(i)
+	}
+	for _, name := range names {
+		legacy := strings.TrimPrefix(name, "__Host-")
+		if _, err := r.Cookie(legacy); err != nil {
+			continue
+		}
+		path := "/"
+		if name == cookieOAuthState {
+			path = "/oauth2/"
+		}
+		expireCookie(w, legacy, path, secure)
+	}
 }
 
 // setJSONCookie writes an SPA-visible base64url JSON cookie. Not HttpOnly by
@@ -125,7 +163,7 @@ func setJSONCookie(w http.ResponseWriter, name string, v any, maxAge time.Durati
 		return fmt.Errorf("cookie %s: %w", name, err)
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     name,
+		Name:     cookieName(name, secure),
 		Value:    base64.RawURLEncoding.EncodeToString(raw),
 		Path:     "/",
 		MaxAge:   int(maxAge.Seconds()),
@@ -136,8 +174,8 @@ func setJSONCookie(w http.ResponseWriter, name string, v any, maxAge time.Durati
 }
 
 // readJSONCookie decodes an SPA-visible cookie into v, reporting presence.
-func readJSONCookie(r *http.Request, name string, v any) bool {
-	c, err := r.Cookie(name)
+func readJSONCookie(r *http.Request, name string, v any, secure bool) bool {
+	c, err := r.Cookie(cookieName(name, secure))
 	if err != nil || c.Value == "" {
 		return false
 	}

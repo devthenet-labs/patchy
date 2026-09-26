@@ -133,8 +133,7 @@ func (fi *fakeIssuer) setNext(claims map[string]any, refreshToken string) {
 func newTestOIDC(t *testing.T, fi *fakeIssuer) (*oidcAuthenticator, *http.ServeMux) {
 	t.Helper()
 	cfg := &Config{
-		Mode:     ModeOIDC,
-		Insecure: true,
+		Mode: ModeOIDC,
 		OIDC: &OIDCConfig{
 			IssuerURL:    fi.ts.URL,
 			ClientID:     "patchy",
@@ -167,7 +166,7 @@ func authorize(t *testing.T, mux *http.ServeMux, originalPath string) (*url.URL,
 		t.Fatalf("authorize location: %v", err)
 	}
 	for _, c := range rec.Result().Cookies() {
-		if c.Name == cookieOAuthState {
+		if c.Name == cookieOAuthState || c.Name == cookieName(cookieOAuthState, false) {
 			return loc, c
 		}
 	}
@@ -234,7 +233,7 @@ func TestOIDCFullFlow(t *testing.T) {
 
 	// The provider cookie reports authenticated to the SPA.
 	var ps providerState
-	if !readJSONCookie(sessionRequest(t, rec, "/"), CookieProvider, &ps) || !ps.Authenticated {
+	if !readJSONCookie(sessionRequest(t, rec, "/"), CookieProvider, &ps, a.secure()) || !ps.Authenticated {
 		t.Errorf("provider cookie = %+v", ps)
 	}
 }
@@ -335,7 +334,7 @@ func TestOIDCRefresh(t *testing.T) {
 		t.Errorf("token endpoint calls = %d, want 1 refresh", fi.tokenCalls)
 	}
 	// The session cookie was rewritten with the fresh token.
-	if got := readChunked(sessionRequest(t, out, "/")); got == "" {
+	if got := readChunked(sessionRequest(t, out, "/"), a.secure()); got == "" {
 		t.Error("refresh did not rewrite the session cookie")
 	}
 }

@@ -588,10 +588,13 @@ func TestIntentLifecycle(t *testing.T) {
 	if m := closingKeyword.FindString(pr.Title + "\n" + pr.Body); m != "" {
 		t.Errorf("pull request carries the closing keyword %q", m)
 	}
-	status := e.own(number, templates.IntentStatusMarker(namespace, name))
-	if len(status) != 1 || !strings.Contains(status[0].Body, fmt.Sprintf("#%d", rec.Number)) {
-		t.Errorf("status comments = %+v, want one, linking the pull request", status)
-	}
+	// The phase write and the GitHub status projection are separate
+	// reconciles. Wait for the PR link instead of racing that projection.
+	var status []fakegithub.Comment
+	eventually(t, "one intent status comment linking the pull request", func() bool {
+		status = e.own(number, templates.IntentStatusMarker(namespace, name))
+		return len(status) == 1 && strings.Contains(status[0].Body, fmt.Sprintf("#%d", rec.Number))
+	})
 	e.exerciseReviseAndCheckFix(t, name, int(rec.Number), pushed)
 
 	// 10. A human merges: the intent completes, patchy sums it up once and

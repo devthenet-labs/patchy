@@ -246,6 +246,20 @@ func TestLegacyEmptyReviewHandoffIsRecognisedNarrowly(t *testing.T) {
 }
 
 func TestAlreadyLaunchedLegacyEmptyReviewDoesNotSpendRevision(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		jobExpired bool
+	}{
+		{name: "agent reports not built"},
+		{name: "job expired before collection", jobExpired: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testAlreadyLaunchedLegacyEmptyReviewDoesNotSpendRevision(t, tc.jobExpired)
+		})
+	}
+}
+
+func testAlreadyLaunchedLegacyEmptyReviewDoesNotSpendRevision(t *testing.T, jobExpired bool) {
 	e := newEnv(t, testProject())
 	name := e.awaiting()
 	e.gh.label(1, "patchy:approved", approver)
@@ -282,6 +296,9 @@ func TestAlreadyLaunchedLegacyEmptyReviewDoesNotSpendRevision(t *testing.T) {
 			Remediation: &envelope.Remediation{Stage: envelope.Stage{Outcome: envelope.OutcomeOK},
 				ReportMarkdown: "---\nsuccess: false\nreason: no feedback\n---\n", Success: false}}}}
 	}
+	if jobExpired {
+		expireLegacyReviseJob(t, e, name)
+	}
 	e.drive(name, v1alpha1.IntentInReview, repoImage)
 	runs := e.runsOf(name, v1alpha1.IntentStageRevise)
 	if len(runs) != 1 || runs[0].Status.Outcome != OutcomeNoUsableFeedback {
@@ -296,6 +313,35 @@ func TestAlreadyLaunchedLegacyEmptyReviewDoesNotSpendRevision(t *testing.T) {
 			t.Errorf("legacy round notice denied the agent that already ran: %q", c.Body)
 		}
 	}
+	for range 3 {
+		e.mustIntent(name)
+	}
+	marker := "<!-- patchy:intent-pr-round:" + name + ":1 -->"
+	notices := 0
+	for _, c := range e.gh.prComments[prNumber] {
+		if strings.Contains(c.Body, marker) {
+			notices++
+		}
+	}
+	if notices != 1 || len(e.runsOf(name, v1alpha1.IntentStageRevise)) != 1 {
+		t.Errorf("expired legacy review hot-looped: %d notices, %d runs",
+			notices, len(e.runsOf(name, v1alpha1.IntentStageRevise)))
+	}
+}
+
+func expireLegacyReviseJob(t *testing.T, e *env, name string) {
+	t.Helper()
+	e.jobs.gone = map[string]bool{}
+	for range 8 {
+		e.readyRepositories(repoImage)
+		e.runRuns()
+		launched := e.runsOf(name, v1alpha1.IntentStageRevise)[0]
+		if launched.Status.JobRef != nil {
+			e.jobs.gone[launched.Status.JobRef.Name] = true
+			return
+		}
+	}
+	t.Fatal("revise Job was not launched before simulating TTL expiry")
 }
 
 func TestLegacyMissingInputDoesNotStrandCollection(t *testing.T) {

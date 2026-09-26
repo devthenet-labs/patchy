@@ -65,6 +65,14 @@ func (s *Server) graphql(w http.ResponseWriter, r *http.Request) {
 	perm := permIssues
 	if kind != "IssueComment" {
 		perm = permPullRequests
+	} else {
+		for n, comments := range s.comments {
+			for _, c := range comments {
+				if c.NodeID == id && s.pulls[n] != nil {
+					perm = permPullRequests
+				}
+			}
+		}
 	}
 	if !s.permits(read, perm) {
 		writeJSON(w, map[string]any{

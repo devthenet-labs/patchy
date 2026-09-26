@@ -278,6 +278,9 @@ names, and a seeded property test checks that they are label-safe and unique wit
     `{repository, number, url, nodeID, headSHA, state, mergedAt, mergeCommitSHA}`
   - `rounds`: the revise-round ordinal, one count over every revise-stage round whatever its trigger or outcome. It is
     advanced in the status write that records the round's first run as `activeRun`.
+  - `roundNoticesThrough`: the last contiguous round whose PR notice was posted or adopted by its bot-authored marker.
+    Delivery failures retry with reconciler backoff, including after merge or close. Older controllers' missing notices
+    are recovered from retained runs; pending deliveries prevent TTL expiry. Each pass repairs at most one round.
   - `revisions` and `checkFixes`: the review-driven and check-fix subsets of those rounds, against their limits
   - `usage` (micro-USD as int64, plus tokens)
   - `tracking{statusCommentID, statusDigest}`

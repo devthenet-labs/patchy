@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -45,14 +44,17 @@ var errNoUsableFeedback = errors.New("no usable feedback was found after filteri
 // merge or close. A failed round returns to InReview; it never fails the
 // Intent or silently pushes the failed agent's output.
 func (p *pass) revising(ctx context.Context) (bool, error) {
+	if changed, err := p.review(ctx); changed || err != nil {
+		return changed, err
+	}
+	if ok, err := p.rateOKForPullRequests(ctx); err != nil || !ok {
+		return false, err
+	}
 	if run := p.round(v1alpha1.IntentStageRevise, p.in.Status.Rounds).latest(); run != nil &&
 		run.Spec.Trigger == v1alpha1.IntentRunTriggerCommand {
 		if err := p.ackPRCommand(ctx, run); err != nil {
 			return false, err
 		}
-	}
-	if changed, err := p.review(ctx); changed || err != nil {
-		return changed, err
 	}
 	rs := p.round(v1alpha1.IntentStageRevise, p.in.Status.Rounds)
 	run := rs.latest()
@@ -152,22 +154,12 @@ func (p *pass) finishPRRound(ctx context.Context, run *v1alpha1.IntentRun) error
 	}
 	pr := p.in.Status.PullRequests[0]
 	marker := fmt.Sprintf("<!-- patchy:intent-pr-round:%s:%d -->", p.in.Name, run.Spec.Round)
-	since := run.CreationTimestamp.Add(-time.Second)
-	comments, err := p.r.GitHub.ListIssueComments(ctx, pr.Repository, pr.Number, since)
-	if ghclient.IsRefused(err) {
-		p.r.log().LogAttrs(ctx, slog.LevelWarn, "GitHub refused to list intent PR round notices",
-			slog.String("intent", p.in.Name), slog.Any("error", err))
-		return nil
-	}
+	since := run.CreationTimestamp.Add(-clockSkew)
+	comments, err := p.r.GitHub.ListPullRequestComments(ctx, pr.Repository, pr.Number, since)
 	if err != nil {
 		return err
 	}
 	bot, err := p.r.GitHub.BotLogin(ctx, pr.Repository)
-	if ghclient.IsRefused(err) {
-		p.r.log().LogAttrs(ctx, slog.LevelWarn, "GitHub refused to identify intent PR bot",
-			slog.String("intent", p.in.Name), slog.Any("error", err))
-		return nil
-	}
 	if err != nil {
 		return err
 	}
@@ -176,32 +168,29 @@ func (p *pass) finishPRRound(ctx context.Context, run *v1alpha1.IntentRun) error
 			return nil
 		}
 	}
-	body := marker + "\nRevision round finished without a push. The pull request remains open for review."
+	tail := ""
+	if pr.State == prOpen && !terminal(p.in.Status.Phase) {
+		tail = " The pull request remains open for review."
+	}
+	body := marker + "\nRevision round ended without a recorded completed push." + tail
 	if run.Status.Outcome == OutcomeNoUsableFeedback {
-		body = marker + "\nRevision round stopped: no usable feedback was found after filtering. " +
-			"The pull request remains open for review."
+		body = marker + "\nRevision round stopped: no usable feedback was found after filtering." + tail
 		if run.Status.JobRef == nil {
 			body = marker + "\nRevision round stopped: no usable feedback was found after filtering. " +
-				"No agent was launched for this round; the pull request remains open for review."
+				"No agent was launched for this round." + tail
 		}
 	}
 	if run.Status.Phase == v1alpha1.RunComplete {
-		if err := p.r.GitHub.RequestReviewers(ctx, pr.Repository, pr.Number,
-			p.proj.Spec.Approvers.Logins); err != nil {
-			if !ghclient.IsRefused(err) {
+		body = marker + "\nRevision round pushed commit `" + run.Status.PushedCommit + "`."
+		if pr.State == prOpen && !terminal(p.in.Status.Phase) {
+			if err := p.r.GitHub.RequestReviewers(ctx, pr.Repository, pr.Number,
+				p.proj.Spec.Approvers.Logins); err != nil {
 				return fmt.Errorf("re-request PR reviewers: %w", err)
 			}
-			p.r.log().LogAttrs(ctx, slog.LevelWarn, "GitHub refused to re-request intent PR reviewers",
-				slog.String("intent", p.in.Name), slog.Any("error", err))
+			body += " Review is requested again."
 		}
-		body = marker + "\nRevision round pushed commit `" + run.Status.PushedCommit + "`. Review is requested again."
 	}
-	_, err = p.r.GitHub.CreateIssueComment(ctx, pr.Repository, pr.Number, body)
-	if ghclient.IsRefused(err) {
-		p.r.log().LogAttrs(ctx, slog.LevelWarn, "GitHub refused the intent PR round notice",
-			slog.String("intent", p.in.Name), slog.Any("error", err))
-		return nil
-	}
+	_, err = p.r.GitHub.CreatePullRequestComment(ctx, pr.Repository, pr.Number, body)
 	return err
 }
 
@@ -507,7 +496,7 @@ func (p *pass) inlineFeedback(ctx context.Context, pr v1alpha1.IntentPullRequest
 
 func (p *pass) prCommentFeedback(ctx context.Context, run *v1alpha1.IntentRun, pr v1alpha1.IntentPullRequest,
 	cutoff, upper time.Time) ([]reviseFeedbackItem, error) {
-	comments, err := p.r.GitHub.ListIssueComments(ctx, pr.Repository, pr.Number, cutoff)
+	comments, err := p.r.GitHub.ListPullRequestComments(ctx, pr.Repository, pr.Number, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -544,7 +533,7 @@ func (p *pass) prCommentFeedback(ctx context.Context, run *v1alpha1.IntentRun, p
 		if !approved {
 			continue
 		}
-		wasEdited, err := p.r.GitHub.CommentEdited(ctx, pr.Repository, c.NodeID)
+		wasEdited, err := p.r.GitHub.PullRequestCommentEdited(ctx, pr.Repository, c.NodeID)
 		if errors.Is(err, ghclient.ErrNodeNotFound) {
 			continue
 		}
@@ -564,7 +553,7 @@ func (p *pass) verifyPRCommand(ctx context.Context, run *v1alpha1.IntentRun,
 	if run.Spec.Inputs.CommandID == 0 {
 		return nil, nil
 	}
-	c, err := p.r.GitHub.GetIssueComment(ctx, pr.Repository, run.Spec.Inputs.CommandID)
+	c, err := p.r.GitHub.GetPullRequestComment(ctx, pr.Repository, run.Spec.Inputs.CommandID)
 	if ghclient.IsNotFound(err) {
 		return nil, fmt.Errorf("%w: PR command %d vanished", errInputUnavailable, run.Spec.Inputs.CommandID)
 	}
@@ -581,7 +570,7 @@ func (p *pass) verifyPRCommand(ctx context.Context, run *v1alpha1.IntentRun,
 	if !approved {
 		return nil, fmt.Errorf("%w: PR command %d is no longer from an approver", errInputUnavailable, c.ID)
 	}
-	wasEdited, err := p.r.GitHub.CommentEdited(ctx, pr.Repository, c.NodeID)
+	wasEdited, err := p.r.GitHub.PullRequestCommentEdited(ctx, pr.Repository, c.NodeID)
 	if errors.Is(err, ghclient.ErrNodeNotFound) || wasEdited {
 		return nil, fmt.Errorf("%w: PR command %d was edited", errInputUnavailable, c.ID)
 	}
@@ -603,7 +592,7 @@ var prCommandParser = command.Parser{Surface: command.IntentPR}
 // access to the application repository.
 func (p *pass) commandRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (bool, error) {
 	cutoff := p.reviewCutoff()
-	comments, err := p.r.GitHub.ListIssueComments(ctx, pr.Repository, pr.Number, cutoff.Add(-time.Second))
+	comments, err := p.r.GitHub.ListPullRequestComments(ctx, pr.Repository, pr.Number, cutoff.Add(-time.Second))
 	if err != nil {
 		return false, err
 	}
@@ -663,7 +652,7 @@ func (p *pass) eligiblePRCommand(ctx context.Context, pr *v1alpha1.IntentPullReq
 	if err != nil || !approved {
 		return false, err
 	}
-	wasEdited, err := p.r.GitHub.CommentEdited(ctx, pr.Repository, c.NodeID)
+	wasEdited, err := p.r.GitHub.PullRequestCommentEdited(ctx, pr.Repository, c.NodeID)
 	if err != nil || wasEdited {
 		return false, err
 	}
@@ -687,28 +676,19 @@ func (p *pass) ackPRCommand(ctx context.Context, run *v1alpha1.IntentRun) error 
 		return nil
 	}
 	pr := p.in.Status.PullRequests[0]
-	c, err := p.r.GitHub.GetIssueComment(ctx, pr.Repository, id)
+	c, err := p.r.GitHub.GetPullRequestComment(ctx, pr.Repository, id)
 	if ghclient.IsNotFound(err) {
 		return nil // the immutable run input will refuse the vanished command
-	}
-	if ghclient.IsRefused(err) {
-		return nil // the input step will refuse this command if it cannot verify it
 	}
 	if err != nil {
 		return err
 	}
 	marker := fmt.Sprintf("<!-- patchy:intent-pr-command:%s:%d -->", p.in.Name, id)
-	comments, err := p.r.GitHub.ListIssueComments(ctx, pr.Repository, pr.Number, c.CreatedAt.Add(-time.Second))
-	if ghclient.IsRefused(err) {
-		return nil
-	}
+	comments, err := p.r.GitHub.ListPullRequestComments(ctx, pr.Repository, pr.Number, c.CreatedAt.Add(-time.Second))
 	if err != nil {
 		return err
 	}
 	bot, err := p.r.GitHub.BotLogin(ctx, pr.Repository)
-	if ghclient.IsRefused(err) {
-		return nil
-	}
 	if err != nil {
 		return err
 	}
@@ -717,21 +697,11 @@ func (p *pass) ackPRCommand(ctx context.Context, run *v1alpha1.IntentRun) error 
 			return nil
 		}
 	}
-	if err := p.r.GitHub.React(ctx, pr.Repository, id); err != nil {
-		if ghclient.IsRefused(err) {
-			p.r.log().LogAttrs(ctx, slog.LevelWarn, "GitHub refused to acknowledge intent PR command",
-				slog.String("intent", p.in.Name), slog.Any("error", err))
-			return nil
-		}
+	if err := p.r.GitHub.ReactPullRequestComment(ctx, pr.Repository, id); err != nil {
 		return err
 	}
-	_, err = p.r.GitHub.CreateIssueComment(ctx, pr.Repository, pr.Number,
+	_, err = p.r.GitHub.CreatePullRequestComment(ctx, pr.Repository, pr.Number,
 		marker+"\nRevision round started. This command and authorised PR feedback will be treated as data, not instructions.")
-	if ghclient.IsRefused(err) {
-		p.r.log().LogAttrs(ctx, slog.LevelWarn, "GitHub refused intent PR command reply",
-			slog.String("intent", p.in.Name), slog.Any("error", err))
-		return nil
-	}
 	return err
 }
 

@@ -1,5 +1,21 @@
 # Handoff: intent-driven development in patchy
 
+## Latest checkpoint — 2026-09-26
+
+This checkpoint supersedes the historical implementation status below; the permissions, gates and security invariants
+still apply. Slice 1a and slice 1b are merged. PRs #61 and #63 repaired GraphQL-only edit detection, empty feedback and
+the expired legacy Job. Both releases passed fresh-Finding gates. Live is 0.12.5, patchy revision 31 and config revision
+18, with intents disabled after rolling back enablement revision 30 to revision 29.
+
+The remaining live fault is PR-comment token scoping: target-2 settled back to InReview with zero revisions charged, but
+its round-1 notice on patchy-target PR #46 received 403 and was discarded. The existing review is consumed and must not
+replay. The owner has authorised a permission audit, scope correction, durable notice recovery, full gates/review,
+merge/release/fresh-Finding gate, then re-enablement and exactly-one-notice verification before a new human review.
+
+See [the permission audit](docs/design/intent-github-permissions.md) for non-writing live probe results. The fix adds
+`roundNoticesThrough` to Intent status; it recovers old missing notices without launching work or charging revisions.
+Keep intents disabled until that fix is released and gated. Before enabling, record both Helm rollback revisions.
+
 Status as of 2026-09-24. Written so another coding agent (for example Codex) can continue without the previous session's
 context. Read this whole file, then `AGENTS.md` (orientation), then `docs/design/intent-driven-development.md` (the
 accepted design — the source of truth for what to build).

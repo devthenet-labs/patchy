@@ -40,6 +40,9 @@ func (r *TTLReconciler) wait(in *v1alpha1.Intent) (wait time.Duration, ok bool) 
 	if r.TTL <= 0 || !in.DeletionTimestamp.IsZero() || !terminal(in.Status.Phase) || in.Status.CompletedAt == nil {
 		return 0, false
 	}
+	if in.Status.RoundNoticesThrough < in.Status.Rounds {
+		return 0, false // delivery's status write requeues the TTL reconciler
+	}
 	return in.Status.CompletedAt.Add(r.TTL).Sub(r.now()), true
 }
 

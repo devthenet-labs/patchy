@@ -189,6 +189,14 @@ func (p *pass) run(ctx context.Context) (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 	if terminal(p.in.Status.Phase) {
+		if p.in.Status.RoundNoticesThrough < p.in.Status.Rounds {
+			if ok, err := p.rateOKForPullRequests(ctx); err != nil || !ok {
+				return ctrl.Result{RequeueAfter: p.set.PRPollInterval}, err
+			}
+			if changed, err := p.syncPRRoundNotices(ctx); changed || err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		if p.r.Nudger.take(p.in.Name) {
 			stop, err := p.handOff(ctx)
 			if err != nil {

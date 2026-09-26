@@ -64,6 +64,15 @@ type GitHub interface {
 	FindPullRequest(ctx context.Context, repoURL, head, base string) (*ghclient.PR, error)
 	CreatePullRequest(ctx context.Context, repoURL string, req ghclient.PRRequest) (*ghclient.PR, error)
 	GetPullRequest(ctx context.Context, repoURL string, number int64) (*ghclient.PullRequest, error)
+	// PR conversation comments use the issues endpoints, but the permission
+	// belongs to the resource: pull_requests, never issues. Keep this explicit
+	// even when intent and application repositories are the same repository.
+	ListPullRequestComments(ctx context.Context, repoURL string, number int64, since time.Time) (
+		[]*ghclient.Comment, error)
+	GetPullRequestComment(ctx context.Context, repoURL string, id int64) (*ghclient.Comment, error)
+	PullRequestCommentEdited(ctx context.Context, repoURL, nodeID string) (bool, error)
+	CreatePullRequestComment(ctx context.Context, repoURL string, number int64, body string) (*ghclient.Comment, error)
+	ReactPullRequestComment(ctx context.Context, repoURL string, commentID int64) error
 	ListPullRequestReviews(ctx context.Context, repoURL string, number int64) ([]ghclient.Review, error)
 	ListPullRequestReviewComments(ctx context.Context, repoURL string, number int64) ([]ghclient.ReviewComment, error)
 	ReviewEdited(ctx context.Context, repoURL, nodeID string) (bool, error)

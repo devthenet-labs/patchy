@@ -405,9 +405,10 @@ func fullIntentStatus() patchyv1.IntentStatus {
 			URL: "https://github.com/acme/shop/pull/7", NodeID: "PR_kwDOAbCdEf", HeadSHA: schemaSHA,
 			State: "merged", MergedAt: schemaNow.DeepCopy(), MergeCommitSHA: schemaSHA,
 		}},
-		Rounds:     3,
-		Revisions:  1,
-		CheckFixes: 1,
+		Rounds:              3,
+		RoundNoticesThrough: 2,
+		Revisions:           1,
+		CheckFixes:          1,
 		Usage: patchyv1.IntentUsage{
 			CostMicroUSD: 1234567, InputTokens: 10, OutputTokens: 20, CacheReadTokens: 30, CacheCreationTokens: 40,
 		},
@@ -584,6 +585,10 @@ func testIntentSchema(ctx context.Context, t *testing.T, c client.Client) {
 		// Rounds and revisions name runs, so they stay inside the name budget.
 		{"rounds at the bound", func(s *patchyv1.IntentStatus) { s.Rounds = patchyv1.MaxIntentRound }, false},
 		{"rounds past the bound", func(s *patchyv1.IntentStatus) { s.Rounds = patchyv1.MaxIntentRound + 1 }, true},
+		{"negative notice cursor", func(s *patchyv1.IntentStatus) { s.RoundNoticesThrough = -1 }, true},
+		{"notice cursor past the bound", func(s *patchyv1.IntentStatus) {
+			s.RoundNoticesThrough = patchyv1.MaxIntentRound + 1
+		}, true},
 		{"an input revision past the bound", func(s *patchyv1.IntentStatus) {
 			s.Input.Revision = patchyv1.MaxIntentRound + 1
 		}, true},

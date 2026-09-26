@@ -507,6 +507,7 @@ func TestScopedTokenEnforcement(t *testing.T) {
 	issuesRead := scopedClient(t, srv, app, intents, ghclient.TokenPerms{Issues: ghclient.PermRead})
 	contentsWrite := scopedClient(t, srv, app, target, ghclient.TokenPerms{Contents: ghclient.PermWrite})
 	pullsWrite := scopedClient(t, srv, app, target, ghclient.TokenPerms{PullRequests: ghclient.PermWrite})
+	targetIssues := scopedClient(t, srv, app, target, ghclient.TokenPerms{Issues: ghclient.PermWrite})
 
 	commit := func(c *ghclient.Client, repo ghclient.Repo) error {
 		_, err := c.CreateCommit(ctx, repo, ghclient.CommitRequest{
@@ -561,6 +562,14 @@ func TestScopedTokenEnforcement(t *testing.T) {
 		{name: "contents write opens a PR", wantForbidden: true, call: func() error { return openPR(contentsWrite) }},
 		{name: "pull requests write opens a PR", call: func() error { return openPR(pullsWrite) }},
 		{name: "pull requests write comments on a PR", call: func() error { return comment(pullsWrite, target, pr.Number) }},
+		{name: "issues write cannot comment on a PR", wantForbidden: true,
+			call: func() error { return comment(targetIssues, target, pr.Number) }},
+		{name: "issues write cannot react on a PR comment", wantForbidden: true, call: func() error {
+			return targetIssues.CreateIssueCommentReaction(ctx, target, prComment, ghclient.ReactionEyes)
+		}},
+		{name: "issues write cannot edit a PR comment", wantForbidden: true, call: func() error {
+			return targetIssues.EditComment(ctx, target, prComment, "forged")
+		}},
 		{name: "pull requests write reacts on a PR comment", call: func() error {
 			return pullsWrite.CreateIssueCommentReaction(ctx, target, prComment, ghclient.ReactionEyes)
 		}},

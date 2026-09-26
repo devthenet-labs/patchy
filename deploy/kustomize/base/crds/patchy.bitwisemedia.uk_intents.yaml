@@ -663,6 +663,16 @@ spec:
                 maximum: 999
                 minimum: 0
                 type: integer
+              roundNoticesThrough:
+                description: |-
+                  RoundNoticesThrough is the last contiguous revise round whose PR
+                  notice was posted or adopted by marker. Zero also recovers notices
+                  lost by older controllers. Only intent-controller writes this cursor;
+                  pending deliveries survive phase changes and prevent TTL expiry.
+                format: int32
+                maximum: 999
+                minimum: 0
+                type: integer
               rounds:
                 description: |-
                   Rounds is the revise-round ordinal: how many revise-stage rounds have

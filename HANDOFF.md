@@ -1,6 +1,47 @@
 # Handoff: intent-driven development in patchy
 
-## Latest checkpoint — 2026-09-26
+## Latest checkpoint — 2026-09-27
+
+The `__Host-` cookie prerequisite (PR #67) is merged and released by PR #68 as **0.12.7**. Live: patchy revision **34**,
+patchy-config revision **20**, intents enabled. Pre-upgrade rollback points were **33 / 19** (0.12.6). All eight pods
+are Ready, target is Ready, and status.patchy.devthe.net returns HTTP 200. OIDC is not configured on this cluster, so no
+live sign-in was claimed. Known advisory broker-startup warnings are accepted; no errors, panics, CrashLoops or failed
+reconciles were observed.
+
+The fresh-Finding gate passed without manual correction: alert 31, `finding-514becf18f-6`, issue #55, repair PR #56,
+merge `9f2f08c4fff7e2fd29fb261f0a8d212aedae398a`. Go/CodeQL passed; the Finding reached Remediated with that merge SHA
+and no ReviewClosePending; the issue closed as completed with the remediated label; each marker occurred once; main's
+CodeQL re-analysis fixed the alert without a duplicate Finding. Existing Finding/Intent phases were unchanged.
+
+The default `alb` namespace prerequisite is now applied (terraform-devthenet PR #17, merge `e784fd3`): its selector is
+exactly `spec.namespaceSelector.matchLabels: {kubernetes.io/metadata.name: patchy}`, the automatic namespace label.
+Applied 2026-09-27 16:58:05 UTC after the owner's specific approval. Both ingresses reconciled successfully; ALB ARN,
+DNS and creation time stayed unchanged, targets remained healthy, and Route53 aliases were unchanged. A fresh probe on
+completed target issue #55 returned 202 in App Recent Deliveries; all 36 deliveries in the checked apply window were
+2xx. Status root and rollup API returned 200; visual verification was unavailable (no connected browser).
+
+The post-ALB fresh-Finding gate passed without manual correction: alert 32, `finding-514becf18f-7`, issue #57,
+[repair PR #58](https://github.com/devthenet-labs/patchy-target/pull/58), merge
+`fcdeb7d60252707606ee3e72d49bf5538b5c067d`. Go/CodeQL passed, Remediated with mergeCommitSHA, no ReviewClosePending,
+closed/completed/remediated issue, unique markers, and no duplicate after main's re-analysis fixed the alert. Existing
+Finding/Intent phases stayed unchanged. The 17:07:41 UTC sweep scanned 121 deliveries with no error; zero failures in
+the apply window meant no redeliveries were needed (failure recovery was not exercised).
+
+Rollback: restore `k8s/auto-mode-alb.yaml` from terraform commit `952b675439c5a3e85eec65f160caa1ac48c90037` and apply
+that manifest. If the ALB is ever replaced, the owner also requires a DNS repair: `patchy.tf` defines
+`aws_route53_record.patchy_webhook` and `aws_route53_record.patchy_status`, both using `data.aws_lb.devthenet_dev`.
+Refresh the lookup and prepare a plan targeting the replacement ALB's DNS/canonical zone, **check in before any
+Terraform apply**, then verify endpoint recovery and that the normal redelivery sweep re-requests failed-window
+deliveries. Do not force a full replay/reset. No replacement occurred in this apply; no Terraform/DNS repair was used.
+
+Evidence is in `/tmp/patchy-alb-gate.cbeLEb/rollout.md`. No preview namespaces, preview ALB or demo resources exist yet.
+The approved preview scope, individual infrastructure check-ins and safeguards below still apply.
+
+The owner says to **leave Actions settings and release credentials unchanged**. Release-please currently uses
+GITHUB_TOKEN; GitHub makes its PR-triggered CI runs approval-required. This is not caused by the external-fork approval
+setting. The standing permission for these run approvals is recorded below; it does not waive any merge gate.
+
+## Previous checkpoint — 2026-09-26
 
 Slice 1a/1b code is merged and live on **0.12.6**, patchy revision **33**, patchy-config revision **19**, intents
 enabled. PR #65 fixed PR-comment permissions and durable notices; the missing round-1 notice on target PR #46 was
@@ -60,6 +101,10 @@ accepted design — the source of truth for what to build).
   - branching and pushing;
   - opening PRs and squash-merging them once CI is green and review findings are resolved;
   - merging release-please PRs;
+  - approving a release-please PR's CI run without asking, **only after checking the current PR diff contains nothing
+    except release-please version stamps and CHANGELOG changes**. Verify the exact head being approved; re-check if it
+    changes. If any other change is present, stop and ask rather than approving. Leave Actions settings and release
+    credentials unchanged; CI must still pass before merge;
   - `helm upgrade` and `helm rollback` of the two releases on `devthenet-dev`;
   - pushing deliberate test vulnerabilities to `devthenet-labs/patchy-target`, and merging patchy's own fix PRs there
     during a gate;

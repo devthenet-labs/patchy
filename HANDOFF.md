@@ -13,9 +13,28 @@ merge `9f2f08c4fff7e2fd29fb261f0a8d212aedae398a`. Go/CodeQL passed; the Finding 
 and no ReviewClosePending; the issue closed as completed with the remediated label; each marker occurred once; main's
 CodeQL re-analysis fixed the alert without a duplicate Finding. Existing Finding/Intent phases were unchanged.
 
-Next is the default `alb` IngressClassParams namespace restriction. **Do not apply until the owner approves the
-specific check-in** with the exact manifest diff, before/after ALB identity and endpoint checks, and rollback.
-No preview infrastructure has been applied. The approved preview scope and safeguards below still apply.
+The default `alb` namespace prerequisite is now applied (terraform-devthenet PR #17, merge `e784fd3`): its selector
+is exactly `spec.namespaceSelector.matchLabels: {kubernetes.io/metadata.name: patchy}`, the automatic namespace label.
+Applied 2026-09-27 16:58:05 UTC after the owner's specific approval. Both ingresses reconciled successfully; ALB ARN,
+DNS and creation time stayed unchanged, targets remained healthy, and Route53 aliases were unchanged. A fresh probe
+on completed target issue #55 returned 202 in App Recent Deliveries; all 36 deliveries in the checked apply window
+were 2xx. Status root and rollup API returned 200; visual verification was unavailable (no connected browser).
+
+The post-ALB fresh-Finding gate passed without manual correction: alert 32, `finding-514becf18f-7`, issue #57, repair
+PR #58, merge `fcdeb7d60252707606ee3e72d49bf5538b5c067d`. Go/CodeQL passed, Remediated with mergeCommitSHA, no
+ReviewClosePending, closed/completed/remediated issue, unique markers, and no duplicate after main's re-analysis
+fixed the alert. Existing Finding/Intent phases stayed unchanged. The 17:07:41 UTC sweep scanned 121 deliveries with
+no error; zero failures in the apply window meant no redeliveries were needed (failure recovery was not exercised).
+
+Rollback: restore `k8s/auto-mode-alb.yaml` from terraform commit `952b675439c5a3e85eec65f160caa1ac48c90037` and apply
+that manifest. If the ALB is ever replaced, the owner also requires a DNS repair: `patchy.tf` defines
+`aws_route53_record.patchy_webhook` and `aws_route53_record.patchy_status`, both using `data.aws_lb.devthenet_dev`.
+Refresh the lookup and prepare a plan targeting the replacement ALB's DNS/canonical zone, **check in before any
+Terraform apply**, then verify endpoint recovery and that the normal redelivery sweep re-requests failed-window
+deliveries. Do not force a full replay/reset. No replacement occurred in this apply; no Terraform/DNS repair was used.
+
+Evidence is in `/tmp/patchy-alb-gate.cbeLEb/rollout.md`. No preview namespaces, preview ALB or demo resources exist yet.
+The approved preview scope, individual infrastructure check-ins and safeguards below still apply.
 
 The owner says to **leave Actions settings and release credentials unchanged**. Release-please currently uses
 GITHUB_TOKEN; GitHub makes its PR-triggered CI runs approval-required. This is not caused by the external-fork approval

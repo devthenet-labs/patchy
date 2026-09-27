@@ -1,6 +1,27 @@
 # Handoff: intent-driven development in patchy
 
-## Latest checkpoint — 2026-09-26
+## Latest checkpoint — 2026-09-27
+
+The `__Host-` cookie prerequisite (PR #67) is merged and released by PR #68 as **0.12.7**. Live: patchy revision
+**34**, patchy-config revision **20**, intents enabled. Pre-upgrade rollback points were **33 / 19** (0.12.6).
+All eight pods are Ready, target is Ready, and status.patchy.devthe.net returns HTTP 200. OIDC is not configured on
+this cluster, so no live sign-in was claimed. Known advisory broker-startup warnings are accepted; no errors, panics,
+CrashLoops or failed reconciles were observed.
+
+The fresh-Finding gate passed without manual correction: alert 31, `finding-514becf18f-6`, issue #55, repair PR #56,
+merge `9f2f08c4fff7e2fd29fb261f0a8d212aedae398a`. Go/CodeQL passed; the Finding reached Remediated with that merge SHA
+and no ReviewClosePending; the issue closed as completed with the remediated label; each marker occurred once; main's
+CodeQL re-analysis fixed the alert without a duplicate Finding. Existing Finding/Intent phases were unchanged.
+
+Next is the default `alb` IngressClassParams namespace restriction. **Do not apply until the owner approves the
+specific check-in** with the exact manifest diff, before/after ALB identity and endpoint checks, and rollback.
+No preview infrastructure has been applied. The approved preview scope and safeguards below still apply.
+
+The owner says to **leave Actions settings and release credentials unchanged**. Release-please currently uses
+GITHUB_TOKEN; GitHub makes its PR-triggered CI runs approval-required. This is not caused by the external-fork approval
+setting. The standing permission for these run approvals is recorded below; it does not waive any merge gate.
+
+## Previous checkpoint — 2026-09-26
 
 Slice 1a/1b code is merged and live on **0.12.6**, patchy revision **33**, patchy-config revision **19**, intents
 enabled. PR #65 fixed PR-comment permissions and durable notices; the missing round-1 notice on target PR #46 was
@@ -60,6 +81,10 @@ accepted design — the source of truth for what to build).
   - branching and pushing;
   - opening PRs and squash-merging them once CI is green and review findings are resolved;
   - merging release-please PRs;
+  - approving a release-please PR's CI run without asking, **only after checking the current PR diff contains nothing
+    except release-please version stamps and CHANGELOG changes**. Verify the exact head being approved; re-check if it
+    changes. If any other change is present, stop and ask rather than approving. Leave Actions settings and release
+    credentials unchanged; CI must still pass before merge;
   - `helm upgrade` and `helm rollback` of the two releases on `devthenet-dev`;
   - pushing deliberate test vulnerabilities to `devthenet-labs/patchy-target`, and merging patchy's own fix PRs there
     during a gate;

@@ -417,6 +417,10 @@ already-pushed commits (or nothing) and can be removed once #51 is merged.
 
 ## Known follow-ups (not started)
 
+- Preview ECR retention currently expires only untagged images. Before sustained preview use, add a Terraform lifecycle
+  rule that expires tagged `sha-*` runtime images in `patchy/previews/patchy-preview-demo` after a bounded age (for
+  example, 30 days); apply the pattern to future preview projects. Keep the `patchy/app-envs` toolchain repository out
+  of that rule, and review the Terraform plan and rollback with the owner before applying it.
 - In the next release, have intent-controller skip the advisory egress-broker startup probe or log its result at info:
   its NetworkPolicy deliberately blocks controller-to-broker traffic, while intent agent pods have their own broker
   allowance. The current `runnercfg.Resolve` probe times out and warns on every intent-controller start, although it

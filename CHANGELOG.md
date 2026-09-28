@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.8](https://github.com/devthenet-labs/patchy/compare/v0.12.7...v0.12.8) (2026-09-28)
+
+
+### Features
+
+* **helm:** add fail-closed preview slot foundation ([#72](https://github.com/devthenet-labs/patchy/issues/72)) ([7b21512](https://github.com/devthenet-labs/patchy/commit/7b215125ff834ac81b148912fbd0cdc7de5cf6c0))
+
 ## [0.12.7](https://github.com/devthenet-labs/patchy/compare/v0.12.6...v0.12.7) (2026-09-26)
 
 

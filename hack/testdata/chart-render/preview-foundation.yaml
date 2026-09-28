@@ -1,0 +1,15 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+preview:
+    enabled: true
+    slotCount: 2
+    imageRegistry: 377946145366.dkr.ecr.us-east-1.amazonaws.com
+    dnsCIDR: 172.20.0.10/32
+    albSubnetCIDRs:
+        - 10.40.128.0/24
+        - 10.40.129.0/24
+    inboundCIDRs:
+        - 75.70.97.14/32
+    certificateARN: arn:aws:acm:us-east-1:377946145366:certificate/a885812f-7587-4150-9196-5b160567cf54
+    hostSuffix: preview.patchy.devthe.net
+    albName: devthenet-dev-preview

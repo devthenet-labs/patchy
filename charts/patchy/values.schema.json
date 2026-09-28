@@ -283,6 +283,22 @@
         }
     },
     "properties": {
+        "preview": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["enabled", "slotCount", "imageRegistry", "dnsCIDR", "albSubnetCIDRs", "inboundCIDRs", "certificateARN", "hostSuffix", "albName"],
+            "properties": {
+                "enabled": {"type": "boolean"},
+                "slotCount": {"type": "integer", "minimum": 0, "maximum": 4},
+                "imageRegistry": {"type": "string", "pattern": "^$|^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com$"},
+                "dnsCIDR": {"type": "string", "pattern": "^$|^[0-9]{1,3}(\\.[0-9]{1,3}){3}/32$"},
+                "albSubnetCIDRs": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}/(2[0-9]|3[0-2])$"}},
+                "inboundCIDRs": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}/32$"}},
+                "certificateARN": {"type": "string", "pattern": "^$|^arn:aws:acm:[a-z0-9-]+:[0-9]{12}:certificate/[0-9a-f-]+$"},
+                "hostSuffix": {"type": "string", "pattern": "^$|^[a-z0-9-]+(\\.[a-z0-9-]+)+$"},
+                "albName": {"type": "string", "pattern": "^$|^[a-z][a-z0-9-]{0,31}$"}
+            }
+        },
         "global": {
             "type": "object"
         },

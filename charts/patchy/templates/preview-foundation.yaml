@@ -1,0 +1,148 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Empty preview slots and their non-optional guardrails. Every resource in this
+# file is kept on uninstall/rollback. Removing a namespace while it has a
+# workload would delete that workload; keeping only the namespace would leave
+# it unguarded. The operator must drain the slot and clean up explicitly.
+{{- if .Values.preview.enabled }}
+{{- $p := .Values.preview }}
+{{- if or (lt (int $p.slotCount) 1) (gt (int $p.slotCount) 4) }}{{ fail "preview.slotCount must be between 1 and 4" }}{{ end }}
+{{- if not $p.imageRegistry }}{{ fail "preview.imageRegistry is required when preview.enabled=true" }}{{ end }}
+{{- if not $p.dnsCIDR }}{{ fail "preview.dnsCIDR is required when preview.enabled=true" }}{{ end }}
+{{- if not $p.albSubnetCIDRs }}{{ fail "preview.albSubnetCIDRs is required when preview.enabled=true" }}{{ end }}
+{{- if not $p.inboundCIDRs }}{{ fail "preview.inboundCIDRs is required when preview.enabled=true" }}{{ end }}
+{{- if not $p.certificateARN }}{{ fail "preview.certificateARN is required when preview.enabled=true" }}{{ end }}
+{{- if not $p.hostSuffix }}{{ fail "preview.hostSuffix is required when preview.enabled=true" }}{{ end }}
+{{- if not $p.albName }}{{ fail "preview.albName is required when preview.enabled=true" }}{{ end }}
+{{- $slots := list }}
+{{- range $i := until (int $p.slotCount) }}{{ $slots = append $slots (printf "patchy-preview-%d" $i) }}{{ end }}
+{{- range $slot := $slots }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+    name: {{ $slot }}
+    annotations:
+        helm.sh/resource-policy: keep
+    labels:
+        kubernetes.io/metadata.name: {{ $slot }}
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/warn: restricted
+        app.kubernetes.io/part-of: patchy-preview
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: preview-isolation
+    namespace: {{ $slot }}
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    podSelector: {}
+    policyTypes: [Ingress, Egress]
+    ingress:
+        - from:
+            {{- range $cidr := $p.albSubnetCIDRs }}
+            - ipBlock:
+                  cidr: {{ $cidr }}
+            {{- end }}
+          ports:
+            - protocol: TCP
+              port: http
+    egress:
+        - to:
+            - ipBlock:
+                  cidr: {{ $p.dnsCIDR }}
+          ports:
+            - protocol: UDP
+              port: 53
+            - protocol: TCP
+              port: 53
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+    name: preview-quota
+    namespace: {{ $slot }}
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    hard:
+        pods: "6"
+        requests.cpu: "1"
+        requests.memory: 1Gi
+        limits.cpu: "2"
+        limits.memory: 2Gi
+        services: "4"
+        services.loadbalancers: "0"
+        services.nodeports: "0"
+        count/ingresses.networking.k8s.io: "4"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+    name: preview-limits
+    namespace: {{ $slot }}
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    limits:
+        - type: Container
+          defaultRequest:
+              cpu: 25m
+              memory: 32Mi
+          default:
+              cpu: 250m
+              memory: 256Mi
+          max:
+              cpu: "1"
+              memory: 512Mi
+{{- end }}
+---
+apiVersion: eks.amazonaws.com/v1
+kind: IngressClassParams
+metadata:
+    name: alb-preview
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    scheme: internet-facing
+    loadBalancerName: {{ $p.albName }}
+    group:
+        name: {{ $p.albName }}
+    targetType: ip
+    sslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    certificateARNs:
+        - {{ $p.certificateARN }}
+    listeners:
+        - port: 443
+          protocol: HTTPS
+    inboundCIDRs:
+        {{- range $cidr := $p.inboundCIDRs }}
+        - {{ $cidr }}
+        {{- end }}
+    namespaceSelector:
+        matchExpressions:
+            - key: kubernetes.io/metadata.name
+              operator: In
+              values:
+                {{- range $slot := $slots }}
+                - {{ $slot }}
+                {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+    name: alb-preview
+    annotations:
+        helm.sh/resource-policy: keep
+        ingressclass.kubernetes.io/is-default-class: "false"
+spec:
+    controller: eks.amazonaws.com/alb
+    parameters:
+        apiGroup: eks.amazonaws.com
+        kind: IngressClassParams
+        name: alb-preview
+{{- end }}

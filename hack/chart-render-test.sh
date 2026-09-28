@@ -95,6 +95,7 @@ notes_has() {
 
 # ---- feature off: the default render carries none of it --------------------
 render default
+expect default 'select(.metadata.name == "alb-preview" or (.metadata.name | test("^patchy-preview-")) or (.metadata.namespace | test("^patchy-preview-"))) | .kind' ""
 for key in PATCHY_REPOSITORY_IMAGES PATCHY_REPOSITORY_IMAGE_REGISTRIES PATCHY_REPOSITORY_IMAGE_ON_REJECT \
   PATCHY_REPOSITORY_IMAGE_COSIGN_KEY_FILE PATCHY_AGENT_EPHEMERAL_STORAGE PATCHY_CHANGESET_MAX_ENTRIES DOCKER_CONFIG; do
   expect default "select(.kind == \"ConfigMap\") | .data.$key | select(. != null)" ""
@@ -112,6 +113,62 @@ for key in PATCHY_REQUESTS_PER_POD PATCHY_CONCURRENT_PER_POD PATCHY_CONCURRENCY_
 done
 render default-cilium --set agent.networkPolicy.mode=cilium
 expect default-cilium 'select(.metadata.name == "patchy-source-controller-cloud-credentials") | .kind' ""
+
+# ---- preview security foundation (no workloads or ALB until later) ---------
+render preview -f "$fixtures/preview-foundation.yaml"
+expect preview 'select(.kind == "Namespace" and (.metadata.name | test("^patchy-preview-"))) | .metadata.name' 'patchy-preview-0
+patchy-preview-1'
+expect preview 'select(.kind == "Namespace" and (.metadata.name | test("^patchy-preview-"))) | .metadata.labels."pod-security.kubernetes.io/enforce"' 'restricted
+restricted'
+for kind in Namespace NetworkPolicy ResourceQuota LimitRange ValidatingAdmissionPolicy ValidatingAdmissionPolicyBinding IngressClass IngressClassParams; do
+  expect preview "select(.kind == \"$kind\" and ((.metadata.name | test(\"preview\")) or (.metadata.namespace | test(\"preview\")))) | .metadata.annotations.\"helm.sh/resource-policy\" | select(. != \"keep\")" ""
+done
+expect preview 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-isolation") | .metadata.namespace' 'patchy-preview-0
+patchy-preview-1'
+expect preview 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-isolation") | .spec.policyTypes | join(",")' 'Ingress,Egress
+Ingress,Egress'
+expect preview 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-isolation") | .spec.podSelector | length' '0
+0'
+expect preview 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-isolation") | .spec.egress | length' '1
+1'
+expect preview 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-isolation") | .spec.egress[0].to | length' '1
+1'
+expect preview 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-isolation") | .spec.egress[0].ports | map(.protocol + "/" + (.port | tostring)) | join(",")' 'UDP/53,TCP/53
+UDP/53,TCP/53'
+expect preview 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-isolation") | .spec.egress[].to[].ipBlock.cidr' '172.20.0.10/32
+172.20.0.10/32'
+expect preview 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-isolation") | .spec.ingress[].from[].ipBlock.cidr' '10.40.128.0/24
+10.40.129.0/24
+10.40.128.0/24
+10.40.129.0/24'
+expect preview 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-isolation") | .spec.ingress[].ports[].port' 'http
+http'
+expect preview 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-isolation") | .spec.ingress | length' '1
+1'
+expect preview 'select(.kind == "IngressClass" and .metadata.name == "alb-preview") | .metadata.annotations."ingressclass.kubernetes.io/is-default-class"' 'false'
+expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.namespaceSelector.matchExpressions[0].values | join(",")' 'patchy-preview-0,patchy-preview-1'
+expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.inboundCIDRs | join(",")' '75.70.97.14/32'
+expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.certificateARNs | length' '1'
+expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.sslPolicy' 'ELBSecurityPolicy-TLS13-1-2-2021-06'
+expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.listeners[0].protocol + "/" + (.spec.listeners[0].port | tostring)' 'HTTPS/443'
+expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name | test("^patchy-preview-"))) | .spec.failurePolicy' 'Fail
+Fail
+Fail
+Fail'
+expect preview 'select(.kind == "ValidatingAdmissionPolicyBinding" and (.metadata.name | test("^patchy-preview-"))) | .spec.matchResources.namespaceSelector.matchLabels."kubernetes.io/metadata.name"' 'patchy-preview-0
+patchy-preview-1
+patchy-preview-0
+patchy-preview-1
+patchy-preview-0
+patchy-preview-1
+patchy-preview-0
+patchy-preview-1'
+render preview-one -f "$fixtures/preview-foundation.yaml" --set preview.slotCount=1
+expect preview-one 'select(.kind == "ValidatingAdmissionPolicyBinding" and .metadata.name == "patchy-preview-0-pods") | .spec.matchResources.namespaceSelector.matchLabels."kubernetes.io/metadata.name"' 'patchy-preview-0'
+expect preview 'select(.kind == "Deployment" and (.metadata.namespace | test("preview"))) | .metadata.name' ""
+expect_fail 'preview missing image registry' 'preview.imageRegistry' --set preview.enabled=true
+expect_fail 'preview zero slots' 'preview.slotCount' -f "$fixtures/preview-foundation.yaml" --set preview.slotCount=0
+expect_fail 'preview missing cert' 'preview.certificateARN' -f "$fixtures/preview-foundation.yaml" --set preview.certificateARN=
 
 # ---- feature on: keys on the right controllers ------------------------------
 render on -f "$fixtures/repository-images.yaml"

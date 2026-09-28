@@ -77,6 +77,50 @@ entry point — `webhook.ingress` (plain Ingress, works anywhere) or `webhook.ht
 **integration-controller**, which validates each delivery against the matching Integration's `webhookSecret`. See the
 [webhook exposure docs](../../docs/deployment/webhook.md) for details and per-platform (EKS, AKS, GKE) notes.
 
+## Preview security foundation (opt-in)
+
+`preview.enabled` defaults to `false`. Enabling it creates **empty** `patchy-preview-0` and `patchy-preview-1`
+namespaces (or 1–4 slots), their isolation NetworkPolicies, quotas, limits, and fail-closed admission policies, plus a
+non-default EKS Auto Mode `alb-preview` class. It does **not** create an Ingress, ALB, wildcard DNS record, preview
+workload, Project, or preview-controller. Supply the ECR registry host, node-local DNS `/32`, ALB public subnet CIDRs,
+tightly scoped operator `/32` inbound CIDRs, issued wildcard ACM certificate ARN, preview host suffix, and a distinct
+ALB name. The [chart-render fixture](../../hack/testdata/chart-render/preview-foundation.yaml) shows the shape; these
+are cluster-specific values, not defaults. The default `alb` class must already be limited to the patchy namespace
+before slots are enabled.
+
+The slot policy selects every pod. Inbound traffic can reach only a port named `http` from the configured ALB subnets;
+outbound traffic can reach only the configured DNS IP on UDP/TCP 53. There is no API, broker, patchy Service, metadata,
+Pod Identity, or internet exception. Admission bindings select only the automatic `kubernetes.io/metadata.name` labels
+for the exact slot names; ordinary workloads in other namespaces are unaffected. Slot Ingresses must use `alb-preview`,
+which is non-default and whose `IngressClassParams.namespaceSelector` excludes non-slot namespaces from the ALB
+controller (Kubernetes admission may still accept their Ingress object). Slot Pods/Deployments must use immutable
+full-SHA images beneath `<registry>/patchy/previews/`, the default ServiceAccount with token automount explicitly
+disabled, no init/ephemeral containers, and only `emptyDir` volumes. Services must remain ClusterIP. Ingress hosts are
+single-label subdomains of `preview.hostSuffix`; only a safe healthcheck-path annotation is allowed.
+
+Every slot namespace **and every chart-owned guardrail** carries `helm.sh/resource-policy: keep`. Helm uninstall or
+rollback to a revision without previews therefore orphans them rather than silently deleting an occupied slot or leaving
+its workloads without admission/network controls. Per-slot admission bindings remain when `slotCount` is reduced, so an
+old slot stays guarded until drained. The operator must not treat rollback as cleanup. Drain deliberately:
+
+1. Disable new preview scheduling and wait for or delete the Preview CRs after their finalizers complete. Before
+   removing the chart or namespace, inspect **each** slot with
+   `kubectl get pods,deployments,replicasets,statefulsets,daemonsets,jobs,cronjobs,services,ingresses -n patchy-preview-0`
+   (and `patchy-preview-1`, or every configured slot). Empty means no application objects, not merely no Ready pods.
+   Investigate and delete leftovers explicitly.
+2. Remove any preview Ingress/ALB and its DNS alias using the infrastructure rollback plan. Only after the slots are
+   empty, remove the kept namespace resources and their cluster-scoped `patchy-preview-*` admission policies/bindings
+   and `alb-preview` class/params intentionally. Retain the guards if any workload remains. Helm will no longer manage
+   kept resources after uninstall/rollback, so a later reinstall needs an explicit adoption/cleanup check.
+
+The render gate checks the exact DNS-only egress, ALB source ingress, exact namespace selectors, and keep annotations.
+The envtest gate applies the _rendered_ admission policies to a real API server and proves slot rejections plus an
+unaffected ordinary namespace. NetworkPolicies require a real dataplane test after rollout: run a disposable diagnostic
+pod using an approved immutable preview image in one slot, prove DNS succeeds, and prove TCP/HTTP to `169.254.169.254`,
+`169.254.170.23`, the Kubernetes API endpoint, every patchy Service (including the egress broker), and an external
+internet address fails. Repeat in the other slot. Do not claim this property from an envtest API server, which has no
+kubelet or networking dataplane.
+
 ## Agent isolation
 
 The agent Jobs run in their own namespace (`agent.namespace`, created by the chart with the `restricted` Pod Security

@@ -1,0 +1,157 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Fail-closed, exact-slot admission. No exempt user or controller: even patchy
+# must create only a Pod/Deployment/Service/Ingress fitting the slot contract.
+# Paired with the kept namespace/network/quota resources so rollback or
+# uninstall cannot leave a live workload in an unguarded slot.
+{{- if .Values.preview.enabled }}
+{{- $p := .Values.preview }}
+{{- $slots := list }}
+{{- range $i := until (int $p.slotCount) }}{{ $slots = append $slots (printf "patchy-preview-%d" $i) }}{{ end }}
+{{- $prefix := printf "%s/patchy/previews/" $p.imageRegistry }}
+{{- range $kind := list (dict "name" "pods" "resource" "pods" "pod" "object.spec") (dict "name" "deployments" "resource" "deployments" "pod" "object.spec.template.spec") }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-{{ $kind.name }}
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [{{ if eq $kind.name "pods" }}""{{ else }}apps{{ end }}]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [{{ $kind.resource }}{{ if eq $kind.name "pods" }}, pods/ephemeralcontainers{{ end }}]
+    variables:
+        - name: pod
+          expression: {{ $kind.pod | quote }}
+    validations:
+        - expression: >-
+              variables.pod.containers.all(c,
+                c.image.startsWith('{{ $prefix }}') &&
+                c.image.substring({{ len $prefix }}).matches('^[a-z0-9-]+:sha-[0-9a-f]{40}$'))
+          message: only immutable patchy preview ECR images are allowed
+        - expression: >-
+              has(variables.pod.automountServiceAccountToken) &&
+              variables.pod.automountServiceAccountToken == false &&
+              has(variables.pod.serviceAccountName) &&
+              variables.pod.serviceAccountName == 'default'
+          message: preview pods must explicitly disable API token mounting and use the default ServiceAccount
+        - expression: >-
+              (!has(variables.pod.initContainers) || size(variables.pod.initContainers) == 0) &&
+              (!has(variables.pod.ephemeralContainers) || size(variables.pod.ephemeralContainers) == 0) &&
+              (!has(variables.pod.volumes) || variables.pod.volumes.all(v, has(v.emptyDir)))
+          message: preview pods may use only emptyDir volumes and no init or ephemeral containers
+        - expression: >-
+              (!has(variables.pod.hostNetwork) || !variables.pod.hostNetwork) &&
+              (!has(variables.pod.hostPID) || !variables.pod.hostPID) &&
+              (!has(variables.pod.hostIPC) || !variables.pod.hostIPC)
+          message: preview pods may not use host namespaces
+{{- range $slot := $slots }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: {{ $slot }}-{{ $kind.name }}
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-{{ $kind.name }}
+    validationActions: [Deny]
+    matchResources:
+        namespaceSelector:
+            matchLabels:
+                kubernetes.io/metadata.name: {{ $slot }}
+{{- end }}
+{{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-services
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [""]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [services]
+    validations:
+        - expression: >-
+              object.spec.type == 'ClusterIP' &&
+              (!has(object.spec.externalIPs) || size(object.spec.externalIPs) == 0) &&
+              (!has(object.spec.loadBalancerClass)) &&
+              object.spec.ports.all(p, !has(p.nodePort) || p.nodePort == 0)
+          message: preview Services must be internal ClusterIP with no external IP or node port
+{{- range $slot := $slots }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: {{ $slot }}-services
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-services
+    validationActions: [Deny]
+    matchResources:
+        namespaceSelector:
+            matchLabels:
+                kubernetes.io/metadata.name: {{ $slot }}
+{{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-ingresses
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [networking.k8s.io]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [ingresses]
+    validations:
+        - expression: >-
+              object.spec.ingressClassName == 'alb-preview' &&
+              !has(object.spec.defaultBackend) &&
+              (!has(object.spec.tls) || size(object.spec.tls) == 0)
+          message: preview Ingresses must use alb-preview and class-level TLS only
+        - expression: >-
+              has(object.spec.rules) && size(object.spec.rules) > 0 &&
+              object.spec.rules.all(r, has(r.host) &&
+                r.host.matches('^[a-z0-9-]+[.]{{ replace "." "[.]" $p.hostSuffix }}$'))
+          message: preview Ingress hosts must be single-label subdomains of the configured preview suffix
+        - expression: >-
+              !has(object.metadata.annotations) ||
+              object.metadata.annotations.all(k, v,
+                k == 'alb.ingress.kubernetes.io/healthcheck-path' &&
+                v.matches('^/[a-zA-Z0-9/_-]*$'))
+          message: preview Ingress annotations are restricted to a safe healthcheck path
+{{- range $slot := $slots }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: {{ $slot }}-ingresses
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-ingresses
+    validationActions: [Deny]
+    matchResources:
+        namespaceSelector:
+            matchLabels:
+                kubernetes.io/metadata.name: {{ $slot }}
+{{- end }}
+{{- end }}

@@ -21,6 +21,11 @@ helm template patchy charts/patchy \
   --set-json 'webhook.httpRoute={"enabled":true,"parentRefs":[{"name":"gw","namespace":"gateway-system"}]}' >/dev/null
 helm template patchy charts/patchy --set statusServer.enabled=false >/dev/null
 
+# Empty preview slots are off by default; when enabled all of their guardrails
+# and the non-default EKS IngressClass must render together.
+helm lint charts/patchy -f hack/testdata/chart-render/preview-foundation.yaml
+helm template patchy charts/patchy -f hack/testdata/chart-render/preview-foundation.yaml >/dev/null
+
 # The egress broker: rendered by default (claude enabled ⇒ broker), absent
 # when only non-brokered runners are enabled, and one render per provider.
 helm template patchy charts/patchy \

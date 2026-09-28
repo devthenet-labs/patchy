@@ -1098,6 +1098,33 @@ devthenet-dev in a separate Helm upgrade from the release that ships them.
   - the `__Host-` cookie fix;
   - the namespaceSelector on the `alb` class;
   - a benign demo repo.
+
+### Deployable by others (after previews)
+
+Make intents and previews installable without reproducing devthenet's manual setup. Keep the ownership boundary clear:
+
+- **In-cluster:** the Helm charts own the complete installation — controllers, CRDs, RBAC, NetworkPolicies, admission,
+  preview slot namespaces and their guardrails, and the edge/placeholder Ingresses. The chart-installed
+  preview-controller owns each preview's short-lived Deployment, Service and Ingress. Operators should not need
+  hand-applied cluster manifests.
+- **Outside the cluster:** provide helpers, not hidden devthenet prerequisites:
+  - a `patchy` CLI command to create the GitHub App through GitHub's App manifest flow;
+  - a parameterised reference AWS Terraform module for image registries, narrowly scoped OIDC publisher roles, DNS and
+    the certificate;
+  - `patchy init app` to scaffold an app repo's `.patchy/` toolchain image, runtime Dockerfile and split build/publish
+    CI. PR builds remain uncredentialed and lack `id-token`; fork PRs never publish, and the trusted publisher never
+    runs PR code;
+  - a template app repo based on `patchy-preview-demo`, never on the vulnerable `patchy-target`;
+  - a `patchy check` preflight for a Project's GitHub, image-publishing and preview setup before enabling it.
+- Write an operator guide, **Deploying intents and previews**, covering prerequisites, installation, onboarding,
+  verification, upgrades and rollback.
+- Audit the implementation and examples for anything that works only because of devthenet-specific setup; flag each
+  assumption and either parameterise it or document a required operator choice.
+- **Open decision:** support external-dns and cert-manager in the chart so clusters that run them need no DNS/TLS
+  Terraform, or keep the Terraform-only path used on devthenet. Do not silently assume either integration exists.
+
+### Later slices
+
 - **Slice 3: multi-repo and commands.** About 5-7 days.
   - Lift the one-repo guard: plan over several read-only trees, fan the build out to one Job per repo, cross-link
     sibling PRs, and add a partial-failure policy.

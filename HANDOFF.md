@@ -373,6 +373,11 @@ already-pushed commits (or nothing) and can be removed once #51 is merged.
 6. **Slice 2: previews** (design "Previews"): first the `__Host-` cookie rename on status-server and a
    `namespaceSelector` admitting only `patchy` on the default `alb` IngressClassParams (check live that the webhook ALB
    is not recreated), a benign demo app repo (never preview patchy-target), then the preview-controller.
+7. **Deployable by others** (design
+   [roadmap section](docs/design/intent-driven-development.md#deployable-by-others-after-previews)): make the Helm
+   charts own the full in-cluster install; provide GitHub App, reference AWS Terraform, app scaffolding, template-repo
+   and Project-preflight helpers plus an operator guide; audit devthenet-specific assumptions. Decide whether to support
+   external-dns and cert-manager or keep DNS/TLS Terraform-only.
 
 ## Gates and process (the owner's working agreement)
 

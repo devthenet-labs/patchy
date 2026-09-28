@@ -55,6 +55,21 @@ admissionPolicy:
     # ServiceAccount names.
     extraExemptSubjects: []
 
+# Preview security foundation. Off until the operator explicitly supplies the
+# cluster-specific edge, registry and DNS settings and approves a rollout.
+# This creates guarded, empty slots and a non-default IngressClass; it creates
+# no Ingress, ALB, DNS record, workload, Project or preview-controller.
+preview:
+    enabled: false
+    slotCount: 2
+    imageRegistry: "" # ECR registry host only; images must be patchy/previews/<app>:sha-<full SHA>
+    dnsCIDR: "" # Node-local CoreDNS service /32, not a broad service CIDR.
+    albSubnetCIDRs: [] # Public ALB source subnets, not 0.0.0.0/0.
+    inboundCIDRs: [] # Operator IP /32 or tightly scoped CIDRs.
+    certificateARN: "" # Issued wildcard certificate for preview hosts.
+    hostSuffix: "" # e.g. preview.patchy.devthe.net, without leading dot.
+    albName: "" # Distinct from the normal patchy ALB.
+
 # Extra labels stamped on every object the chart renders.
 commonLabels: {}
 

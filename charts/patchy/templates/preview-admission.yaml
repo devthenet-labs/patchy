@@ -7,8 +7,14 @@
 # uninstall cannot leave a live workload in an unguarded slot.
 {{- if .Values.preview.enabled }}
 {{- $p := .Values.preview }}
+{{- $nodes := $p.nodeIsolation }}
+{{- if not $nodes.nodePool }}{{ fail "preview.nodeIsolation.nodePool is required when preview.enabled=true" }}{{ end }}
+{{- if not $nodes.nodeClass }}{{ fail "preview.nodeIsolation.nodeClass is required when preview.enabled=true" }}{{ end }}
+{{- if not $nodes.taintKey }}{{ fail "preview.nodeIsolation.taintKey is required when preview.enabled=true" }}{{ end }}
 {{- $slots := list }}
 {{- range $i := until (int $p.slotCount) }}{{ $slots = append $slots (printf "patchy-preview-%d" $i) }}{{ end }}
+{{- $guardSlots := list }}
+{{- range $i := until 4 }}{{ $guardSlots = append $guardSlots (printf "patchy-preview-%d" $i) }}{{ end }}
 {{- $prefix := printf "%s/patchy/previews/" $p.imageRegistry }}
 {{- range $kind := list (dict "name" "pods" "resource" "pods" "pod" "object.spec") (dict "name" "deployments" "resource" "deployments" "pod" "object.spec.template.spec") }}
 ---
@@ -26,6 +32,11 @@ spec:
               apiVersions: [v1]
               operations: [CREATE, UPDATE]
               resources: [{{ $kind.resource }}{{ if eq $kind.name "pods" }}, pods/ephemeralcontainers{{ end }}]
+    # Match the actual namespace name; do not rely on a label selector alone
+    # for this security decision.
+    matchConditions:
+        - name: exact-preview-slot
+          expression: 'request.namespace in {{ $guardSlots | toJson }}'
     variables:
         - name: pod
           expression: {{ $kind.pod | quote }}
@@ -51,6 +62,46 @@ spec:
               (!has(variables.pod.hostPID) || !variables.pod.hostPID) &&
               (!has(variables.pod.hostIPC) || !variables.pod.hostIPC)
           message: preview pods may not use host namespaces
+        - expression: >-
+              has(variables.pod.nodeSelector) &&
+              'karpenter.sh/nodepool' in variables.pod.nodeSelector &&
+              variables.pod.nodeSelector['karpenter.sh/nodepool'] == {{ $nodes.nodePool | quote }} &&
+              'eks.amazonaws.com/nodeclass' in variables.pod.nodeSelector &&
+              variables.pod.nodeSelector['eks.amazonaws.com/nodeclass'] == {{ $nodes.nodeClass | quote }}
+          message: preview pods must select the dedicated preview node pool and class
+        - expression: >-
+              has(variables.pod.tolerations) &&
+              variables.pod.tolerations.exists(t,
+                has(t.key) && t.key == {{ $nodes.taintKey | quote }} &&
+                has(t.operator) && t.operator == 'Equal' &&
+                has(t.value) && t.value == 'true' &&
+                has(t.effect) && t.effect == 'NoExecute' &&
+                !has(t.tolerationSeconds))
+          message: preview pods must tolerate the exact preview-only taint
+        - expression: >-
+              {{- if eq $kind.name "pods" }}
+              (!has(variables.pod.nodeName) || variables.pod.nodeName == '' ||
+                (request.operation == 'UPDATE' && oldObject != null &&
+                  has(oldObject.spec.nodeName) &&
+                  variables.pod.nodeName == oldObject.spec.nodeName)) &&
+              {{- else }}
+              (!has(variables.pod.nodeName) || variables.pod.nodeName == '') &&
+              {{- end }}
+              (!has(variables.pod.schedulerName) || variables.pod.schedulerName == '' ||
+                variables.pod.schedulerName == 'default-scheduler')
+          message: preview pods may not bypass the default scheduler
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-all-slots-{{ $kind.name }}
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-{{ $kind.name }}
+    validationActions: [Deny]
+# Keep the older per-slot bindings below for a safe upgrade of retained
+# policies. This global binding protects a slot even if its label is changed.
 {{- range $slot := $slots }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -67,6 +118,55 @@ spec:
             matchLabels:
                 kubernetes.io/metadata.name: {{ $slot }}
 {{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-outside-{{ $kind.name }}
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [{{ if eq $kind.name "pods" }}""{{ else }}apps{{ end }}]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [{{ $kind.resource }}{{ if eq $kind.name "pods" }}, pods/ephemeralcontainers{{ end }}]
+    matchConditions:
+        - name: outside-preview-slots
+          expression: '!(request.namespace in {{ $slots | toJson }})'
+    variables:
+        - name: pod
+          expression: {{ $kind.pod | quote }}
+    validations:
+        - expression: >-
+              !has(variables.pod.tolerations) ||
+              variables.pod.tolerations.all(t,
+                (!has(t.key) || t.key != {{ $nodes.taintKey | quote }}) &&
+                !(has(t.operator) && t.operator == 'Exists' &&
+                  (!has(t.key) || t.key == '')))
+          message: preview-only toleration and tolerate-all are forbidden outside preview slots
+        - expression: >-
+              {{- if eq $kind.name "pods" }}
+              !has(variables.pod.nodeName) || variables.pod.nodeName == '' ||
+              (request.operation == 'UPDATE' && oldObject != null &&
+                has(oldObject.spec.nodeName) &&
+                variables.pod.nodeName == oldObject.spec.nodeName)
+              {{- else }}
+              !has(variables.pod.nodeName) || variables.pod.nodeName == ''
+              {{- end }}
+          message: direct node placement is forbidden outside preview slots
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-outside-{{ $kind.name }}
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-outside-{{ $kind.name }}
+    validationActions: [Deny]
 {{- end }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -83,6 +183,9 @@ spec:
               apiVersions: [v1]
               operations: [CREATE, UPDATE]
               resources: [services]
+    matchConditions:
+        - name: exact-preview-slot
+          expression: 'request.namespace in {{ $guardSlots | toJson }}'
     validations:
         - expression: >-
               object.spec.type == 'ClusterIP' &&
@@ -90,6 +193,16 @@ spec:
               (!has(object.spec.loadBalancerClass)) &&
               object.spec.ports.all(p, !has(p.nodePort) || p.nodePort == 0)
           message: preview Services must be internal ClusterIP with no external IP or node port
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-all-slots-services
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-services
+    validationActions: [Deny]
 {{- range $slot := $slots }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -121,6 +234,9 @@ spec:
               apiVersions: [v1]
               operations: [CREATE, UPDATE]
               resources: [ingresses]
+    matchConditions:
+        - name: exact-preview-slot
+          expression: 'request.namespace in {{ $guardSlots | toJson }}'
     validations:
         - expression: >-
               object.spec.ingressClassName == 'alb-preview' &&
@@ -138,6 +254,16 @@ spec:
                 k == 'alb.ingress.kubernetes.io/healthcheck-path' &&
                 v.matches('^/[a-zA-Z0-9/_-]*$'))
           message: preview Ingress annotations are restricted to a safe healthcheck path
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-all-slots-ingresses
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-ingresses
+    validationActions: [Deny]
 {{- range $slot := $slots }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -154,4 +280,37 @@ spec:
             matchLabels:
                 kubernetes.io/metadata.name: {{ $slot }}
 {{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-outside-ingresses
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [networking.k8s.io]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [ingresses]
+    matchConditions:
+        - name: outside-preview-slots
+          expression: '!(request.namespace in {{ $slots | toJson }})'
+    validations:
+        - expression: >-
+              !has(object.spec.ingressClassName) ||
+              object.spec.ingressClassName != 'alb-preview'
+          message: alb-preview is reserved for the exact preview slot namespaces
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-outside-ingresses
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-outside-ingresses
+    validationActions: [Deny]
 {{- end }}

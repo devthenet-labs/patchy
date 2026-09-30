@@ -3,6 +3,10 @@
 preview:
     enabled: true
     slotCount: 2
+    nodeIsolation:
+        nodePool: patchy-preview
+        nodeClass: patchy-preview
+        taintKey: patchy.devthe.net/preview-only
     imageRegistry: 377946145366.dkr.ecr.us-east-1.amazonaws.com
     dnsCIDR: 172.20.0.10/32
     albSubnetCIDRs:

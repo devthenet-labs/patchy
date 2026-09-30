@@ -154,8 +154,25 @@ expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-
 expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name | test("^patchy-preview-"))) | .spec.failurePolicy' 'Fail
 Fail
 Fail
+Fail
+Fail
+Fail
 Fail'
-expect preview 'select(.kind == "ValidatingAdmissionPolicyBinding" and (.metadata.name | test("^patchy-preview-"))) | .spec.matchResources.namespaceSelector.matchLabels."kubernetes.io/metadata.name"' 'patchy-preview-0
+expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name | test("^patchy-preview-outside-"))) | .metadata.name' 'patchy-preview-outside-pods
+patchy-preview-outside-deployments
+patchy-preview-outside-ingresses'
+expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name | test("^patchy-preview-outside-"))) | .spec.matchConditions[0].expression' '!(request.namespace in ["patchy-preview-0","patchy-preview-1"])
+!(request.namespace in ["patchy-preview-0","patchy-preview-1"])
+!(request.namespace in ["patchy-preview-0","patchy-preview-1"])'
+expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name | test("^patchy-preview-")) and (.metadata.name | test("^patchy-preview-outside-") | not)) | .spec.matchConditions[0].expression' 'request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]
+request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]
+request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]
+request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]'
+expect preview 'select(.kind == "ValidatingAdmissionPolicyBinding" and (.metadata.name | test("^patchy-preview-all-slots-"))) | has("spec")' 'true
+true
+true
+true'
+expect preview 'select(.kind == "ValidatingAdmissionPolicyBinding" and (.metadata.name | test("^patchy-preview-0|^patchy-preview-1"))) | .spec.matchResources.namespaceSelector.matchLabels."kubernetes.io/metadata.name"' 'patchy-preview-0
 patchy-preview-1
 patchy-preview-0
 patchy-preview-1
@@ -165,8 +182,12 @@ patchy-preview-0
 patchy-preview-1'
 render preview-one -f "$fixtures/preview-foundation.yaml" --set preview.slotCount=1
 expect preview-one 'select(.kind == "ValidatingAdmissionPolicyBinding" and .metadata.name == "patchy-preview-0-pods") | .spec.matchResources.namespaceSelector.matchLabels."kubernetes.io/metadata.name"' 'patchy-preview-0'
+expect preview-one 'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name == "patchy-preview-outside-pods") | .spec.matchConditions[0].expression' '!(request.namespace in ["patchy-preview-0"])'
 expect preview 'select(.kind == "Deployment" and (.metadata.namespace | test("preview"))) | .metadata.name' ""
 expect_fail 'preview missing image registry' 'preview.imageRegistry' --set preview.enabled=true
+expect_fail 'preview missing node pool' 'preview.nodeIsolation.nodePool' -f "$fixtures/preview-foundation.yaml" --set preview.nodeIsolation.nodePool=
+expect_fail 'preview missing node class' 'preview.nodeIsolation.nodeClass' -f "$fixtures/preview-foundation.yaml" --set preview.nodeIsolation.nodeClass=
+expect_fail 'preview missing node taint key' 'preview.nodeIsolation.taintKey' -f "$fixtures/preview-foundation.yaml" --set preview.nodeIsolation.taintKey=
 expect_fail 'preview zero slots' 'preview.slotCount' -f "$fixtures/preview-foundation.yaml" --set preview.slotCount=0
 expect_fail 'preview missing cert' 'preview.certificateARN' -f "$fixtures/preview-foundation.yaml" --set preview.certificateARN=
 

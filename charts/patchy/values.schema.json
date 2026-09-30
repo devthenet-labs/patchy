@@ -286,10 +286,20 @@
         "preview": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["enabled", "slotCount", "imageRegistry", "dnsCIDR", "albSubnetCIDRs", "inboundCIDRs", "certificateARN", "hostSuffix", "albName"],
+            "required": ["enabled", "slotCount", "nodeIsolation", "imageRegistry", "dnsCIDR", "albSubnetCIDRs", "inboundCIDRs", "certificateARN", "hostSuffix", "albName"],
             "properties": {
                 "enabled": {"type": "boolean"},
                 "slotCount": {"type": "integer", "minimum": 0, "maximum": 4},
+                "nodeIsolation": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["nodePool", "nodeClass", "taintKey"],
+                    "properties": {
+                        "nodePool": {"type": "string", "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+                        "nodeClass": {"type": "string", "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+                        "taintKey": {"type": "string"}
+                    }
+                },
                 "imageRegistry": {"type": "string", "pattern": "^$|^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com$"},
                 "dnsCIDR": {"type": "string", "pattern": "^$|^[0-9]{1,3}(\\.[0-9]{1,3}){3}/32$"},
                 "albSubnetCIDRs": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}/(2[0-9]|3[0-2])$"}},

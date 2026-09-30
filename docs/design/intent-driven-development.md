@@ -888,6 +888,10 @@ namespaces. patchy renders every manifest.
     10.40.129.0/24) on the app port, and egress only to DNS at 172.20.0.10/32;
   - a ResourceQuota with `services.loadbalancers: 0`, `services.nodeports: 0` and small CPU, memory and pod caps;
   - a LimitRange.
+- **Node isolation.** Preview workloads run only on a dedicated, tainted EKS Auto Mode NodePool backed by a custom
+  `DefaultDeny` NodeClass. The pool has no fixed replicas and consolidates when empty; an instance-type restriction and
+  CPU/node limits bound intended spend. The node IAM role can pull only `patchy/previews/*` images. On devthenet the
+  NodeClass, NodePool, IAM role and EKS access entry are infrastructure prerequisites, not chart-owned resources.
 - **preview-controller's permissions.** A namespaced Role in each slot over deployments, services and ingresses, plus
   read access to pods and replicasets. It has no access to namespaces, NetworkPolicies, quotas, RBAC or Secrets, nothing
   cluster-scoped, and no GitHub access.
@@ -897,6 +901,11 @@ namespaces. patchy renders every manifest.
   - Images must match `patchy/previews/<app>:sha-<40hex>`.
   - Pods need `automountServiceAccountToken: false` and the default ServiceAccount, may use only emptyDir volumes, and
     may not have init containers.
+  - Pods and Deployment templates must select the dedicated NodePool and NodeClass, tolerate its exact `NoExecute`
+    preview taint, use the default scheduler and leave `nodeName` unset. An outside-slot admission binding rejects the
+    named toleration and wildcard `Exists` tolerations in every other namespace, as well as direct `nodeName` Pod
+    creation. Admission matches the actual namespace name, not only its automatic name label. No other workload may use
+    the pool through normal scheduling or direct Pod creation.
   - Services must be ClusterIP.
 - **Edge.** A separate `alb-preview` IngressClass with its own IngressClassParams:
   - its own group and ALB name;
@@ -982,7 +991,9 @@ A deploy triggered by `pull_request` cannot be gated by an Environment branch ru
    - patchy gains namespaced deploy power, limited to chart-created slot namespaces and fenced by a VAP.
    - Agent-built code runs as an internet service, gated by IP, in namespaces that cannot reach patchy, patchy-agents,
      the broker, the API server or link-local addresses.
-   - The residual risk is the VPC CNI's policy-attach race, which leaves a new pod open for a few seconds.
+   - EKS Auto Mode's `DefaultAllow` NodeClass leaves a new pod open for a few seconds while policy attaches (observed in
+     the live slot probe). A dedicated `DefaultDeny` node is required before preview use, and a Deployment-managed
+     first-instruction probe must confirm deny-before-policy plus DNS after the allow rule attaches.
 9. **Pre-existing, flagged separately.** The app-env push role trusts `main` of every repo in the org. The allowlist is
    the whole `patchy/app-envs/` prefix, with `allowUnsigned: true`. So the main branch of any org repo can publish an
    image the sandbox will admit. Narrow the role to registered app repos in terraform-devthenet.

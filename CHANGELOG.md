@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.9](https://github.com/devthenet-labs/patchy/compare/v0.12.8...v0.12.9) (2026-09-30)
+
+
+### Features
+
+* **chart:** constrain previews to isolated nodes ([#74](https://github.com/devthenet-labs/patchy/issues/74)) ([71461b8](https://github.com/devthenet-labs/patchy/commit/71461b8bdd5a51870fb4be48a4969f2a728c6a9f))
+
 ## [0.12.8](https://github.com/devthenet-labs/patchy/compare/v0.12.7...v0.12.8) (2026-09-28)
 
 

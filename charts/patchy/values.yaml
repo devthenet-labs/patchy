@@ -62,6 +62,13 @@ admissionPolicy:
 preview:
     enabled: false
     slotCount: 2
+    # A dedicated, tainted EKS Auto Mode NodePool backed by a DefaultDeny
+    # NodeClass is required before any slot workload runs. These names must
+    # match the node resources; the chart does not create cloud nodes.
+    nodeIsolation:
+        nodePool: ""
+        nodeClass: ""
+        taintKey: "" # Exact NoExecute taint; value must be "true".
     imageRegistry: "" # ECR registry host only; images must be patchy/previews/<app>:sha-<full SHA>
     dnsCIDR: "" # Node-local CoreDNS service /32, not a broad service CIDR.
     albSubnetCIDRs: [] # Public ALB source subnets, not 0.0.0.0/0.

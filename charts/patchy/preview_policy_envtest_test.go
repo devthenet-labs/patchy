@@ -4,6 +4,7 @@
 package chart_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -122,20 +123,43 @@ func installPreviewPolicy(t *testing.T, admin client.Client) {
 func waitForPreviewPolicy(t *testing.T, admin client.Client) {
 	t.Helper()
 	ctx := t.Context()
-	// Bindings propagate asynchronously. Wait for a rejection that names our
-	// policy, so a fast API server cannot produce a false successful test.
+	// Bindings propagate independently. A Pod rejection does not prove that
+	// Deployment, Service or Ingress policy is active yet, so wait for one
+	// rejection from every rendered policy before testing the admission matrix.
+	outsidePod := pod("ordinary", "probe", "nginx:latest")
+	outsidePod.Spec.Tolerations = previewTolerations()
+	outsideDeployment := deployment("ordinary", "probe", "nginx:latest")
+	outsideDeployment.Spec.Template.Spec.Tolerations = previewTolerations()
+	probes := []struct {
+		name string
+		obj  client.Object
+		want string
+	}{
+		{"slot pod", pod("patchy-preview-0", "probe", "nginx:latest"), "only immutable patchy preview ECR images"},
+		{"slot deployment", deployment("patchy-preview-0", "probe", "nginx:latest"), "only immutable"},
+		{"outside pod", outsidePod, "preview-only toleration"},
+		{"outside deployment", outsideDeployment, "preview-only toleration"},
+		{"slot service", service("patchy-preview-0", "probe", corev1.ServiceTypeLoadBalancer), "internal ClusterIP"},
+		{"slot ingress", ingress("patchy-preview-0", "probe", "alb", previewHost), "alb-preview"},
+		{"outside ingress", ingress("ordinary", "probe", "alb-preview", previewHost),
+			"reserved for the exact preview slot"},
+	}
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		slotErr := admin.Create(ctx, pod("patchy-preview-0", "probe", "nginx:latest"), client.DryRunAll)
-		outside := pod("ordinary", "probe", "nginx:latest")
-		outside.Spec.Tolerations = previewTolerations()
-		outsideErr := admin.Create(ctx, outside, client.DryRunAll)
-		if slotErr != nil && strings.Contains(slotErr.Error(), "only immutable patchy preview ECR images") &&
-			outsideErr != nil && strings.Contains(outsideErr.Error(), "preview-only toleration") {
-			break
+		var notReady []string
+		for _, probe := range probes {
+			// Admission/defaulting can mutate even dry-run objects (notably a
+			// Service's clusterIPs). Each probe must start from a fresh object.
+			err := admin.Create(ctx, probe.obj.DeepCopyObject().(client.Object), client.DryRunAll)
+			if err == nil || !strings.Contains(err.Error(), probe.want) {
+				notReady = append(notReady, fmt.Sprintf("%s: %v", probe.name, err))
+			}
+		}
+		if len(notReady) == 0 {
+			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("preview policies did not enforce before deadline: slot %v; outside %v", slotErr, outsideErr)
+			t.Fatalf("preview policies did not enforce before deadline: %v", notReady)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

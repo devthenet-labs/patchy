@@ -4,6 +4,7 @@
 package chart_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -122,20 +123,43 @@ func installPreviewPolicy(t *testing.T, admin client.Client) {
 func waitForPreviewPolicy(t *testing.T, admin client.Client) {
 	t.Helper()
 	ctx := t.Context()
-	// Bindings propagate asynchronously. Wait for a rejection that names our
-	// policy, so a fast API server cannot produce a false successful test.
+	// Bindings propagate independently. A Pod rejection does not prove that
+	// Deployment, Service or Ingress policy is active yet, so wait for one
+	// rejection from every rendered policy before testing the admission matrix.
+	outsidePod := pod("ordinary", "probe", "nginx:latest")
+	outsidePod.Spec.Tolerations = previewTolerations()
+	outsideDeployment := deployment("ordinary", "probe", "nginx:latest")
+	outsideDeployment.Spec.Template.Spec.Tolerations = previewTolerations()
+	probes := []struct {
+		name string
+		obj  client.Object
+		want string
+	}{
+		{"slot pod", pod("patchy-preview-0", "probe", "nginx:latest"), "only immutable patchy preview ECR images"},
+		{"slot deployment", deployment("patchy-preview-0", "probe", "nginx:latest"), "only immutable"},
+		{"outside pod", outsidePod, "preview-only toleration"},
+		{"outside deployment", outsideDeployment, "preview-only toleration"},
+		{"slot service", service("patchy-preview-0", "probe", corev1.ServiceTypeLoadBalancer), "internal ClusterIP"},
+		{"slot ingress", ingress("patchy-preview-0", "probe", "alb", previewHost), "alb-preview"},
+		{"outside ingress", ingress("ordinary", "probe", "alb-preview", previewHost),
+			"reserved for the exact preview slot"},
+	}
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		slotErr := admin.Create(ctx, pod("patchy-preview-0", "probe", "nginx:latest"), client.DryRunAll)
-		outside := pod("ordinary", "probe", "nginx:latest")
-		outside.Spec.Tolerations = previewTolerations()
-		outsideErr := admin.Create(ctx, outside, client.DryRunAll)
-		if slotErr != nil && strings.Contains(slotErr.Error(), "only immutable patchy preview ECR images") &&
-			outsideErr != nil && strings.Contains(outsideErr.Error(), "preview-only toleration") {
-			break
+		var notReady []string
+		for _, probe := range probes {
+			// Admission/defaulting can mutate even dry-run objects (notably a
+			// Service's clusterIPs). Each probe must start from a fresh object.
+			err := admin.Create(ctx, probe.obj.DeepCopyObject().(client.Object), client.DryRunAll)
+			if err == nil || !strings.Contains(err.Error(), probe.want) {
+				notReady = append(notReady, fmt.Sprintf("%s: %v", probe.name, err))
+			}
+		}
+		if len(notReady) == 0 {
+			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("preview policies did not enforce before deadline: slot %v; outside %v", slotErr, outsideErr)
+			t.Fatalf("preview policies did not enforce before deadline: %v", notReady)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -241,6 +265,23 @@ func testPreviewDenials(t *testing.T, admin client.Client) {
 			service("patchy-preview-0", "external-ip", corev1.ServiceTypeClusterIP), func(s *corev1.Service) {
 				s.Spec.ExternalIPs = []string{"203.0.113.1"}
 			}), "internal ClusterIP"},
+		{"helm service annotations on other name", mutateService(
+			service("patchy-preview-0", "other-service", corev1.ServiceTypeClusterIP), func(s *corev1.Service) {
+				s.Annotations = placeholderHelmAnnotations()
+			}), "reserved for the placeholder"},
+		{"helm service annotations in other slot", mutateService(
+			service("patchy-preview-1", "patchy-preview-placeholder", corev1.ServiceTypeClusterIP), func(s *corev1.Service) {
+				s.Annotations = placeholderHelmAnnotations()
+			}), "reserved for the placeholder"},
+		{"wrong placeholder service ownership", mutateService(
+			service("patchy-preview-0", "patchy-preview-placeholder", corev1.ServiceTypeClusterIP), func(s *corev1.Service) {
+				s.Annotations = map[string]string{"meta.helm.sh/release-name": "other"}
+			}), "reserved for the placeholder"},
+		{"extra placeholder service annotation", mutateService(
+			service("patchy-preview-0", "patchy-preview-placeholder", corev1.ServiceTypeClusterIP), func(s *corev1.Service) {
+				s.Annotations = placeholderHelmAnnotations()
+				s.Annotations["example.com/extra"] = "value"
+			}), "reserved for the placeholder"},
 		{"default class", ingress("patchy-preview-0", "default-class", "alb", previewHost), "alb-preview"},
 		{"omitted class", mutateIngress(
 			ingress("patchy-preview-0", "omitted-class", "alb", previewHost), func(i *networkingv1.Ingress) {
@@ -258,6 +299,26 @@ func testPreviewDenials(t *testing.T, admin client.Client) {
 		{"unsafe annotation", mutateIngress(
 			ingress("patchy-preview-0", "unsafe-annotation", "alb-preview", previewHost), func(i *networkingv1.Ingress) {
 				i.Annotations = map[string]string{"alb.ingress.kubernetes.io/security-groups": "bypass"}
+			}), "annotations are restricted"},
+		{"helm ingress annotations on other name", mutateIngress(
+			ingress("patchy-preview-0", "other-ingress", "alb-preview", previewHost), func(i *networkingv1.Ingress) {
+				i.Annotations = placeholderHelmAnnotations()
+			}), "annotations are restricted"},
+		{"helm ingress annotations in other slot", mutateIngress(
+			ingress("patchy-preview-1", "patchy-preview-placeholder", "alb-preview", previewHost),
+			func(i *networkingv1.Ingress) {
+				i.Annotations = placeholderHelmAnnotations()
+			}), "annotations are restricted"},
+		{"wrong placeholder ingress ownership", mutateIngress(
+			ingress("patchy-preview-0", "patchy-preview-placeholder", "alb-preview", previewHost),
+			func(i *networkingv1.Ingress) {
+				i.Annotations = map[string]string{"meta.helm.sh/release-name": "other"}
+			}), "annotations are restricted"},
+		{"extra placeholder ingress annotation", mutateIngress(
+			ingress("patchy-preview-0", "patchy-preview-placeholder", "alb-preview", previewHost),
+			func(i *networkingv1.Ingress) {
+				i.Annotations = placeholderHelmAnnotations()
+				i.Annotations["alb.ingress.kubernetes.io/security-groups"] = "bypass"
 			}), "annotations are restricted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -324,7 +385,11 @@ func testPreviewAllowed(t *testing.T, admin client.Client) {
 		pod("patchy-preview-1", "allowed-pod-second-slot", previewImage),
 		deployment("patchy-preview-0", "allowed-deployment", previewImage),
 		service("patchy-preview-0", "allowed-service", corev1.ServiceTypeClusterIP),
+		mutateService(service("patchy-preview-0", "patchy-preview-placeholder", corev1.ServiceTypeClusterIP),
+			func(s *corev1.Service) { s.Annotations = placeholderHelmAnnotations() }),
 		ingress("patchy-preview-0", "allowed-ingress", "alb-preview", previewHost),
+		mutateIngress(ingress("patchy-preview-0", "patchy-preview-placeholder", "alb-preview", previewHost),
+			func(i *networkingv1.Ingress) { i.Annotations = placeholderHelmAnnotations() }),
 		// A normal workload in an unrelated namespace is unaffected by the
 		// slot policy; an ordinary unapproved image remains valid there.
 		pod("ordinary", "ordinary-pod", "nginx:latest"),
@@ -337,6 +402,14 @@ func testPreviewAllowed(t *testing.T, admin client.Client) {
 		if err := admin.Create(ctx, obj, client.DryRunAll); err != nil {
 			t.Errorf("valid %T %s/%s refused: %v", obj, obj.GetNamespace(), obj.GetName(), err)
 		}
+	}
+}
+
+func placeholderHelmAnnotations() map[string]string {
+	return map[string]string{
+		"helm.sh/resource-policy":        "keep",
+		"meta.helm.sh/release-name":      "patchy",
+		"meta.helm.sh/release-namespace": "patchy",
 	}
 }
 

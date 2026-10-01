@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.11](https://github.com/devthenet-labs/patchy/compare/v0.12.10...v0.12.11) (2026-10-01)
+
+
+### Features
+
+* **preview:** keep a fixed placeholder ingress for the preview ALB ([#78](https://github.com/devthenet-labs/patchy/issues/78)) ([73aebd4](https://github.com/devthenet-labs/patchy/commit/73aebd4901351a648360a1d6ca8e778a69480185))
+
 ## [0.12.10](https://github.com/devthenet-labs/patchy/compare/v0.12.9...v0.12.10) (2026-10-01)
 
 

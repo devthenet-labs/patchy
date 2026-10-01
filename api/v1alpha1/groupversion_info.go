@@ -40,6 +40,7 @@ func addKnownTypes(s *runtime.Scheme) error {
 		&IntentRun{}, &IntentRunList{},
 		&Investigation{}, &InvestigationList{},
 		&Project{}, &ProjectList{},
+		&Preview{}, &PreviewList{},
 		&Remediation{}, &RemediationList{},
 		&Repository{}, &RepositoryList{},
 	)

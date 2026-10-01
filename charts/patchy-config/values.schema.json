@@ -816,6 +816,34 @@
                     "type": "object",
                     "additionalProperties": false
                 },
+                "preview": {
+                    "description": "Preview opts this Project into the slice-2 preview flow. Omitted means\nits PRs are never deployed, even if the preview-controller is enabled.\nOnly operator-authored Project configuration can supply the runtime\nimage repository and serving port; issue and agent text cannot.",
+                    "properties": {
+                        "imageRepository": {
+                            "description": "ImageRepository is an immutable-tag runtime repository under the\noperator's preview registry, such as <registry>/patchy/previews/demo.\nThe preview-controller also checks its configured image prefix.",
+                            "maxLength": 255,
+                            "minLength": 1,
+                            "pattern": "^[a-z0-9][a-z0-9.:-]*/patchy/previews/[a-z0-9-]+$",
+                            "type": "string"
+                        },
+                        "port": {
+                            "description": "Port is the one HTTP container/service port.",
+                            "format": "int32",
+                            "maximum": 65535,
+                            "minimum": 1,
+                            "type": "integer"
+                        },
+                        "readinessPath": {
+                            "description": "ReadinessPath is a safe HTTP path, also used by the ALB health check.",
+                            "maxLength": 128,
+                            "pattern": "^/[a-zA-Z0-9/_-]*$",
+                            "type": "string"
+                        }
+                    },
+                    "required": ["imageRepository", "port", "readinessPath"],
+                    "type": "object",
+                    "additionalProperties": false
+                },
                 "repositories": {
                     "description": "Repositories are the application repositories intents build in; the\nfirst entry is also the planning repository. The schema admits up to\n8 — the multi-repo shape — but slice 1 builds in exactly one:\nintent-controller reports a Project with more as not Ready rather\nthan the schema refusing it, so the CRD does not change when\nmulti-repo intents land. Each entry names a different repository:\nthe Intent records its pull requests by repository URL, and every\nrepository's branch is the same patchy-intent/<intent>, so two\nentries for one repository would fan two builds into one branch. URLs\nare compared the way forges compare them — case-insensitively, with\nany .git suffix dropped.",
                     "items": {

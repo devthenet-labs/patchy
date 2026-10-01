@@ -1,0 +1,219 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: previews.patchy.bitwisemedia.uk
+spec:
+  group: patchy.bitwisemedia.uk
+  names:
+    categories:
+    - patchy
+    kind: Preview
+    listKind: PreviewList
+    plural: previews
+    singular: preview
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.slot
+      name: Slot
+      type: integer
+    - jsonPath: .status.url
+      name: URL
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Preview deploys one approved PR head into one of the chart's fixed,
+          isolated slots. It owns no namespace or infrastructure resource.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              PreviewSpec is authored by intent-controller in the release namespace.
+              A PR head change updates Revision; an operator's Project change may also
+              update the component runtime configuration.
+            properties:
+              components:
+                description: Slice 2 has one application repository and one runtime
+                  component.
+                items:
+                  description: |-
+                    PreviewComponent is the fixed application shape copied from an operator's
+                    Project, with only Revision taken from the live, recorded PR head.
+                  properties:
+                    imageRepository:
+                      description: ImageRepository is the operator-configured repository,
+                        without a tag.
+                      maxLength: 255
+                      pattern: ^[a-z0-9][a-z0-9.:-]*/patchy/previews/[a-z0-9-]+$
+                      type: string
+                    name:
+                      description: Name identifies the component and its rendered
+                        resources.
+                      maxLength: 16
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    port:
+                      description: Port and ReadinessPath are operator configuration,
+                        not agent input.
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    readinessPath:
+                      maxLength: 128
+                      pattern: ^/[a-zA-Z0-9/_-]*$
+                      type: string
+                    revision:
+                      description: Revision is the full GitHub pull-request head SHA,
+                        never a branch name.
+                      pattern: ^[0-9a-f]{40}$
+                      type: string
+                  required:
+                  - imageRepository
+                  - name
+                  - port
+                  - readinessPath
+                  - revision
+                  type: object
+                maxItems: 1
+                minItems: 1
+                type: array
+              hostLabel:
+                description: HostLabel is the single DNS label before the operator's
+                  host suffix.
+                maxLength: 63
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                type: string
+                x-kubernetes-validations:
+                - message: hostLabel is immutable
+                  rule: self == oldSelf
+              intentRef:
+                description: IntentRef pins the exact Intent; a recycled name cannot
+                  adopt a preview.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    minLength: 1
+                    type: string
+                  uid:
+                    description: UID of the referent at the time the reference was
+                      written.
+                    type: string
+                required:
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: intentRef is immutable
+                  rule: self == oldSelf
+              ttl:
+                description: |-
+                  TTL is at most 72 hours since the last successful deployment. It is
+                  also a cap on queued/deploying previews, so they cannot hold a slot
+                  forever if the image never becomes available.
+                type: string
+                x-kubernetes-validations:
+                - message: ttl must be between 1h and 72h
+                  rule: duration(self) >= duration('1h') && duration(self) <= duration('72h')
+            required:
+            - components
+            - hostLabel
+            - intentRef
+            - ttl
+            type: object
+          status:
+            description: |-
+              PreviewStatus is written only by preview-controller. Slot is held until
+              finalizer cleanup has removed every rendered object from that slot.
+            properties:
+              attemptStartedAt:
+                format: date-time
+                type: string
+              components:
+                items:
+                  description: PreviewComponentStatus records the image the kubelet
+                    actually ran.
+                  properties:
+                    imageID:
+                      description: ImageID is the runtime's digest-bearing image ID
+                        once a Pod is Ready.
+                      type: string
+                    name:
+                      type: string
+                  required:
+                  - name
+                  type: object
+                maxItems: 1
+                type: array
+              lastDeployedAt:
+                format: date-time
+                type: string
+              message:
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration distinguishes an expired or failed revision from a
+                  later PR-head update that may legitimately start a fresh deployment.
+                format: int64
+                type: integer
+              observedRevision:
+                description: ObservedRevision is the revision this slot currently
+                  serves or tried.
+                type: string
+              phase:
+                description: |-
+                  PreviewPhase is the local state of a disposable runtime preview. It never
+                  participates in Finding or Intent phase transitions.
+                enum:
+                - Pending
+                - Queued
+                - Deploying
+                - Ready
+                - Failed
+                - Expired
+                type: string
+              retries:
+                format: int32
+                maximum: 3
+                type: integer
+              slot:
+                format: int32
+                type: integer
+              url:
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

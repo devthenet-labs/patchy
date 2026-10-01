@@ -200,6 +200,7 @@ is its own: a build stage alone may take an hour.
 {{- $_ := set $data "PATCHY_INTENT_POLL_INTERVAL" $own.pollInterval }}
 {{- $_ := set $data "PATCHY_INTENT_APPROVAL_POLL_INTERVAL" $own.approvalPollInterval }}
 {{- $_ := set $data "PATCHY_INTENT_PR_POLL_INTERVAL" $own.prPollInterval }}
+{{- $_ := set $data "PATCHY_INTENT_PREVIEWS_ENABLED" $root.Values.previewController.enabled }}
 {{- $_ := set $data "PATCHY_INTENT_MAX_CONCURRENT_RUNS" $own.maxConcurrentRuns }}
 {{- $_ := set $data "PATCHY_INTENT_RATE_LIMIT_FLOOR" $own.rateLimitFloor }}
 {{- $_ := set $data "PATCHY_INTENT_TTL" $own.intentTTL }}
@@ -226,6 +227,17 @@ blocks on ImageRequired. The changeset entry cap is remediation's value.
 {{- $_ := set $data "PATCHY_AGENT_EPHEMERAL_STORAGE" $ri.ephemeralStorage }}
 {{- $_ := set $data "PATCHY_CHANGESET_MAX_ENTRIES" $ri.changesetMaxEntries }}
 {{- end }}
+{{- else if eq $c.name "preview-controller" }}
+{{- $p := $root.Values.preview }}
+{{- $_ := set $data "PATCHY_PREVIEW_SLOT_COUNT" $p.slotCount }}
+{{- $_ := set $data "PATCHY_PREVIEW_IMAGE_PREFIX" (printf "%s/patchy/previews/" $p.imageRegistry) }}
+{{- $_ := set $data "PATCHY_PREVIEW_HOST_SUFFIX" $p.hostSuffix }}
+{{- $_ := set $data "PATCHY_PREVIEW_NODE_POOL" $p.nodeIsolation.nodePool }}
+{{- $_ := set $data "PATCHY_PREVIEW_NODE_CLASS" $p.nodeIsolation.nodeClass }}
+{{- $_ := set $data "PATCHY_PREVIEW_TAINT_KEY" $p.nodeIsolation.taintKey }}
+{{- $_ := set $data "PATCHY_PREVIEW_ROLLOUT_TIMEOUT" $own.rolloutTimeout }}
+{{- $_ := set $data "PATCHY_PREVIEW_POLL_INTERVAL" $own.pollInterval }}
+{{- $_ := set $data "PATCHY_PREVIEW_MAX_RETRIES" $own.maxRetries }}
 {{- end }}
 {{/*
 The global egress proxy (spec.proxy on a Forge/GitHub Integration overrides

@@ -82,12 +82,13 @@ entry point — `webhook.ingress` (plain Ingress, works anywhere) or `webhook.ht
 `preview.enabled` defaults to `false`. Enabling it creates **empty** `patchy-preview-0` and `patchy-preview-1`
 namespaces (or 1–4 slots), their isolation NetworkPolicies, quotas, limits, and fail-closed admission policies, plus a
 non-default EKS Auto Mode `alb-preview` class. It does **not** create an Ingress, ALB, wildcard DNS record, preview
-workload, Project, or preview-controller. Supply the ECR registry host, node-local DNS `/32`, ALB public subnet CIDRs,
-tightly scoped operator `/32` inbound CIDRs, issued wildcard ACM certificate ARN, preview host suffix, and a distinct
-ALB name. Before enabling the foundation, supply `preview.nodeIsolation.nodePool`, `nodeClass`, and `taintKey` from a
-dedicated EKS Auto Mode NodePool whose NodeClass uses `networkPolicy: DefaultDeny` and whose taint is
-`<taintKey>=true:NoExecute`. `DefaultAllow` has a start-up interval with unrestricted egress even when the slot
-NetworkPolicy exists. The chart does not create the NodePool, NodeClass or node IAM role. The
+workload, Project, or preview-controller: that controller has its own default-off `previewController.enabled` switch.
+Supply the ECR registry host, node-local DNS `/32`, ALB public subnet CIDRs, tightly scoped operator `/32` inbound
+CIDRs, issued wildcard ACM certificate ARN, preview host suffix, and a distinct ALB name. Before enabling the
+foundation, supply `preview.nodeIsolation.nodePool`, `nodeClass`, and `taintKey` from a dedicated EKS Auto Mode NodePool
+whose NodeClass uses `networkPolicy: DefaultDeny` and whose taint is `<taintKey>=true:NoExecute`. `DefaultAllow` has a
+start-up interval with unrestricted egress even when the slot NetworkPolicy exists. The chart does not create the
+NodePool, NodeClass or node IAM role. The
 [chart-render fixture](../../hack/testdata/chart-render/preview-foundation.yaml) shows the shape; these are
 cluster-specific values, not defaults. The default `alb` class must already be limited to the patchy namespace before
 slots are enabled.
@@ -138,6 +139,35 @@ Identity, the Kubernetes API endpoint, every patchy Service (including the egres
 address are unreachable. DNS may initially be denied by `DefaultDeny` until its allow rule is programmed, then must
 resolve. Repeat cold starts and inspect the node agent for reconciliation errors. Do not claim this property from an
 envtest API server, which has no kubelet or networking dataplane.
+
+The repeatable [cold-start isolation probe](../../hack/preview-isolation-probe/README.md) uses a disposable, unmerged
+demo-repo PR image, not the demo app's main image. Re-run it after every EKS, Auto Mode or VPC CNI upgrade and before
+relying on previews again. The 2026-09-30 observed network result passed; direct Auto Mode policy-agent log inspection
+remains an open validation gap. Never call those logs checked merely because Pod events are clean.
+
+## Preview controller (opt-in, off by default)
+
+`previewController.enabled` requires `preview.enabled`, `intentController.enabled`, and an exact Kubernetes Service
+`/32` in `previewController.config.apiServerCIDR`. With it off, neither a Preview spec projector nor the
+preview-controller runs. With it on, only Projects that have an operator-authored `spec.preview` block get previews; the
+existing `target` Project has none and must never be previewed. The fixed renderer takes the application runtime
+repository, HTTP port and readiness path only from that Project block, and the tag only from the recorded PR head. It
+never reads issue/agent text as deployment configuration, and holds no GitHub, registry, cloud or Secret credential. Its
+release-namespace Role is limited to Preview and Intent reads/writes; one Role per fixed slot grants only Deployment,
+Service and Ingress CRUD and Pod/ReplicaSet reads. No ClusterRole is installed. Its NetworkPolicy permits only DNS and
+the Kubernetes API Service `/32` out; there is no internet or broker egress rule.
+
+The controller serializes slot leases, queues by creation time, waits for a Ready Pod with a recorded image ID before
+creating the `alb-preview` Ingress, and withdraws the old Ingress before a PR-head update. Each new head gets at most
+three rollout attempts (10 minutes each by default). Failed and expired Previews free their slot only after all rendered
+resources and Pod/ReplicaSet children are gone. An open PR's preview expires after 72 hours from its last successful
+deployment; a new PR head can start a new preview. Deletion uses a finalizer, and a periodic orphan sweep cleans owned
+resources even after a lost CR. **Do not reduce `slotCount` or disable the controller while a Preview owns a slot**:
+restore the old slot count and drain via the Preview finalizer first. Helm's `keep` annotations protect the namespace
+and guardrails but are not a substitute for that drain.
+
+This release deliberately keeps `previewController.enabled: false` and `preview.enabled: false`. The separate preview
+ALB, placeholder Ingress and wildcard DNS still require an operator-reviewed infrastructure check-in before apply.
 
 ## Agent isolation
 

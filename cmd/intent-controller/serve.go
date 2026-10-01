@@ -48,6 +48,8 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 		"how often an intent awaiting approval polls its issue for an approval")
 	f.Duration("intent-pr-poll-interval", intent.DefaultPRPollInterval,
 		"how often an intent in review polls its pull requests")
+	f.Bool("intent-previews-enabled", false,
+		"project opted-in, open intent PRs into Preview resources; requires a separately enabled preview-controller")
 	f.Int("intent-max-concurrent-runs", 1, "intent agent Jobs running at once (a pool separate from remediation's)")
 	f.Int("intent-rate-limit-floor", intent.DefaultRateLimitFloor,
 		"pause intent polling while the installation has fewer core GitHub requests left than this (0 disables)")
@@ -274,6 +276,13 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), TTL: opts.Duration("intent-ttl"), Log: log,
 	}).SetupWithManager(mgr); err != nil {
 		return err
+	}
+	if opts.Bool("intent-previews-enabled") {
+		if err := (&intent.PreviewSourceReconciler{
+			Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr); err != nil {
+			return err
+		}
 	}
 
 	log.LogAttrs(ctx, slog.LevelInfo, "intent-controller starting",

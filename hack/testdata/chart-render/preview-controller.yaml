@@ -1,0 +1,6 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+previewController:
+    enabled: true
+    config:
+        apiServerCIDR: 172.20.0.1/32

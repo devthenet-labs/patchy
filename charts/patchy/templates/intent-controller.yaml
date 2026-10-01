@@ -93,6 +93,11 @@ rules:
     - apiGroups: [patchy.bitwisemedia.uk]
       resources: [intents/status, intents/finalizers]
       verbs: [update]
+    {{- if .Values.previewController.enabled }}
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [previews]
+      verbs: [create, get, update, delete]
+    {{- end }}
     - apiGroups: [patchy.bitwisemedia.uk]
       resources: [intentruns]
       verbs: [create, get, list, watch, update]

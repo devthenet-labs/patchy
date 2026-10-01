@@ -86,9 +86,36 @@ See [the permission audit](docs/design/intent-github-permissions.md) for non-wri
 `roundNoticesThrough` to Intent status; it recovers old missing notices without launching work or charging revisions.
 Keep intents disabled until that fix is released and gated. Before enabling, record both Helm rollback revisions.
 
-Status as of 2026-09-24. Written so another coding agent (for example Codex) can continue without the previous session's
-context. Read this whole file, then `AGENTS.md` (orientation), then `docs/design/intent-driven-development.md` (the
-accepted design — the source of truth for what to build).
+Historical status as of 2026-09-24; the 2026-10-01 preview update above is current. Written so another coding agent can
+continue without the previous session's context. Read this whole file, then `AGENTS.md` (orientation), then
+`docs/design/intent-driven-development.md` (the accepted design — the source of truth for what to build).
+
+## Preview update (2026-10-01; supersedes the older status below)
+
+- Slice 1a and 1b are merged and live. The preview prerequisites are live through patchy 0.12.9 (Helm revision 38) and
+  patchy-config 0.12.9 (revision 22). `preview.enabled` is **false** in the live Helm values and in terraform-devthenet.
+  Do not enable it while developing the preview-controller. The dedicated `patchy-preview` DefaultDeny NodeClass and
+  tainted NodePool are Ready and scale to zero. No preview ALB exists yet.
+- The first-instant isolation result is accepted as passing by the owner: three separate cold starts of a disposable,
+  unmerged preview-demo PR image on Deployment-managed Pods (slot 0, slot 1, slot 0) each recorded 128 blocked
+  connections and no reachable or inconclusive forbidden target. The targets were IMDSv2 token PUT (status only), Pod
+  Identity, Kubernetes API, patchy services and broker, and the internet; DNS succeeded after policy programming. The
+  probe Deployments were deleted, the node pool returned to zero, and the PR was closed unmerged.
+- **Open validation gap:** the EKS Auto Mode network-policy agent logs were not directly available. No
+  `no bpf context registered` error was seen in the Kubernetes events or available control-plane logs, but that is
+  **not** an agent-log check. Do not report the agent-log check as passed. Obtain node diagnostics or managed-agent
+  delivery in a later validation and close this gap explicitly.
+- **Standing rule:** re-run the disposable-PR-image, Deployment-managed **cold-start isolation probe** after every EKS,
+  EKS Auto Mode or VPC CNI upgrade, and before relying on previews again. The re-run procedure and probe source are in
+  `hack/preview-isolation-probe/README.md`; never merge the probe into preview-demo's main branch. Any forbidden success
+  is a security failure: remove the probe Deployment, keep previews unused, and investigate.
+- The live ECR lifecycle policy for `patchy/previews/patchy-preview-demo` still expires **untagged images only** after
+  14 days. It has no tagged-preview-image expiry. Include a tagged `sha-` preview image expiry rule (for example older
+  than 30 days, after the 72-hour preview lifetime) in the next terraform-devthenet infrastructure check-in; do not
+  claim it is already applied.
+- Next: implement the Preview CR and preview-controller, the Intent-to-Preview PR-head projection, and their chart
+  wiring, tests and release with preview disabled. Check in and get approval **before** applying the preview ALB,
+  placeholder Ingress or wildcard DNS. The user's later instructions supersede the historical next-step list below.
 
 ## Running this work: environment and permissions
 

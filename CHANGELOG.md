@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.10](https://github.com/devthenet-labs/patchy/compare/v0.12.9...v0.12.10) (2026-10-01)
+
+
+### Features
+
+* **preview:** render PR-head previews into isolated fixed slots ([4133152](https://github.com/devthenet-labs/patchy/commit/41331520718f9986c4695bda4b9beba980f943cb))
+
 ## [0.12.9](https://github.com/devthenet-labs/patchy/compare/v0.12.8...v0.12.9) (2026-09-30)
 
 

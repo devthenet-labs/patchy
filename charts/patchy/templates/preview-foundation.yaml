@@ -145,4 +145,43 @@ spec:
         apiGroup: eks.amazonaws.com
         kind: IngressClassParams
         name: alb-preview
+---
+# Keep an empty target group so the separate preview ALB and its DNS name do
+# not churn between Preview CRs. This Service has no selector or endpoints;
+# it never schedules a Pod or exposes a patchy controller.
+apiVersion: v1
+kind: Service
+metadata:
+    name: patchy-preview-placeholder
+    namespace: patchy-preview-0
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    type: ClusterIP
+    ports:
+        - name: http
+          port: 80
+          targetPort: 80
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+    name: patchy-preview-placeholder
+    namespace: patchy-preview-0
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    ingressClassName: alb-preview
+    rules:
+        - host: placeholder.{{ $p.hostSuffix }}
+          http:
+              paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                        service:
+                            name: patchy-preview-placeholder
+                            port:
+                                number: 80
 {{- end }}

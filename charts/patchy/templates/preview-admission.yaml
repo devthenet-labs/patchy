@@ -5,6 +5,9 @@
 # must create only a Pod/Deployment/Service/Ingress fitting the slot contract.
 # Paired with the kept namespace/network/quota resources so rollback or
 # uninstall cannot leave a live workload in an unguarded slot.
+# Helm adds ownership annotations to chart resources. Admit them only on the
+# fixed selectorless placeholder Service/Ingress in slot 0, never on a
+# preview-controller or other user-created resource.
 {{- if .Values.preview.enabled }}
 {{- $p := .Values.preview }}
 {{- $nodes := $p.nodeIsolation }}
@@ -186,6 +189,9 @@ spec:
     matchConditions:
         - name: exact-preview-slot
           expression: 'request.namespace in {{ $guardSlots | toJson }}'
+    variables:
+        - name: helmPlaceholder
+          expression: "request.namespace == 'patchy-preview-0' && object.metadata.name == 'patchy-preview-placeholder'"
     validations:
         - expression: >-
               object.spec.type == 'ClusterIP' &&
@@ -193,6 +199,18 @@ spec:
               (!has(object.spec.loadBalancerClass)) &&
               object.spec.ports.all(p, !has(p.nodePort) || p.nodePort == 0)
           message: preview Services must be internal ClusterIP with no external IP or node port
+        - expression: >-
+              !has(object.metadata.annotations) ||
+              object.metadata.annotations.all(k, v,
+                (variables.helmPlaceholder && (
+                  (k == 'helm.sh/resource-policy' && v == 'keep') ||
+                  (k == 'meta.helm.sh/release-name' && v == {{ .Release.Name | quote }}) ||
+                  (k == 'meta.helm.sh/release-namespace' && v == {{ .Release.Namespace | quote }}))) ||
+                (!variables.helmPlaceholder &&
+                  k != 'helm.sh/resource-policy' &&
+                  k != 'meta.helm.sh/release-name' &&
+                  k != 'meta.helm.sh/release-namespace'))
+          message: Helm ownership and keep annotations are reserved for the placeholder Service
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -237,6 +255,9 @@ spec:
     matchConditions:
         - name: exact-preview-slot
           expression: 'request.namespace in {{ $guardSlots | toJson }}'
+    variables:
+        - name: helmPlaceholder
+          expression: "request.namespace == 'patchy-preview-0' && object.metadata.name == 'patchy-preview-placeholder'"
     validations:
         - expression: >-
               object.spec.ingressClassName == 'alb-preview' &&
@@ -251,9 +272,14 @@ spec:
         - expression: >-
               !has(object.metadata.annotations) ||
               object.metadata.annotations.all(k, v,
-                k == 'alb.ingress.kubernetes.io/healthcheck-path' &&
-                v.matches('^/[a-zA-Z0-9/_-]*$'))
-          message: preview Ingress annotations are restricted to a safe healthcheck path
+                (!variables.helmPlaceholder &&
+                  k == 'alb.ingress.kubernetes.io/healthcheck-path' &&
+                  v.matches('^/[a-zA-Z0-9/_-]*$')) ||
+                (variables.helmPlaceholder && (
+                  (k == 'helm.sh/resource-policy' && v == 'keep') ||
+                  (k == 'meta.helm.sh/release-name' && v == {{ .Release.Name | quote }}) ||
+                  (k == 'meta.helm.sh/release-namespace' && v == {{ .Release.Namespace | quote }}))))
+          message: preview Ingress annotations are restricted to a safe healthcheck path or the named placeholder's Helm ownership
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

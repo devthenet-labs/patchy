@@ -118,17 +118,22 @@ rollback to a revision without previews therefore orphans them rather than silen
 its workloads without admission/network controls. The slot policies still match every supported slot name (0–3) when
 `slotCount` is reduced, while outside-slot policies deny new tolerations and `alb-preview` Ingresses in retired slots.
 Retained per-slot bindings and NetworkPolicies remain until drained. The operator must not treat rollback as cleanup.
-Drain deliberately:
+With `preview.enabled: true`, the chart also keeps a selectorless `patchy-preview-placeholder` Service and Ingress in
+slot 0. The Service has no endpoints and schedules no Pod; the Ingress keeps the separate `alb-preview` ALB and its DNS
+name stable between previews. The only slot resources allowed Helm ownership/keep annotations are that exact Service and
+Ingress in slot 0. **Creating the placeholder starts ALB charges even while `previewController.enabled: false`.** Drain
+deliberately:
 
 1. Disable new preview scheduling and wait for or delete the Preview CRs after their finalizers complete. Before
    removing the chart or namespace, inspect **each** slot with
    `kubectl get pods,deployments,replicasets,statefulsets,daemonsets,jobs,cronjobs,services,ingresses -n patchy-preview-0`
    (and `patchy-preview-1`, or every configured slot). Empty means no application objects, not merely no Ready pods.
    Investigate and delete leftovers explicitly.
-2. Remove any preview Ingress/ALB and its DNS alias using the infrastructure rollback plan. Only after the slots are
-   empty, remove the kept namespace resources and their cluster-scoped `patchy-preview-*` admission policies/bindings
-   and `alb-preview` class/params intentionally. Retain the guards if any workload remains. Helm will no longer manage
-   kept resources after uninstall/rollback, so a later reinstall needs an explicit adoption/cleanup check.
+2. Remove the wildcard DNS alias before deleting the kept placeholder Ingress and Service; then verify the preview ALB
+   is gone. Remove any other preview Ingress using the infrastructure rollback plan. Only after the slots are empty,
+   remove the kept namespace resources and their cluster-scoped `patchy-preview-*` admission policies/bindings and
+   `alb-preview` class/params intentionally. Retain the guards if any workload remains. Helm will no longer manage kept
+   resources after uninstall/rollback, so a later reinstall needs an explicit adoption/cleanup check.
 
 The render gate checks the exact DNS-only egress, ALB source ingress, exact namespace selectors, and keep annotations.
 The envtest gate applies the _rendered_ admission policies to a real API server and proves slot placement and
@@ -166,8 +171,8 @@ resources even after a lost CR. **Do not reduce `slotCount` or disable the contr
 restore the old slot count and drain via the Preview finalizer first. Helm's `keep` annotations protect the namespace
 and guardrails but are not a substitute for that drain.
 
-This release deliberately keeps `previewController.enabled: false` and `preview.enabled: false`. The separate preview
-ALB, placeholder Ingress and wildcard DNS still require an operator-reviewed infrastructure check-in before apply.
+The chart renders the placeholder only when `preview.enabled: true`. The devthenet rollout keeps both preview switches
+false; the separate ALB and wildcard DNS require their own operator-reviewed infrastructure check-ins before apply.
 
 ## Agent isolation
 

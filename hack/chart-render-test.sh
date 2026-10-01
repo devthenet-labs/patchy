@@ -119,6 +119,18 @@ expect default-cilium 'select(.metadata.name == "patchy-source-controller-cloud-
 render preview -f "$fixtures/preview-foundation.yaml"
 render preview-runtime -f "$fixtures/preview-foundation.yaml" \
   -f "$fixtures/intent-controller.yaml" -f "$fixtures/preview-controller.yaml"
+expect preview 'select(.kind == "Service" and .metadata.name == "patchy-preview-placeholder") | .metadata.namespace' patchy-preview-0
+expect preview 'select(.kind == "Service" and .metadata.name == "patchy-preview-placeholder") | .spec.type' ClusterIP
+expect preview 'select(.kind == "Service" and .metadata.name == "patchy-preview-placeholder") | .spec | has("selector")' false
+expect preview 'select(.kind == "Service" and .metadata.name == "patchy-preview-placeholder") | .metadata.annotations."helm.sh/resource-policy"' keep
+expect preview 'select(.kind == "Ingress" and .metadata.name == "patchy-preview-placeholder") | .metadata.namespace' patchy-preview-0
+expect preview 'select(.kind == "Ingress" and .metadata.name == "patchy-preview-placeholder") | .spec.ingressClassName' alb-preview
+expect preview 'select(.kind == "Ingress" and .metadata.name == "patchy-preview-placeholder") | .spec.rules[0].host' placeholder.preview.patchy.devthe.net
+expect preview 'select(.kind == "Ingress" and .metadata.name == "patchy-preview-placeholder") | .spec.rules[0].http.paths[0].backend.service.name' patchy-preview-placeholder
+expect preview 'select(.kind == "Ingress" and .metadata.name == "patchy-preview-placeholder") | .metadata.annotations."helm.sh/resource-policy"' keep
+expect preview 'select(.kind == "Ingress" and .metadata.name == "patchy-preview-placeholder") | .spec | has("tls")' false
+expect preview 'select(.kind == "Ingress" and .metadata.name == "patchy-preview-placeholder") | .spec | has("defaultBackend")' false
+expect preview 'select(.kind == "Pod" and (.metadata.namespace | test("^patchy-preview-"))) | .metadata.name' ""
 expect preview-runtime 'select(.kind == "Deployment" and .metadata.name == "patchy-preview-controller") | .spec.template.spec.containers[0].image | split(":") | .[0]' \
   ghcr.io/devthenet-labs/patchy/preview-controller
 expect preview-runtime 'select(.kind == "ServiceAccount" and .metadata.name == "patchy-preview-controller") | .metadata.namespace' patchy

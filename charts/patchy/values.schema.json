@@ -309,6 +309,40 @@
                 "albName": {"type": "string", "pattern": "^$|^[a-z][a-z0-9-]{0,31}$"}
             }
         },
+        "previewController": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["enabled", "config", "serviceAccount", "networkPolicy"],
+            "properties": {
+                "enabled": {"type": "boolean"},
+                "image": {"$ref": "#/definitions/imageOverride"},
+                "config": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["apiServerCIDR", "rolloutTimeout", "pollInterval", "maxRetries"],
+                    "properties": {
+                        "apiServerCIDR": {"type": "string", "pattern": "^$|^[0-9]{1,3}(\\.[0-9]{1,3}){3}/32$"},
+                        "rolloutTimeout": {"$ref": "#/definitions/duration"},
+                        "pollInterval": {"$ref": "#/definitions/duration"},
+                        "maxRetries": {"type": "integer", "minimum": 1, "maximum": 3},
+                        "extra": {"$ref": "#/definitions/extraEnv"}
+                    }
+                },
+                "resources": {"type": "object"},
+                "podAnnotations": {"type": "object"},
+                "podLabels": {"type": "object"},
+                "nodeSelector": {"type": "object"},
+                "tolerations": {"type": "array", "items": {"type": "object"}},
+                "affinity": {"type": "object"},
+                "serviceAccount": {"$ref": "#/definitions/serviceAccount"},
+                "networkPolicy": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["create"],
+                    "properties": {"create": {"type": "boolean"}}
+                }
+            }
+        },
         "global": {
             "type": "object"
         },

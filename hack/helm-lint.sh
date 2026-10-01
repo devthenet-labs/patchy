@@ -25,6 +25,12 @@ helm template patchy charts/patchy --set statusServer.enabled=false >/dev/null
 # and the non-default EKS IngressClass must render together.
 helm lint charts/patchy -f hack/testdata/chart-render/preview-foundation.yaml
 helm template patchy charts/patchy -f hack/testdata/chart-render/preview-foundation.yaml >/dev/null
+helm lint charts/patchy -f hack/testdata/chart-render/preview-foundation.yaml \
+  -f hack/testdata/chart-render/intent-controller.yaml \
+  -f hack/testdata/chart-render/preview-controller.yaml
+helm template patchy charts/patchy -f hack/testdata/chart-render/preview-foundation.yaml \
+  -f hack/testdata/chart-render/intent-controller.yaml \
+  -f hack/testdata/chart-render/preview-controller.yaml >/dev/null
 
 # The egress broker: rendered by default (claude enabled ⇒ broker), absent
 # when only non-brokered runners are enabled, and one render per provider.

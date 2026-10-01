@@ -77,6 +77,37 @@ preview:
     hostSuffix: "" # e.g. preview.patchy.devthe.net, without leading dot.
     albName: "" # Distinct from the normal patchy ALB.
 
+# Namespaced runtime renderer for opt-in Projects. Kept off while preview
+# isolation, the separate ALB, placeholder Ingress and DNS are being staged.
+# Enabling it requires preview.enabled and intentController.enabled too.
+previewController:
+    enabled: false
+    image: {}
+    config:
+        apiServerCIDR: "" # In-cluster Kubernetes Service /32, never 0.0.0.0/0.
+        rolloutTimeout: 10m
+        pollInterval: 15s
+        maxRetries: 3
+        extra: {}
+    resources:
+        requests:
+            cpu: 25m
+            memory: 64Mi
+        limits:
+            cpu: 250m
+            memory: 128Mi
+    podAnnotations: {}
+    podLabels: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    serviceAccount:
+        create: true
+        name: ""
+        annotations: {}
+    networkPolicy:
+        create: true
+
 # Extra labels stamped on every object the chart renders.
 commonLabels: {}
 

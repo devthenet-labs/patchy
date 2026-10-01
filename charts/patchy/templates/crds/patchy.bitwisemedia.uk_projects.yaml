@@ -303,6 +303,39 @@ spec:
                         type: integer
                     type: object
                 type: object
+              preview:
+                description: |-
+                  Preview opts this Project into the slice-2 preview flow. Omitted means
+                  its PRs are never deployed, even if the preview-controller is enabled.
+                  Only operator-authored Project configuration can supply the runtime
+                  image repository and serving port; issue and agent text cannot.
+                properties:
+                  imageRepository:
+                    description: |-
+                      ImageRepository is an immutable-tag runtime repository under the
+                      operator's preview registry, such as <registry>/patchy/previews/demo.
+                      The preview-controller also checks its configured image prefix.
+                    maxLength: 255
+                    minLength: 1
+                    pattern: ^[a-z0-9][a-z0-9.:-]*/patchy/previews/[a-z0-9-]+$
+                    type: string
+                  port:
+                    description: Port is the one HTTP container/service port.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  readinessPath:
+                    description: ReadinessPath is a safe HTTP path, also used by the
+                      ALB health check.
+                    maxLength: 128
+                    pattern: ^/[a-zA-Z0-9/_-]*$
+                    type: string
+                required:
+                - imageRepository
+                - port
+                - readinessPath
+                type: object
               repositories:
                 description: |-
                   Repositories are the application repositories intents build in; the

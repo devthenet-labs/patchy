@@ -17,7 +17,7 @@ hour, get context-enhanced, then a sandboxed `claude -p` run investigates each o
 remediated in priority order into pull requests, everything else routes to humans. Completed findings expire on a
 TTL; `FindingRollup` resources keep the all-time statistics.
 
-Eleven binaries, one module. "Not monolithic" means separate binaries/deployments with shared `internal/` code:
+Twelve binaries, one module. "Not monolithic" means separate binaries/deployments with shared `internal/` code:
 
 - `cmd/integration-controller` — the single internet-facing entry point, driven by `Integration` CRs: validates
   provider webhooks (`/github/webhooks` HMAC, `/google-cloud/webhooks` Pub/Sub OIDC, `/wiz/webhooks` bearer
@@ -74,6 +74,11 @@ Eleven binaries, one module. "Not monolithic" means separate binaries/deployment
   (`forge.Store.TokenWith`), has no ClusterRole and no inbound surface. Only
   writer of Project status, Intent and IntentRun. Its own flags carry an `intent-` prefix (`PATCHY_INTENT_*`); it runs
   on brokered claude only (or the fake harness in dev).
+- `cmd/preview-controller` — OPTIONAL (default-off): renders one `Preview` per eligible Intent PR into a fixed,
+  isolated slot namespace. It uses only the Kubernetes API, with namespaced Roles and no GitHub, AWS, ECR or Secret
+  access. It owns Preview status, fixed Deployment/Service/Ingress objects, bounded retries, slot cleanup and a
+  periodic orphan sweep. Intent-controller projects the operator's Project preview config and recorded PR head into
+  Preview spec only when explicitly enabled. See `docs/configuration/preview-controller.md`.
 - `cmd/status-server` — the human-facing status page (NOT a controller: no reconcilers, no leases): the embedded
   SPA + JSON projection of Findings/FindingRollups, SSE refetch signal, OIDC sign-in, the access-review-gated
   approve/retry/expedite/suspend/resume actions, and the user-menu demo tooling (replay → Integration
@@ -154,7 +159,8 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   never part of the Finding transition table), `controller/intent` (Project validation + discovery, the Intent
   phase machine and its GitHub writes, the IntentRun scheduler with launch/collect/push, the Intent TTL; one
   writer reconciler per status and its own phase table, `v1alpha1.SetIntentPhase`, beside Finding's; `doc.go` holds
-  the single-writer table and the durable-settle rules).
+  the single-writer table and the durable-settle rules), `controller/preview` (fixed slot workload renderer,
+  bounded rollout, cleanup and orphan sweep; no forge access).
 - `kube` — the controller-runtime manager wrapper: scheme, kubeconfig/in-cluster config, leader election,
   multi-namespace cache, health probes, logr↔slog bridge. Secrets are never cached; a controller that needs only
   its own ConfigMaps confines their informer by label (`ConfigMapSelector`; intent-controller does, so the Finding

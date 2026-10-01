@@ -96,6 +96,7 @@ notes_has() {
 # ---- feature off: the default render carries none of it --------------------
 render default
 expect default 'select(.metadata.name == "alb-preview" or (.metadata.name | test("^patchy-preview-")) or (.metadata.namespace | test("^patchy-preview-"))) | .kind' ""
+expect default 'select(.metadata.name == "patchy-preview-controller") | .kind' ""
 for key in PATCHY_REPOSITORY_IMAGES PATCHY_REPOSITORY_IMAGE_REGISTRIES PATCHY_REPOSITORY_IMAGE_ON_REJECT \
   PATCHY_REPOSITORY_IMAGE_COSIGN_KEY_FILE PATCHY_AGENT_EPHEMERAL_STORAGE PATCHY_CHANGESET_MAX_ENTRIES DOCKER_CONFIG; do
   expect default "select(.kind == \"ConfigMap\") | .data.$key | select(. != null)" ""
@@ -116,6 +117,36 @@ expect default-cilium 'select(.metadata.name == "patchy-source-controller-cloud-
 
 # ---- preview security foundation (no workloads or ALB until later) ---------
 render preview -f "$fixtures/preview-foundation.yaml"
+render preview-runtime -f "$fixtures/preview-foundation.yaml" \
+  -f "$fixtures/intent-controller.yaml" -f "$fixtures/preview-controller.yaml"
+expect preview-runtime 'select(.kind == "Deployment" and .metadata.name == "patchy-preview-controller") | .spec.template.spec.containers[0].image | split(":") | .[0]' \
+  ghcr.io/devthenet-labs/patchy/preview-controller
+expect preview-runtime 'select(.kind == "ServiceAccount" and .metadata.name == "patchy-preview-controller") | .metadata.namespace' patchy
+expect preview-runtime 'select(.kind == "Role" and .metadata.name == "patchy-preview-controller") | .metadata.namespace' \
+  'patchy
+patchy-preview-0
+patchy-preview-1'
+expect preview-runtime 'select(.kind == "ClusterRole" and .metadata.name == "patchy-preview-controller") | .kind' ""
+expect preview-runtime 'select(.kind == "Role" and .metadata.namespace == "patchy" and .metadata.name == "patchy-preview-controller") | .rules[] | select(.resources[] == "projects") | .verbs[]' get
+expect preview-runtime 'select(.kind == "Role" and .metadata.name == "patchy-preview-controller") | .rules[].resources[] | select(. == "secrets" or . == "namespaces" or . == "networkpolicies")' ""
+expect preview-runtime 'select(.kind == "NetworkPolicy" and .metadata.name == "patchy-preview-controller") | .spec.egress[].to[].ipBlock.cidr | select(. != null)' 172.20.0.1/32
+cm preview-runtime preview-controller PATCHY_PREVIEW_SLOT_COUNT 2
+cm preview-runtime preview-controller PATCHY_PREVIEW_IMAGE_PREFIX 377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/
+cm preview-runtime preview-controller PATCHY_PREVIEW_HOST_SUFFIX preview.patchy.devthe.net
+cm preview-runtime preview-controller PATCHY_PREVIEW_NODE_POOL patchy-preview
+cm preview-runtime preview-controller PATCHY_PREVIEW_NODE_CLASS patchy-preview
+cm preview-runtime preview-controller PATCHY_PREVIEW_TAINT_KEY patchy.devthe.net/preview-only
+cm preview-runtime intent-controller PATCHY_INTENT_PREVIEWS_ENABLED true
+expect_fail 'preview controller without slots' 'requires preview.enabled' \
+  -f "$fixtures/intent-controller.yaml" -f "$fixtures/preview-controller.yaml"
+expect_fail 'preview controller without intent writer' 'requires intentController.enabled' \
+  -f "$fixtures/preview-foundation.yaml" -f "$fixtures/preview-controller.yaml"
+expect_fail 'preview controller without API CIDR' 'apiServerCIDR is required' \
+  -f "$fixtures/preview-foundation.yaml" -f "$fixtures/intent-controller.yaml" \
+  --set previewController.enabled=true
+expect_fail 'preview controller with broad API CIDR' 'does not match pattern' \
+  -f "$fixtures/preview-foundation.yaml" -f "$fixtures/intent-controller.yaml" \
+  --set previewController.enabled=true --set previewController.config.apiServerCIDR=0.0.0.0/0
 expect preview 'select(.kind == "Namespace" and (.metadata.name | test("^patchy-preview-"))) | .metadata.name' 'patchy-preview-0
 patchy-preview-1'
 expect preview 'select(.kind == "Namespace" and (.metadata.name | test("^patchy-preview-"))) | .metadata.labels."pod-security.kubernetes.io/enforce"' 'restricted

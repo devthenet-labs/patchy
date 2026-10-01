@@ -1,0 +1,215 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Optional, namespaced runtime renderer. It has no GitHub, ECR, AWS, Secret,
+# namespace or cluster-scoped permissions. The separate preview.enabled
+# foundation must be present before any workload can run.
+{{- if .Values.previewController.enabled }}
+{{- if not .Values.preview.enabled }}{{ fail "previewController.enabled requires preview.enabled: the guarded slot namespaces must exist" }}{{ end }}
+{{- if not .Values.intentController.enabled }}{{ fail "previewController.enabled requires intentController.enabled: only intent-controller writes Preview spec" }}{{ end }}
+{{- if not .Values.previewController.networkPolicy.create }}{{ fail "previewController.enabled requires its API-only NetworkPolicy" }}{{ end }}
+{{- if not .Values.previewController.config.apiServerCIDR }}{{ fail "previewController.config.apiServerCIDR is required when enabled" }}{{ end }}
+{{- $vals := .Values.previewController }}
+{{- $name := "preview-controller" }}
+{{- $c := dict "name" $name "vals" $vals }}
+{{- $sa := include "patchy.serviceAccountName" (dict "root" . "name" $name "vals" $vals) }}
+{{- if $vals.serviceAccount.create }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" . "extra" $vals.serviceAccount.annotations) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+{{- end }}
+{{- include "patchy.controllerConfigMap" (dict "root" . "c" $c) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: {{ include "patchy.fullname" . }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [previews]
+      verbs: [get, list, watch, update, delete]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [previews/status, previews/finalizers]
+      verbs: [update]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [intents, projects]
+      verbs: [get]
+    - apiGroups: [coordination.k8s.io]
+      resources: [leases]
+      verbs: [get, create, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: {{ include "patchy.fullname" . }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: {{ include "patchy.fullname" . }}-{{ $name }}
+subjects:
+    - kind: ServiceAccount
+      name: {{ $sa }}
+      namespace: {{ .Release.Namespace }}
+{{- range $i := until (int .Values.preview.slotCount) }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: {{ include "patchy.fullname" $ }}-{{ $name }}
+    namespace: patchy-preview-{{ $i }}
+rules:
+    - apiGroups: [apps]
+      resources: [deployments]
+      verbs: [create, get, list, update, patch, delete]
+    - apiGroups: ["" ]
+      resources: [services]
+      verbs: [create, get, list, update, patch, delete]
+    - apiGroups: [networking.k8s.io]
+      resources: [ingresses]
+      verbs: [create, get, list, update, patch, delete]
+    - apiGroups: ["" ]
+      resources: [pods]
+      verbs: [list]
+    - apiGroups: [apps]
+      resources: [replicasets]
+      verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: {{ include "patchy.fullname" $ }}-{{ $name }}
+    namespace: patchy-preview-{{ $i }}
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: {{ include "patchy.fullname" $ }}-{{ $name }}
+subjects:
+    - kind: ServiceAccount
+      name: {{ $sa }}
+      namespace: {{ $.Release.Namespace }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: {{ include "patchy.fullname" . }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name "component" "controller") | nindent 8 }}
+spec:
+    replicas: 1
+    strategy:
+        type: Recreate
+    selector:
+        matchLabels:
+            {{- include "patchy.selectorLabels" (dict "root" . "name" $name) | nindent 12 }}
+    template:
+        metadata:
+            labels:
+                {{- include "patchy.labels" (dict "root" . "name" $name "component" "controller") | nindent 16 }}
+                {{- with $vals.podLabels }}{{- toYaml . | nindent 16 }}{{- end }}
+            annotations:
+                checksum/config: {{ include "patchy.controllerConfigMap" (dict "root" . "c" $c) | sha256sum }}
+                {{- with $vals.podAnnotations }}{{- toYaml . | nindent 16 }}{{- end }}
+        spec:
+            serviceAccountName: {{ $sa }}
+            {{- with .Values.image.pullSecrets }}
+            imagePullSecrets:
+                {{- toYaml . | nindent 16 }}
+            {{- end }}
+            securityContext:
+                runAsNonRoot: true
+                runAsUser: 65532
+                runAsGroup: 65532
+                seccompProfile:
+                    type: RuntimeDefault
+            containers:
+                - name: controller
+                  image: {{ include "patchy.image" (dict "root" . "binary" $name "image" $vals.image) }}
+                  imagePullPolicy: {{ .Values.image.pullPolicy }}
+                  args: [serve]
+                  envFrom:
+                      - configMapRef:
+                            name: {{ include "patchy.configMapName" (dict "root" . "name" $name) }}
+                  env:
+                      - name: POD_NAMESPACE
+                        valueFrom:
+                            fieldRef:
+                                fieldPath: metadata.namespace
+                  ports:
+                      - name: health
+                        containerPort: 8081
+                  livenessProbe:
+                      httpGet: {path: /healthz, port: health}
+                      initialDelaySeconds: 5
+                      periodSeconds: 20
+                  readinessProbe:
+                      httpGet: {path: /readyz, port: health}
+                      initialDelaySeconds: 2
+                      periodSeconds: 10
+                  resources:
+                      {{- toYaml $vals.resources | nindent 22 }}
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities: {drop: [ALL]}
+                      seccompProfile: {type: RuntimeDefault}
+                  volumeMounts:
+                      - name: tmp
+                        mountPath: /tmp
+            {{- with $vals.nodeSelector }}
+            nodeSelector:
+                {{- toYaml . | nindent 16 }}
+            {{- end }}
+            {{- with $vals.tolerations }}
+            tolerations:
+                {{- toYaml . | nindent 16 }}
+            {{- end }}
+            {{- with $vals.affinity }}
+            affinity:
+                {{- toYaml . | nindent 16 }}
+            {{- end }}
+            volumes:
+                - name: tmp
+                  emptyDir: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: {{ include "patchy.fullname" . }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+spec:
+    podSelector:
+        matchLabels:
+            {{- include "patchy.selectorLabels" (dict "root" . "name" $name) | nindent 12 }}
+    policyTypes: [Ingress, Egress]
+    ingress:
+        - ports:
+              - protocol: TCP
+                port: 8081
+    egress:
+        - to:
+              - namespaceSelector:
+                    matchLabels:
+                        kubernetes.io/metadata.name: kube-system
+          ports:
+              - {protocol: UDP, port: 53}
+              - {protocol: TCP, port: 53}
+        - to:
+              - ipBlock:
+                    cidr: {{ $vals.config.apiServerCIDR }}
+          ports:
+              - {protocol: TCP, port: 443}
+              - {protocol: TCP, port: 6443}
+{{- end }}

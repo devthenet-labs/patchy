@@ -286,6 +286,12 @@ type ProjectSpec struct {
 	// +optional
 	// +kubebuilder:default={}
 	Checks ProjectChecks `json:"checks,omitempty"`
+	// Preview opts this Project into the slice-2 preview flow. Omitted means
+	// its PRs are never deployed, even if the preview-controller is enabled.
+	// Only operator-authored Project configuration can supply the runtime
+	// image repository and serving port; issue and agent text cannot.
+	// +optional
+	Preview *ProjectPreview `json:"preview,omitempty"`
 	// RequireRepositoryImage, true by default, launches build and revise
 	// runs only on an accepted repository-declared runner image (the
 	// Repository's pinned, not-rejected image) and blocks the Intent with
@@ -298,6 +304,29 @@ type ProjectSpec struct {
 	// of its intents is launched. Running Jobs finish.
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
+}
+
+// ProjectPreview is the operator's fixed runtime contract for this Project's
+// sole application repository (slice 2 is single-repository). ImageRepository
+// omits the tag; intent-controller supplies the observed PR head as an
+// immutable sha-<40 hex> tag. No Dockerfile, image name, port or path comes
+// from issue text or from the build agent.
+type ProjectPreview struct {
+	// ImageRepository is an immutable-tag runtime repository under the
+	// operator's preview registry, such as <registry>/patchy/previews/demo.
+	// The preview-controller also checks its configured image prefix.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9.:-]*/patchy/previews/[a-z0-9-]+$`
+	ImageRepository string `json:"imageRepository"`
+	// Port is the one HTTP container/service port.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port"`
+	// ReadinessPath is a safe HTTP path, also used by the ALB health check.
+	// +kubebuilder:validation:Pattern=`^/[a-zA-Z0-9/_-]*$`
+	// +kubebuilder:validation:MaxLength=128
+	ReadinessPath string `json:"readinessPath"`
 }
 
 // ProjectStatus is the Project's observed state. Written only by

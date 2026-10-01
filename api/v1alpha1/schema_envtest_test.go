@@ -314,6 +314,7 @@ func TestSchemaValidation(t *testing.T) {
 
 	t.Run("intent spec is immutable except suspend and its status is bounded", func(t *testing.T) {
 		testIntentSchema(ctx, t, c)
+		testPreviewSchema(ctx, t, c)
 	})
 
 	t.Run("intent run spec is immutable and holds its stage invariants", func(t *testing.T) {

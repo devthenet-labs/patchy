@@ -30,6 +30,9 @@ data:
     PATCHY_INTENT_APPROVAL_POLL_INTERVAL: 30s
     # An intent in review polls its pull request this often.
     PATCHY_INTENT_PR_POLL_INTERVAL: 60s
+    # Preview projection is off until the chart-provisioned slot foundation
+    # and preview-controller are enabled together.
+    PATCHY_INTENT_PREVIEWS_ENABLED: "false"
     # Pause intent polling while the GitHub installation has fewer core
     # requests left than this, so intents never starve the security flow's
     # share of the rate limit. "0" disables the floor.

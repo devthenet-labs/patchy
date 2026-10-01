@@ -1,0 +1,6 @@
+*
+!go.mod
+!cmd/
+!cmd/netprobe/
+!cmd/netprobe/*.go
+!Dockerfile

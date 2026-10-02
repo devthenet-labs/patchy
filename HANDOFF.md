@@ -1,6 +1,101 @@
 # Handoff: intent-driven development in patchy
 
-## Latest checkpoint — 2026-09-27
+## Current checkpoint — 2026-10-02 (source of truth; older checkpoints below are historical)
+
+**Stop here for handover. Stage 1 is complete; stage 2 has not been approved or started.** The preview foundation is
+enabled only to stage retained guardrails. No preview workload, placeholder Service/Ingress, preview ALB, wildcard DNS
+record, Preview CR, or `preview-demo` Project exists. `previewController.enabled` is false. Do not create the
+placeholder Ingress or enable the controller until the owner approves the respective future steps. The older "Next
+steps" and "Preview update" sections below are historical; this checkpoint supersedes their live-state claims.
+
+### Merged, released, applied
+
+- patchy PR #76 merged the Preview CR, fixed-slot preview-controller and Intent-to-Preview projection; release PR #77
+  published **0.12.10**. PR #78 merged the kept, selectorless placeholder Service/Ingress and exact-name Helm annotation
+  exception; release PR #79 published **0.12.11**. A live server-side dry run found that the _retained old_ slot
+  admission policy would reject the placeholder during a direct enablement upgrade. PR #80 therefore added
+  `preview.placeholder.enabled` (default true) so admission can be upgraded first with the placeholder off; release PR
+  #81 published **0.12.12**. Both OCI charts and images are published. All local gates, separate security/liveness
+  reviews and CI passed on the chart PRs; release-please CI approvals followed the standing diff-only rule.
+- Live cluster: `patchy` chart/app **0.12.12, Helm revision 42**; `patchy-config` chart/app **0.12.12, revision 25**.
+  The 0.12.12 release was first deployed with both preview switches false (revisions **41/25**, pre-upgrade rollback
+  points **40/24**). Terraform values PR #25 then merged (`173b66f`) and a _patchy-only_ upgrade made revision **42**
+  with `preview.enabled: true`, `preview.placeholder.enabled: false`, `previewController.enabled: false`, and
+  `nodeIsolation: {nodePool: patchy-preview, nodeClass: patchy-preview, taintKey: patchy.devthe.net/preview-only}`. The
+  pre-stage-1 rollback points were **41/25**. Re-record both live revisions before any future upgrade; if stage 2 is
+  approved, **42/25** are the expected rollback points, not a substitute for a fresh check. Live Helm values match the
+  merged `k8s/patchy-values.yaml` plus TLS overlay and `k8s/patchy-config-values.yaml`.
+- Terraform PRs #18 (preview ECR repositories and split publisher OIDC roles), #19/#20 (certificate request and its
+  ACM-compatible correction), #23 (minimal preview node IAM role/policy/access entry), and #24 (runtime image lifecycle)
+  are merged; the corrected infrastructure is applied. The wildcard preview certificate is **ISSUED**. The runtime
+  repository `patchy/previews/patchy-preview-demo` now expires untagged images after 14 days and `sha-` tagged images
+  after 30 days; the agent-toolchain repository is outside that tagged rule. PR #25 changed Helm values only: no
+  Terraform resources were applied for stage 1. A fresh `AWS_PROFILE=devthenet terraform plan -detailed-exitcode` on
+  2026-10-02 exited **0: no changes** (only unrelated provider deprecation warnings). The separately applied
+  `k8s/auto-mode-preview-node.yaml` defines a Ready `patchy-preview` DefaultDeny NodeClass and tainted NoExecute
+  NodePool, with `spec.limits.cpu: "4"` and `spec.limits.nodes: "2"`, currently **zero nodes**. Treat CPU as the hard
+  spend bound; do not assume Auto Mode enforces the `nodes` limit without re-checking. The demo repo's trusted runtime
+  publisher remains enabled; no preview runtime is running.
+- The 0.12.11 fresh-Finding gate completed: CodeQL alert #36, Finding `finding-514becf18f-11`, issue #65, fix PR #66,
+  merge `291bd486bc541762618354399f0cf302dac10431`. The 0.12.12 gate also completed without manual correction: alert
+  #37, `finding-514becf18f-12`, issue #67, fix PR #68, merge `c4b37565d30ad9c5cb1ad2b79d775d09703ac87d`. In each gate
+  the remediation pushed SHA matched the PR head, Go/CodeQL checks passed, the Finding reached Remediated with the merge
+  SHA and no ReviewClosePending, the issue closed as completed with the remediated label, each patchy comment marker
+  appeared once, and main CodeQL fixed the alert without a duplicate Finding. No fresh Finding was seeded after the
+  values-only stage-1 revision.
+
+### Stage-1 live verification and rollback
+
+- All eight existing Deployments are 1/1 Ready with zero restarts; post-upgrade controller logs had no errors, panics or
+  failed reconciles. The `target` Project is Ready. Both slot namespaces have their `preview-isolation` NetworkPolicy
+  and preview admission bindings, but no Deployment, Pod, Service or Ingress. No active Job remains in `patchy-agents`,
+  and no probe is running. The dedicated NodePool is Ready at zero nodes.
+- A server-side dry run **accepted** only the rendered `patchy-preview-placeholder` Service and Ingress in slot 0 with
+  the exact Helm ownership/keep annotations. Dry runs **denied** the same annotations on a differently named Service and
+  Ingress in the slot, and denied `alb-preview` on an Ingress in `patchy`. This verifies the kept-policy staging fix
+  without creating the placeholder. AWS still returns `LoadBalancerNotFound` for `devthenet-dev-preview`; no preview ALB
+  or wildcard DNS exists. The existing webhook/status ALB kept ARN
+  `arn:aws:elasticloadbalancing:us-east-1:377946145366:loadbalancer/app/devthenet-dev/35727d407a91ad54`, DNS
+  `devthenet-dev-806232275.us-east-1.elb.amazonaws.com`, and creation time `2026-09-22T17:41:15.593Z`;
+  `https://status.patchy.devthe.net/` returned HTTP 200. No new App-delivery probe was run for stage 1; verify webhook
+  deliveries after the later ALB step as agreed.
+- Stage-1 rollback, if required: roll patchy back to revision **41** (patchy-config remains 25). Helm `keep` annotations
+  mean slot namespaces/guardrails may remain; inspect and deliberately drain before any explicit deletion. Never assume
+  `helm rollback` or uninstall silently removes a slot with workloads. The preview controller is off, so stage 1 cannot
+  schedule a preview.
+- Local checkout caveat for the next agent: `/Users/peter/code/patchy` has pre-existing, untracked `data/`, `debug.log`
+  and `info.log`; the original terraform-devthenet checkout has untracked `AGENTS.md`, `debug.log` and `info.log`. These
+  are not preview changes and were deliberately left untouched. Task branches and `/tmp` worktrees were audited; see the
+  final handover report for their remote-HEAD states. Work in a clean branch/worktree and preserve those files.
+
+### Open items and next steps — in this order
+
+1. **Ask for the owner's separate stage-2 ALB approval before changing anything.** The proposed change is only
+   `preview.placeholder.enabled: false -> true` in `k8s/patchy-values.yaml`, followed by a separate patchy Helm revision
+   using 0.12.12. It renders the kept, selectorless placeholder Service and `alb-preview` Ingress in slot 0; this starts
+   the agreed estimated ~$25–35/month incremental ALB cost even without workloads. Re-record rollback revisions first.
+   Keep `previewController.enabled: false`. Verify the new ALB name/DNS, certificate, HTTPS listener, exact
+   `75.70.97.14/32` inbound CIDR, empty target group, zero preview nodes/workloads, unchanged shared ALB ARN/DNS/
+   creation time, 2xx GitHub App Recent Deliveries to `patchy.devthe.net`, and the status page. On failure, inspect
+   empty slots, explicitly delete the **named** kept placeholder Ingress/Service to remove the ALB, then roll back to
+   the guardrails-only revision; Helm rollback alone will not delete kept resources. Check in before this apply.
+2. **Wildcard DNS after the preview ALB exists:** prepare the Route53 alias Terraform PR/plan for
+   `*.preview.patchy.devthe.net` against the actual new ALB DNS/canonical zone, review the plan and rollback with the
+   owner, and do not apply until separately approved. The preview cert is ready; DNS is not present.
+3. **Then the `preview-demo` Project:** configure only `devthenet-labs/patchy-preview-demo` in patchy-config, enable the
+   preview-controller/Intent preview projection in a separate approved Helm revision, and run the live preview
+   demo/cleanup and fresh-Finding gate. **Never preview patchy-target.** Keep the preview pool at zero when idle.
+4. **Known validation gap:** direct EKS Auto Mode network-policy-agent logs were unavailable during the accepted
+   first-instant, Deployment-managed cold-start isolation probe. The observed network behaviour passed, but the
+   `no bpf context registered` agent-log check remains **open**. Use `hack/preview-isolation-probe/README.md` and
+   `run.sh` (merged on main); re-run its disposable, unmerged PR-image probe after any EKS, Auto Mode or VPC CNI upgrade
+   and before relying on previews again. Any forbidden success is a security failure: remove the probe Deployment, keep
+   previews unused, and investigate. Obtain managed-agent/node diagnostics later to close the log gap. Intent CI
+   check-fix has not been exercised live; Finding PR CodeQL fix rounds remain a separate follow-up below. The
+   intent-controller advisory broker-probe cleanup **is already implemented**: it uses
+   `runnercfg.ResolveWithoutBrokerProbe`, with a regression test asserting no controller-side broker readiness call.
+
+## Historical checkpoint — 2026-09-27
 
 The `__Host-` cookie prerequisite (PR #67) is merged and released by PR #68 as **0.12.7**. Live: patchy revision **34**,
 patchy-config revision **20**, intents enabled. Pre-upgrade rollback points were **33 / 19** (0.12.6). All eight pods
@@ -86,11 +181,12 @@ See [the permission audit](docs/design/intent-github-permissions.md) for non-wri
 `roundNoticesThrough` to Intent status; it recovers old missing notices without launching work or charging revisions.
 Keep intents disabled until that fix is released and gated. Before enabling, record both Helm rollback revisions.
 
-Historical status as of 2026-09-24; the 2026-10-01 preview update above is current. Written so another coding agent can
-continue without the previous session's context. Read this whole file, then `AGENTS.md` (orientation), then
-`docs/design/intent-driven-development.md` (the accepted design — the source of truth for what to build).
+Historical status as of 2026-09-24; the current checkpoint at the top supersedes this and the 2026-10-01 update. Written
+so another coding agent can continue without the previous session's context. Read this whole file, then `AGENTS.md`
+(orientation), then `docs/design/intent-driven-development.md` (the accepted design — the source of truth for what to
+build).
 
-## Preview update (2026-10-01; supersedes the older status below)
+## Historical preview update (2026-10-01; superseded by the current checkpoint above)
 
 - Slice 1a and 1b are merged and live. The preview prerequisites are live through patchy 0.12.9 (Helm revision 38) and
   patchy-config 0.12.9 (revision 22). `preview.enabled` is **false** in the live Helm values and in terraform-devthenet.
@@ -109,10 +205,8 @@ continue without the previous session's context. Read this whole file, then `AGE
   EKS Auto Mode or VPC CNI upgrade, and before relying on previews again. The re-run procedure and probe source are in
   `hack/preview-isolation-probe/README.md`; never merge the probe into preview-demo's main branch. Any forbidden success
   is a security failure: remove the probe Deployment, keep previews unused, and investigate.
-- The live ECR lifecycle policy for `patchy/previews/patchy-preview-demo` still expires **untagged images only** after
-  14 days. It has no tagged-preview-image expiry. Include a tagged `sha-` preview image expiry rule (for example older
-  than 30 days, after the 72-hour preview lifetime) in the next terraform-devthenet infrastructure check-in; do not
-  claim it is already applied.
+- At this 2026-10-01 checkpoint, ECR still expired only untagged images. Terraform PR #24 later added and applied 30-day
+  `sha-` tagged-image expiry; see the current checkpoint above.
 - Next: implement the Preview CR and preview-controller, the Intent-to-Preview PR-head projection, and their chart
   wiring, tests and release with preview disabled. Check in and get approval **before** applying the preview ALB,
   placeholder Ingress or wildcard DNS. The user's later instructions supersede the historical next-step list below.
@@ -182,18 +276,18 @@ repos report `read` for everyone, so `read` is never enough).
 
 ## Where everything is
 
-| Thing                           | Where                                                                                                                                                                                                                                                                                                                           |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| patchy fork (work here)         | `devthenet-labs/patchy`, local `/Users/peter/code/patchy`. `upstream` (bitwise-media-group) is read-only. Always pass `--repo devthenet-labs/patchy` to `gh` (bare PR numbers can resolve to upstream).                                                                                                                         |
-| Infra (terraform + Helm values) | `/Users/peter/code/DevTheNet/terraform-devthenet` (remote `brvtl/terraform-devthenet`), Helm values in `k8s/`. AWS profile `devthenet` (`~/.aws`).                                                                                                                                                                              |
-| Cluster                         | EKS Auto Mode `devthenet-dev`, us-east-1. Namespaces `patchy`, `patchy-agents`. `export AWS_PROFILE=devthenet`.                                                                                                                                                                                                                 |
-| Helm releases                   | `patchy` (chart `oci://ghcr.io/devthenet-labs/patchy/charts/patchy`, values `-f k8s/patchy-values.yaml -f k8s/patchy-values-tls.yaml`) and `patchy-config` (`.../charts/patchy-config`, `-f k8s/patchy-config-values.yaml`). Live: **0.12.0**, patchy rev 18, patchy-config rev 11 (rollback points rev 17 / rev 10 = 0.11.11). |
-| Hostnames                       | `patchy.devthe.net` (webhooks `/github/webhooks`), `status.patchy.devthe.net`.                                                                                                                                                                                                                                                  |
-| GitHub App                      | `patchy-devthenet` (id 5036888), installation 163854331 on all devthenet-labs repos; credentials in Secret `patchy/patchy-github` (keys `appID`, `privateKey`, `webhookSecret`).                                                                                                                                                |
-| App repo (demo target)          | `devthenet-labs/patchy-target` (deliberately vulnerable Go server; its agent image is `patchy/app-envs/patchy-target` in ECR, pushed by the per-app role `devthenet-labs-app-env-push-patchy-target`).                                                                                                                          |
-| Intent repo                     | `devthenet-labs/intents` (private): README, issue form `.github/ISSUE_TEMPLATE/target.yml` applying `patchy:target`, labels `patchy:target` and `patchy:approved`.                                                                                                                                                              |
-| Scratch repo                    | `devthenet-labs/patchy-smoke` (private) for API experiments.                                                                                                                                                                                                                                                                    |
-| Plans (git-ignored)             | `.claude/plans/intent-wave3-brief.md` (the controller contract), `.claude/plans/intent-dev-understand-maps.md` (codebase maps). Local only.                                                                                                                                                                                     |
+| Thing                           | Where                                                                                                                                                                                                                                                                                                    |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| patchy fork (work here)         | `devthenet-labs/patchy`, local `/Users/peter/code/patchy`. `upstream` (bitwise-media-group) is read-only. Always pass `--repo devthenet-labs/patchy` to `gh` (bare PR numbers can resolve to upstream).                                                                                                  |
+| Infra (terraform + Helm values) | `/Users/peter/code/DevTheNet/terraform-devthenet` (remote `brvtl/terraform-devthenet`), Helm values in `k8s/`. AWS profile `devthenet` (`~/.aws`).                                                                                                                                                       |
+| Cluster                         | EKS Auto Mode `devthenet-dev`, us-east-1. Namespaces `patchy`, `patchy-agents`, and guarded empty slots `patchy-preview-0/1`. `export AWS_PROFILE=devthenet`.                                                                                                                                            |
+| Helm releases                   | `patchy` (chart `oci://ghcr.io/devthenet-labs/patchy/charts/patchy`, values `-f k8s/patchy-values.yaml -f k8s/patchy-values-tls.yaml`) and `patchy-config` (`.../charts/patchy-config`, `-f k8s/patchy-config-values.yaml`). Current live state and rollback points are in the current checkpoint above. |
+| Hostnames                       | `patchy.devthe.net` (webhooks `/github/webhooks`), `status.patchy.devthe.net`.                                                                                                                                                                                                                           |
+| GitHub App                      | `patchy-devthenet` (id 5036888), installation 163854331 on all devthenet-labs repos; credentials in Secret `patchy/patchy-github` (keys `appID`, `privateKey`, `webhookSecret`).                                                                                                                         |
+| App repo (demo target)          | `devthenet-labs/patchy-target` (deliberately vulnerable Go server; its agent image is `patchy/app-envs/patchy-target` in ECR, pushed by the per-app role `devthenet-labs-app-env-push-patchy-target`).                                                                                                   |
+| Intent repo                     | `devthenet-labs/intents` (private): README, issue form `.github/ISSUE_TEMPLATE/target.yml` applying `patchy:target`, labels `patchy:target` and `patchy:approved`.                                                                                                                                       |
+| Scratch repo                    | `devthenet-labs/patchy-smoke` (private) for API experiments.                                                                                                                                                                                                                                             |
+| Plans (git-ignored)             | `.claude/plans/intent-wave3-brief.md` (the controller contract), `.claude/plans/intent-dev-understand-maps.md` (codebase maps). Local only.                                                                                                                                                              |
 
 ## Where the work stands
 
@@ -372,7 +466,7 @@ No other work is in flight: every background agent and workflow has been stopped
 branch is merged. Stale local worktrees under `.claude/worktrees/wf_451798cb-b4d-*` and `wf_5ea15417-dc3-*` hold only
 already-pushed commits (or nothing) and can be removed once #51 is merged.
 
-## Next steps, in order
+## Historical next steps (completed or superseded; use the current checkpoint above)
 
 1. **Finish #51.** Check out `feature/intent-controller`, confirm the six round-3 items above are fixed (read the latest
    commits), apply the fakegithub fix, run every gate (below), push, wait for CI green. Merge `origin/main` in if it
@@ -436,22 +530,14 @@ already-pushed commits (or nothing) and can be removed once #51 is merged.
 
 - The shell is zsh: unquoted variables are **not** word-split (use `${=VAR}` or arrays); `cp` is aliased to `cp -i` (use
   `command cp -f`).
-- The owner's `gh` token lacks the `workflow` scope: pushes that touch `.github/workflows` must go over SSH git.
+- The owner's `gh` login has the `workflow` scope now; workflow-file pushes can use the normal SSH git path.
 - CodeQL occasionally uploads a zero-rule Go analysis; push an empty commit to re-run it.
 - `kubectl get … -w` stops when a Helm upgrade replaces a CRD; re-arm watches after upgrades.
 - Some editing tools turn `\uXXXX` escapes in Go source into literal invisible characters; scan changed files.
 - Before deleting worktrees, verify the branch is pushed (`git ls-remote` equals `HEAD`) and the tree is clean.
 
-## Known follow-ups (not started)
+## Other known follow-ups
 
-- Preview ECR retention currently expires only untagged images. Before sustained preview use, add a Terraform lifecycle
-  rule that expires tagged `sha-*` runtime images in `patchy/previews/patchy-preview-demo` after a bounded age (for
-  example, 30 days); apply the pattern to future preview projects. Keep the `patchy/app-envs` toolchain repository out
-  of that rule, and review the Terraform plan and rollback with the owner before applying it.
-- In the next release, have intent-controller skip the advisory egress-broker startup probe or log its result at info:
-  its NetworkPolicy deliberately blocks controller-to-broker traffic, while intent agent pods have their own broker
-  allowance. The current `runnercfg.Resolve` probe times out and warns on every intent-controller start, although it
-  does not gate readiness or launches.
 - Extend slice 1b's bounded check-fix rounds to Finding PRs: during the 0.12.1 live gate, patchy's `go/request-forgery`
   remediation passed its Go tests but its PR still failed CodeQL with a new critical alert, so it needed a separate
   manual correction. This is the second such miss after the earlier path-traversal case. A failing CodeQL check on a

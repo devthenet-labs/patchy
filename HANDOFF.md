@@ -1,6 +1,42 @@
 # Handoff: intent-driven development in patchy
 
-## Current checkpoint — 2026-10-02 (source of truth; older checkpoints below are historical)
+## Current checkpoint — 2026-10-02, evening (source of truth; Claude resumed from Codex)
+
+**Previews are set up and ready for the first live demo; no preview has run yet.** Done today, each owner-approved
+separately, with rollback points recorded before each Helm revision:
+
+- **Stage 2 (preview ALB):** terraform-devthenet #26 set `preview.placeholder.enabled: true`; patchy Helm **rev 43**.
+  Auto Mode created `devthenet-dev-preview` (ARN `…/app/devthenet-dev-preview/4b96adc30c66b9f7`, DNS
+  `devthenet-dev-preview-1425308117.us-east-1.elb.amazonaws.com`, created 2026-10-02T17:11:49Z): HTTPS 443 only,
+  `ELBSecurityPolicy-TLS13-1-2-2021-06`, the wildcard cert, SG inbound only `75.70.97.14/32` on 443, one empty target
+  group. Shared ALB unchanged (same ARN/DNS/creation time); a fresh App delivery returned 202; status page 200.
+- **Wildcard DNS:** terraform-devthenet #27 (`patchy-preview-dns.tf`): `*.preview.patchy.devthe.net` A alias to the
+  preview ALB, looked up by name like the shared ALB. Applied 1 add; fresh plan no changes. Names resolve to the preview
+  ALB; HTTPS from the owner's IP verifies the cert and returns 503 (no targets). The terraform checkout needed
+  `terraform init -reconfigure` (same S3 bucket/key/lock table; cached backend metadata had drifted).
+- **Demo toolchain image:** dispatched patchy-preview-demo `agent image` on main; the trusted publisher
+  (`publish images` → agent job; runtime job skipped) pushed `patchy/app-envs/patchy-preview-demo:toolchain-v1`
+  (`sha256:02b294e7…`). `.patchy/agent.yaml` already names it.
+- **Intents:** devthenet-labs/intents #3 added the `preview-demo` issue form; label `patchy:preview-demo` exists.
+- **Controller + Project:** terraform-devthenet #28: `previewController.enabled: true` with
+  `apiServerCIDR: 172.20.0.1/32` → patchy **rev 44**; Project `preview-demo` (repo patchy-preview-demo, approver brvtl,
+  preview `{imageRepository: …/patchy/previews/patchy-preview-demo, port: 8080, readinessPath: /healthz}`) →
+  patchy-config **rev 26**. Both Projects Ready; `target` has no `spec.preview` (never previewed). Nine Deployments
+  Ready, zero restarts; previews 0; preview nodes 0; slots empty.
+- **Rollback points:** before the controller: patchy 43 / patchy-config 25; before stage 2: patchy 42. Stage-2 rollback
+  must delete the named kept placeholder Ingress/Service (removing the ALB) before `helm rollback patchy 42`, and the
+  wildcard record (revert #27 + apply) should go first.
+
+**Known issue (follow-up chart fix):** the preview-controller's Role lacks `events` create, so its Kubernetes Events are
+rejected (`events is forbidden … cannot create resource "events"`). Function is unaffected; add `events` create/patch to
+its Role in the chart and release.
+
+**Next:** the live preview demo, driven by the owner (opens the intent with the preview-demo form, approves the plan,
+views the preview from 75.70.97.14, requests changes, merges); the agent watches each stage, verifies the preview is
+deployed at `preview-demo-<issue>.preview.patchy.devthe.net`, updates on the revision, and is torn down after merge with
+the pool back at zero; then a fresh-Finding gate.
+
+## Previous checkpoint — 2026-10-02 (Codex stage-1 handover; historical)
 
 **Stop here for handover. Stage 1 is complete; stage 2 has not been approved or started.** The preview foundation is
 enabled only to stage retained guardrails. No preview workload, placeholder Service/Ingress, preview ALB, wildcard DNS

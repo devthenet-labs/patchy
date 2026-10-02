@@ -6,6 +6,7 @@
 # foundation must be present before any workload can run.
 {{- if .Values.previewController.enabled }}
 {{- if not .Values.preview.enabled }}{{ fail "previewController.enabled requires preview.enabled: the guarded slot namespaces must exist" }}{{ end }}
+{{- if not .Values.preview.placeholder.enabled }}{{ fail "previewController.enabled requires preview.placeholder.enabled: the stable placeholder Ingress must be rendered" }}{{ end }}
 {{- if not .Values.intentController.enabled }}{{ fail "previewController.enabled requires intentController.enabled: only intent-controller writes Preview spec" }}{{ end }}
 {{- if not .Values.previewController.networkPolicy.create }}{{ fail "previewController.enabled requires its API-only NetworkPolicy" }}{{ end }}
 {{- if not .Values.previewController.config.apiServerCIDR }}{{ fail "previewController.config.apiServerCIDR is required when enabled" }}{{ end }}

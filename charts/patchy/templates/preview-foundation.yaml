@@ -145,6 +145,7 @@ spec:
         apiGroup: eks.amazonaws.com
         kind: IngressClassParams
         name: alb-preview
+{{- if $p.placeholder.enabled }}
 ---
 # Keep an empty target group so the separate preview ALB and its DNS name do
 # not churn between Preview CRs. This Service has no selector or endpoints;
@@ -184,4 +185,5 @@ spec:
                             name: patchy-preview-placeholder
                             port:
                                 number: 80
+{{- end }}
 {{- end }}

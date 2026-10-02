@@ -117,8 +117,12 @@ expect default-cilium 'select(.metadata.name == "patchy-source-controller-cloud-
 
 # ---- preview security foundation (no workloads or ALB until later) ---------
 render preview -f "$fixtures/preview-foundation.yaml"
+render preview-guardrails -f "$fixtures/preview-foundation.yaml" --set preview.placeholder.enabled=false
 render preview-runtime -f "$fixtures/preview-foundation.yaml" \
   -f "$fixtures/intent-controller.yaml" -f "$fixtures/preview-controller.yaml"
+expect preview-guardrails 'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name == "patchy-preview-ingresses") | .metadata.name' patchy-preview-ingresses
+expect preview-guardrails 'select(.metadata.name == "patchy-preview-placeholder") | .kind' ""
+expect preview-guardrails 'select(.kind == "Ingress" and (.metadata.namespace | test("^patchy-preview-"))) | .metadata.name' ""
 expect preview 'select(.kind == "Service" and .metadata.name == "patchy-preview-placeholder") | .metadata.namespace' patchy-preview-0
 expect preview 'select(.kind == "Service" and .metadata.name == "patchy-preview-placeholder") | .spec.type' ClusterIP
 expect preview 'select(.kind == "Service" and .metadata.name == "patchy-preview-placeholder") | .spec | has("selector")' false
@@ -151,6 +155,9 @@ cm preview-runtime preview-controller PATCHY_PREVIEW_TAINT_KEY patchy.devthe.net
 cm preview-runtime intent-controller PATCHY_INTENT_PREVIEWS_ENABLED true
 expect_fail 'preview controller without slots' 'requires preview.enabled' \
   -f "$fixtures/intent-controller.yaml" -f "$fixtures/preview-controller.yaml"
+expect_fail 'preview controller without stable placeholder' 'requires preview.placeholder.enabled' \
+  -f "$fixtures/preview-foundation.yaml" -f "$fixtures/intent-controller.yaml" \
+  -f "$fixtures/preview-controller.yaml" --set preview.placeholder.enabled=false
 expect_fail 'preview controller without intent writer' 'requires intentController.enabled' \
   -f "$fixtures/preview-foundation.yaml" -f "$fixtures/preview-controller.yaml"
 expect_fail 'preview controller without API CIDR' 'apiServerCIDR is required' \

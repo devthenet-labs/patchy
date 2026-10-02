@@ -118,11 +118,14 @@ rollback to a revision without previews therefore orphans them rather than silen
 its workloads without admission/network controls. The slot policies still match every supported slot name (0–3) when
 `slotCount` is reduced, while outside-slot policies deny new tolerations and `alb-preview` Ingresses in retired slots.
 Retained per-slot bindings and NetworkPolicies remain until drained. The operator must not treat rollback as cleanup.
-With `preview.enabled: true`, the chart also keeps a selectorless `patchy-preview-placeholder` Service and Ingress in
-slot 0. The Service has no endpoints and schedules no Pod; the Ingress keeps the separate `alb-preview` ALB and its DNS
-name stable between previews. The only slot resources allowed Helm ownership/keep annotations are that exact Service and
-Ingress in slot 0. **Creating the placeholder starts ALB charges even while `previewController.enabled: false`.** Drain
-deliberately:
+With `preview.enabled: true` and the default `preview.placeholder.enabled: true`, the chart also keeps a selectorless
+`patchy-preview-placeholder` Service and Ingress in slot 0. The Service has no endpoints and schedules no Pod; the
+Ingress keeps the separate `alb-preview` ALB and its DNS name stable between previews. The only slot resources allowed
+Helm ownership/keep annotations are that exact Service and Ingress in slot 0. **Creating the placeholder starts ALB
+charges even while `previewController.enabled: false`.** If re-enabling previews after a rollback that kept an older
+slot admission policy, first upgrade with `preview.enabled: true` and `preview.placeholder.enabled: false` to update the
+guardrails without creating an ALB. Verify the new policy admits the placeholder via a server-side dry run, then enable
+the placeholder in a separate, approved Helm revision. Drain deliberately:
 
 1. Disable new preview scheduling and wait for or delete the Preview CRs after their finalizers complete. Before
    removing the chart or namespace, inspect **each** slot with
@@ -171,8 +174,9 @@ resources even after a lost CR. **Do not reduce `slotCount` or disable the contr
 restore the old slot count and drain via the Preview finalizer first. Helm's `keep` annotations protect the namespace
 and guardrails but are not a substitute for that drain.
 
-The chart renders the placeholder only when `preview.enabled: true`. The devthenet rollout keeps both preview switches
-false; the separate ALB and wildcard DNS require their own operator-reviewed infrastructure check-ins before apply.
+The chart renders the placeholder only when both `preview.enabled` and `preview.placeholder.enabled` are true. The
+devthenet rollout keeps preview and preview-controller disabled; the separate ALB and wildcard DNS require their own
+operator-reviewed infrastructure check-ins before apply.
 
 ## Agent isolation
 

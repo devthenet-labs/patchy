@@ -286,10 +286,18 @@
         "preview": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["enabled", "slotCount", "nodeIsolation", "imageRegistry", "dnsCIDR", "albSubnetCIDRs", "inboundCIDRs", "certificateARN", "hostSuffix", "albName"],
+            "required": ["enabled", "slotCount", "placeholder", "nodeIsolation", "imageRegistry", "dnsCIDR", "albSubnetCIDRs", "inboundCIDRs", "certificateARN", "hostSuffix", "albName"],
             "properties": {
                 "enabled": {"type": "boolean"},
                 "slotCount": {"type": "integer", "minimum": 0, "maximum": 4},
+                "placeholder": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["enabled"],
+                    "properties": {
+                        "enabled": {"type": "boolean"}
+                    }
+                },
                 "nodeIsolation": {
                     "type": "object",
                     "additionalProperties": false,

@@ -57,11 +57,14 @@ admissionPolicy:
 
 # Preview security foundation. Off until the operator explicitly supplies the
 # cluster-specific edge, registry and DNS settings and approves a rollout.
-# This creates guarded, empty slots and a non-default IngressClass; it creates
-# no Ingress, ALB, DNS record, workload, Project or preview-controller.
+# When enabled, the default placeholder Ingress creates a separate ALB even if
+# previewController is off. Set placeholder.enabled=false for a guardrails-only
+# staging revision before re-enabling a kept, older admission policy.
 preview:
     enabled: false
     slotCount: 2
+    placeholder:
+        enabled: true
     # A dedicated, tainted EKS Auto Mode NodePool backed by a DefaultDeny
     # NodeClass is required before any slot workload runs. These names must
     # match the node resources; the chart does not create cloud nodes.

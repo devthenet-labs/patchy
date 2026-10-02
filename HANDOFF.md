@@ -63,6 +63,10 @@ steps" and "Preview update" sections below are historical; this checkpoint super
   mean slot namespaces/guardrails may remain; inspect and deliberately drain before any explicit deletion. Never assume
   `helm rollback` or uninstall silently removes a slot with workloads. The preview controller is off, so stage 1 cannot
   schedule a preview.
+- Local checkout caveat for the next agent: `/Users/peter/code/patchy` has pre-existing, untracked `data/`, `debug.log`
+  and `info.log`; the original terraform-devthenet checkout has untracked `AGENTS.md`, `debug.log` and `info.log`. These
+  are not preview changes and were deliberately left untouched. Task branches and `/tmp` worktrees were audited; see the
+  final handover report for their remote-HEAD states. Work in a clean branch/worktree and preserve those files.
 
 ### Open items and next steps — in this order
 

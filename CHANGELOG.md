@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.12](https://github.com/devthenet-labs/patchy/compare/v0.12.11...v0.12.12) (2026-10-02)
+
+
+### Bug Fixes
+
+* **preview:** stage kept admission before placeholder ingress ([#80](https://github.com/devthenet-labs/patchy/issues/80)) ([8489ae7](https://github.com/devthenet-labs/patchy/commit/8489ae722372c3b3f4674dad9e941904c239f144))
+
 ## [0.12.11](https://github.com/devthenet-labs/patchy/compare/v0.12.10...v0.12.11) (2026-10-01)
 
 

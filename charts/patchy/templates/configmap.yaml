@@ -103,6 +103,15 @@ their paths are config.
 */}}
 {{- $_ := set $data "PATCHY_REPOSITORY_IMAGES" "true" }}
 {{- $_ := set $data "PATCHY_REPOSITORY_IMAGE_REGISTRIES" (join "," $ri.registries) }}
+{{- if $root.Values.preview.enabled }}
+{{/*
+The preview image prefix is never an agent image's registry. The prefix
+helper already refuses to render an allowlist that overlaps it; this holds
+source-controller to the same rule on its own, whatever reaches its
+registries key (a config.extra override included).
+*/}}
+{{- $_ := set $data "PATCHY_REPOSITORY_IMAGE_DENIED_REGISTRIES" (include "patchy.previewImagePrefix" $root) }}
+{{- end }}
 {{- $_ := set $data "PATCHY_REPOSITORY_IMAGE_MAX_BYTES" $ri.maxBytes }}
 {{- $_ := set $data "PATCHY_REPOSITORY_IMAGE_ON_REJECT" ($ri.onReject | default "default") }}
 {{- $_ := set $data "PATCHY_REPOSITORY_IMAGE_ALLOW_UNSIGNED" ($ri.allowUnsigned | default false) }}
@@ -231,7 +240,7 @@ blocks on ImageRequired. The changeset entry cap is remediation's value.
 {{- else if eq $c.name "preview-controller" }}
 {{- $p := $root.Values.preview }}
 {{- $_ := set $data "PATCHY_PREVIEW_SLOT_COUNT" $p.slotCount }}
-{{- $_ := set $data "PATCHY_PREVIEW_IMAGE_PREFIX" (printf "%s/patchy/previews/" $p.imageRegistry) }}
+{{- $_ := set $data "PATCHY_PREVIEW_IMAGE_PREFIX" (include "patchy.previewImagePrefix" $root) }}
 {{- $_ := set $data "PATCHY_PREVIEW_HOST_SUFFIX" $p.hostSuffix }}
 {{- $_ := set $data "PATCHY_PREVIEW_NODE_POOL" $p.nodeIsolation.nodePool }}
 {{- $_ := set $data "PATCHY_PREVIEW_NODE_CLASS" $p.nodeIsolation.nodeClass }}

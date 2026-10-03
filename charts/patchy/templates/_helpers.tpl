@@ -366,3 +366,59 @@ TestChartEphemeralStoragePatternIsSound (internal/runnercfg).
 {{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+The preview image prefix, <preview.imageRegistry>/<preview.imagePathPrefix>/:
+the one string the slot admission policy (preview-admission.yaml) and the
+preview-controller (PATCHY_PREVIEW_IMAGE_PREFIX) hold every preview image to,
+and the path source-controller refuses agent images from, so none of them can
+disagree. With the default path, patchy/previews, it is the prefix the chart
+hard-coded before the path was configurable, so those renders are byte for
+byte what they were. Context: the root. It fails the render when:
+
+  * imagePathPrefix is empty, or not lowercase ECR path segments joined by
+    "/" with no leading or trailing slash. values.schema.json says the same,
+    but a render that skips schema validation still lands here.
+  * agent.repositoryImages is enabled and one of its registries entries is
+    this prefix, contains it or sits under it. A preview runtime image is
+    built from an unreviewed same-repository pull request head, so it must
+    never be admissible as an agent sandbox image, and an agent toolchain
+    image must never be admissible as a preview. The comparison is on
+    segment boundaries over patchy.registryPathKey, so no other spelling of
+    the same ECR repository passes.
+*/}}
+{{- define "patchy.previewImagePrefix" -}}
+{{- $p := .Values.preview -}}
+{{- $path := $p.imagePathPrefix | default "" | toString -}}
+{{- if not (regexMatch `^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$` $path) -}}
+{{- fail (printf "preview.imagePathPrefix %q must be one or more lowercase registry path segments joined by '/', with no leading or trailing slash, such as patchy/previews (the default)" $path) -}}
+{{- end -}}
+{{- $prefix := printf "%s/%s/" $p.imageRegistry $path -}}
+{{- $ri := .Values.agent.repositoryImages | default dict -}}
+{{- if $ri.enabled -}}
+{{- $previewKey := include "patchy.registryPathKey" $prefix -}}
+{{- range $entry := $ri.registries | default list -}}
+{{- $agentKey := include "patchy.registryPathKey" (printf "%s/" (trimSuffix "/" (toString $entry))) -}}
+{{- if or (hasPrefix $agentKey $previewKey) (hasPrefix $previewKey $agentKey) -}}
+{{- fail (printf "agent.repositoryImages.registries entry %q overlaps the preview image prefix %s (preview.imageRegistry/preview.imagePathPrefix): the two must be disjoint, neither equal to nor under the other, or an image built from an unreviewed pull request could run as an agent sandbox (and an agent toolchain image as a preview). Move the agent images, or set preview.imagePathPrefix to a path outside every registries entry" (toString $entry) $prefix) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $prefix -}}
+{{- end }}
+
+{{/*
+patchy.registryPathKey: a "host/path/" registry prefix as the registry it is
+pulled from sees it, for comparing two prefixes on segment boundaries.
+Lowercased (source-controller lowercases allowlist entries and references), an
+explicit :443 dropped (the same HTTPS endpoint), and ECR's dual-stack and
+FIPS endpoint names (<account>.dkr-ecr.<region>.on.aws,
+<account>.dkr.ecr-fips.<region>.amazonaws.com, ...) folded onto the plain
+<account>.dkr.ecr.<region>.amazonaws.com, which serves the same repositories.
+runnerimage.registryKey is the same fold on source-controller's side.
+*/}}
+{{- define "patchy.registryPathKey" -}}
+{{- $key := lower . -}}
+{{- $key = regexReplaceAll `^([^/]+):443/` $key "${1}/" -}}
+{{- regexReplaceAll `^([0-9]{12})\.dkr[.-]ecr(-fips)?\.([a-z0-9-]+)\.(amazonaws\.com|on\.aws)/` $key "${1}.dkr.ecr.${3}.amazonaws.com/" -}}
+{{- end }}

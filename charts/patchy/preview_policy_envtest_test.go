@@ -46,7 +46,10 @@ func TestPreviewAdmissionAgainstAPIServer(t *testing.T) {
 	testIsolationProbeService(t, env)
 }
 
-func startPreviewPolicyEnv(t *testing.T) (*envtest.Environment, client.Client) {
+// startPreviewPolicyEnv starts an API server holding the slot namespaces and
+// the chart's preview policies, rendered from the preview fixture plus
+// helmArgs, and waits until every policy enforces.
+func startPreviewPolicyEnv(t *testing.T, helmArgs ...string) (*envtest.Environment, client.Client) {
 	t.Helper()
 	env := &envtest.Environment{}
 	cfg, err := env.Start()
@@ -82,16 +85,17 @@ func startPreviewPolicyEnv(t *testing.T) (*envtest.Environment, client.Client) {
 	if err := admin.Create(ctx, outsideBound); err != nil {
 		t.Fatalf("create pre-policy ordinary scheduled Pod: %v", err)
 	}
-	installPreviewPolicy(t, admin)
+	installPreviewPolicy(t, admin, helmArgs...)
 	waitForPreviewPolicy(t, admin)
 	return env, admin
 }
 
-func installPreviewPolicy(t *testing.T, admin client.Client) {
+func installPreviewPolicy(t *testing.T, admin client.Client, helmArgs ...string) {
 	t.Helper()
 	ctx := t.Context()
-	output, err := exec.CommandContext(ctx, "helm", "template", "patchy", ".", "--namespace", "patchy",
-		"-f", "../../hack/testdata/chart-render/preview-foundation.yaml").Output()
+	args := append([]string{"template", "patchy", ".", "--namespace", "patchy",
+		"-f", "../../hack/testdata/chart-render/preview-foundation.yaml"}, helmArgs...)
+	output, err := exec.CommandContext(ctx, "helm", args...).Output()
 	if err != nil {
 		t.Fatalf("render chart: %v", err)
 	}

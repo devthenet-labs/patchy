@@ -72,6 +72,19 @@ expect_fail() {
   fi
 }
 
+# golden_render NAME FILE [helm args...]: the render (pass --show-only for one
+# template) equals the committed golden FILE byte for byte.
+golden_render() {
+  name=$1
+  file=$2
+  shift 2
+  if ! helm template patchy "$chart" --namespace patchy "$@" >"$out/$name.golden" 2>"$out/$name.err"; then
+    fail "$name: render failed: $(cat "$out/$name.err")"
+  elif ! cmp -s "$file" "$out/$name.golden"; then
+    fail "$name: render differs from $file: $(diff "$file" "$out/$name.golden" | head -20)"
+  fi
+}
+
 # notes NAME [helm args...]: render the install NOTES into $out/NAME.notes.
 # helm template never renders NOTES.txt; a client-side dry-run install does,
 # without a cluster. A failed render is itself a failure.
@@ -103,7 +116,8 @@ render default
 expect default 'select(.metadata.name == "alb-preview" or (.metadata.name | test("^patchy-preview-")) or (.metadata.namespace | test("^patchy-preview-"))) | .kind' ""
 expect default 'select(.metadata.name == "patchy-preview-controller") | .kind' ""
 for key in PATCHY_REPOSITORY_IMAGES PATCHY_REPOSITORY_IMAGE_REGISTRIES PATCHY_REPOSITORY_IMAGE_ON_REJECT \
-  PATCHY_REPOSITORY_IMAGE_COSIGN_KEY_FILE PATCHY_AGENT_EPHEMERAL_STORAGE PATCHY_CHANGESET_MAX_ENTRIES DOCKER_CONFIG; do
+  PATCHY_REPOSITORY_IMAGE_COSIGN_KEY_FILE PATCHY_AGENT_EPHEMERAL_STORAGE PATCHY_CHANGESET_MAX_ENTRIES DOCKER_CONFIG \
+  PATCHY_REPOSITORY_IMAGE_DENIED_REGISTRIES; do
   expect default "select(.kind == \"ConfigMap\") | .data.$key | select(. != null)" ""
 done
 expect default 'select(.metadata.name == "patchy-repository-image-key") | .kind' ""
@@ -286,6 +300,83 @@ expect_fail 'preview zero slots' "'/preview/slotCount': minimum" -f "$fixtures/p
 expect_fail 'preview zero slots, schema skipped' 'preview.slotCount must be between 1 and 4' \
   -f "$fixtures/preview-foundation.yaml" --set preview.slotCount=0 --skip-schema-validation
 expect_fail 'preview missing cert' 'preview.certificateARN' -f "$fixtures/preview-foundation.yaml" --set preview.certificateARN=
+
+# ---- the preview image prefix (preview.imagePathPrefix) ---------------------
+# One helper (patchy.previewImagePrefix) feeds the slot admission policy, the
+# preview-controller and source-controller's denied path. With the default
+# path the admission policies are byte for byte what main rendered before the
+# path was configurable: preview-admission.default.yaml is that render, and is
+# never regenerated to make this pass. A custom path changes only the prefix
+# and its length (preview-admission.custom.yaml; regenerate it with the same
+# helm template command and review the diff against the default).
+golden=$fixtures/golden
+pv=$fixtures/preview-foundation.yaml
+reg=377946145366.dkr.ecr.us-east-1.amazonaws.com
+golden_render preview-vap-default "$golden/preview-admission.default.yaml" -f "$pv" \
+  --show-only templates/preview-admission.yaml
+golden_render preview-vap-custom "$golden/preview-admission.custom.yaml" -f "$pv" \
+  --set preview.imagePathPrefix=acme/runtime.images --show-only templates/preview-admission.yaml
+render preview-prefix-custom -f "$pv" -f "$fixtures/intent-controller.yaml" -f "$fixtures/preview-controller.yaml" \
+  --set preview.imagePathPrefix=acme/runtime.images
+cm preview-prefix-custom preview-controller PATCHY_PREVIEW_IMAGE_PREFIX "$reg/acme/runtime.images/"
+notes notes-preview-prefix -f "$pv" --set preview.imagePathPrefix=acme/runtime.images
+notes_has notes-preview-prefix "--image $reg/acme/runtime.images/<app>" yes
+expect_fail 'preview image path prefix empty' "'/preview/imagePathPrefix': '' does not match pattern" \
+  -f "$pv" --set preview.imagePathPrefix=
+expect_fail 'preview image path prefix trailing slash' "'patchy/previews/' does not match pattern" \
+  -f "$pv" --set preview.imagePathPrefix=patchy/previews/
+expect_fail 'preview image path prefix leading slash' "'/patchy/previews' does not match pattern" \
+  -f "$pv" --set preview.imagePathPrefix=/patchy/previews
+expect_fail 'preview image path prefix uppercase' "does not match pattern" \
+  -f "$pv" --set preview.imagePathPrefix=Patchy/previews
+expect_fail 'preview image path prefix unset' "missing property 'imagePathPrefix'" \
+  -f "$pv" --set preview.imagePathPrefix=null
+# A render that skips the schema still meets the template's own check.
+expect_fail 'preview image path prefix empty, schema skipped' 'preview.imagePathPrefix "" must be' \
+  -f "$pv" --set preview.imagePathPrefix= --skip-schema-validation
+expect_fail 'preview image path prefix trailing slash, schema skipped' \
+  'preview.imagePathPrefix "patchy/previews/" must be' \
+  -f "$pv" --set preview.imagePathPrefix=patchy/previews/ --skip-schema-validation
+
+# Disjoint from the agent allowlist: an agent.repositoryImages.registries
+# entry that is the preview prefix, contains it or sits under it fails the
+# render, compared on segment boundaries after the fold source-controller
+# applies (case, an explicit :443, ECR's dual-stack and FIPS endpoint names).
+# A runtime image is built from an unreviewed pull request head and must
+# never be admissible as an agent sandbox image, nor a toolchain image as a
+# preview.
+ri=$fixtures/repository-images.yaml
+for entry in "$reg/patchy/" "$reg/patchy/previews" "$reg/patchy/previews/" "$reg/patchy/previews/agents/" \
+  "377946145366.DKR.ECR.us-east-1.amazonaws.com/Patchy/" "$reg:443/patchy/" \
+  "377946145366.dkr-ecr.us-east-1.on.aws/patchy/" "377946145366.dkr.ecr-fips.us-east-1.amazonaws.com/patchy/previews/x"; do
+  expect_fail "agent registry $entry overlaps the preview prefix" \
+    "agent.repositoryImages.registries entry \"$entry\" overlaps the preview image prefix $reg/patchy/previews/" \
+    -f "$pv" -f "$ri" --set "agent.repositoryImages.registries={ghcr.io/example/agent-images/,$entry}"
+done
+expect_fail 'custom preview prefix under an agent registry' \
+  "agent.repositoryImages.registries entry \"$reg/apps/\" overlaps the preview image prefix $reg/apps/previews/" \
+  -f "$pv" -f "$ri" --set "agent.repositoryImages.registries={$reg/apps/}" --set preview.imagePathPrefix=apps/previews
+# Disjoint entries render: a sibling sharing the prefix's leading
+# characters, another region's registry, a disjoint custom pair; and with
+# repository images off nothing is judged (the kill switch never fails a
+# render).
+for entry in "$reg/patchy/previews-agents/" "377946145366.dkr.ecr.us-west-2.amazonaws.com/patchy/" "$reg/patchy/app-envs/"; do
+  render "preview-disjoint-$(echo "$entry" | tr -c 'a-z0-9\n' '-')" -f "$pv" -f "$ri" \
+    --set "agent.repositoryImages.registries={$entry}"
+done
+render preview-disjoint-custom -f "$pv" -f "$ri" --set "agent.repositoryImages.registries={$reg/apps/agents/}" \
+  --set preview.imagePathPrefix=apps/previews
+render preview-overlap-images-off -f "$pv" -f "$ri" --set agent.repositoryImages.enabled=false \
+  --set "agent.repositoryImages.registries={$reg/patchy/}"
+cm preview-overlap-images-off source-controller PATCHY_REPOSITORY_IMAGE_DENIED_REGISTRIES null
+# source-controller refuses agent images from the preview prefix on its own
+# too (runnerimage.Policy.Deny), whatever reaches its registries key.
+render preview-ri -f "$pv" -f "$ri"
+cm preview-ri source-controller PATCHY_REPOSITORY_IMAGE_DENIED_REGISTRIES "$reg/patchy/previews/"
+cm preview-disjoint-custom source-controller PATCHY_REPOSITORY_IMAGE_DENIED_REGISTRIES "$reg/apps/previews/"
+for c in investigation-controller remediation-controller integration-controller; do
+  cm preview-ri "$c" PATCHY_REPOSITORY_IMAGE_DENIED_REGISTRIES null
+done
 
 # ---- EKS Auto Mode toggles: off by default, and off means absent ------------
 # clusterDNSCIDR, preview.nodeIsolation.create and edgeIngressClass.create are
@@ -495,6 +586,8 @@ cm on source-controller PATCHY_REPOSITORY_IMAGE_ALLOW_UNSIGNED false
 cm on source-controller PATCHY_REPOSITORY_IMAGE_COSIGN_KEY_FILE /etc/patchy/repository-image/cosign.pub
 cm on source-controller DOCKER_CONFIG /etc/patchy/registry
 cm on source-controller PATCHY_AGENT_EPHEMERAL_STORAGE null
+# No preview prefix to deny without previews.
+cm on source-controller PATCHY_REPOSITORY_IMAGE_DENIED_REGISTRIES null
 for c in investigation-controller remediation-controller; do
   cm on "$c" PATCHY_REPOSITORY_IMAGES true
   cm on "$c" PATCHY_AGENT_EPHEMERAL_STORAGE 8Gi

@@ -96,21 +96,31 @@ before slots are enabled; `edgeIngressClass.create` renders an edge class that i
 is never the default. On EKS Auto Mode set `clusterDNSCIDR` (or `preview.dnsCIDR`) to the node-local DNS `/32`: the slot
 policy allows DNS only there.
 
+Preview images are `<preview.imageRegistry>/<preview.imagePathPrefix>/<app>:sha-<full SHA>`. `preview.imagePathPrefix`
+(default `patchy/previews`) is lowercase registry path segments with no leading or trailing slash, never empty. One
+helper renders it into the slot admission policy and the preview-controller's `PATCHY_PREVIEW_IMAGE_PREFIX`, so with the
+default both are byte for byte what they were when the path was fixed. It must be disjoint from the agent image
+allowlist: the render fails when an `agent.repositoryImages.registries` entry equals the preview prefix, contains it or
+sits under it, compared on path segment boundaries after folding case, an explicit `:443` and ECR's dual-stack and FIPS
+endpoint names. A runtime image is built from an unreviewed pull request head, so it must never be admissible as an
+agent sandbox image, nor a toolchain image as a preview. With repository images enabled, source-controller also refuses
+any declared agent image under the preview prefix on its own (`PATCHY_REPOSITORY_IMAGE_DENIED_REGISTRIES`).
+
 The slot policy selects every pod. Inbound traffic can reach only a port named `http` from the configured ALB subnets;
 outbound traffic can reach only the configured DNS IP on UDP/TCP 53. There is no API, broker, patchy Service, metadata,
 Pod Identity, or internet exception. Admission matches the actual namespace name in CEL, not only the automatic
 `kubernetes.io/metadata.name` label. An unselected workload in an ordinary namespace is unaffected; only the
 outside-slot toleration and IngressClass rules below change its workload admission. Slot Ingresses must use
 `alb-preview`, which is non-default and refused outside the slots. Slot Pods/Deployments must use immutable full-SHA
-images beneath `<registry>/patchy/previews/`, exactly one container, the default ServiceAccount with token automount
-explicitly disabled, no init/ephemeral containers, and only `emptyDir` volumes. Services must remain ClusterIP, and a
-Service may carry only a safe healthcheck-path annotation (a multi-component Preview's per-component health check).
-Ingress hosts are single-label subdomains of `preview.hostSuffix`; only a safe healthcheck-path annotation is allowed.
-An Ingress has one rule of at most four `Prefix` paths in the component path grammar, each backed by a `preview-`
-Service on port 80; the kept placeholder backs `/` with its own Service. The slot quota fits one Preview of up to four
-components: five Services (one each, plus slot 0's placeholder) and eight Pods. With
-`previewController.config.targetHealth: true` (the default, since previews run only on EKS Auto Mode and Auto Mode was
-seen injecting the gate on a live preview) the slot namespaces are labelled
+images one leaf beneath `<preview.imageRegistry>/<preview.imagePathPrefix>/` (`patchy/previews` by default), exactly one
+container, the default ServiceAccount with token automount explicitly disabled, no init/ephemeral containers, and only
+`emptyDir` volumes. Services must remain ClusterIP, and a Service may carry only a safe healthcheck-path annotation (a
+multi-component Preview's per-component health check). Ingress hosts are single-label subdomains of
+`preview.hostSuffix`; only a safe healthcheck-path annotation is allowed. An Ingress has one rule of at most four
+`Prefix` paths in the component path grammar, each backed by a `preview-` Service on port 80; the kept placeholder backs
+`/` with its own Service. The slot quota fits one Preview of up to four components: five Services (one each, plus slot
+0's placeholder) and eight Pods. With `previewController.config.targetHealth: true` (the default, since previews run
+only on EKS Auto Mode and Auto Mode was seen injecting the gate on a live preview) the slot namespaces are labelled
 `eks.amazonaws.com/pod-readiness-gate-inject: enabled`, so EKS Auto Mode's load balancer injects a target-health
 readiness gate into each slot Pod, and the preview-controller marks a Preview Ready only once its targets are healthy;
 `false` restores the ungated Ready. See `docs/configuration/preview-controller.md`. The default was `false` up to

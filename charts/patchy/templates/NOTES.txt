@@ -114,7 +114,7 @@ Next steps:
 
        bash hack/preview-isolation-probe/run.sh \
          --repository <owner>/<app> \
-         --image {{ $p.imageRegistry }}/patchy/previews/<app> \
+         --image {{ include "patchy.previewImagePrefix" . }}<app> \
          --taint-key {{ $n.taintKey }} \
          --node-pool {{ $n.nodePool }} --node-class {{ $n.nodeClass }} \
          <disposable-PR-number>

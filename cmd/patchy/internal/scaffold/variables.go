@@ -67,8 +67,10 @@ func Variables(o Options) []Variable {
 
 // variablesTable is the Markdown table of Variables the READMEs carry.
 func variablesTable(o Options) string {
-	rows := [][]string{{"Variable", "Value", "What it is"}}
-	for _, v := range Variables(o) {
+	vars := Variables(o)
+	rows := make([][]string, 0, len(vars)+1)
+	rows = append(rows, []string{"Variable", "Value", "What it is"})
+	for _, v := range vars {
 		value := "the " + v.Placeholder
 		switch {
 		case v.Value != "":

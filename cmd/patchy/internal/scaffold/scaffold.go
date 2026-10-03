@@ -190,7 +190,9 @@ func (o Options) AgentRepository() string { return o.AgentPrefix + "/" + o.Image
 func (o Options) RuntimeRepository() string { return PreviewPrefix + "/" + o.ImageName }
 
 // AgentImage is the reference .patchy/agent.yaml declares.
-func (o Options) AgentImage() string { return o.Registry + "/" + o.AgentRepository() + ":" + ToolchainTag }
+func (o Options) AgentImage() string {
+	return o.Registry + "/" + o.AgentRepository() + ":" + ToolchainTag
+}
 
 // Region is the registry's AWS region.
 func (o Options) Region() string {

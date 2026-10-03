@@ -182,13 +182,13 @@ func TestPlanBranch(t *testing.T) {
 	o.Branch = "trunk"
 	files := byPath(plan(t, o))
 	for p, want := range map[string]string{
-		".github/workflows/ci.yml":             "branches: ['trunk']",
-		".github/workflows/agent-image.yml":    "github.ref == 'refs/heads/trunk'",
-		".github/workflows/publish-agent.yml":  "github.ref == 'refs/heads/trunk'",
+		".github/workflows/ci.yml":              "branches: ['trunk']",
+		".github/workflows/agent-image.yml":     "github.ref == 'refs/heads/trunk'",
+		".github/workflows/publish-agent.yml":   "github.ref == 'refs/heads/trunk'",
 		".github/workflows/publish-runtime.yml": "github.ref == 'refs/heads/trunk'",
-		".github/actions/publish/guard.cjs":    "const BRANCH = 'trunk';",
-		".github/actions/publish/README.md":    "publish-agent.yml@refs/heads/trunk",
-		"README.md":                            "publish-runtime.yml@refs/heads/trunk",
+		".github/actions/publish/guard.cjs":     "const BRANCH = 'trunk';",
+		".github/actions/publish/README.md":     "publish-agent.yml@refs/heads/trunk",
+		"README.md":                             "publish-runtime.yml@refs/heads/trunk",
 	} {
 		if !strings.Contains(files[p], want) {
 			t.Errorf("%s lacks %q", p, want)

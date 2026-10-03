@@ -78,30 +78,7 @@ func TestOnlyThePublishersAssumeARole(t *testing.T) {
 		if got := slices.Sorted(maps.Keys(wfs)); !slices.Equal(got, slices.Sorted(slices.Values(wantFiles))) {
 			t.Fatalf("existing=%v: workflows %v, want %v", existing, got, wantFiles)
 		}
-
-		// Every role assumption in every workflow, as file/job → role.
-		roles := map[string]string{}
-		for name, w := range wfs {
-			if _, ok := w.Permissions["id-token"]; ok {
-				t.Errorf("%s grants id-token to every job", name)
-			}
-			for jobName, job := range w.Jobs {
-				for _, step := range job.Steps {
-					if strings.HasPrefix(step.Uses, configureAWS) {
-						roles[name+"/"+jobName] = step.With["role-to-assume"]
-					}
-				}
-			}
-		}
-		wantRoles := map[string]string{
-			"publish-runtime.yml/publish": "${{ vars.RUNTIME_ROLE_ARN }}",
-			"publish-agent.yml/publish":   "${{ vars.AGENT_ROLE_ARN }}",
-		}
-		if !maps.Equal(roles, wantRoles) {
-			t.Errorf("existing=%v: roles are assumed in %v, want only %v", existing, roles, wantRoles)
-		}
-
-		// The builds: no OIDC, no repository variable, no role.
+		checkRoles(t, wfs)
 		for _, name := range []string{build, "agent-image.yml"} {
 			for jobName, job := range wfs[name].Jobs {
 				if _, ok := job.Permissions["id-token"]; ok {
@@ -109,42 +86,7 @@ func TestOnlyThePublishersAssumeARole(t *testing.T) {
 				}
 			}
 		}
-
-		// The dispatcher: triggered by the builds, no permission of its
-		// own, and two jobs that only call their own publisher behind their
-		// own gate.
-		d := wfs["publish-images.yml"]
-		if _, ok := d.On["workflow_run"]; !ok || len(d.On) != 1 {
-			t.Errorf("publish-images.yml runs on %v, want workflow_run only", slices.Collect(maps.Keys(d.On)))
-		}
-		if d.Permissions == nil || len(d.Permissions) != 0 {
-			t.Errorf("publish-images.yml permissions = %v, want {}", d.Permissions)
-		}
-		gates := map[string][2]string{
-			"runtime": {"./.github/workflows/publish-runtime.yml", PreviewPublishEnabled},
-			"agent":   {"./.github/workflows/publish-agent.yml", AgentPublishEnabled},
-		}
-		if got := slices.Sorted(maps.Keys(d.Jobs)); !slices.Equal(got, []string{"agent", "runtime"}) {
-			t.Errorf("publish-images.yml jobs %v, want agent and runtime", got)
-		}
-		for jobName, want := range gates {
-			job := d.Jobs[jobName]
-			if job.Uses != want[0] || len(job.Steps) != 0 || job.Secrets != nil {
-				t.Errorf("publish-images.yml/%s: uses %q with %d steps and secrets %v; want only a call of %s",
-					jobName, job.Uses, len(job.Steps), job.Secrets, want[0])
-			}
-			if !strings.Contains(job.If, "vars."+want[1]+" == 'true'") {
-				t.Errorf("publish-images.yml/%s is not gated on %s: %q", jobName, want[1], job.If)
-			}
-			for other, otherWant := range gates {
-				if other != jobName && strings.Contains(job.If, otherWant[1]) {
-					t.Errorf("publish-images.yml/%s is gated on the other kind's %s", jobName, otherWant[1])
-				}
-			}
-		}
-
-		// The callees: called only, by the dispatcher, and blind to the
-		// other kind's role and repository.
+		checkDispatcher(t, wfs["publish-images.yml"])
 		for _, kind := range []string{"runtime", "agent"} {
 			name := "publish-" + kind + ".yml"
 			w := wfs[name]
@@ -155,25 +97,94 @@ func TestOnlyThePublishersAssumeARole(t *testing.T) {
 				t.Errorf("%s: want one publish job holding id-token: write, got %+v", name, w.Jobs)
 			}
 		}
-		for _, f := range files {
-			name, ok := strings.CutPrefix(f.Path, ".github/workflows/")
-			if !ok {
-				continue
-			}
-			data := string(f.Data)
-			for _, v := range []string{"RUNTIME_ROLE_ARN", "RUNTIME_IMAGE_REPOSITORY"} {
-				if strings.Contains(data, v) != (name == "publish-runtime.yml") {
-					t.Errorf("%s: names %s = %v", name, v, strings.Contains(data, v))
+		checkKindVariables(t, files)
+	}
+}
+
+// checkRoles: of every step of every workflow, exactly two assume a role,
+// each in its own publisher's one job, and no workflow grants id-token to
+// all of its jobs.
+func checkRoles(t *testing.T, wfs map[string]workflowFile) {
+	t.Helper()
+	roles := map[string]string{}
+	for name, w := range wfs {
+		if _, ok := w.Permissions["id-token"]; ok {
+			t.Errorf("%s grants id-token to every job", name)
+		}
+		for jobName, job := range w.Jobs {
+			for _, step := range job.Steps {
+				if strings.HasPrefix(step.Uses, configureAWS) {
+					roles[name+"/"+jobName] = step.With["role-to-assume"]
 				}
 			}
-			for _, v := range []string{"AGENT_ROLE_ARN", "AGENT_IMAGE_REPOSITORY"} {
-				if strings.Contains(data, v) != (name == "publish-agent.yml") {
-					t.Errorf("%s: names %s = %v", name, v, strings.Contains(data, v))
-				}
+		}
+	}
+	want := map[string]string{
+		"publish-runtime.yml/publish": "${{ vars.RUNTIME_ROLE_ARN }}",
+		"publish-agent.yml/publish":   "${{ vars.AGENT_ROLE_ARN }}",
+	}
+	if !maps.Equal(roles, want) {
+		t.Errorf("roles are assumed in %v, want only %v", roles, want)
+	}
+}
+
+// checkDispatcher: publish-images.yml is triggered by the builds, has no
+// permission of its own, and two jobs that only call their own publisher
+// behind their own gate.
+func checkDispatcher(t *testing.T, d workflowFile) {
+	t.Helper()
+	if _, ok := d.On["workflow_run"]; !ok || len(d.On) != 1 {
+		t.Errorf("publish-images.yml runs on %v, want workflow_run only", slices.Collect(maps.Keys(d.On)))
+	}
+	if d.Permissions == nil || len(d.Permissions) != 0 {
+		t.Errorf("publish-images.yml permissions = %v, want {}", d.Permissions)
+	}
+	gates := map[string][2]string{
+		"runtime": {"./.github/workflows/publish-runtime.yml", PreviewPublishEnabled},
+		"agent":   {"./.github/workflows/publish-agent.yml", AgentPublishEnabled},
+	}
+	if got := slices.Sorted(maps.Keys(d.Jobs)); !slices.Equal(got, []string{"agent", "runtime"}) {
+		t.Errorf("publish-images.yml jobs %v, want agent and runtime", got)
+	}
+	for jobName, want := range gates {
+		job := d.Jobs[jobName]
+		if job.Uses != want[0] || len(job.Steps) != 0 || job.Secrets != nil {
+			t.Errorf("publish-images.yml/%s: uses %q with %d steps and secrets %v; want only a call of %s",
+				jobName, job.Uses, len(job.Steps), job.Secrets, want[0])
+		}
+		if !strings.Contains(job.If, "vars."+want[1]+" == 'true'") {
+			t.Errorf("publish-images.yml/%s is not gated on %s: %q", jobName, want[1], job.If)
+		}
+		for other, otherWant := range gates {
+			if other != jobName && strings.Contains(job.If, otherWant[1]) {
+				t.Errorf("publish-images.yml/%s is gated on the other kind's %s", jobName, otherWant[1])
 			}
-			if strings.Contains(data, "secrets.") || strings.Contains(data, "pull_request_target") {
-				t.Errorf("%s uses a secret or pull_request_target", name)
+		}
+	}
+}
+
+// checkKindVariables: each kind's role and repository variables appear in
+// its own publisher and in no other workflow, and no workflow reads a
+// secret or runs on pull_request_target.
+func checkKindVariables(t *testing.T, files []File) {
+	t.Helper()
+	owner := map[string]string{
+		"RUNTIME_ROLE_ARN": "publish-runtime.yml", "RUNTIME_IMAGE_REPOSITORY": "publish-runtime.yml",
+		"AGENT_ROLE_ARN": "publish-agent.yml", "AGENT_IMAGE_REPOSITORY": "publish-agent.yml",
+	}
+	for _, f := range files {
+		name, ok := strings.CutPrefix(f.Path, ".github/workflows/")
+		if !ok {
+			continue
+		}
+		data := string(f.Data)
+		for v, publisher := range owner {
+			if strings.Contains(data, v) != (name == publisher) {
+				t.Errorf("%s: names %s = %v", name, v, strings.Contains(data, v))
 			}
+		}
+		if strings.Contains(data, "secrets.") || strings.Contains(data, "pull_request_target") {
+			t.Errorf("%s uses a secret or pull_request_target", name)
 		}
 	}
 }

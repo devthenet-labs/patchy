@@ -213,7 +213,7 @@ func TestInitAppReadsTheCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	for p, data := range map[string]string{
-		".git/config": "[remote \"origin\"]\n\turl = https://github.com/acme/My_Service.git\n",
+		".git/config":                   "[remote \"origin\"]\n\turl = https://github.com/acme/My_Service.git\n",
 		".git/refs/remotes/origin/HEAD": "ref: refs/remotes/origin/trunk\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, p), []byte(data), 0o644); err != nil {

@@ -33,8 +33,9 @@ func TestNextStepsSetsEveryVariableInOrder(t *testing.T) {
 			}
 			set = append(set, m[1])
 		}
-		var want []string
-		for _, v := range Variables(o) {
+		vars := Variables(o)
+		want := make([]string, 0, len(vars))
+		for _, v := range vars {
 			want = append(want, v.Name)
 		}
 		// The configuration first, then the agent gate, then the preview

@@ -1,0 +1,39 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# `terraform-docs deploy/terraform/aws` regenerates the reference tables in
+# this module's README.md and in modules/app/README.md; hack/tf-lint.sh checks
+# them for drift with --output-check. The generated block is fenced off from
+# prettier, whose table re-alignment would otherwise read as drift.
+formatter: markdown table
+
+recursive:
+  enabled: true
+  path: modules
+  include-main: true
+
+output:
+  file: README.md
+  mode: inject
+  template: |-
+    <!-- BEGIN_TF_DOCS -->
+    <!-- prettier-ignore-start -->
+    {{ .Content }}
+    <!-- prettier-ignore-end -->
+    <!-- END_TF_DOCS -->
+
+sort:
+  enabled: true
+  by: required
+
+settings:
+  anchor: false
+  default: true
+  escape: true
+  hide-empty: true
+  html: true
+  indent: 3
+  lockfile: false
+  required: true
+  sensitive: false
+  type: true

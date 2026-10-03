@@ -118,3 +118,31 @@ jobs:
 
             - name: Run helm-lint
               run: mise run helm-lint
+
+    # The reference AWS terraform module (deploy/terraform/aws): fmt -check,
+    # validate, tflint, the offline mock-provider `terraform test` suites and
+    # the terraform-docs drift check (hack/tf-lint.sh). No AWS credentials:
+    # init downloads the AWS provider only for its schema. terraform, tflint and
+    # terraform-docs come pinned from mise, set up as in the jobs above.
+    terraform:
+        runs-on: ubuntu-latest
+        permissions:
+            # check out the repository
+            contents: read
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false # read-only checkout; don't leave the token in .git/config
+                  submodules: true # the shared toolchain (tasks + pinned tools) at .mise/
+
+            - name: Setup mise
+              uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+              with:
+                  version: v2026.9.1
+                  # sha256 of the linux-x64 mise binary for the version above, from the release's
+                  # SHASUMS256.txt -- the action verifies the extracted binary, not the archive
+                  sha256: c98423c8470d6dc416d9f7036d0646d8ef5ae92ad9186907f8fcc84cbe7db4ea
+
+            - name: Run tf-lint
+              run: mise run tf-lint

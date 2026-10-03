@@ -21,19 +21,22 @@ the chart's preview policy envtest (`charts/patchy/preview_probe_envtest_test.go
 against the rendered policies.
 
 The probe runs from an app repository that already publishes preview images through patchy's trusted publisher, and it
-is **never merged into that repository's main**. Prepare a disposable same-repo PR on a `test/preview-*` branch based on
-current main. Copy this directory's `cmd/netprobe/` to the app repository's `cmd/netprobe/`, and replace its runtime
-`Dockerfile` and `.dockerignore` with the two files here. Do not alter its agent-toolchain image, build/publish
-workflow, or application source. Verify the PR diff contains only those files; open the PR and wait for the
-uncredentialed build and the trusted publisher to succeed. The publisher must push
+is **never merged into that repository's default branch**. Prepare a disposable same-repo PR on a `test/preview-*`
+branch based on the current default branch and open into it; the script reads the repository's default branch from
+GitHub and refuses a PR into any other. Copy this directory's `cmd/netprobe/` to the app repository's `cmd/netprobe/`,
+and replace its runtime `Dockerfile` and `.dockerignore` with the two files here. Do not alter its agent-toolchain
+image, build/publish workflow, or application source. Verify the PR diff contains only those files; open the PR and wait
+for the uncredentialed build and the trusted publisher to succeed. The publisher must push
 `<preview path prefix>/<app>:sha-<full PR head SHA>`; the script confirms that tag and its digest exist in ECR. Never
-run the probe from a fork PR or from an image tagged from main.
+run the probe from a fork PR or from an image tagged from the default branch.
 
 The script takes the site as flags or from its environment and sets nothing else: `gh` must be signed in with read
 access to the app repository, `kubectl`'s current context must be the cluster, and the AWS CLI must reach the registry's
-account with the credentials already in your environment (`AWS_PROFILE` or the rest). From this patchy checkout, check
-the values first with `--dry-run`, which validates them and prints the site the run would probe without calling `gh`,
-`aws` or `kubectl`, then run:
+account with the credentials already in your environment (`AWS_PROFILE` or the rest). The image is looked up in the
+account named in `--image`, the one the probe Pod pulls from, whichever account those credentials belong to; from
+another account, that repository's policy must allow them `ecr:DescribeImages`. From this patchy checkout, check the
+values first with `--dry-run`, which validates them and prints the site the run would probe without calling `gh`, `aws`
+or `kubectl`, then run:
 
 ```sh
 bash hack/preview-isolation-probe/run.sh \
@@ -43,13 +46,13 @@ bash hack/preview-isolation-probe/run.sh \
   <disposable-PR-number>
 ```
 
-| Flag           | Environment        | Required | Meaning                                                                                                          |
-| -------------- | ------------------ | -------- | ---------------------------------------------------------------------------------------------------------------- |
-| `--repository` | `PROBE_REPOSITORY` | yes      | `owner/name` of the app repository the disposable PR is open on                                                  |
-| `--image`      | `PROBE_IMAGE`      | yes      | The ECR repository its trusted publisher pushes preview images to; the registry host and region are read from it |
-| `--taint-key`  | `PROBE_TAINT_KEY`  | yes      | The preview NodePool's `NoExecute` taint key, the chart's `preview.nodeIsolation.taintKey`                       |
-| `--node-pool`  | `PROBE_NODE_POOL`  | no       | The preview NodePool, the chart's `preview.nodeIsolation.nodePool`; default `patchy-preview`                     |
-| `--node-class` | `PROBE_NODE_CLASS` | no       | The preview NodeClass, the chart's `preview.nodeIsolation.nodeClass`; default `patchy-preview`                   |
+| Flag           | Environment        | Required | Meaning                                                                                                                       |
+| -------------- | ------------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `--repository` | `PROBE_REPOSITORY` | yes      | `owner/name` of the app repository the disposable PR is open on                                                               |
+| `--image`      | `PROBE_IMAGE`      | yes      | The ECR repository its trusted publisher pushes preview images to; the registry host, its account and region are read from it |
+| `--taint-key`  | `PROBE_TAINT_KEY`  | yes      | The preview NodePool's `NoExecute` taint key, the chart's `preview.nodeIsolation.taintKey`                                    |
+| `--node-pool`  | `PROBE_NODE_POOL`  | no       | The preview NodePool, the chart's `preview.nodeIsolation.nodePool`; default `patchy-preview`                                  |
+| `--node-class` | `PROBE_NODE_CLASS` | no       | The preview NodeClass, the chart's `preview.nodeIsolation.nodeClass`; default `patchy-preview`                                |
 
 A flag wins over its environment variable; `--help` prints the same table. Each value is checked for its shape before
 anything runs, because each lands in a command argument or in the probe's manifest. The script still assumes a release

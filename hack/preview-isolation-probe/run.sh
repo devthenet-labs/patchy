@@ -25,7 +25,7 @@ Each option falls back to the environment variable named beside it.
                                 trusted publisher pushes preview images to,
                                 <account>.dkr.ecr.<region>.amazonaws.com/
                                 <preview path prefix>/<app>; the registry
-                                host and region are read from it
+                                host, its account and region are read from it
   --taint-key <key>             PROBE_TAINT_KEY (required): the preview
                                 NodePool's NoExecute taint key (the chart's
                                 preview.nodeIsolation.taintKey)
@@ -39,6 +39,9 @@ Each option falls back to the environment variable named beside it.
                                 would probe, then exit before gh, aws or
                                 kubectl is called
   -h, --help                    print this help
+
+The disposable PR must be open into the repository's default branch, which
+is read from GitHub rather than taken as an option.
 EOF
 }
 
@@ -98,6 +101,10 @@ fi
 registry=${BASH_REMATCH[1]}
 region=${BASH_REMATCH[2]}
 image_repo=${BASH_REMATCH[3]}
+# The account the registry belongs to, which the image lookup is bound to:
+# the cluster pulls from that account, whichever account the caller's AWS
+# credentials are in.
+account=${registry%%.*}
 dns_name='[a-z0-9]([-a-z0-9]*[a-z0-9])?'
 if [[ ! $taint_key =~ ^($dns_name(\.$dns_name)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$ ]]; then
     fail "--taint-key must be a taint key, [<dns prefix>/]<name>, not $taint_key"
@@ -110,8 +117,8 @@ done
 
 if [[ $dry_run -eq 1 ]]; then
     cat <<EOF
-repository:  $repo (PR #$pr_number)
-registry:    $registry (region $region)
+repository:  $repo (PR #$pr_number, into its default branch)
+registry:    $registry (account $account, region $region)
 image:       $registry/$image_repo:sha-<PR head SHA>
 taint key:   $taint_key
 node pool:   $node_pool
@@ -142,14 +149,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The PR must be into the repository's default branch, the one its previews
+# are built against; it is the repository's own setting, so it is read here.
+base=$(gh repo view "$repo" --json defaultBranchRef | jq -r '.defaultBranchRef.name // empty')
+if [[ -z $base ]]; then
+    echo "could not read the default branch of $repo" >&2
+    exit 1
+fi
 pr_json=$(gh pr view "$pr_number" --repo "$repo" --json state,isCrossRepository,headRefOid,headRefName,baseRefName)
-if ! jq -e '.state == "OPEN" and .isCrossRepository == false and .baseRefName == "main" and
+if ! jq -e --arg base "$base" '.state == "OPEN" and .isCrossRepository == false and .baseRefName == $base and
     (.headRefName | startswith("test/preview-")) and (.headRefOid | test("^[0-9a-f]{40}$"))' <<<"$pr_json" >/dev/null; then
-    echo "PR is not an open, same-repository disposable test/preview-* PR into main" >&2
+    echo "PR is not an open, same-repository disposable test/preview-* PR into $base" >&2
     exit 1
 fi
 sha=$(jq -r '.headRefOid' <<<"$pr_json")
-digest=$(aws ecr describe-images --region "$region" --repository-name "$image_repo" \
+# --registry-id: look in the account named in --image, the one the probe Pod
+# pulls from, not the default registry of the caller's own account.
+digest=$(aws ecr describe-images --registry-id "$account" --region "$region" --repository-name "$image_repo" \
     --image-ids "imageTag=sha-$sha" --query 'imageDetails[0].imageDigest' --output text)
 if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
     echo "trusted publisher has not published the full-PR-head image" >&2

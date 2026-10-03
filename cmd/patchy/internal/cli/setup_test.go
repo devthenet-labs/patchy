@@ -573,7 +573,7 @@ func TestSetupGitHubAppUsage(t *testing.T) {
 		{"two owners", []string{"--org", "acme", "--user", "--intents"}, "exclusive"},
 		{"not an org login", []string{"--org", "acme/x", "--intents"}, "not a GitHub organization login"},
 		{"no feature", []string{"--org", "acme"}, "choose what the App is for"},
-		{"checks alone", []string{"--org", "acme", "--checks"}, "choose what the App is for"},
+		{"checks alone", []string{"--org", "acme", "--checks"}, "--checks extends --intents"},
 		{"checks without intents", []string{"--org", "acme", "--security", "--webhook-url", setupWebhook,
 			"--checks"}, "--checks extends --intents"},
 		{"security without a webhook", []string{"--org", "acme", "--security"}, "needs --webhook-url"},
@@ -625,8 +625,10 @@ func TestSetupGitHubAppFailures(t *testing.T) {
 	idle := func(string) error { return nil }
 	_, _, err = execSetup(t, g.deps(idle, nil), "setup", "github-app", "--org", "acme", "--intents", "-o", out,
 		"--timeout", "50ms")
-	if !errors.Is(err, ghapp.ErrNoCode) || exitCode(err) != ExitError {
-		t.Errorf("no code before the timeout = %v (exit %d), want ErrNoCode", err, exitCode(err))
+	if !errors.Is(err, ghapp.ErrNoCode) || exitCode(err) != ExitError ||
+		!strings.Contains(err.Error(), g.srv.URL+"/organizations/acme/settings/apps") {
+		t.Errorf("no code before the timeout = %v (exit %d), want ErrNoCode naming where to clean up", err,
+			exitCode(err))
 	}
 	if _, statErr := os.Stat(out); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("a file was written without a code: %v", statErr)

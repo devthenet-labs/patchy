@@ -67,16 +67,16 @@ func (f Features) Selected() []intentperm.Feature {
 // nothing patchy runs on, or a feature without the one it extends.
 func (f Features) Validate() error {
 	selected := f.Selected()
-	if !f.Security && !f.Intents {
-		return fmt.Errorf("choose what the App is for: --%s, --%s, or both",
-			intentperm.FeatureSecurity, intentperm.FeatureIntents)
-	}
 	for _, feature := range selected {
 		for _, base := range feature.Requires() {
 			if !slices.Contains(selected, base) {
 				return fmt.Errorf("--%s extends --%s: it needs --%s", feature, base, base)
 			}
 		}
+	}
+	if !f.Security && !f.Intents {
+		return fmt.Errorf("choose what the App is for: --%s, --%s, or both",
+			intentperm.FeatureSecurity, intentperm.FeatureIntents)
 	}
 	return nil
 }

@@ -256,6 +256,13 @@ func runSetupGitHubApp(ctx context.Context, opts *Options, f *setupGitHubAppFlag
 	} else {
 		code, err = browserCode(ctx, opts, plan, deps, createURL, state, f.timeout)
 	}
+	if errors.Is(err, ghapp.ErrNoCode) {
+		// The App may exist although its code never arrived: a browser on
+		// another machine cannot reach this one's loopback address.
+		return fmt.Errorf("%w; if GitHub created the App, delete it at %s, or within the hour run again with "+
+			"--no-browser and paste the code= value from the address the browser could not open",
+			err, ghapp.AppsURL(deps.webURL, plan.owner))
+	}
 	if err != nil {
 		return err
 	}

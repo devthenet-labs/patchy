@@ -424,9 +424,8 @@ func (p *pass) reviseFeedback(ctx context.Context, run *v1alpha1.IntentRun,
 // comment or edit cannot expand the agent's authority mid-round.
 func (p *pass) reviseWindow(run *v1alpha1.IntentRun) (time.Time, time.Time) {
 	upper := run.CreationTimestamp.Time
-	if rs := p.round(v1alpha1.IntentStageRevise, run.Spec.Round, anyRepository); len(rs) > 0 &&
-		!rs[0].CreationTimestamp.IsZero() {
-		upper = rs[0].CreationTimestamp.Time
+	if leased := p.roundLeasedAt(run.Spec.Round); !leased.IsZero() {
+		upper = leased
 	}
 	var cutoff time.Time
 	if build := p.round(v1alpha1.IntentStageBuild, run.Spec.Inputs.PlanRevision,
@@ -435,9 +434,10 @@ func (p *pass) reviseWindow(run *v1alpha1.IntentRun) (time.Time, time.Time) {
 		cutoff = build.Status.FinishedAt.Time
 	}
 	for _, older := range p.runs {
-		if older.Spec.Stage == v1alpha1.IntentStageRevise && older.Spec.Round < run.Spec.Round &&
-			older.CreationTimestamp.After(cutoff) {
-			cutoff = older.CreationTimestamp.Time
+		if older.Spec.Stage == v1alpha1.IntentStageRevise && older.Spec.Round < run.Spec.Round {
+			if leased := p.roundLeasedAt(older.Spec.Round); leased.After(cutoff) {
+				cutoff = leased
+			}
 		}
 	}
 	return cutoff, upper
@@ -864,7 +864,7 @@ func (p *pass) eligibleReviews(ctx context.Context, pr *v1alpha1.IntentPullReque
 	}
 	var eligible, requests []ghclient.Review
 	for _, review := range reviews {
-		if review.ID < 1 || review.NodeID == "" || review.SubmittedAt.Before(cutoff) {
+		if review.ID < 1 || review.NodeID == "" || review.SubmittedAt.Before(cutoff) || p.reviewConsumed(review.ID) {
 			continue
 		}
 		ok, _, err := p.authorizeIn(ctx, pr.Repository, review.Author)
@@ -928,11 +928,35 @@ func (p *pass) reviewCutoff(repoURL string) time.Time {
 		if run.Spec.Stage != v1alpha1.IntentStageRevise {
 			continue
 		}
-		if t := run.CreationTimestamp.Time; t.After(at) {
+		if t := p.roundLeasedAt(run.Spec.Round); t.After(at) {
 			at = t
 		}
 	}
 	return at
+}
+
+// roundLeasedAt is when a revise round was leased: its first attempt's
+// creation. It closes the round's feedback window (reviseWindow), which
+// every retry attempt reads again unchanged, and so opens the next round's
+// in the same repository. A retry attempt's own, later, creation is never a
+// boundary: feedback left while a failing attempt ran is after the round's
+// window, and is read by the next round rather than dropped.
+func (p *pass) roundLeasedAt(round int32) time.Time {
+	if rs := p.round(v1alpha1.IntentStageRevise, round, anyRepository); len(rs) > 0 {
+		return rs[0].CreationTimestamp.Time
+	}
+	return time.Time{}
+}
+
+// reviewConsumed reports a review some round already took (its ReviewIDs):
+// a review is consumed once, by id, whatever its time says.
+func (p *pass) reviewConsumed(id int64) bool {
+	for _, run := range p.runs {
+		if run.Spec.Stage == v1alpha1.IntentStageRevise && slices.Contains(run.Spec.Inputs.ReviewIDs, id) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *pass) enterRevising(ctx context.Context, run *v1alpha1.IntentRun) error {

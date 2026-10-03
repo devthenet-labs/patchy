@@ -5,6 +5,7 @@ package intent
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"slices"
 	"strings"
@@ -792,5 +793,93 @@ func TestReviseRetryDoesNotReadLaterPRFeedback(t *testing.T) {
 	}
 	if strings.Contains(cm.Data[keyInvestigation], "LATER-FEEDBACK") {
 		t.Error("retry read feedback posted after the round was leased")
+	}
+}
+
+// reviewOn adds an approver's unedited CHANGES_REQUESTED review, submitted
+// now, to pull request n.
+func (e *env) reviewOn(n, id int64, body string) {
+	e.gh.mu.Lock()
+	defer e.gh.mu.Unlock()
+	e.gh.reviews[n] = append(e.gh.reviews[n], ghclient.Review{ID: id, NodeID: fmt.Sprintf("review-%d", id),
+		Author: actorOf(approver), State: "CHANGES_REQUESTED", Body: body, SubmittedAt: e.clock.Now()})
+}
+
+// reviseRun is the Intent's revise run of round, attempt 1, or nil.
+func (e *env) reviseRun(name string, round int32) *v1alpha1.IntentRun {
+	for _, r := range e.runsOf(name, v1alpha1.IntentStageRevise) {
+		if r.Spec.Round == round && r.Spec.Attempt == 1 {
+			return &r
+		}
+	}
+	return nil
+}
+
+// TestReviewDuringAFailedAttemptIsNotDropped: a review submitted while a
+// round's first attempt runs, and fails, comes after the round's feedback
+// window (its first attempt's creation) but before its retry attempt is
+// created. The next round consumes it. Regression: the next round's cutoff
+// was the retry attempt's creation, so the review was never read by any
+// round. Found by TestMultiPRRoundsInvariantsSeeded; one pull request is
+// enough.
+func TestReviewDuringAFailedAttemptIsNotDropped(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	first := v1alpha1.IntentRunName(name, v1alpha1.IntentStageRevise, 1, "app", 1)
+	e.jobs.output = func(spec jobs.Spec) jobs.RunOutput {
+		if spec.Finding == first {
+			return failingBuild(spec)
+		}
+		return defaultOutput(spec)
+	}
+	e.gh.label(1, "patchy:approved", approver)
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	e.reviewOn(1, 1201, "Name the field sha.")
+	e.clock.Advance(3 * time.Minute)
+	e.drive(name, v1alpha1.IntentRevising, repoImage)
+	e.clock.Advance(time.Minute)
+	e.reviewOn(1, 1202, "And return the build time.")
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	if r := e.reviseRun(name, 1); r == nil || len(e.runsOf(name, v1alpha1.IntentStageRevise)) != 2 ||
+		!slices.Equal(r.Spec.Inputs.ReviewIDs, []int64{1201}) {
+		t.Fatalf("round 1 = %+v, want two attempts consuming review 1201", e.runsOf(name, v1alpha1.IntentStageRevise))
+	}
+	e.clock.Advance(3 * time.Minute)
+	e.drive(name, v1alpha1.IntentRevising, repoImage)
+	if r := e.reviseRun(name, 2); r == nil || !slices.Equal(r.Spec.Inputs.ReviewIDs, []int64{1202}) {
+		t.Fatalf("round 2 = %+v, want it to consume review 1202", r)
+	}
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	if r := e.reviseRun(name, 2); r.Status.Phase != v1alpha1.RunComplete {
+		t.Errorf("round 2 = %s %s %q; its window refused the review it took", r.Status.Phase, r.Status.Outcome,
+			r.Status.Detail)
+	}
+}
+
+// TestReviewIsConsumedOnceByID: a review submitted at the very instant a
+// round is leased is inside both that round's window and the next one's; the
+// round that took it is the only one that reads it, whatever its time says.
+func TestReviewIsConsumedOnceByID(t *testing.T) {
+	e := newEnv(t, testProject())
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	e.reviewOn(1, 1301, "Name the field sha.")
+	e.clock.Advance(3 * time.Minute)
+	e.gh.mu.Lock()
+	e.gh.reviews[1] = append(e.gh.reviews[1], ghclient.Review{ID: 1302, NodeID: "review-1302",
+		Author: actorOf(approver), State: "COMMENTED", Body: "Also note the units.", SubmittedAt: e.clock.Now()})
+	e.gh.mu.Unlock()
+	e.mustIntent(name)
+	if r := e.reviseRun(name, 1); r == nil || !r.CreationTimestamp.Time.Equal(e.clock.Now()) ||
+		!slices.Equal(r.Spec.Inputs.ReviewIDs, []int64{1301, 1302}) {
+		t.Fatalf("round 1 = %+v, want both reviews taken the instant the comment was submitted", r)
+	}
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	e.reviewOn(1, 1303, "And the build time.")
+	e.clock.Advance(3 * time.Minute)
+	e.drive(name, v1alpha1.IntentRevising, repoImage)
+	if r := e.reviseRun(name, 2); r == nil || !slices.Equal(r.Spec.Inputs.ReviewIDs, []int64{1303}) {
+		t.Fatalf("round 2 = %+v, want review 1303 alone: 1302 was round 1's", r)
 	}
 }

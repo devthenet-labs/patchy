@@ -49,7 +49,9 @@ func newCheckProjectCmd(opts *Options) *cobra.Command {
 			"sha-<default-branch head> published, <project>-0.<host suffix> resolves to\n" +
 			"the preview load balancer, and it serves a certificate trusted for that name.\n\n" +
 			"GitHub is read with GH_TOKEN, else GITHUB_TOKEN, else anonymously (public\n" +
-			"repositories only). Registries are read with your cloud and docker\n" +
+			"repositories only); a repository on another host (GitHub Enterprise Server)\n" +
+			"with GH_ENTERPRISE_TOKEN, else GITHUB_ENTERPRISE_TOKEN, so a github.com token\n" +
+			"never leaves github.com. Registries are read with your cloud and docker\n" +
 			"credentials: an ECR repository through the AWS SDK's default chain\n" +
 			"(AWS_PROFILE), Artifact Registry through Application Default Credentials,\n" +
 			"any other through your docker config. What this cannot prove is that the\n" +

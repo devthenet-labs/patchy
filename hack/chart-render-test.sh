@@ -12,6 +12,11 @@
 # mise.toml) reads the rendered documents. Runs as part of `mise run
 # helm-lint`. Every assertion runs; the exit status is the failure count.
 set -eu
+# Byte-order collation: some assertions compare a yq key list with a list
+# sorted by sort(1), and under a UTF-8 locale sort ignores punctuation
+# (PATCHY_INTENT_PR_POLL_INTERVAL vs PATCHY_INTENT_PREVIEWS_ENABLED), so the
+# test failed on developer machines while passing in CI's C locale.
+export LC_ALL=C
 
 chart=charts/patchy
 fixtures=hack/testdata/chart-render

@@ -1,7 +1,7 @@
 // Copyright 2026 Bitwise Media Group Ltd.
 // SPDX-License-Identifier: MIT
 
-package imagecheck
+package checkreport
 
 import (
 	"math/rand"
@@ -11,6 +11,8 @@ import (
 	"testing/quick"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/bitwise-media-group/patchy/cmd/patchy/internal/printer"
 )
 
 func TestPrintable(t *testing.T) {
@@ -25,13 +27,13 @@ func TestPrintable(t *testing.T) {
 		"a literal backslash-x \\x1b stays": `a literal backslash-x \x1b stays`,
 	}
 	for in, want := range cases {
-		if got := printable(in); got != want {
-			t.Errorf("printable(%q) = %q, want %q", in, got, want)
+		if got := Printable(in); got != want {
+			t.Errorf("Printable(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
 
-// TestPrintableProperty: for any bytes an image could print, the result is
+// TestPrintableProperty: for any bytes an image (or a registry) could print, the result is
 // valid UTF-8 with no control character but newline and tab, printing it
 // again changes nothing, and text that needed no escaping is untouched.
 func TestPrintableProperty(t *testing.T) {
@@ -48,8 +50,8 @@ func TestPrintableProperty(t *testing.T) {
 		},
 	}
 	inert := func(s string) bool {
-		got := printable(s)
-		if !utf8.ValidString(got) || printable(got) != got {
+		got := Printable(s)
+		if !utf8.ValidString(got) || Printable(got) != got {
 			return false
 		}
 		for _, r := range got {
@@ -64,5 +66,42 @@ func TestPrintableProperty(t *testing.T) {
 	}
 	if err := quick.Check(inert, cfg); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestRender(t *testing.T) {
+	type data struct {
+		Name string `json:"name"`
+	}
+	lines := []Line{
+		{Status: Pass, Cells: []string{"reference"}, Reason: "ghcr.io/acme/app:1"},
+		{Status: Fail, Cells: []string{"forge", "web"}, Reason: "no forge\n  matches   it"},
+		{Status: Skip, Cells: []string{"tls", ""}, Reason: "timed out"},
+	}
+	table := "PASS  reference  ghcr.io/acme/app:1\n" +
+		"FAIL  forge      web  no forge matches it\n" +
+		"SKIP  tls        timed out\n"
+	cases := []struct {
+		format printer.Format
+		want   string
+	}{
+		{printer.FormatTable, table},
+		{printer.FormatWide, table},
+		{printer.FormatJSON, "{\n  \"name\": \"demo\"\n}\n"},
+		{printer.FormatYAML, "name: demo\n"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.format), func(t *testing.T) {
+			var b strings.Builder
+			if err := Render(&b, tc.format, data{Name: "demo"}, lines); err != nil {
+				t.Fatal(err)
+			}
+			if b.String() != tc.want {
+				t.Errorf("Render =\n%q\nwant\n%q", b.String(), tc.want)
+			}
+		})
+	}
+	if n := Failed(lines); n != 1 {
+		t.Errorf("Failed = %d, want 1", n)
 	}
 }

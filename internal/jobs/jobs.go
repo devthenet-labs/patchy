@@ -284,6 +284,24 @@ type Spec struct {
 	// declared RunnerImage, echoed on the returned RunnerImageRef so the
 	// tracking issue can name it.
 	RunnerImageManifest string
+	// Trees are the other repositories a multi-repository intent's plan
+	// Job reads beside its own, read-only: each digest-verified by the
+	// prepare init into /workspace/repos/<key>, with no git history, and
+	// listed with the Job's own in the repositories manifest agent-runner
+	// checks the plan against. Empty — every other Job — leaves the Job and
+	// its Secret byte-identical. Create refuses Trees on any Job but a plan
+	// on the default runner image (treesRefusal, ErrTreesRefused).
+	//
+	// Every tree shares the workspace emptyDir, and so the pod's
+	// ephemeral-storage limit (Config.EphemeralStorage) when one is set: an
+	// operator sizing it for intent Jobs sizes it for a plan holding every
+	// repository of the largest Project, up to eight trees at once.
+	Trees []Tree
+	// RepoKey and RepoURL name the Job's own repository in that manifest:
+	// its Project key and its https URL. Required with Trees, unused
+	// without.
+	RepoKey string
+	RepoURL string
 }
 
 // Client creates and observes agent Jobs in one namespace. It embeds the
@@ -398,13 +416,22 @@ func (c *Client) Create(ctx context.Context, spec Spec) (string, v1alpha1.Runner
 	// rather than from what this call built, so a retry that adopts an
 	// earlier launch reports the image that launch actually runs.
 	ref := runnerImageRef(created, spec.RunnerImageManifest)
-	c.log.LogAttrs(ctx, slog.LevelInfo, "created agent job",
+	attrs := []slog.Attr{
 		slog.String("job", name),
 		slog.String("repo", spec.Repo),
 		slog.String("finding", spec.Finding),
 		slog.Int("attempt", spec.Attempt),
 		slog.String("runner_image", ref.Image),
-		slog.String("runner_image_source", ref.Source))
+		slog.String("runner_image_source", ref.Source),
+	}
+	if len(spec.Trees) > 0 {
+		trees := make([]string, len(spec.Trees))
+		for i, tr := range spec.Trees {
+			trees[i] = tr.Key + "@" + tr.BaseSHA + " sha256:" + tr.ArtifactDigest
+		}
+		attrs = append(attrs, slog.Any("trees", trees))
+	}
+	c.log.LogAttrs(ctx, slog.LevelInfo, "created agent job", attrs...)
 	return name, ref, nil
 }
 
@@ -496,13 +523,18 @@ func injectedBinaries(runner Runner) []string {
 }
 
 // buildSecret holds everything the init container needs: the handoff
-// markdown files.
+// markdown files, and on a Job with Trees the fetch list and the
+// repositories manifest.
 func buildSecret(name, namespace string, spec Spec) *corev1.Secret {
 	data := map[string][]byte{
 		secretKeyIssue: []byte(spec.IssueMarkdown),
 	}
 	if spec.InvestigationMarkdown != "" {
 		data[secretKeyInvestigation] = []byte(spec.InvestigationMarkdown)
+	}
+	if len(spec.Trees) > 0 {
+		data[secretKeyTrees] = []byte(treesFile(spec.Trees))
+		data[secretKeyRepositories] = []byte(repositoriesFile(spec))
 	}
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: jobLabels(spec)},
@@ -512,6 +544,9 @@ func buildSecret(name, namespace string, spec Spec) *corev1.Secret {
 }
 
 func (c *Client) buildJob(name string, spec Spec) (*batchv1.Job, error) {
+	if err := treesRefusal(spec); err != nil {
+		return nil, err
+	}
 	res, err := c.cfg.resources()
 	if err != nil {
 		return nil, err
@@ -658,6 +693,11 @@ func (c *Client) prepareContainer(runner Runner, spec Spec, res corev1.ResourceR
 			corev1.EnvVar{Name: sandboxprobe.TimeoutEnv, Value: c.cfg.SandboxProbeTimeout.String()})
 		script += injectScript
 		mounts = append(mounts, corev1.VolumeMount{Name: volPatchyBin, MountPath: patchyBinDir})
+	}
+	if len(spec.Trees) > 0 {
+		// treesRefusal has kept trees off an injecting Job, so this never
+		// follows injectScript.
+		script += treesScript
 	}
 	return corev1.Container{
 		Name:            initContainerName,

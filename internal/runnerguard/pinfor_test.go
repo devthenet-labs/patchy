@@ -5,6 +5,7 @@ package runnerguard
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
@@ -61,7 +62,8 @@ func TestPinFor(t *testing.T) {
 				want.RunnerSearchPath = tt.ri.SearchPath
 				want.RunnerImageManifest = tt.ri.Manifest
 			}
-			if spec != want {
+			// A Spec holds a slice (Trees), so it compares deeply.
+			if !reflect.DeepEqual(spec, want) {
 				t.Errorf("spec = %+v, want %+v", spec, want)
 			}
 		})
@@ -98,15 +100,15 @@ func TestPinForAgreesWithPin(t *testing.T) {
 				got := g.PinFor(&forSpec, repo)
 				switch {
 				case pinSpec.RunnerImage != "":
-					if got != "" || forSpec != pinSpec {
+					if got != "" || !reflect.DeepEqual(forSpec, pinSpec) {
 						t.Errorf("Pin copied; PinFor = %q with spec %+v, want \"\" with %+v", got, forSpec, pinSpec)
 					}
 				case pin != "":
-					if got != pin || forSpec != base {
+					if got != pin || !reflect.DeepEqual(forSpec, base) {
 						t.Errorf("Pin = %q; PinFor = %q with spec %+v, want the same reason untouched", pin, got, forSpec)
 					}
 				default:
-					if (got != SkipNoImage && got != SkipRejected) || forSpec != base {
+					if (got != SkipNoImage && got != SkipRejected) || !reflect.DeepEqual(forSpec, base) {
 						t.Errorf("Pin pinned nothing; PinFor = %q with spec %+v, want a refusal untouched", got, forSpec)
 					}
 				}

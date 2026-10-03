@@ -16,6 +16,14 @@
 // event. They run on the Finding stages' configuration (plan on
 // investigate's, build on remediate's) and on brokered claude only.
 //
+// An intent may change several repositories. Its plan Job then holds every
+// tree — the planning repository as the working tree, the others read-only
+// under the workspace's repos/, with no git history — and a manifest of
+// them, which the plan stage checks whole before any agent runs and holds
+// the plan's repositories to afterwards. Each build is in one repository
+// of such a plan and learns which from PATCHY_REPO alone, matched against
+// the approved plan's own list: no new configuration key exists for either.
+//
 // The runner trusts the repository over the agent: a remediation or build
 // report claiming success is downgraded unless commit.sh ran cleanly and
 // left real commits on the branch. It never talks to a forge — the pod has

@@ -40,6 +40,15 @@
 # request beside it is a fatal event, as agent-runner makes it. The
 # changeset stays clear of .github, .patchy and .devcontainer, which an
 # intent's changeset may never touch.
+#
+# A multi-repository intent keeps two more of agent-runner's guards. A plan
+# Job handed a repositories manifest (input/repositories, one
+# "<key> <path> <url>" line per repository) finds every tree it lists, or
+# fails fatally before planning: a pod path under /workspace is looked for
+# under PATCHY_WORKSPACE, so a harness that stages the workspace elsewhere
+# still has its trees checked. A build of a plan naming several repositories
+# finds exactly one of them whose owner/name is PATCHY_REPO (case and a .git
+# suffix ignored), or fails fatally before building.
 set -eu
 
 repo="${PATCHY_REPO:-unknown/unknown}"
@@ -71,6 +80,50 @@ turn() {
   printf 'PATCHY-TURN: {"v":1,"seq":%d,"at":"%s","role":"%s","kind":"%s","tool":"%s","text":"%s"}\n' \
     "$seq" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" "$2" "$3" "$4"
   [ "$turn_delay" = 0 ] || sleep "$turn_delay"
+}
+
+# fatal <message> — the one fatal event agent-runner emits before a stage,
+# then a non-zero exit. The message must hold no double quote or backslash.
+fatal() {
+  printf 'PATCHY-EVENT: {"v":4,"type":"fatal","repo":"%s","finding":"%s","error":"fake agent: %s"}\n' \
+    "$repo" "$finding" "$1"
+  exit 1
+}
+
+# plan_repositories <plan> — the repositories a plan's frontmatter names,
+# one per line, from a block or a flow list, quoted or not.
+plan_repositories() {
+  awk '
+    NR == 1 { if ($0 != "---") exit; next }
+    $0 == "---" { exit }
+    /^repositories:/ {
+      rest = substr($0, length("repositories:") + 1)
+      gsub(/^[ \t]+|[ \t]+$/, "", rest)
+      if (rest ~ /^\[/) {
+        gsub(/^\[|\]$/, "", rest)
+        n = split(rest, items, ",")
+        for (i = 1; i <= n; i++) {
+          v = items[i]; gsub(/^[ \t"]+|[ \t"]+$/, "", v)
+          if (v != "") print v
+        }
+        next
+      }
+      listing = 1
+      next
+    }
+    listing && /^[ \t]*- / {
+      v = $0; sub(/^[ \t]*- /, "", v); gsub(/^[ \t"]+|[ \t"]+$/, "", v)
+      print v
+      next
+    }
+    { listing = 0 }
+  ' "$1"
+}
+
+# repo_key <owner/name> — a repository's owner/name as agent-runner compares
+# it: lower case, a .git suffix dropped.
+repo_key() {
+  printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/\.git$//'
 }
 
 case "$phase" in
@@ -127,6 +180,14 @@ remediate)
     "$repo" "$finding" "$remediate_model" "$seq" "$report" "$finding" "$base_sha" "$content"
   ;;
 plan)
+  # Every tree the manifest lists, or no plan at all.
+  if [ -f "$workspace/input/repositories" ]; then
+    while read -r key path url; do
+      at="$workspace${path#/workspace}"
+      [ -d "$at" ] || fatal "the tree of $key ($url) is missing at $path"
+    done < "$workspace/input/repositories"
+  fi
+
   # The repositories the request lists, one "- <url>" line each under the
   # snapshot's "## Repositories" heading. The last such section outside a
   # code fence is the controller's own: the issue body comes before it and
@@ -174,6 +235,21 @@ build)
     printf 'PATCHY-EVENT: {"v":4,"type":"fatal","repo":"%s","finding":"%s","error":"fake agent: an intent build needs the approved plan in input/investigation.md"}\n' \
       "$repo" "$finding"
     exit 1
+  fi
+  # A plan naming several repositories is built once in each: this build
+  # must find exactly one of them to be its own.
+  plan_repos=$(plan_repositories "$workspace/input/investigation.md")
+  named=$(printf '%s\n' "$plan_repos" | awk 'NF { n++ } END { print n + 0 }')
+  if [ "$named" -gt 1 ]; then
+    own=$(repo_key "$repo")
+    matches=0
+    for url in $plan_repos; do
+      if [ "$(repo_key "$(printf '%s' "$url" | sed 's#^https://[^/]*/##')")" = "$own" ]; then
+        matches=$((matches + 1))
+      fi
+    done
+    [ "$matches" -eq 1 ] ||
+      fatal "the approved plan names $named repositories, and $matches of them are this build's repository $repo; a build of a multi-repository plan builds exactly one of them"
   fi
 
   # A representative build conversation: read the approved plan, change the

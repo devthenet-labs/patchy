@@ -5,6 +5,7 @@ package runnerguard
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -96,7 +97,8 @@ func TestPin(t *testing.T) {
 				want.RunnerSearchPath = accepted.SearchPath
 				want.RunnerImageManifest = accepted.Manifest
 			}
-			if spec != want {
+			// A Spec holds a slice (Trees), so it compares deeply.
+			if !reflect.DeepEqual(spec, want) {
 				t.Errorf("spec = %+v, want %+v", spec, want)
 			}
 		})

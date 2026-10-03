@@ -36,6 +36,13 @@ func NewClaude() *Claude {
 // and subagents and narrows Bash to read-only git (Write stays allowed so the
 // agent can emit its report). SandboxDefault is absent by design: an unset
 // posture imposes no grammar and leaves the CLI's defaults.
+//
+// A multi-repository intent's planner reads its other repositories' trees
+// with the same read-only tools: they sit under the workspace the stage adds
+// as a directory, and they are plain trees with no git history, so the
+// git-only Bash grammar is deliberately not widened for them: Read, Glob
+// and Grep already cover what ls or cat would, and a find would bring
+// -exec and -delete with it.
 var claudeTools = map[Sandbox]struct{ allow, deny []string }{
 	SandboxReadOnly: {
 		allow: []string{

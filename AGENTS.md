@@ -96,9 +96,13 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   exactly `intentperm.ForApp`'s permissions and events for `--security`/`--intents`/`--checks`, then writes its
   ghsecret-keyed Secret manifest to a 0600 file or a pipe, never to the cluster and never the private key to a
   terminal or a file other users can read; engine in `cmd/patchy/internal/ghapp`, plain net/http, no GitHub
-  client). Builds for windows too, and ships a `kubectl-patchy` alias. Ships no container image: it is distributed
-  as its own `patchy-cli` release archive (separate from the cluster binaries' `patchy` archive) and as a Homebrew
-  cask in bitwise-media-group/homebrew-tap.
+  client). `check project` is `check image`'s cluster-reading sibling: a read-only Project preflight (engine in
+  `cmd/patchy/internal/projectcheck`) that reads Ready/IntentNameConflict, resolves every repository over the
+  Forge CRs, and judges agent and preview images, DNS and TLS with the caller's own credentials. It never reads a
+  Secret, so never the App key. Both `check` nouns render through `cmd/patchy/internal/checkreport` (PASS/FAIL/SKIP
+  lines, `-o json|yaml`, inert reasons). Builds for windows too, and ships a `kubectl-patchy` alias. Ships no
+  container image: it is distributed as its own `patchy-cli` release archive (separate from the cluster binaries'
+  `patchy` archive) and as a Homebrew cask in bitwise-media-group/homebrew-tap.
 
 ## Layout
 

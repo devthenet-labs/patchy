@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bitwise-media-group/patchy/cmd/patchy/internal/checkreport"
 	"github.com/bitwise-media-group/patchy/internal/agentrun"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/runnerimage"
@@ -117,7 +118,7 @@ func Sandbox(ctx context.Context, cmd Commander, cfg SandboxConfig) []Check {
 	if cfg.Progress != nil {
 		// A platform name is the index's own string; it is shown inert,
 		// like every reason.
-		progress = func(msg string) { cfg.Progress(printable(msg)) }
+		progress = func(msg string) { cfg.Progress(checkreport.Printable(msg)) }
 	}
 	if _, err := cmd.LookPath("docker"); err != nil {
 		return SkipSandbox("docker CLI not found on PATH; --run needs a local docker")
@@ -147,7 +148,7 @@ func Sandbox(ctx context.Context, cmd Commander, cfg SandboxConfig) []Check {
 			platformChecks = sandboxAs(ctx, cmd, cfg, searchPath, p, progress)
 		}
 		for _, c := range platformChecks {
-			c.Platform = printable(p.name)
+			c.Platform = checkreport.Printable(p.name)
 			checks = append(checks, c)
 		}
 	}

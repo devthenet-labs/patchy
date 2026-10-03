@@ -5,19 +5,16 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/spf13/cobra"
-	"sigs.k8s.io/yaml"
 
+	"github.com/bitwise-media-group/patchy/cmd/patchy/internal/checkreport"
 	"github.com/bitwise-media-group/patchy/cmd/patchy/internal/imagecheck"
 	"github.com/bitwise-media-group/patchy/cmd/patchy/internal/printer"
 	"github.com/bitwise-media-group/patchy/internal/runnerimage"
@@ -30,19 +27,23 @@ import (
 // not hang a shell.
 const staticCheckTimeout = 2 * time.Minute
 
-// newCheckCmd is the `check` verb: judge an artifact the way the pipeline
-// will, before it reaches the pipeline. Cluster-free like `dev` and
-// `mirror`; the persistent kubeconfig flags are inert here.
+// newCheckCmd is the `check` verb: judge something the way the pipeline
+// will, before it reaches the pipeline. `check image` is cluster-free like
+// `dev` and `mirror` (the persistent kubeconfig flags are inert there);
+// `check project` reads the cluster with the caller's own kubeconfig.
 func newCheckCmd(opts *Options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "check",
-		Short: "Check an artifact the way patchy will judge it, without a cluster",
-		Long: "Judge something you are about to hand to patchy the way the pipeline will judge\n" +
-			"it, from your workstation and with no cluster access. The kubeconfig flags are\n" +
-			"inert here.",
+		Short: "Check something the way patchy will judge it, before the pipeline does",
+		Long: "Judge something you are handing to patchy the way the pipeline will judge it,\n" +
+			"from your workstation, and report every verdict as a PASS, FAIL or SKIP line.\n\n" +
+			"check image needs no cluster: it checks an agent image a repository means to\n" +
+			"declare, and the kubeconfig flags are inert for it. check project reads the\n" +
+			"cluster with your own kubeconfig, and GitHub and the registry with your own\n" +
+			"credentials, to tell whether a Project is ready for its first intent.",
 		Args: cobra.NoArgs,
 	}
-	cmd.AddCommand(newCheckImageCmd(opts))
+	cmd.AddCommand(newCheckImageCmd(opts), newCheckProjectCmd(opts))
 	return cmd
 }
 
@@ -285,33 +286,9 @@ func sandboxDir() (string, error) {
 // line per check otherwise, with the platform after the check's name for
 // the sandbox checks, which run once per platform.
 func renderCheckImage(opts *Options, report imagecheck.Report, format printer.Format) error {
-	switch format {
-	case printer.FormatJSON:
-		enc := json.NewEncoder(opts.Out)
-		enc.SetIndent("", "  ")
-		return enc.Encode(report)
-	case printer.FormatYAML:
-		out, err := yaml.Marshal(report)
-		if err != nil {
-			return err
-		}
-		_, err = opts.Out.Write(out)
-		return err
-	}
-	w := tabwriter.NewWriter(opts.Out, 0, 8, 2, ' ', 0)
+	lines := make([]checkreport.Line, 0, len(report.Checks))
 	for _, c := range report.Checks {
-		cells := []string{string(c.Status), c.Name}
-		if c.Platform != "" {
-			cells = append(cells, c.Platform)
-		}
-		if _, err := fmt.Fprintln(w, strings.Join(append(cells, oneLine(c.Reason)), "\t")); err != nil {
-			return err
-		}
+		lines = append(lines, checkreport.Line{Status: c.Status, Cells: []string{c.Name, c.Platform}, Reason: c.Reason})
 	}
-	return w.Flush()
-}
-
-// oneLine keeps a reason on its check's line.
-func oneLine(s string) string {
-	return strings.Join(strings.Fields(s), " ")
+	return checkreport.Render(opts.Out, format, report, lines)
 }

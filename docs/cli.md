@@ -356,6 +356,44 @@ private key appears nowhere else, and GitHub keeps no copy: apply or encrypt the
 the App with the link printed on stderr, on the repositories patchy works on: for intents, the intent repository and
 every application repository. Only github.com is supported, and nothing here talks to a cluster.
 
+## Checking a Project
+
+`patchy check project <name>` is the preflight for a [Project](configuration/intent-controller.md) before its first
+intent. Unlike `check image` it reads the cluster, with your kubeconfig, and it reports the same way: one line per
+check, PASS, FAIL or SKIP, then what the check is about (a repository's key, `intent-repository`, or `-` for the Project
+as a whole) and the reason. It looks at every repository the Project lists, and every previewed one, never just the
+first:
+
+```sh
+patchy check project shop -n patchy
+GH_TOKEN=$(gh auth token) AWS_PROFILE=prod patchy check project shop -n patchy
+patchy check project shop -o json | jq '.checks[] | select(.status == "FAIL")'
+```
+
+| Check           | What it reads, and what it says                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ready`         | The Project's `Ready` condition, with its reason and message: intent-controller's own verdict, which it reaches by minting the App's scoped tokens in-cluster. A condition older than the spec fails.                                                                                                                                                                                                                                                                                                                |
+| `intent-names`  | The `IntentNameConflict` condition.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `forge`         | Each repository, the intent repository included, resolved over the namespace's Forge CRs by the controllers' own `forge.Resolve`, and that Forge's `Ready` condition.                                                                                                                                                                                                                                                                                                                                                |
+| `labels`        | The trigger and approve labels, from `Ready`: intent-controller ensures them last, so they exist exactly when it is True.                                                                                                                                                                                                                                                                                                                                                                                            |
+| `agent-image`   | Each repository's `.patchy/agent.yaml` (or `.devcontainer/devcontainer.json`) at its default-branch head, judged by `check image`'s checks under source-controller's live allowlist, size cap and signing key. Only a regular file counts, as for source-controller: a symlink is not a declaration. When source-controller requires a signature but its key is not in a ConfigMap labelled for it (the chart's layout), an image that passes everything else is a SKIP, and `check image --cosign-key` verifies it. |
+| `previews`      | That intent-controller writes Previews and preview-controller is configured, from their ConfigMaps.                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `preview-image` | Each previewed repository's image repository: under preview-controller's prefix, one valid leaf, reachable, and holding `sha-<default-branch head>`, the tag a preview runs for a component an intent leaves be. With one previewed repository no preview runs that tag (only the pull request's head), so its absence is a SKIP.                                                                                                                                                                                    |
+| `preview-dns`   | That `<project>-0.<host suffix>` resolves to the preview load balancer, the placeholder Ingress's address. No intent is numbered 0, so the wildcard covers that name and no Preview owns it. It fails when the name does not exist (NXDOMAIN) or resolves elsewhere, and when the placeholder Ingress has no load balancer address; a lookup that times out, or a placeholder you cannot read, is a SKIP.                                                                                                            |
+| `preview-tls`   | That the name serves a certificate trusted for it. The preview load balancer admits only `preview.inboundCIDRs`, so from any other address the handshake times out, and that is a SKIP, not a FAIL.                                                                                                                                                                                                                                                                                                                  |
+
+The check never reads a Secret, so it never holds the App's private key: whether the App is installed with the
+permissions intents use, and whether the labels exist, come from the conditions the controller computed in the cluster.
+What only your own identity can see, it reads with that identity and says so: GitHub with `GH_TOKEN` (else
+`GITHUB_TOKEN`, else anonymously, which sees public repositories only), a GitHub Enterprise Server repository with
+`GH_ENTERPRISE_TOKEN` (else `GITHUB_ENTERPRISE_TOKEN`) only when `GH_HOST` names its host and anonymously otherwise, and
+registries with your cloud and docker credentials (ECR through the AWS SDK's default chain, so `AWS_PROFILE` works). The
+Project, which someone else may have written, names the repositories' hosts, so a github.com token never leaves
+github.com and an enterprise token never leaves `GH_HOST`. A PASS there means _you_ can read the image; whether
+source-controller's and the preview nodes' own credentials can is shown by a Repository's `status.runnerImage` and a
+Preview's status. The exit status is 1 when any check fails, 3 when the Project does not exist and 4 when you may not
+read it.
+
 ## Permissions
 
 Each action is a **custom RBAC verb**, granted independently: holding `approve` says nothing about `suspend`. The

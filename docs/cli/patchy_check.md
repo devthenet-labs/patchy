@@ -1,12 +1,16 @@
 ## patchy check
 
-Check an artifact the way patchy will judge it, without a cluster
+Check something the way patchy will judge it, before the pipeline does
 
 ### Synopsis
 
-Judge something you are about to hand to patchy the way the pipeline will judge
-it, from your workstation and with no cluster access. The kubeconfig flags are
-inert here.
+Judge something you are handing to patchy the way the pipeline will judge it,
+from your workstation, and report every verdict as a PASS, FAIL or SKIP line.
+
+check image needs no cluster: it checks an agent image a repository means to
+declare, and the kubeconfig flags are inert for it. check project reads the
+cluster with your own kubeconfig, and GitHub and the registry with your own
+credentials, to tell whether a Project is ready for its first intent.
 
 ### Options
 
@@ -31,4 +35,5 @@ inert here.
 
 * [patchy](patchy.md)	 - Work with patchy security findings from the terminal
 * [patchy check image](patchy_check_image.md)	 - Check an agent image a repository means to declare
+* [patchy check project](patchy_check_project.md)	 - Check that a Project is ready for its first intent
 

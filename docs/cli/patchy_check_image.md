@@ -88,5 +88,5 @@ patchy check image <reference> [flags]
 
 ### SEE ALSO
 
-* [patchy check](patchy_check.md)	 - Check an artifact the way patchy will judge it, without a cluster
+* [patchy check](patchy_check.md)	 - Check something the way patchy will judge it, before the pipeline does
 

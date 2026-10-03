@@ -29,6 +29,8 @@ type jobRun struct {
 	head, base, merge    string
 	homeTemp, cleanTemp  string
 	stepMillis, testSecs int
+	// pid is the test process's id, which Node and test runners print.
+	pid int
 }
 
 // liveRun is the first failing run of the live CI-fix demo (2026-10-03):
@@ -40,7 +42,7 @@ var liveRun = jobRun{
 	base:     "c8c683651a2b3c4d5e6f708192a3b4c5d6e7f809",
 	merge:    "3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d",
 	homeTemp: "1f2e3d4c-5b6a-4798-8a7b-6c5d4e3f2a1b", cleanTemp: "9e8d7c6b-5a49-4382-a1b0-c9d8e7f6a5b4",
-	stepMillis: 412, testSecs: 3,
+	stepMillis: 412, testSecs: 3, pid: 2073,
 }
 
 // rerun is the same check failing the same way after a fix round pushed a
@@ -53,7 +55,7 @@ var rerun = jobRun{
 	base:     "c8c683651a2b3c4d5e6f708192a3b4c5d6e7f809",
 	merge:    "0aa1bb2cc3dd4ee5ff6a7b8c9d0e1f2a3b4c5d6e",
 	homeTemp: "0a1b2c3d-4e5f-4061-8728-394a5b6c7d8e", cleanTemp: "aabbccdd-eeff-4011-9223-344556677889",
-	stepMillis: 38, testSecs: 12,
+	stepMillis: 38, testSecs: 12, pid: 4121,
 }
 
 // changelogLog renders a run of the changelog job as GitHub's job log API
@@ -105,6 +107,78 @@ func changelogLog(r jobRun, failure string) string {
 	return b.String()
 }
 
+// stepLog renders a run of a job whose failing step, run by run, printed body,
+// as GitHub's job log API returns it: every line led by its time stamp, the
+// first by a byte order mark, the runner's setup before the step and the
+// cleanup after it.
+func stepLog(r jobRun, run string, body []string) string {
+	at := r.start
+	var b strings.Builder
+	line := func(s string) {
+		if b.Len() == 0 {
+			b.WriteString("\ufeff")
+		}
+		fmt.Fprintf(&b, "%s %s\n", at.Format("2006-01-02T15:04:05.0000000Z"), s)
+		at = at.Add(time.Duration(r.stepMillis) * time.Microsecond)
+	}
+	line(fmt.Sprintf("Runner name: 'GitHub Actions %d'", r.runner))
+	line(fmt.Sprintf("Machine name: '%s'", r.machine))
+	line(fmt.Sprintf("HEAD is now at %s Merge %s into %s", r.merge[:7], r.head, r.base))
+	line("##[group]Run " + run)
+	line(run)
+	line("##[endgroup]")
+	for _, l := range body {
+		line(l)
+	}
+	line("##[error]Process completed with exit code 1.")
+	line("Post job cleanup.")
+	return b.String()
+}
+
+// jestLog is a Jest test job failing with failure (its "Received:" line), as
+// npm and Jest print it: durations with a space before the unit, a
+// deprecation warning carrying Node's process id, a code frame.
+func jestLog(r jobRun, failure string) string {
+	return stepLog(r, "npm test", []string{
+		"> app@1.0.0 test", "> jest",
+		fmt.Sprintf("(node:%d) [DEP0040] DeprecationWarning: The `punycode` module is deprecated.", r.pid),
+		fmt.Sprintf("FAIL src/sum.test.js (%d.%03d s)", r.testSecs, r.stepMillis),
+		"  sum",
+		fmt.Sprintf("    \u2713 adds zero (%d ms)", r.stepMillis%7+1),
+		fmt.Sprintf("    \u2715 adds numbers (%d ms)", r.stepMillis),
+		"  \u25cf sum \u203a adds numbers",
+		"    expect(received).toBe(expected) // Object.is equality",
+		"    Expected: 3",
+		"    " + failure,
+		"    > 4 |   expect(sum(1, 2)).toBe(3);",
+		"      at Object.toBe (src/sum.test.js:4:21)",
+		"Test Suites: 1 failed, 1 total",
+		"Tests:       1 failed, 1 passed, 2 total",
+		"Snapshots:   0 total",
+		fmt.Sprintf("Time:        %d.%03d s", r.testSecs, r.stepMillis),
+		"Ran all test suites.",
+	})
+}
+
+// surefireLog is a Maven Surefire test job failing with failure (its
+// assertion), as Maven prints it: elapsed and total times with a space
+// before the unit, the time it finished.
+func surefireLog(r jobRun, failure string) string {
+	return stepLog(r, "mvn -B test", []string{
+		"[INFO] Running com.acme.AppTest",
+		fmt.Sprintf("[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: %d.%03d s "+
+			"<<< FAILURE! -- in com.acme.AppTest", r.testSecs, r.stepMillis),
+		fmt.Sprintf("[ERROR] com.acme.AppTest.addsNumbers -- Time elapsed: 0.%03d s <<< FAILURE!", r.stepMillis),
+		"org.opentest4j.AssertionFailedError: " + failure,
+		"\tat com.acme.AppTest.addsNumbers(AppTest.java:14)",
+		"[INFO] BUILD FAILURE",
+		fmt.Sprintf("[INFO] Total time:  %d.%03d s", r.testSecs, r.stepMillis),
+		"[INFO] Finished at: " + r.start.Format(time.RFC3339),
+		"[ERROR] Failed to execute goal org.apache.maven.plugins:maven-surefire-plugin:3.2.5:test " +
+			"(default-test) on project app: There are test failures.",
+	})
+}
+
 const liveFailure = "CHANGELOG.md has no entry for #9: add a line under ## Unreleased"
 
 // changelogPrint is the stable form of the changelog check failing with log.
@@ -137,6 +211,37 @@ func TestCheckFingerprintIgnoresWhatEachRunDiffersBy(t *testing.T) {
 	renamed := checkRunPrint(ghclient.CheckRun{Name: "test", Conclusion: "failure"}, nil, first, false)
 	if sig(first) == failureSignature([]string{renamed}) {
 		t.Error("the same log under another check fingerprints the same")
+	}
+}
+
+// TestCheckFingerprintIgnoresOtherToolsDurations is the round-2 regression of
+// the fingerprint: Jest and Maven write a space between a duration and its
+// unit ("Time: 2.345 s", "(5 ms)", "Time elapsed: 0.123 s"), and Node prints
+// its process id, inside the failing step's tail. Under the previous rule
+// (patchy-check-fingerprint/3) those were read as values, so the same Jest or
+// Maven failure fingerprinted differently on every run and RepeatedFailure
+// never fired. Another failure must still fingerprint differently.
+func TestCheckFingerprintIgnoresOtherToolsDurations(t *testing.T) {
+	sig := func(log string) string {
+		return failureSignature([]string{checkRunPrint(ghclient.CheckRun{Name: "test", Conclusion: "failure"},
+			nil, log, false)})
+	}
+	for _, tt := range []struct {
+		name          string
+		render        func(jobRun, string) string
+		failure, next string
+	}{
+		{"jest", jestLog, "Received: 4", "Received: 5"},
+		{"maven surefire", surefireLog, "expected: <3> but was: <4>", "expected: <3> but was: <5>"},
+	} {
+		first, again := tt.render(liveRun, tt.failure), tt.render(rerun, tt.failure)
+		if sig(first) != sig(again) {
+			t.Errorf("%s: the same failure from another run fingerprints differently:\n%s\n---\n%s", tt.name,
+				strings.Join(stableLogTail(first, false), "\n"), strings.Join(stableLogTail(again, false), "\n"))
+		}
+		if sig(first) == sig(tt.render(rerun, tt.next)) {
+			t.Errorf("%s: %q and %q fingerprint the same", tt.name, tt.failure, tt.next)
+		}
 	}
 }
 
@@ -195,6 +300,15 @@ func TestCheckFingerprintKeepsValues(t *testing.T) {
 		{"the line moved", "version_test.go:12: got 3, want 5", "version_test.go:14: got 3, want 5", true},
 		{"another duration", "--- FAIL: TestVersion (0.01s)", "--- FAIL: TestVersion (1.20s)", true},
 		{"another goroutine", "goroutine 17 [running]:", "goroutine 9 [running]:", true},
+		{"another jest duration", "\u2715 adds numbers (5 ms)", "\u2715 adds numbers (12 ms)", true},
+		{"another elapsed time", "Time elapsed: 0.123 s <<< FAILURE!", "Time elapsed: 1.456 s <<< FAILURE!", true},
+		{"another node process", "(node:2073) Warning: x", "(node:4121) Warning: x", true},
+		{"the python line moved", `File "test_x.py", line 12, in test_add`, `File "test_x.py", line 14, in test_add`,
+			true},
+		{"the tsc position moved", "src/app.test.ts(12,5): error TS2322: Type 'string'",
+			"src/app.test.ts(14,9): error TS2322: Type 'string'", true},
+		{"jest received changed", "Expected: 5 Received: 3", "Expected: 5 Received: 4", false},
+		{"another error code", "error TS2322: Type 'string'", "error TS2345: Type 'string'", false},
 	} {
 		if same := sig(tt.a) == sig(tt.b); same != tt.same {
 			t.Errorf("%s: %q and %q fingerprint the same: %v, want %v", tt.name, tt.a, tt.b, same, tt.same)
@@ -223,6 +337,19 @@ func TestStableLine(t *testing.T) {
 		{"goroutine 17 [running]:", "goroutine <n> [running]:"},
 		{"main.f(0xc000123456, 0x1a)", "main.f(<addr>, <addr>)"},
 		{"[12:04:59] lint failed", "[<time>] lint failed"},
+		{"Time:        2.345 s", "Time: <dur>"},
+		{"    \u2715 adds numbers (5 ms)", "\u2715 adds numbers (<dur>)"},
+		{"Tests run: 3, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 0.123 s <<< FAILURE!",
+			"Tests run: 3, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: <dur> <<< FAILURE!"},
+		{"[INFO] Total time:  12.345 s", "[INFO] Total time: <dur>"},
+		{"Total time: 1.2345 Seconds", "Total time: <dur>"},
+		{"timed out after 2 minutes", "timed out after <dur>"},
+		{"(node:2073) [DEP0040] DeprecationWarning", "(node:<n>) [DEP0040] DeprecationWarning"},
+		{"pid 2073 exited; PID: 88 too", "pid <n> exited; PID: <n> too"},
+		{`  File "/w/app/test_x.py", line 12, in test_add`, `File "/w/app/test_x.py", line <line>, in test_add`},
+		{"src/app.test.ts(12,5): error TS2322", "src/app.test.ts(<line>): error TS2322"},
+		{"got 3 more, 2 skipped", "got 3 more, 2 skipped"},
+		{"Expected: 3 Received: 4", "Expected: 3 Received: 4"},
 		{"coverage: 71.3% of statements, want >= 80%", "coverage: 71.3% of statements, want >= 80%"},
 		{"got 3, want 5", "got 3, want 5"},
 		{"  spaced \t out  ", "spaced out"},
@@ -260,7 +387,7 @@ func TestCheckFingerprintSeededProperty(t *testing.T) {
 			runner: 1 + rng.Intn(2_000_000_000), machine: "runnervm" + hexOf(5),
 			image: fmt.Sprintf("%d.%d.%d", 20260000+rng.Intn(9999), rng.Intn(9), rng.Intn(9)),
 			head:  hexOf(40), base: hexOf(40), merge: hexOf(40), homeTemp: uuid(), cleanTemp: uuid(),
-			stepMillis: 1 + rng.Intn(999), testSecs: rng.Intn(600),
+			stepMillis: 1 + rng.Intn(999), testSecs: rng.Intn(600), pid: 1 + rng.Intn(4_194_304),
 		}
 	}
 	failures := []string{
@@ -268,17 +395,26 @@ func TestCheckFingerprintSeededProperty(t *testing.T) {
 		"version_test.go:12: got 404, want 200",
 		"--- FAIL: TestVersionHandler (0.00s)",
 		"go: updates to go.mod needed; to update it: go mod tidy",
+		"Received: 4",
+		"expected: <3> but was: <4>",
 	}
+	// Each case reads one job's log, as the changelog script, Jest or Maven
+	// Surefire writes it.
+	renders := []struct {
+		name   string
+		render func(jobRun, string) string
+	}{{"changelog", changelogLog}, {"jest", jestLog}, {"surefire", surefireLog}}
 	for i := range 300 {
 		failure := failures[rng.Intn(len(failures))]
-		a := failureSignature([]string{changelogPrint(changelogLog(random(), failure))})
-		b := failureSignature([]string{changelogPrint(changelogLog(random(), failure))})
+		job := renders[rng.Intn(len(renders))]
+		a := failureSignature([]string{changelogPrint(job.render(random(), failure))})
+		b := failureSignature([]string{changelogPrint(job.render(random(), failure))})
 		if a != b {
-			t.Fatalf("case %d: %q fingerprints differently in two runs", i, failure)
+			t.Fatalf("case %d (%s): %q fingerprints differently in two runs", i, job.name, failure)
 		}
 		other := failures[(slices.Index(failures, failure)+1+rng.Intn(len(failures)-1))%len(failures)]
-		if c := failureSignature([]string{changelogPrint(changelogLog(random(), other))}); c == a {
-			t.Fatalf("case %d: %q and %q fingerprint the same", i, failure, other)
+		if c := failureSignature([]string{changelogPrint(job.render(random(), other))}); c == a {
+			t.Fatalf("case %d (%s): %q and %q fingerprint the same", i, job.name, failure, other)
 		}
 	}
 }

@@ -23,9 +23,11 @@ import (
 // tokens replaced, and of a job log only the failing step's own lines. The
 // agent still reads the diagnostic itself.
 //
-// Only numbers of a volatile shape are replaced: durations, times, ids long
-// enough to be generated, addresses, goroutine numbers, and a source line
-// number after a file name (a fix moves lines). Any other number is a value,
+// Only numbers of a volatile shape are replaced: durations (with or without a
+// space before the unit, as Go, Jest, Maven and dotnet print them), times, ids
+// long enough to be generated, a process's id, addresses, goroutine numbers,
+// and a source position (a fix moves lines): a line number after a file name,
+// a "line N", a "(line,column)" after a file name. Any other number is a value,
 // and counts: a coverage gate that rose from 71.3% to 76.1%, or a test that
 // went from "got 3" to "got 4", is progress, not the same failure. A false
 // "same" stops automatic fixing while the agent was getting somewhere, a false
@@ -33,7 +35,7 @@ import (
 
 // fingerprintVersion heads every fingerprint, so a stable form changed later
 // never compares equal to one taken under an earlier rule.
-const fingerprintVersion = "patchy-check-fingerprint/3"
+const fingerprintVersion = "patchy-check-fingerprint/4"
 
 // fingerprintLogLines bounds how many lines of a failing step's log the
 // fingerprint keeps: its last ones, which say why it failed. Fewer than a 32
@@ -52,15 +54,24 @@ var (
 	timeToken = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?`)
 	hexToken  = regexp.MustCompile(`\b[0-9a-f]{7,}\b`)
 	// addrToken is a pointer or offset a stack trace prints, goroutineToken
-	// a goroutine's number.
+	// a goroutine's number, pidToken a process's id: Node's "(node:2073)",
+	// "pid 2073", "PID: 2073".
 	addrToken      = regexp.MustCompile(`\b0x[0-9a-fA-F]+\b`)
 	goroutineToken = regexp.MustCompile(`\bgoroutine \d+\b`)
-	// durationToken is a duration as tools print one: "(0.01s)", "412ms",
-	// "1m2.5s".
-	durationToken = regexp.MustCompile(`\b(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+\b`)
+	pidToken       = regexp.MustCompile(`(?i)\b(node:|pid[:=]? ?)\d+\b`)
+	// durationToken is a duration as tools print one, the unit written
+	// straight after the number or one space after it: "(0.01s)", "412ms",
+	// "1m2.5s", Jest's "(5 ms)" and "Time: 2.345 s", Maven's "Time elapsed:
+	// 0.123 s", dotnet's "1.2345 Seconds".
+	durationToken = regexp.MustCompile(
+		`\b(?:\d+(?:\.\d+)? ?(?:ns|us|µs|ms|s|m|h|(?i:secs?|seconds?|mins?|minutes?|hours?)))+\b`)
 	// lineToken is a source line (and column) number after a file name:
-	// "version_test.go:12:", "main.rs:4:7".
-	lineToken = regexp.MustCompile(`(\.[A-Za-z0-9]+):\d+(?::\d+)?\b`)
+	// "version_test.go:12:", "main.rs:4:7"; parenToken the same in
+	// parentheses, as tsc and MSBuild print it: "app.test.ts(12,5)";
+	// lineWordToken a line Python names: `File "x.py", line 12`.
+	lineToken     = regexp.MustCompile(`(\.[A-Za-z0-9]+):\d+(?::\d+)?\b`)
+	parenToken    = regexp.MustCompile(`(\.[A-Za-z0-9]+)\(\d+(?:,\d+){0,3}\)`)
+	lineWordToken = regexp.MustCompile(`\b([Ll]ine) \d+\b`)
 	// clockToken is a time of day without a date.
 	clockToken = regexp.MustCompile(`\b\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\b`)
 	// idDigits are five or more digits in a row: a run, job, process or
@@ -88,7 +99,10 @@ func stableLine(line string) string {
 		return tok // a word made of hex letters, such as "acceded"
 	})
 	line = goroutineToken.ReplaceAllString(line, "goroutine <n>")
+	line = pidToken.ReplaceAllString(line, "${1}<n>")
 	line = lineToken.ReplaceAllString(line, "$1:<line>")
+	line = parenToken.ReplaceAllString(line, "$1(<line>)")
+	line = lineWordToken.ReplaceAllString(line, "$1 <line>")
 	line = clockToken.ReplaceAllString(line, "<time>")
 	line = durationToken.ReplaceAllString(line, "<dur>")
 	line = idDigits.ReplaceAllString(line, "<n>")

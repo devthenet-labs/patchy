@@ -204,9 +204,12 @@ request's head, in the same image as its build, pushed as a fast-forward of the 
   head patchy last pushed, the round reads that check's output, annotations and the tail of its Actions job log.
   `limits.maxCheckFixes` bounds them. A CI-fix round that does not fix the failure stops automatic fixing: the same
   failure again holds the intent `Blocked` with `ChecksFailing` (`RepeatedFailure`) for a human, until the Project
-  changes. Two failures are compared without the log's times, durations, commit hashes, long ids (runner, job and
-  process numbers), addresses, and the line numbers after a file name; every other number counts, so a failure whose
-  values moved (coverage from 71.3% to 76.1%, a test from `got 3` to `got 4`) is progress, and gets another round.
+  changes. Two failures are compared without the log's times, durations (`412ms`, and `2.345 s` or `(5 ms)` as Jest
+  and Maven print them), commit hashes, long ids (runner, job and process numbers), process ids (`(node:2073)`,
+  `pid 2073`), addresses, and source positions (`app_test.go:12`, `line 12`, `app.test.ts(12,5)`); every other number
+  counts, so a failure whose values moved (coverage from 71.3% to 76.1%, a test from `got 3` to `got 4`) is progress,
+  and gets another round. A tool that prints some other volatile number in its last lines (a random seed, say) can
+  still make the same failure read as a new one, which costs a round, up to `limits.maxCheckFixes`.
 
 Each round posts one comment on the pull request saying what kind of round it was ("Revision round", or "CI-fix round
 for `test`") and what it pushed, and when it pushed, asks the approvers to review again. The summary patchy posts when

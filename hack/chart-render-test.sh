@@ -203,6 +203,17 @@ expect preview 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-i
 http'
 expect preview 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-isolation") | .spec.ingress | length' '1
 1'
+# The slot quota holds one Preview of up to four components: a Service each
+# plus slot 0's placeholder, and every component's Pod replaced at once.
+expect preview 'select(.kind == "ResourceQuota" and .metadata.name == "preview-quota") | .spec.hard.services + "/" + .spec.hard.pods' '5/8
+5/8'
+expect preview 'select(.kind == "ResourceQuota" and .metadata.name == "preview-quota") | .spec.hard."services.loadbalancers" + "/" + .spec.hard."services.nodeports"' '0/0
+0/0'
+# The multi-component admission rules are rendered into the slot policies.
+expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name == "patchy-preview-pods" or .metadata.name == "patchy-preview-deployments")) | .spec.validations[].expression | select(. == "size(variables.pod.containers) == 1")' 'size(variables.pod.containers) == 1
+size(variables.pod.containers) == 1'
+expect preview 'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name == "patchy-preview-ingresses") | .spec.validations[].message | select(test("one rule of at most 4 Prefix paths"))' \
+  'preview Ingresses have one rule of at most 4 Prefix paths in the component path grammar, each backed by a preview- Service on port 80'
 expect preview 'select(.kind == "IngressClass" and .metadata.name == "alb-preview") | .metadata.annotations."ingressclass.kubernetes.io/is-default-class"' 'false'
 expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.namespaceSelector.matchExpressions[0].values | join(",")' 'patchy-preview-0,patchy-preview-1'
 expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.inboundCIDRs | join(",")' '75.70.97.14/32'

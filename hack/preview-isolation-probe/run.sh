@@ -17,13 +17,20 @@ region=us-east-1
 registry=377946145366.dkr.ecr.us-east-1.amazonaws.com
 image_repo=patchy/previews/patchy-preview-demo
 deployment=preview-isolation-probe
+# The sibling stage's targets: another component's Pod and Service in the
+# probe's slot, and a Pod in the other slot.
+sibling=preview-isolation-sibling
+other=preview-isolation-other
 created=0
 export AWS_PROFILE=devthenet
 
 cleanup() {
     if [[ $created -eq 1 ]]; then
         for slot in 0 1; do
-            kubectl delete deployment "$deployment" -n "patchy-preview-$slot" --ignore-not-found --wait=true >&2 || true
+            for name in "$deployment" "$sibling" "$other"; do
+                kubectl delete deployment "$name" -n "patchy-preview-$slot" --ignore-not-found --wait=true >&2 || true
+            done
+            kubectl delete service "$sibling" -n "patchy-preview-$slot" --ignore-not-found --wait=true >&2 || true
         done
     fi
 }
@@ -51,10 +58,12 @@ fi
 for slot in 0 1; do
     ns="patchy-preview-$slot"
     kubectl get networkpolicy preview-isolation -n "$ns" >/dev/null
-    if kubectl get deployment "$deployment" -n "$ns" >/dev/null 2>&1; then
-        echo "existing $ns/$deployment: refusing to overwrite another probe" >&2
-        exit 1
-    fi
+    for name in "$deployment" "$sibling" "$other"; do
+        if kubectl get deployment "$name" -n "$ns" >/dev/null 2>&1; then
+            echo "existing $ns/$name: refusing to overwrite another probe" >&2
+            exit 1
+        fi
+    done
 done
 
 service_ip() {
@@ -88,25 +97,26 @@ wait_zero() {
     return 1
 }
 
-run_slot() {
-    local slot=$1 ns="patchy-preview-$1" pod logs summary tries=0
-    wait_zero
-    echo "Cold-starting Deployment-managed probe in $ns" >&2
+# apply_probe NAMESPACE NAME [EXTRA_ENV_LINES]: a Deployment-managed netprobe
+# Pod, in the exact preview Pod shape, labelled app=NAME. EXTRA_ENV_LINES are
+# further env entries, already indented.
+apply_probe() {
+    local ns=$1 name=$2 extra_env=${3:-}
     created=1
     kubectl apply -n "$ns" -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: $deployment
+  name: $name
   namespace: $ns
 spec:
   replicas: 1
   strategy: {type: Recreate}
   selector:
-    matchLabels: {app: $deployment}
+    matchLabels: {app: $name}
   template:
     metadata:
-      labels: {app: $deployment}
+      labels: {app: $name}
     spec:
       serviceAccountName: default
       automountServiceAccountToken: false
@@ -133,6 +143,7 @@ spec:
             - {name: PROBE_INTEGRATION_CONTROLLER, value: "$integration_ip"}
             - {name: PROBE_SOURCE_CONTROLLER, value: "$source_ip"}
             - {name: PROBE_STATUS_SERVER, value: "$status_ip"}
+$extra_env
           resources:
             requests: {cpu: 25m, memory: 32Mi}
             limits: {cpu: 250m, memory: 256Mi}
@@ -141,6 +152,16 @@ spec:
             readOnlyRootFilesystem: true
             capabilities: {drop: [ALL]}
 EOF
+}
+
+# run_slot SLOT [EXTRA_ENV_LINES] [TARGETS]: run the probe in slot SLOT and
+# require every one of its TARGETS (default 8) to be blocked on all 16
+# attempts, and DNS to work. The cold-start runs call it on an empty pool.
+run_slot() {
+    local slot=$1 extra_env=${2:-} targets=${3:-8} ns="patchy-preview-$1" pod logs summary tries=0 blocked
+    blocked=$((targets * 16))
+    echo "Starting Deployment-managed probe in $ns ($targets forbidden targets)" >&2
+    apply_probe "$ns" "$deployment" "$extra_env"
     while (( tries < 120 )); do
         pod=$(kubectl get pods -n "$ns" -l "app=$deployment" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
         if [[ -n $pod ]]; then
@@ -153,19 +174,17 @@ EOF
                 fi
                 summary=$(jq -r 'select(.name == "summary") | .outcome' <<<"$logs" 2>/dev/null | tail -1)
                 if [[ -n $summary ]]; then
-                    if [[ $summary != PASS ]] || ! jq -s -e \
-                        '([.[] | select(.outcome == "blocked")] | length) == 128 and
+                    if [[ $summary != PASS ]] || ! jq -s -e --argjson blocked "$blocked" \
+                        '([.[] | select(.outcome == "blocked")] | length) == $blocked and
                          ([.[] | select(.name == "dns" and .outcome == "ok")] | length) == 1 and
                          ([.[] | select(.outcome == "inconclusive" or .outcome == "REACHABLE")] | length) == 0' \
                         <<<"$logs" >/dev/null; then
-                        echo "probe $ns/$pod ended $summary, or did not record all 128 blocked attempts and DNS" >&2
+                        echo "probe $ns/$pod ended $summary, or did not record all $blocked blocked attempts and DNS" >&2
                         cleanup
                         exit 1
                     fi
-                    echo "$ns/$pod: 128 blocked, DNS ok, no forbidden success ($summary)" >&2
+                    echo "$ns/$pod: $blocked blocked, DNS ok, no forbidden success ($summary)" >&2
                     kubectl delete deployment "$deployment" -n "$ns" --wait=true >&2
-                    created=0
-                    wait_zero
                     return 0
                 fi
             fi
@@ -177,8 +196,70 @@ EOF
     return 1
 }
 
-run_slot 0
-run_slot 1
-run_slot 0
-echo "Cold-start isolation passed three runs. Agent-log check remains open; see README.md." >&2
+# pod_ip NAMESPACE NAME: the IP of NAME's running Pod, waiting up to 20 minutes.
+pod_ip() {
+    local ns=$1 name=$2 ip tries=0
+    while (( tries < 120 )); do
+        ip=$(kubectl get pods -n "$ns" -l "app=$name" -o jsonpath='{.items[0].status.podIP}' 2>/dev/null || true)
+        if [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$ip"
+            return 0
+        fi
+        sleep 10
+        tries=$((tries + 1))
+    done
+    echo "no Pod IP for $ns/$name within 20 minutes" >&2
+    return 1
+}
+
+# run_siblings: multi-component isolation. Two more probe Pods stand in for
+# a sibling component (with its own Service) in slot 0 and for a Pod in slot
+# 1; the probe in slot 0 must then also find the sibling's Pod and Service
+# and the other slot's Pod blocked. They listen on nothing, so a broken
+# policy shows as a refused (inconclusive) attempt, which fails the run too.
+# The pool is warm by now: this checks the slot policy between Pods, while
+# the three runs before it check a cold start.
+run_siblings() {
+    local sibling_ip service_ip other_ip extra_env
+    echo "Starting sibling targets in patchy-preview-0 and patchy-preview-1" >&2
+    apply_probe patchy-preview-0 "$sibling"
+    apply_probe patchy-preview-1 "$other"
+    kubectl apply -n patchy-preview-0 -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: $sibling
+  namespace: patchy-preview-0
+spec:
+  type: ClusterIP
+  selector: {app: $sibling}
+  ports:
+    - {name: http, port: 80, targetPort: 8080, protocol: TCP}
+EOF
+    sibling_ip=$(pod_ip patchy-preview-0 "$sibling")
+    other_ip=$(pod_ip patchy-preview-1 "$other")
+    service_ip=$(service_ip patchy-preview-0 "$sibling")
+    if [[ ! $service_ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "could not discover the sibling Service ClusterIP" >&2
+        exit 1
+    fi
+    extra_env="            - {name: PROBE_SIBLING_POD, value: \"$sibling_ip\"}
+            - {name: PROBE_SIBLING_SERVICE, value: \"$service_ip\"}
+            - {name: PROBE_OTHER_SLOT_POD, value: \"$other_ip\"}"
+    run_slot 0 "$extra_env" 11
+    kubectl delete deployment "$sibling" -n patchy-preview-0 --wait=true >&2
+    kubectl delete service "$sibling" -n patchy-preview-0 --wait=true >&2
+    kubectl delete deployment "$other" -n patchy-preview-1 --wait=true >&2
+    created=0
+    wait_zero
+}
+
+for slot in 0 1 0; do
+    wait_zero
+    run_slot "$slot"
+    created=0
+done
+wait_zero
+run_siblings
+echo "Cold-start isolation passed three runs and the sibling run. Agent-log check remains open; see README.md." >&2
 echo "Close PR #$pr_number unmerged after recording the result." >&2

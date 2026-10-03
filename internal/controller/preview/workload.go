@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -27,8 +28,14 @@ func ownedBy(obj client.Object, p *v1alpha1.Preview) bool {
 		l[labelManagedBy] == managedBy
 }
 
-func (r *Reconciler) ensureService(ctx context.Context, p *v1alpha1.Preview, slot int32) error {
-	desired := r.Settings.service(p, slot)
+// ownedSelector lists the objects that claim to be the Preview's; ownedBy
+// then checks each one's name label too.
+func ownedSelector(p *v1alpha1.Preview) client.MatchingLabels {
+	return client.MatchingLabels{labelPreviewUID: string(p.UID), labelManagedBy: managedBy}
+}
+
+func (r *Reconciler) ensureService(ctx context.Context, p *v1alpha1.Preview, i int, slot int32) error {
+	desired := r.Settings.service(p, i, slot)
 	var live corev1.Service
 	err := r.Get(ctx, client.ObjectKeyFromObject(desired), &live)
 	if kerrors.IsNotFound(err) {
@@ -44,18 +51,24 @@ func (r *Reconciler) ensureService(ctx context.Context, p *v1alpha1.Preview, slo
 		return errDeleting
 	}
 	if reflect.DeepEqual(live.Spec.Selector, desired.Spec.Selector) &&
-		reflect.DeepEqual(live.Spec.Ports, desired.Spec.Ports) && live.Spec.Type == desired.Spec.Type {
+		reflect.DeepEqual(live.Spec.Ports, desired.Spec.Ports) && live.Spec.Type == desired.Spec.Type &&
+		maps.Equal(live.Labels, desired.Labels) && maps.Equal(live.Annotations, desired.Annotations) {
 		return nil
 	}
 	old := live.DeepCopy()
 	live.Spec.Selector = desired.Spec.Selector
 	live.Spec.Ports = desired.Spec.Ports
 	live.Spec.Type = desired.Spec.Type
+	live.Labels = desired.Labels
+	live.Annotations = desired.Annotations
 	return r.Patch(ctx, &live, client.MergeFrom(old))
 }
 
-func (r *Reconciler) ensureDeployment(ctx context.Context, p *v1alpha1.Preview, slot int32) error {
-	desired := r.Settings.deployment(p, slot)
+// ensureDeployment renders component i. A Deployment's selector is
+// immutable, so one whose selector differs (a component that moved to or from
+// being the only one) is deleted and created anew rather than patched.
+func (r *Reconciler) ensureDeployment(ctx context.Context, p *v1alpha1.Preview, i int, slot int32) error {
+	desired := r.Settings.deployment(p, i, slot)
 	var live appsv1.Deployment
 	err := r.Get(ctx, client.ObjectKeyFromObject(desired), &live)
 	if kerrors.IsNotFound(err) {
@@ -70,11 +83,18 @@ func (r *Reconciler) ensureDeployment(ctx context.Context, p *v1alpha1.Preview, 
 	if !live.DeletionTimestamp.IsZero() {
 		return errDeleting
 	}
-	if reflect.DeepEqual(live.Spec, desired.Spec) {
+	if !reflect.DeepEqual(live.Spec.Selector, desired.Spec.Selector) {
+		if err := r.Delete(ctx, &live); err != nil && !kerrors.IsNotFound(err) {
+			return err
+		}
+		return errDeleting
+	}
+	if reflect.DeepEqual(live.Spec, desired.Spec) && maps.Equal(live.Labels, desired.Labels) {
 		return nil
 	}
 	old := live.DeepCopy()
 	live.Spec = desired.Spec
+	live.Labels = desired.Labels
 	return r.Patch(ctx, &live, client.MergeFrom(old))
 }
 
@@ -116,9 +136,48 @@ func (r *Reconciler) deleteIngress(ctx context.Context, p *v1alpha1.Preview, slo
 	return client.IgnoreNotFound(r.Delete(ctx, &live))
 }
 
-func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, slot int32) (string, bool, error) {
+// prune deletes the Preview's Deployments and Services in the slot that no
+// current component renders: a component the Project no longer previews, or
+// one whose name moved. Each is found by the Preview's own labels, never by
+// name alone.
+func (r *Reconciler) prune(ctx context.Context, p *v1alpha1.Preview, slot int32) error {
+	desired := make(map[string]bool, len(p.Spec.Components))
+	for i := range p.Spec.Components {
+		desired[componentName(p, i)] = true
+	}
+	ns := client.InNamespace(r.Settings.slotName(slot))
+	var deployments appsv1.DeploymentList
+	if err := r.List(ctx, &deployments, ns, ownedSelector(p)); err != nil {
+		return err
+	}
+	var services corev1.ServiceList
+	if err := r.List(ctx, &services, ns, ownedSelector(p)); err != nil {
+		return err
+	}
+	stale := make([]client.Object, 0)
+	for i := range deployments.Items {
+		stale = append(stale, &deployments.Items[i])
+	}
+	for i := range services.Items {
+		stale = append(stale, &services.Items[i])
+	}
+	for _, obj := range stale {
+		if desired[obj.GetName()] || !ownedBy(obj, p) || !obj.GetDeletionTimestamp().IsZero() {
+			continue
+		}
+		if err := r.Delete(ctx, obj); err != nil && !kerrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// readyImage reports component i's ready image ID: its Deployment has rolled
+// out and a Pod running the component's exact image is Ready.
+func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, i int, slot int32) (string, bool, error) {
+	c := p.Spec.Components[i]
 	var dep appsv1.Deployment
-	key := types.NamespacedName{Namespace: r.Settings.slotName(slot), Name: resourceName(p)}
+	key := types.NamespacedName{Namespace: r.Settings.slotName(slot), Name: componentName(p, i)}
 	if err := r.Get(ctx, key, &dep); err != nil {
 		return "", false, err
 	}
@@ -126,12 +185,13 @@ func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, slot i
 		return "", false, nil
 	}
 	var pods corev1.PodList
-	if err := r.List(ctx, &pods, client.InNamespace(key.Namespace), client.MatchingLabels(labelsFor(p))); err != nil {
+	if err := r.List(ctx, &pods, client.InNamespace(key.Namespace),
+		client.MatchingLabels(componentLabels(p, i))); err != nil {
 		return "", false, err
 	}
 	for _, pod := range pods.Items {
 		if !pod.DeletionTimestamp.IsZero() || len(pod.Spec.Containers) != 1 ||
-			pod.Spec.Containers[0].Image != image(p.Spec.Components[0]) {
+			pod.Spec.Containers[0].Image != image(c) {
 			continue
 		}
 		ready := false
@@ -144,7 +204,7 @@ func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, slot i
 			continue
 		}
 		for _, status := range pod.Status.ContainerStatuses {
-			if status.Name == p.Spec.Components[0].Name && status.Ready && status.ImageID != "" {
+			if status.Name == c.Name && status.Ready && status.ImageID != "" {
 				return status.ImageID, true, nil
 			}
 		}
@@ -153,36 +213,54 @@ func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, slot i
 }
 
 // cleanup never deletes a foreign object, even one squatting on a rendered
-// name. It scans all configured slots so a lost status.slot or interrupted
+// name: it lists each kind by the Preview's own UID label, so it finds every
+// component's objects whatever their names, an older controller's included.
+// It scans all configured slots so a lost status.slot or interrupted
 // assignment cannot leave a workload behind. Pod/ReplicaSet checks keep the
 // slot held until background garbage collection has truly removed the code.
 func (r *Reconciler) cleanup(ctx context.Context, p *v1alpha1.Preview) (bool, error) {
 	remaining := false
 	for slot := range r.Settings.SlotCount {
-		ns := r.Settings.slotName(int32(slot))
-		key := types.NamespacedName{Namespace: ns, Name: resourceName(p)}
-		for _, obj := range []client.Object{&networkingv1.Ingress{}, &corev1.Service{}, &appsv1.Deployment{}} {
-			if err := r.Get(ctx, key, obj); kerrors.IsNotFound(err) {
-				continue
-			} else if err != nil {
-				return false, err
-			}
+		ns := client.InNamespace(r.Settings.slotName(int32(slot)))
+		var ingresses networkingv1.IngressList
+		if err := r.List(ctx, &ingresses, ns, ownedSelector(p)); err != nil {
+			return false, err
+		}
+		var services corev1.ServiceList
+		if err := r.List(ctx, &services, ns, ownedSelector(p)); err != nil {
+			return false, err
+		}
+		var deployments appsv1.DeploymentList
+		if err := r.List(ctx, &deployments, ns, ownedSelector(p)); err != nil {
+			return false, err
+		}
+		objects := make([]client.Object, 0, len(ingresses.Items)+len(services.Items)+len(deployments.Items))
+		for i := range ingresses.Items {
+			objects = append(objects, &ingresses.Items[i])
+		}
+		for i := range services.Items {
+			objects = append(objects, &services.Items[i])
+		}
+		for i := range deployments.Items {
+			objects = append(objects, &deployments.Items[i])
+		}
+		for _, obj := range objects {
 			if !ownedBy(obj, p) {
-				return false, fmt.Errorf("foreign %T holds %s", obj, key)
+				return false, fmt.Errorf("foreign %T %s/%s carries preview %s's UID", obj,
+					obj.GetNamespace(), obj.GetName(), p.Name)
 			}
 			remaining = true
-			if err := r.Delete(ctx, obj); err != nil &&
-				!kerrors.IsNotFound(err) {
+			if err := r.Delete(ctx, obj); err != nil && !kerrors.IsNotFound(err) {
 				return false, err
 			}
 		}
 		selector := client.MatchingLabels(labelsFor(p))
 		var pods corev1.PodList
-		if err := r.List(ctx, &pods, client.InNamespace(ns), selector); err != nil {
+		if err := r.List(ctx, &pods, ns, selector); err != nil {
 			return false, err
 		}
 		var replicas appsv1.ReplicaSetList
-		if err := r.List(ctx, &replicas, client.InNamespace(ns), selector); err != nil {
+		if err := r.List(ctx, &replicas, ns, selector); err != nil {
 			return false, err
 		}
 		if len(pods.Items) > 0 || len(replicas.Items) > 0 {

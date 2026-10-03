@@ -114,7 +114,7 @@ func TestFixedManifestSecurity(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFixedPodSecurity(t, s, p)
-	svc := s.service(p, 0)
+	svc := s.service(p, 0, 0)
 	if svc.Spec.Type != corev1.ServiceTypeClusterIP || svc.Spec.Ports[0].Port != 80 {
 		t.Errorf("service = %+v", svc.Spec)
 	}
@@ -134,7 +134,7 @@ func TestFixedManifestSecurity(t *testing.T) {
 
 func assertFixedPodSecurity(t *testing.T, s Settings, p *v1alpha1.Preview) {
 	t.Helper()
-	d := s.deployment(p, 0)
+	d := s.deployment(p, 0, 0)
 	pod := d.Spec.Template.Spec
 	if d.Namespace != "patchy-preview-0" || pod.NodeSelector["karpenter.sh/nodepool"] != s.NodePool ||
 		pod.NodeSelector["eks.amazonaws.com/nodeclass"] != s.NodeClass ||
@@ -173,7 +173,7 @@ func TestQueueAndOrphanHold(t *testing.T) {
 	}
 	// A vanished Preview can leave resources. Its slot is withheld until
 	// the periodic sweep actually removes the orphan, then the queue moves.
-	orphan := testSettings().deployment(p0, 0)
+	orphan := testSettings().deployment(p0, 0, 0)
 	if err := e.c.Create(context.Background(), orphan); err != nil {
 		t.Fatal(err)
 	}

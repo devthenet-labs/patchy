@@ -69,13 +69,16 @@ metadata:
     annotations:
         helm.sh/resource-policy: keep
 spec:
+    # Sized for one Preview of up to four components: a Service each plus
+    # slot 0's placeholder, and room for every component's Pod to be
+    # replaced while its old one terminates.
     hard:
-        pods: "6"
+        pods: "8"
         requests.cpu: "1"
         requests.memory: 1Gi
         limits.cpu: "2"
         limits.memory: 2Gi
-        services: "4"
+        services: "5"
         services.loadbalancers: "0"
         services.nodeports: "0"
         count/ingresses.networking.k8s.io: "4"

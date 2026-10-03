@@ -6,9 +6,9 @@ status. No GitHub, ECR or AWS call is made by this binary. It never runs an agen
 [the accepted preview design](../design/intent-driven-development.md#previews-slice-2-d5) and the Helm security
 foundation in `charts/patchy/README.md`.
 
-Before rendering, the controller independently checks the Preview component against the operator's Project config and
-its revision against the Intent's recorded open PR head. A mismatched spec fails closed and removes an exposed Ingress
-before releasing the slot.
+Before rendering, the controller re-derives the Preview from the operator's Project config and the Intent's recorded
+state (`v1alpha1.DesiredPreviewComponents`, the function the writer uses too) and checks every component against it. A
+mismatched spec fails closed and removes an exposed Ingress before releasing the slot.
 
 `preview.enabled` first creates guarded, empty slot namespaces and the non-default `alb-preview` class.
 `previewController.enabled` then adds the controller, one namespaced Role in the release namespace and one in each slot,
@@ -28,16 +28,53 @@ spec:
     readinessPath: /health
 ```
 
-The Project must still have exactly one application repository. Do **not** add this block to patchy-target. The runtime
-publisher must publish the immutable `sha-<full PR head SHA>` image before the preview can become Ready. No fork PR may
-publish; the uncredentialed build has no `id-token` access, and the trusted main-context publisher never checks out or
-executes PR code. The Preview's host is `<project>-<issue>.<preview.hostSuffix>`; its spec contains the Intent UID, host
-label, component name/image repository/full head SHA/port/readiness path, and a 72-hour TTL.
+`spec.preview` is the one-repository shorthand: it needs exactly one application repository. Do **not** add this block
+to patchy-target. The runtime publisher must publish the immutable `sha-<full PR head SHA>` image before the preview can
+become Ready. No fork PR may publish; the uncredentialed build has no `id-token` access, and the trusted main-context
+publisher never checks out or executes PR code. The Preview's host is `<project>-<issue>.<preview.hostSuffix>`; its spec
+contains the Intent UID, host label, each component's name/image repository/full head SHA/port/readiness path/route
+path, and a 72-hour TTL.
+
+A Project with several repositories previews them per repository instead, at most four, each under its own path on the
+one host:
+
+```yaml
+spec:
+  repositories:
+    - name: web
+      url: https://github.com/acme/Acme.Web_App
+      preview:
+        imageRepository: 377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/acme-web
+        port: 8080
+        readinessPath: /healthz
+        path: / # the default
+    - name: lib # never previewed: no runtime
+      url: https://github.com/acme/shared-lib
+    - name: api
+      url: https://github.com/acme/api
+      preview:
+        imageRepository: 377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/acme-api
+        port: 8080
+        readinessPath: /api/healthz
+        path: /api
+```
+
+Each previewed repository becomes one component, named by its key, with its own Deployment and Service: the first keeps
+the single-component name `preview-<project>-<issue>`, and each further one is `preview-<project>-<issue>-<key>`. Their
+selectors carry the component's name, so no Service reaches a sibling's Pods. The one Ingress routes a `Prefix` path per
+component, longest first; the load balancer does not rewrite paths, so an API under `/api` serves `/api/...`, and a page
+calls it same-origin, from the browser (the slot NetworkPolicy keeps components from reaching each other directly). Each
+component Service carries its own health-check path; the Ingress carries the `/` component's. The repository name is
+free: the key and the image leaf are the operator's. The preview-controller renders such Previews already; until
+intent-controller derives Previews through the same function as multi-repository intents land, it writes them only for
+the `spec.preview` shorthand.
 
 `Pending` takes a free slot, or `Queued` waits in creation order behind other Previews. `Deploying` creates a fixed
-ClusterIP Service and a single-replica, restricted Deployment on the dedicated `DefaultDeny` preview pool. Only after a
-Pod is Ready with the requested image and has an image ID does it create the fixed `alb-preview` Ingress and mark the
-Preview `Ready` with its URL and image ID. A PR-head change removes the old Ingress before updating the runtime image.
+ClusterIP Service and a single-replica, restricted Deployment per component on the dedicated `DefaultDeny` preview pool.
+Only after every component has a Ready Pod with the requested image and an image ID does it create the fixed
+`alb-preview` Ingress and mark the Preview `Ready` with its URL and each component's revision and image ID. A PR-head
+change removes the old Ingress before updating the runtime images; a component whose spec did not change is not rolled.
+Cleanup and pruning find a Preview's objects by its UID label, so a component the Project stops previewing is removed.
 Timed-out rollouts are retried at most `previewController.config.maxRetries` times (default three) with a 10-minute
 per-attempt deadline; `Failed` frees the slot after cleanup. `Expired` is reached 72 hours after the last successful
 deployment (or after creation/attempt start if none ever succeeds); a later new PR head may revive it. An Intent

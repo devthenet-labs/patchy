@@ -1249,7 +1249,13 @@ The section above was critiqued adversarially; these decisions supersede it wher
   effort with retry and a condition on failure.
 - **The configurable preview image prefix moves to "Deployable by others"**, together with an enforced rule that the
   preview and agent-image prefixes are disjoint. Slice 3 keeps `<registry>/patchy/previews/<leaf>`; the leaf is any
-  operator-chosen slug, so app repositories are freely named.
+  operator-chosen slug, so app repositories are freely named. _Implemented in W1:_ the value is the path only,
+  `preview.imagePathPrefix` (default `patchy/previews`, never empty), beside the existing `preview.imageRegistry`, not
+  the full `preview.imageRepositoryPrefix` above. The leaf did change, to the controller's DNS label (the schema
+  admitted `app-` and `-app` before). Disjointness is enforced in three places: the chart's render (segment boundaries,
+  with case, `:443` and ECR's dual-stack and FIPS host names folded), the terraform modules' variable validation
+  (`agent_path_prefix` against the new `preview_path_prefix`), and source-controller, which refuses a declared agent
+  image under the preview prefix (`--repository-image-denied-registries`, set by the chart).
 - **Terraform guards use variable validation, not `check` blocks** (which only warn), and per-app OIDC trust uses the
   org's immutable subject form (`repo:<org>@<org_id>/<repo>@<repo_id>:ref:refs/heads/main`).
 - **Live checks after the preview-controller wave include a real single-repository preview**, not only the fresh-Finding

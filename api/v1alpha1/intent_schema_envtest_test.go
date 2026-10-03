@@ -70,8 +70,167 @@ func testProjectSchema(ctx context.Context, t *testing.T, c client.Client) {
 	t.Helper()
 	testProjectDefaults(ctx, t, c)
 	testProjectBounds(ctx, t, c)
+	testProjectPreviews(ctx, t, c)
 	testProjectUpdates(ctx, t, c)
 	testProjectStatus(ctx, t, c)
+}
+
+// schemaPreview is a valid per-repository preview at `path` ("" omits it).
+func schemaPreview(leaf, path string) *patchyv1.ProjectRepositoryPreview {
+	return &patchyv1.ProjectRepositoryPreview{
+		ProjectPreview: patchyv1.ProjectPreview{
+			ImageRepository: "registry.example/patchy/previews/" + leaf, Port: 8080, ReadinessPath: "/healthz",
+		},
+		Path: path,
+	}
+}
+
+// previewedRepos is n repositories, each previewed at /p<i> (the first at /).
+func previewedRepos(n int) []patchyv1.ProjectRepository {
+	out := make([]patchyv1.ProjectRepository, n)
+	for i := range out {
+		path := fmt.Sprintf("/p%d", i)
+		if i == 0 {
+			path = "/"
+		}
+		out[i] = patchyv1.ProjectRepository{
+			Name: fmt.Sprintf("app%d", i), URL: fmt.Sprintf("https://github.com/acme/app%d", i),
+			Preview: schemaPreview(fmt.Sprintf("app%d", i), path),
+		}
+	}
+	return out
+}
+
+// testProjectPreviews exercises the per-repository previews (slice 3): at
+// most four, at distinct paths in the path grammar, an omitted path
+// defaulted to "/", and the spec.preview shorthand only for a lone
+// repository with no per-repository preview. Repository names are free: a
+// mixed-case, punctuated one needs only a short key and a lowercase leaf.
+func testProjectPreviews(ctx context.Context, t *testing.T, c client.Client) {
+	t.Helper()
+	shorthand := &patchyv1.ProjectPreview{
+		ImageRepository: "registry.example/patchy/previews/shop", Port: 8080, ReadinessPath: "/healthz",
+	}
+	tests := []struct {
+		name    string
+		mutate  func(*patchyv1.Project)
+		wantErr bool
+	}{
+		{"the shorthand on one repository", func(p *patchyv1.Project) { p.Spec.Preview = shorthand }, false},
+		{"a freely named repository previewed by its key", func(p *patchyv1.Project) {
+			p.Spec.Repositories = []patchyv1.ProjectRepository{{
+				Name: "web", URL: "https://github.com/acme/Acme.Web_App", Preview: schemaPreview("acme-web", "/"),
+			}}
+		}, false},
+		{"two previewed repositories and a library", func(p *patchyv1.Project) {
+			p.Spec.Repositories = append(previewedRepos(2),
+				patchyv1.ProjectRepository{Name: "lib", URL: "https://github.com/acme/lib"})
+		}, false},
+		{"four previewed repositories", func(p *patchyv1.Project) { p.Spec.Repositories = previewedRepos(4) }, false},
+		{"four previewed of eight", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(8)
+			for i := 4; i < 8; i++ {
+				p.Spec.Repositories[i].Preview = nil
+			}
+		}, false},
+		{"five previewed repositories", func(p *patchyv1.Project) { p.Spec.Repositories = previewedRepos(5) }, true},
+		{"a nested path", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(2)
+			p.Spec.Repositories[1].Preview.Path = "/api/v1"
+		}, false},
+		{"two repositories at one path", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(2)
+			p.Spec.Repositories[1].Preview.Path = "/"
+		}, true},
+		// An omitted path is the default "/", so it collides with one.
+		{"an omitted path beside /", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(2)
+			p.Spec.Repositories[1].Preview.Path = ""
+		}, true},
+		{"an uppercase path", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(2)
+			p.Spec.Repositories[1].Preview.Path = "/API"
+		}, true},
+		{"a relative path", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(2)
+			p.Spec.Repositories[1].Preview.Path = "api"
+		}, true},
+		{"a trailing slash", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(2)
+			p.Spec.Repositories[1].Preview.Path = "/api/"
+		}, true},
+		{"an empty segment", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(2)
+			p.Spec.Repositories[1].Preview.Path = "/api//v1"
+		}, true},
+		{"a path with a query", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(2)
+			p.Spec.Repositories[1].Preview.Path = "/api?x=1"
+		}, true},
+		{"a per-repository image outside the preview registry path", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(1)
+			p.Spec.Repositories[0].Preview.ImageRepository = "registry.example/patchy/app-envs/app0"
+		}, true},
+		{"the shorthand beside a per-repository preview", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(1)
+			p.Spec.Preview = shorthand
+		}, true},
+		{"the shorthand with two repositories", func(p *patchyv1.Project) {
+			p.Spec.Repositories = append(p.Spec.Repositories,
+				patchyv1.ProjectRepository{Name: "lib", URL: "https://github.com/acme/lib"})
+			p.Spec.Preview = shorthand
+		}, true},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := schemaProject(fmt.Sprintf("proj-previews-%d", i))
+			tt.mutate(p)
+			err := c.Create(ctx, p)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Create(project: %s) = %v, wantErr %v", tt.name, err, tt.wantErr)
+			}
+		})
+	}
+
+	t.Run("an omitted path defaults to /", func(t *testing.T) {
+		p := schemaProject("proj-preview-default")
+		p.Spec.Repositories = previewedRepos(2)
+		p.Spec.Repositories[0].Preview.Path = ""
+		if err := c.Create(ctx, p); err != nil {
+			t.Fatalf("Create(project) = %v", err)
+		}
+		got := &patchyv1.Project{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(p), got); err != nil {
+			t.Fatalf("Get(project) = %v", err)
+		}
+		if path := got.Spec.Repositories[0].Preview.Path; path != "/" {
+			t.Errorf("defaulted path = %q, want /", path)
+		}
+	})
+
+	// A legacy Project cannot grow a second repository while it keeps the
+	// shorthand: the operator moves it to repositories[0].preview first.
+	t.Run("a shorthand project gains a repository", func(t *testing.T) {
+		p := schemaProject("proj-preview-grow")
+		p.Spec.Preview = shorthand
+		if err := c.Create(ctx, p); err != nil {
+			t.Fatalf("Create(project) = %v", err)
+		}
+		got := &patchyv1.Project{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(p), got); err != nil {
+			t.Fatalf("Get(project) = %v", err)
+		}
+		got.Spec.Repositories = append(got.Spec.Repositories,
+			patchyv1.ProjectRepository{Name: "lib", URL: "https://github.com/acme/lib"})
+		if err := c.Update(ctx, got); err == nil {
+			t.Error("Update(shorthand with two repositories) = nil, want rejection")
+		}
+		got.Spec.Repositories[0].Preview = &patchyv1.ProjectRepositoryPreview{ProjectPreview: *shorthand}
+		got.Spec.Preview = nil
+		if err := c.Update(ctx, got); err != nil {
+			t.Errorf("Update(moved to repositories[0].preview) = %v, want nil", err)
+		}
+	})
 }
 
 // testProjectUpdates: the intent repository is immutable — an Intent is
@@ -404,7 +563,11 @@ func fullIntentStatus() patchyv1.IntentStatus {
 			Repository: "https://github.com/acme/shop", Number: 7,
 			URL: "https://github.com/acme/shop/pull/7", NodeID: "PR_kwDOAbCdEf", HeadSHA: schemaSHA,
 			State: "merged", MergedAt: schemaNow.DeepCopy(), MergeCommitSHA: schemaSHA,
+			ChecksObservedHeadSHA: schemaSHA, ChecksObservedProjectGeneration: 3,
 		}},
+		PreviewBases: []patchyv1.IntentPreviewBase{
+			{Repository: "https://github.com/acme/web", SHA: strings.Repeat("b", 40)},
+		},
 		Rounds:              3,
 		RoundNoticesThrough: 2,
 		Revisions:           1,
@@ -543,6 +706,13 @@ func testIntentSchema(ctx context.Context, t *testing.T, c client.Client) {
 		}
 		return out
 	}
+	bases := func(n int) []patchyv1.IntentPreviewBase {
+		out := make([]patchyv1.IntentPreviewBase, n)
+		for k := range out {
+			out[k] = patchyv1.IntentPreviewBase{Repository: fmt.Sprintf("https://github.com/acme/app%d", k), SHA: schemaSHA}
+		}
+		return out
+	}
 	for _, tt := range []struct {
 		name    string
 		mutate  func(*patchyv1.IntentStatus)
@@ -605,6 +775,28 @@ func testIntentSchema(ctx context.Context, t *testing.T, c client.Client) {
 			s.Commands.RefusedActors = actors(patchyv1.MaxIntentRefusedActors + 1)
 		}, true},
 		{"a refused actor twice", func(s *patchyv1.IntentStatus) { s.Commands.RefusedActors = []int64{7, 7} }, true},
+		// Slice 3: per-PR check observation and the recorded preview bases.
+		{"a malformed per-PR checks head", func(s *patchyv1.IntentStatus) {
+			s.PullRequests[0].ChecksObservedHeadSHA = "HEAD"
+		}, true},
+		{"a negative per-PR checks generation", func(s *patchyv1.IntentStatus) {
+			s.PullRequests[0].ChecksObservedProjectGeneration = -1
+		}, true},
+		{"8 preview bases", func(s *patchyv1.IntentStatus) { s.PreviewBases = bases(8) }, false},
+		{"9 preview bases", func(s *patchyv1.IntentStatus) { s.PreviewBases = bases(9) }, true},
+		{"two preview bases for one repository", func(s *patchyv1.IntentStatus) {
+			s.PreviewBases = append(bases(1), patchyv1.IntentPreviewBase{Repository: "https://github.com/acme/app0",
+				SHA: strings.Repeat("c", 40)})
+		}, true},
+		// A preview image is tagged sha-<40 hex>: a base is never anything else.
+		{"a short preview base", func(s *patchyv1.IntentStatus) { s.PreviewBases[0].SHA = "abc123" }, true},
+		{"a sha-256 preview base", func(s *patchyv1.IntentStatus) { s.PreviewBases[0].SHA = strings.Repeat("b", 64) }, true},
+		{"a preview base without its repository", func(s *patchyv1.IntentStatus) {
+			s.PreviewBases[0].Repository = ""
+		}, true},
+		{"a preview base for a credentialed url", func(s *patchyv1.IntentStatus) {
+			s.PreviewBases[0].Repository = "https://x:token@github.com/acme/web"
+		}, true},
 		{"a seen comment without its id", func(s *patchyv1.IntentStatus) { s.Commands.Seen.ID = 0 }, true},
 	} {
 		t.Run("status with "+tt.name, func(t *testing.T) {

@@ -319,10 +319,15 @@ func TestSchemaValidation(t *testing.T) {
 
 	t.Run("intent run spec is immutable and holds its stage invariants", func(t *testing.T) {
 		testIntentRunSchema(ctx, t, c)
+		testIntentRunTreesSchema(ctx, t, c)
 	})
 
 	t.Run("finding commands round-trip and are bounded", func(t *testing.T) {
 		testFindingCommandsSchema(ctx, t, c)
+	})
+
+	t.Run("the live objects stay valid and unchanged under the current schema", func(t *testing.T) {
+		testLiveObjectsRoundTrip(ctx, t, c)
 	})
 }
 

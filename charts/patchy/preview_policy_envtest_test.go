@@ -38,12 +38,15 @@ func TestPreviewAdmissionAgainstAPIServer(t *testing.T) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Skip("KUBEBUILDER_ASSETS not set; run via mise run envtest")
 	}
-	admin := startPreviewPolicyEnv(t)
+	env, admin := startPreviewPolicyEnv(t)
 	testPreviewDenials(t, admin)
 	testPreviewAllowed(t, admin)
+	testMultiComponentAdmission(t, admin)
+	testPlaceholderStaysAdmissible(t, admin)
+	testIsolationProbeService(t, env)
 }
 
-func startPreviewPolicyEnv(t *testing.T) client.Client {
+func startPreviewPolicyEnv(t *testing.T) (*envtest.Environment, client.Client) {
 	t.Helper()
 	env := &envtest.Environment{}
 	cfg, err := env.Start()
@@ -81,7 +84,7 @@ func startPreviewPolicyEnv(t *testing.T) client.Client {
 	}
 	installPreviewPolicy(t, admin)
 	waitForPreviewPolicy(t, admin)
-	return admin
+	return env, admin
 }
 
 func installPreviewPolicy(t *testing.T, admin client.Client) {
@@ -459,10 +462,16 @@ func service(ns, name string, kind corev1.ServiceType) *corev1.Service {
 
 func mutateService(s *corev1.Service, f func(*corev1.Service)) *corev1.Service { f(s); return s }
 
+// ingress is a preview Ingress routing / to a preview Service; the named
+// placeholder in slot 0 routes to its own Service, as the chart renders it.
 func ingress(ns, name, class, host string) *networkingv1.Ingress {
 	path := networkingv1.PathTypePrefix
+	service := "preview-demo-1"
+	if ns == "patchy-preview-0" && name == "patchy-preview-placeholder" {
+		service = name
+	}
 	backend := networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
-		Name: "demo", Port: networkingv1.ServiceBackendPort{Number: 80},
+		Name: service, Port: networkingv1.ServiceBackendPort{Number: 80},
 	}}
 	rule := networkingv1.IngressRule{
 		Host: host,

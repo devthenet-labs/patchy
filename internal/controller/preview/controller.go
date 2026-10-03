@@ -70,8 +70,7 @@ func (r *Reconciler) reconcilePresent(ctx context.Context, p *v1alpha1.Preview) 
 	if err != nil && !kerrors.IsNotFound(err) {
 		return ctrl.Result{}, err
 	}
-	if kerrors.IsNotFound(err) || in.UID != p.Spec.IntentRef.UID ||
-		v1alpha1.IntentTerminal(in.Status.Phase) || !hasOpenPR(&in) {
+	if kerrors.IsNotFound(err) || in.UID != p.Spec.IntentRef.UID || !v1alpha1.IntentWantsPreview(&in) {
 		return ctrl.Result{}, client.IgnoreNotFound(r.Delete(ctx, p))
 	}
 	var project v1alpha1.Project
@@ -87,29 +86,35 @@ func (r *Reconciler) reconcilePresent(ctx context.Context, p *v1alpha1.Preview) 
 	return r.reconcileActive(ctx, p)
 }
 
+// matchesApprovedPreview re-derives the Preview from the operator's Project
+// and the Intent's recorded state through the same function the writer uses,
+// and accepts the spec only if every component matches it, in order: name,
+// image repository, revision, port, readiness path and route path. A forged
+// or stale spec renders nothing.
 func matchesApprovedPreview(p *v1alpha1.Preview, in *v1alpha1.Intent, project *v1alpha1.Project) bool {
-	if project.Spec.Preview == nil || len(project.Spec.Repositories) != 1 ||
-		len(in.Status.PullRequests) != 1 || len(p.Spec.Components) != 1 {
+	want, ok := v1alpha1.DesiredPreviewComponents(project, in)
+	if !ok || len(want) != len(p.Spec.Components) {
 		return false
 	}
-	component, config, repo := p.Spec.Components[0], project.Spec.Preview, project.Spec.Repositories[0]
-	pr := in.Status.PullRequests[0]
-	return component.Name == repo.Name && component.ImageRepository == config.ImageRepository &&
-		component.Port == config.Port && component.ReadinessPath == config.ReadinessPath &&
-		component.Revision == pr.HeadSHA && sameRepository(pr.Repository, repo.URL)
-}
-
-func sameRepository(a, b string) bool {
-	normalize := func(u string) string {
-		u = strings.ToLower(strings.TrimRight(strings.TrimSpace(u), "/"))
-		return strings.TrimSuffix(u, ".git")
+	for i, w := range want {
+		got := p.Spec.Components[i]
+		if got.Name != w.Name || got.ImageRepository != w.ImageRepository || got.Revision != w.Revision ||
+			got.Port != w.Port || got.ReadinessPath != w.ReadinessPath ||
+			v1alpha1.PreviewComponentPath(got) != v1alpha1.PreviewComponentPath(w) {
+			return false
+		}
 	}
-	return normalize(a) == normalize(b)
+	return true
 }
 
 func (r *Reconciler) reconcileActive(ctx context.Context, p *v1alpha1.Preview) (ctrl.Result, error) {
 	if p.Status.ObservedGeneration != p.Generation {
-		if p.Status.Slot != nil {
+		// A new spec withdraws the host until it is Ready again — unless
+		// Ready waits for target health, which needs the Ingress (and so the
+		// target group binding) in place before the new Pods start. The
+		// Recreate rollout stops the old revision before the new one runs,
+		// and the host answers no old code past it.
+		if p.Status.Slot != nil && !r.Settings.TargetHealth {
 			if err := r.deleteIngress(ctx, p, *p.Status.Slot); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -167,18 +172,6 @@ func (r *Reconciler) reconcileActive(ctx context.Context, p *v1alpha1.Preview) (
 		return r.fail(ctx, p, "slot outside configured pool")
 	}
 	return r.deploy(ctx, p)
-}
-
-func hasOpenPR(in *v1alpha1.Intent) bool {
-	if len(in.Status.PullRequests) != 1 {
-		return false
-	}
-	switch in.Status.Phase {
-	case v1alpha1.IntentInReview, v1alpha1.IntentRevising, v1alpha1.IntentBlocked:
-		return in.Status.PullRequests[0].State == "open"
-	default:
-		return false
-	}
 }
 
 // chooseSlot makes a stable first-come queue. A slot is held by a Preview
@@ -272,65 +265,133 @@ func (r *Reconciler) slotHasManagedObjects(ctx context.Context, slot int32) (boo
 	return len(ingresses.Items) > 0, nil
 }
 
+// deploy renders every component into the slot: it prunes the objects of
+// components no longer rendered, ensures each component's Service and
+// Deployment (a Deployment whose spec did not change is not touched, so it is
+// not rolled), and marks the Preview Ready once every component is. The host
+// is exposed only then too — unless Ready waits for target health, when the
+// Ingress precedes the Pods (Settings.TargetHealth).
+//
+// Pruning comes first so that a renamed component's Service fits the slot
+// quota, which in slot 0 has no Service to spare beside four components and
+// the placeholder. Nothing still routes to what it prunes: without target
+// health the Ingress was withdrawn for the new spec (or was rendered for it),
+// and with it prepareIngress has dropped stale routes from the kept one.
 func (r *Reconciler) deploy(ctx context.Context, p *v1alpha1.Preview) (ctrl.Result, error) {
 	slot := *p.Status.Slot
-	if err := r.ensureService(ctx, p, slot); err != nil {
-		if errors.Is(err, errDeleting) {
-			return r.wait(), nil
+	if r.Settings.TargetHealth {
+		if err := r.prepareIngress(ctx, p, slot); err != nil {
+			return r.renderError(ctx, p, err)
 		}
-		return r.retryError(ctx, p, err)
 	}
-	if p.Status.Retries > 0 {
-		var dep appsv1.Deployment
-		key := types.NamespacedName{Namespace: r.Settings.slotName(slot), Name: resourceName(p)}
-		if err := r.Get(ctx, key, &dep); kerrors.IsNotFound(err) {
-			children, err := r.childrenRemain(ctx, p, slot)
+	if err := r.prune(ctx, p, slot); err != nil {
+		return ctrl.Result{}, err
+	}
+	for i, c := range p.Spec.Components {
+		if err := r.ensureService(ctx, p, i, slot); err != nil {
+			if quotaExceeded(err) {
+				// The quota controller releases a pruned Service's share
+				// after the delete, not with it: wait rather than spend a
+				// retry, which would restart every component.
+				return r.notYet(ctx, p, fmt.Sprintf("the slot quota had no room for component %s's Service", c.Name))
+			}
+			return r.renderError(ctx, p, err)
+		}
+	}
+	if r.Settings.TargetHealth {
+		// The Pods must start after their target group bindings exist, or
+		// the load balancer never injects the gate Ready waits for.
+		if err := r.ensureIngress(ctx, p, slot); err != nil {
+			return r.renderError(ctx, p, err)
+		}
+		// A Preview already Ready has its Pods; it does not wait again.
+		if p.Status.Phase != v1alpha1.PreviewReady {
+			admitted, err := r.ingressAdmitted(ctx, p, slot)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
-			if children {
-				return r.wait(), nil
+			if !admitted {
+				return r.notYet(ctx, p, "the load balancer did not admit the Ingress")
 			}
-		} else if err != nil {
-			return ctrl.Result{}, err
 		}
 	}
-	if err := r.ensureDeployment(ctx, p, slot); err != nil {
-		if errors.Is(err, errDeleting) {
-			return r.wait(), nil
+	for i := range p.Spec.Components {
+		if p.Status.Retries > 0 {
+			// A retry deleted the component's Deployment; its old Pods must
+			// be gone before a new one starts beside them.
+			remain, err := r.oldPodsRemain(ctx, p, i, slot)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if remain {
+				return r.wait(), nil
+			}
 		}
-		return r.retryError(ctx, p, err)
+		if err := r.ensureDeployment(ctx, p, i, slot); err != nil {
+			return r.renderError(ctx, p, err)
+		}
 	}
 	return r.completeDeployment(ctx, p, slot)
 }
 
-func (r *Reconciler) completeDeployment(ctx context.Context, p *v1alpha1.Preview, slot int32) (ctrl.Result, error) {
-	imageID, ready, err := r.readyImage(ctx, p, slot)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if !ready {
-		if p.Status.AttemptStartedAt != nil &&
-			r.now().Sub(p.Status.AttemptStartedAt.Time) >= r.Settings.RolloutTimeout {
-			return r.retryError(ctx, p, fmt.Errorf("deployment did not become Ready within %s", r.Settings.RolloutTimeout))
-		}
+// renderError waits for a rendered object that is still deleting, and spends
+// a retry on any other failure to render one.
+func (r *Reconciler) renderError(ctx context.Context, p *v1alpha1.Preview, err error) (ctrl.Result, error) {
+	if errors.Is(err, errDeleting) {
 		return r.wait(), nil
 	}
-	if err := r.ensureIngress(ctx, p, slot); err != nil {
-		if errors.Is(err, errDeleting) {
-			return r.wait(), nil
+	return r.retryError(ctx, p, err)
+}
+
+// oldPodsRemain reports whether component i's Deployment is gone while its
+// Pods or ReplicaSets remain.
+func (r *Reconciler) oldPodsRemain(ctx context.Context, p *v1alpha1.Preview, i int, slot int32) (bool, error) {
+	var dep appsv1.Deployment
+	key := types.NamespacedName{Namespace: r.Settings.slotName(slot), Name: componentName(p, i)}
+	if err := r.Get(ctx, key, &dep); !kerrors.IsNotFound(err) {
+		return false, err
+	}
+	return r.childrenRemain(ctx, p, i, slot)
+}
+
+func (r *Reconciler) completeDeployment(ctx context.Context, p *v1alpha1.Preview, slot int32) (ctrl.Result, error) {
+	// Reaching Ready waits for target health. A Preview already Ready at
+	// this generation stays Ready on its serving Pods, so one deployed
+	// before the gate existed is not restarted to grow one.
+	gated := r.Settings.TargetHealth && p.Status.Phase != v1alpha1.PreviewReady
+	components := make([]v1alpha1.PreviewComponentStatus, 0, len(p.Spec.Components))
+	for i, c := range p.Spec.Components {
+		imageID, state, err := r.readyImage(ctx, p, i, slot, gated)
+		if err != nil {
+			return ctrl.Result{}, err
 		}
-		return r.retryError(ctx, p, err)
+		switch state {
+		case componentReady:
+		case componentGateless:
+			// The Pod is Ready, so "did not become Ready" would point away
+			// from the cause: the load balancer injected no gate.
+			return r.notYet(ctx, p, fmt.Sprintf("component %s's Ready Pod got no load-balancer readiness gate", c.Name),
+				"is the slot namespace's eks.amazonaws.com/pod-readiness-gate-inject label honoured? "+
+					"previewController.config.targetHealth: false stops waiting for the gate")
+		case componentUnhealthy:
+			return r.notYet(ctx, p, fmt.Sprintf("component %s's load balancer target did not become healthy", c.Name))
+		default:
+			return r.notYet(ctx, p, fmt.Sprintf("component %s did not become Ready", c.Name))
+		}
+		components = append(components, v1alpha1.PreviewComponentStatus{
+			Name: c.Name, Revision: c.Revision, ImageID: imageID,
+		})
+	}
+	if err := r.ensureIngress(ctx, p, slot); err != nil {
+		return r.renderError(ctx, p, err)
 	}
 	url := "https://" + r.Settings.host(p)
 	if p.Status.Phase != v1alpha1.PreviewReady || p.Status.URL != url ||
-		len(p.Status.Components) != 1 || p.Status.Components[0].ImageID != imageID {
+		!slices.Equal(p.Status.Components, components) {
 		p.Status.Phase = v1alpha1.PreviewReady
 		p.Status.URL = url
 		p.Status.Message = ""
-		p.Status.Components = []v1alpha1.PreviewComponentStatus{{
-			Name: p.Spec.Components[0].Name, ImageID: imageID,
-		}}
+		p.Status.Components = components
 		if p.Status.LastDeployedAt == nil {
 			t := metav1.NewTime(r.now())
 			p.Status.LastDeployedAt = &t
@@ -340,9 +401,26 @@ func (r *Reconciler) completeDeployment(ctx context.Context, p *v1alpha1.Preview
 	return r.wait(), nil
 }
 
-func (r *Reconciler) childrenRemain(ctx context.Context, p *v1alpha1.Preview, slot int32) (bool, error) {
+// notYet waits for the attempt to progress, and retries it once the rollout
+// deadline has passed with `what` still true. Any advice follows `what` in
+// the retry's message.
+func (r *Reconciler) notYet(ctx context.Context, p *v1alpha1.Preview, what string,
+	advice ...string) (ctrl.Result, error) {
+	if p.Status.AttemptStartedAt != nil &&
+		r.now().Sub(p.Status.AttemptStartedAt.Time) >= r.Settings.RolloutTimeout {
+		cause := fmt.Sprintf("%s within %s", what, r.Settings.RolloutTimeout)
+		for _, a := range advice {
+			cause += "; " + a
+		}
+		return r.retryError(ctx, p, errors.New(cause))
+	}
+	return r.wait(), nil
+}
+
+// childrenRemain reports whether component i still has Pods or ReplicaSets.
+func (r *Reconciler) childrenRemain(ctx context.Context, p *v1alpha1.Preview, i int, slot int32) (bool, error) {
 	ns := r.Settings.slotName(slot)
-	selector := client.MatchingLabels(labelsFor(p))
+	selector := client.MatchingLabels(componentLabels(p, i))
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(ns), selector); err != nil {
 		return false, err
@@ -360,21 +438,30 @@ func (r *Reconciler) retryError(ctx context.Context, p *v1alpha1.Preview, cause 
 			slog.String("preview", p.Name), slog.Any("error", cause))
 	}
 	if p.Status.Slot != nil {
-		if err := r.deleteIngress(ctx, p, *p.Status.Slot); err != nil {
-			return ctrl.Result{}, err
-		}
-		var dep appsv1.Deployment
-		key := types.NamespacedName{Namespace: r.Settings.slotName(*p.Status.Slot), Name: resourceName(p)}
-		if err := r.Get(ctx, key, &dep); err == nil {
-			if !ownedBy(&dep, p) {
-				return r.fail(ctx, p, "deployment name is held by a foreign object")
-			}
-			if err := r.Delete(ctx, &dep); err != nil &&
-				!kerrors.IsNotFound(err) {
+		// The host is withdrawn for the retry, except when Ready waits for
+		// target health: the retried Pods need the Ingress's target group
+		// bindings in place to get their gates, and until a target is
+		// healthy the load balancer routes nothing to it.
+		if !r.Settings.TargetHealth {
+			if err := r.deleteIngress(ctx, p, *p.Status.Slot); err != nil {
 				return ctrl.Result{}, err
 			}
-		} else if !kerrors.IsNotFound(err) {
-			return ctrl.Result{}, err
+		}
+		// Every component restarts: a retry deletes each one's Deployment.
+		for i := range p.Spec.Components {
+			var dep appsv1.Deployment
+			key := types.NamespacedName{Namespace: r.Settings.slotName(*p.Status.Slot), Name: componentName(p, i)}
+			if err := r.Get(ctx, key, &dep); err == nil {
+				if !ownedBy(&dep, p) {
+					return r.fail(ctx, p, "deployment name is held by a foreign object")
+				}
+				if err := r.Delete(ctx, &dep); err != nil &&
+					!kerrors.IsNotFound(err) {
+					return ctrl.Result{}, err
+				}
+			} else if !kerrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 	p.Status.Retries++

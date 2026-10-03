@@ -30,28 +30,74 @@ type result struct {
 	Status    int    `json:"status,omitempty"`
 }
 
-// The script discovers these service IPs immediately before deployment and
-// passes them as ordinary, non-secret environment variables. Missing values
-// make the test inconclusive, not a misleading pass. Link-local and internet
-// targets are constant. No target is ever accessed by hostname.
-func targets() ([]target, bool) {
-	out := []target{
-		{name: "imds-v2-token-put", addr: "169.254.169.254:80", imds: true},
-		{name: "pod-identity-agent", addr: "169.254.170.23:80"},
-		{name: "internet", addr: "1.1.1.1:443"},
-	}
-	for _, item := range []struct{ name, key, port string }{
+type envTarget struct{ name, key, port string }
+
+// requiredTargets are always probed; siblingTargets are probed together or
+// not at all. A multi-component Preview runs several components in one slot,
+// so the slot policy must also keep a component from its sibling's Pod and
+// Service, and from a Pod in another slot: a page reaches a sibling only from
+// the browser, through the load balancer.
+var (
+	requiredTargets = []envTarget{
 		{"kubernetes-api", "PROBE_KUBERNETES_API", "443"},
 		{"patchy-egress-broker", "PROBE_EGRESS_BROKER", "8080"},
 		{"patchy-integration-controller", "PROBE_INTEGRATION_CONTROLLER", "8080"},
 		{"patchy-source-controller", "PROBE_SOURCE_CONTROLLER", "9790"},
 		{"patchy-status-server", "PROBE_STATUS_SERVER", "8080"},
-	} {
-		ip := net.ParseIP(os.Getenv(item.key))
+	}
+	siblingTargets = []envTarget{
+		{"same-slot-sibling-pod", "PROBE_SIBLING_POD", "8080"},
+		{"same-slot-sibling-service", "PROBE_SIBLING_SERVICE", "80"},
+		{"other-slot-pod", "PROBE_OTHER_SLOT_POD", "8080"},
+	}
+)
+
+// The script discovers these service IPs immediately before deployment and
+// passes them as ordinary, non-secret environment variables. Missing values
+// make the test inconclusive, not a misleading pass. Link-local and internet
+// targets are constant. No target is ever accessed by hostname.
+func targets() ([]target, bool) { return targetsFrom(os.Getenv) }
+
+func targetsFrom(getenv func(string) string) ([]target, bool) {
+	out := []target{
+		{name: "imds-v2-token-put", addr: "169.254.169.254:80", imds: true},
+		{name: "pod-identity-agent", addr: "169.254.170.23:80"},
+		{name: "internet", addr: "1.1.1.1:443"},
+	}
+	ipv4 := func(item envTarget) (target, bool) {
+		ip := net.ParseIP(getenv(item.key))
 		if ip == nil || ip.To4() == nil {
+			return target{}, false
+		}
+		return target{name: item.name, addr: net.JoinHostPort(ip.String(), item.port)}, true
+	}
+	for _, item := range requiredTargets {
+		t, ok := ipv4(item)
+		if !ok {
 			return nil, false
 		}
-		out = append(out, target{name: item.name, addr: net.JoinHostPort(ip.String(), item.port)})
+		out = append(out, t)
+	}
+	// The sibling set is all or nothing: one silently missing would drop a
+	// forbidden target from a run that then reports a pass.
+	given := 0
+	for _, item := range siblingTargets {
+		if getenv(item.key) != "" {
+			given++
+		}
+	}
+	if given == 0 {
+		return out, true
+	}
+	if given != len(siblingTargets) {
+		return nil, false
+	}
+	for _, item := range siblingTargets {
+		t, ok := ipv4(item)
+		if !ok {
+			return nil, false
+		}
+		out = append(out, t)
 	}
 	return out, true
 }

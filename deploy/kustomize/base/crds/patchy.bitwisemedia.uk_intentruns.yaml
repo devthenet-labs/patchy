@@ -99,7 +99,9 @@ spec:
               admission rather than launched: every run names its Intent by UID, a build
               or revise run always pins an approved plan, and a revise run always names
               its trigger, records what that trigger consumed (IntentRunInputs), and
-              takes its image from the build round's Repository, named by UID.
+              takes its image from the build round's Repository, named by UID. Only a
+              plan run reads more than its one repository (Trees), and each tree is a
+              different repository.
             properties:
               attempt:
                 description: |-
@@ -294,7 +296,9 @@ spec:
                 - outcome
                 type: object
               repository:
-                description: Repository is the tree the run works on.
+                description: |-
+                  Repository is the tree the run works on; for a plan run, the planning
+                  repository (the Project's first).
                 properties:
                   repositoryRef:
                     description: |-
@@ -347,6 +351,56 @@ spec:
                 - build
                 - revise
                 type: string
+              trees:
+                description: |-
+                  Trees are the Project's other repositories a plan run reads beside
+                  Repository, read-only on the default image, so one plan covers every
+                  repository of a multi-repository Project. Set on plan runs only
+                  (CEL-enforced); empty for a one-repository Project. At most
+                  MaxIntentRunTrees.
+                items:
+                  description: |-
+                    IntentRunTree is one more Project repository a plan run reads, beside its
+                    planning repository (spec.repository): read-only, on the default image.
+                  properties:
+                    name:
+                      description: |-
+                        Name is the Project repository's key: the tree's directory in the
+                        workspace and the suffix of its Repository's name; the list key.
+                      maxLength: 16
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    repositoryRef:
+                      description: |-
+                        RepositoryRef names the Repository artifact this run owns for the
+                        tree, pinned at the default branch head
+                        (IntentRunTreeRepositoryName).
+                      properties:
+                        name:
+                          description: Name of the referent.
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    url:
+                      description: URL is the https URL of the repository (one of
+                        the Project's).
+                      maxLength: 256
+                      minLength: 1
+                      pattern: ^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$
+                      type: string
+                  required:
+                  - name
+                  - repositoryRef
+                  - url
+                  type: object
+                maxItems: 7
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               trigger:
                 description: |-
                   Trigger names what started a revise round (slice 1b); set on every
@@ -404,6 +458,17 @@ spec:
             - message: inputs.commandID is consumed only by command rounds
               rule: '!has(self.inputs.commandID) || (has(self.trigger) && self.trigger
                 == ''command'')'
+            - message: 'spec.trees is set on plan runs only: a build or revise run
+                works on its one repository'
+              rule: '!has(self.trees) || self.stage == ''plan'''
+            - message: every tree is a different repository from the others and from
+                spec.repository (compared case-insensitively, ignoring a .git suffix)
+              rule: '!has(self.trees) || self.trees.all(t, (t.url.endsWith(''.git'')
+                ? t.url.substring(0, size(t.url) - 4) : t.url).lowerAscii() != (self.repository.url.endsWith(''.git'')
+                ? self.repository.url.substring(0, size(self.repository.url) - 4)
+                : self.repository.url).lowerAscii() && self.trees.exists_one(u, (u.url.endsWith(''.git'')
+                ? u.url.substring(0, size(u.url) - 4) : u.url).lowerAscii() == (t.url.endsWith(''.git'')
+                ? t.url.substring(0, size(t.url) - 4) : t.url).lowerAscii()))'
           status:
             description: |-
               IntentRunStatus records how the run ran. Written only by
@@ -596,6 +661,47 @@ spec:
                 required:
                 - name
                 type: object
+              trees:
+                description: |-
+                  Trees records, for each of spec.trees, the commit and tarball digest
+                  the Job was launched with, written beside JobRef and BaseSHA. The
+                  run record keeps what the planner saw after the tree Repositories
+                  are deleted with the run.
+                items:
+                  description: |-
+                    IntentRunTreeStatus records what one extra tree was when the run launched,
+                    so the run record keeps what the planner saw after its Repositories are
+                    deleted with it.
+                  properties:
+                    artifactDigest:
+                      description: |-
+                        ArtifactDigest is the hex sha256 of the tarball the Job was handed
+                        for the tree (the Repository's status.artifact.digest), which its init
+                        container verified.
+                      pattern: ^[0-9a-f]{64}$
+                      type: string
+                    baseSHA:
+                      description: BaseSHA is the commit the tree's Repository was
+                        pinned at.
+                      pattern: ^([0-9a-f]{40}|[0-9a-f]{64})$
+                      type: string
+                    name:
+                      description: Name is the tree's key (spec.trees[].name); the
+                        list key.
+                      maxLength: 16
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                  required:
+                  - artifactDigest
+                  - baseSHA
+                  - name
+                  type: object
+                maxItems: 7
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               usage:
                 description: Usage accounting for the run, as the harness reported
                   it.

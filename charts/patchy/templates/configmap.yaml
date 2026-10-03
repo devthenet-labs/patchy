@@ -238,6 +238,7 @@ blocks on ImageRequired. The changeset entry cap is remediation's value.
 {{- $_ := set $data "PATCHY_PREVIEW_ROLLOUT_TIMEOUT" $own.rolloutTimeout }}
 {{- $_ := set $data "PATCHY_PREVIEW_POLL_INTERVAL" $own.pollInterval }}
 {{- $_ := set $data "PATCHY_PREVIEW_MAX_RETRIES" $own.maxRetries }}
+{{- $_ := set $data "PATCHY_PREVIEW_TARGET_HEALTH" $own.targetHealth }}
 {{- end }}
 {{/*
 The global egress proxy (spec.proxy on a Forge/GitHub Integration overrides

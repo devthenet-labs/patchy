@@ -327,12 +327,13 @@
                 "config": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["apiServerCIDR", "rolloutTimeout", "pollInterval", "maxRetries"],
+                    "required": ["apiServerCIDR", "rolloutTimeout", "pollInterval", "maxRetries", "targetHealth"],
                     "properties": {
                         "apiServerCIDR": {"type": "string", "pattern": "^$|^[0-9]{1,3}(\\.[0-9]{1,3}){3}/32$"},
                         "rolloutTimeout": {"$ref": "#/definitions/duration"},
                         "pollInterval": {"$ref": "#/definitions/duration"},
                         "maxRetries": {"type": "integer", "minimum": 1, "maximum": 3},
+                        "targetHealth": {"type": "boolean"},
                         "extra": {"$ref": "#/definitions/extraEnv"}
                     }
                 },

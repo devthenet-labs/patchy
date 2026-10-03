@@ -31,6 +31,17 @@ metadata:
         pod-security.kubernetes.io/audit: restricted
         pod-security.kubernetes.io/warn: restricted
         app.kubernetes.io/part-of: patchy-preview
+        {{- if $.Values.previewController.config.targetHealth }}
+        # EKS Auto Mode's load balancer injects a target-health readiness
+        # gate into the slot's Pods (the upstream AWS Load Balancer
+        # Controller's label is elbv2.k8s.aws/pod-readiness-gate-inject; the
+        # alb-preview class is Auto Mode's), so a Pod is Ready, and the
+        # Preview with it, only once its target is healthy. Only with
+        # previewController.config.targetHealth, whose Ingress ordering (the
+        # binding before the Pods, kept across redeploys) the gate needs;
+        # without it the slots run exactly as slice 2 ran them, ungated.
+        eks.amazonaws.com/pod-readiness-gate-inject: enabled
+        {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -69,13 +80,16 @@ metadata:
     annotations:
         helm.sh/resource-policy: keep
 spec:
+    # Sized for one Preview of up to four components: a Service each plus
+    # slot 0's placeholder, and room for every component's Pod to be
+    # replaced while its old one terminates.
     hard:
-        pods: "6"
+        pods: "8"
         requests.cpu: "1"
         requests.memory: 1Gi
         limits.cpu: "2"
         limits.memory: 2Gi
-        services: "4"
+        services: "5"
         services.loadbalancers: "0"
         services.nodeports: "0"
         count/ingresses.networking.k8s.io: "4"

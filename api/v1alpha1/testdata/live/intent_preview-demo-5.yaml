@@ -1,0 +1,98 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Read from devthenet-dev on 2026-10-03 (kubectl get -o yaml) before the slice-3 schema change,
+# server-owned metadata removed. live_envtest_test.go round-trips it under the current schema.
+apiVersion: patchy.bitwisemedia.uk/v1alpha1
+kind: Intent
+metadata:
+  name: preview-demo-5
+  namespace: patchy
+spec:
+  issue:
+    number: 5
+    repository: https://github.com/devthenet-labs/intents
+    url: https://github.com/devthenet-labs/intents/issues/5
+  project: preview-demo
+  requestedBy:
+    at: "2026-10-03T06:55:10Z"
+    eventID: 32385593664
+    login: brvtl
+status:
+  approval:
+    at: "2026-10-03T06:58:05Z"
+    by: brvtl
+    eventID: 32385665841
+    inputDigest: sha256:401ba32134189045603a2cd317e365b67ebdc2fb4c6afef33a6a7ced4d1ba33b
+    planDigest: sha256:047e0490a6a9df800b282f7eda37beaa87aaa71c50c9c2c191e66502617999fe
+    planRevision: 1
+    source: label
+  branch: patchy-intent/preview-demo-5
+  checkFixes: 1
+  checksObservedHeadSHA: ff75476100fc6ca8f0a2f64723cebf713fa58022
+  checksObservedProjectGeneration: 2
+  commands:
+    seen:
+      at: "2026-10-03T06:57:23Z"
+      id: 5966549902
+  completedAt: "2026-10-03T07:07:25Z"
+  conditions:
+    - lastTransitionTime: "2026-10-03T06:58:18Z"
+      message: plan r1 approved by brvtl
+      observedGeneration: 1
+      reason: Approved
+      status: "False"
+      type: ApprovalRejected
+  input:
+    configMap: preview-demo-5-input-r1
+    digest: sha256:401ba32134189045603a2cd317e365b67ebdc2fb4c6afef33a6a7ced4d1ba33b
+    revision: 1
+  observedGeneration: 1
+  phase: Merged
+  phaseTimes:
+    - at: "2026-10-03T06:56:15Z"
+      phase: Pending
+    - at: "2026-10-03T06:56:15Z"
+      phase: Planning
+    - at: "2026-10-03T06:57:23Z"
+      phase: AwaitingApproval
+    - at: "2026-10-03T06:58:16Z"
+      phase: Building
+    - at: "2026-10-03T07:00:17Z"
+      phase: InReview
+    - at: "2026-10-03T07:01:20Z"
+      phase: Revising
+    - at: "2026-10-03T07:03:18Z"
+      phase: InReview
+    - at: "2026-10-03T07:07:25Z"
+      phase: Merged
+  plan:
+    commentDigest: sha256:7592675af7143a2c3a3349a3e54a1294a479e61bbf1b062ae9acb2f758d9de8e
+    commentID: 5966549902
+    configMap: preview-demo-5-plan-r1
+    digest: sha256:047e0490a6a9df800b282f7eda37beaa87aaa71c50c9c2c191e66502617999fe
+    postedAt: "2026-10-03T06:57:23Z"
+    repositories:
+      - https://github.com/devthenet-labs/patchy-preview-demo
+    revision: 1
+    summary: Add a static 'Deployed by patchy' footer to the welcome card in main.go, below revision/build, with a test asserting it renders
+  pullRequests:
+    - headSHA: ff75476100fc6ca8f0a2f64723cebf713fa58022
+      mergeCommitSHA: 8604f2007010e1ca07688b66c0946006076c2836
+      mergedAt: "2026-10-03T07:07:18Z"
+      nodeID: PR_kwDOUuyUYs8AAAABGZ4SFA
+      number: 9
+      repository: https://github.com/devthenet-labs/patchy-preview-demo
+      state: merged
+      url: https://github.com/devthenet-labs/patchy-preview-demo/pull/9
+  roundNoticesThrough: 1
+  rounds: 1
+  tracking:
+    statusCommentID: 5966541566
+    statusDigest: sha256:2a849c6f03062786ef754e00ae09309c07aa3b550529dbfd4dd23d0cbd7db343
+  usage:
+    cacheCreationTokens: 129217
+    cacheReadTokens: 1493608
+    costMicroUSD: 748594
+    inputTokens: 70
+    outputTokens: 12669

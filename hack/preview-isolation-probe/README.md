@@ -7,6 +7,19 @@ each of eight forbidden targets. All 128 connections must be blocked; DNS may su
 connection refusal is inconclusive, not a pass. The IMDSv2 test issues only a token PUT, reads only the status line, and
 treats an established TCP connection as a failure; it never reads a token or credentials.
 
+A fourth, **sibling run** covers multi-component previews, where several components share one slot. Two more probe Pods
+stand in for a sibling component (with its own ClusterIP Service) in slot 0 and for a Pod in slot 1, then the probe runs
+in slot 0 with three more forbidden targets: the sibling's Pod, the sibling's Service and the other slot's Pod. All 176
+connections must be blocked. The stand-ins listen on nothing, so a policy that let a connection through shows as a
+refused, inconclusive attempt, which fails the run too. The pool is warm by then: the sibling run checks the slot policy
+between Pods, while the three runs before it check the cold start.
+
+The script **creates** every probe object (`kubectl create`) and never client-side applies one: `kubectl apply` adds a
+`kubectl.kubernetes.io/last-applied-configuration` annotation, and a slot Service may carry no annotation but a safe
+health-check path, so admission would refuse the sibling's Service. The sibling Service is `sibling-service.yaml`, and
+the chart's preview policy envtest (`charts/patchy/preview_probe_envtest_test.go`) runs the script's own command on it
+against the rendered policies.
+
 The probe is **never merged into `devthenet-labs/patchy-preview-demo` main**. Prepare a disposable same-repo PR on a
 `test/preview-*` branch based on current main. Copy this directory's `cmd/netprobe/` to the demo repo's `cmd/netprobe/`,
 and replace the demo repo's runtime `Dockerfile` and `.dockerignore` with the two files here. Do not alter its

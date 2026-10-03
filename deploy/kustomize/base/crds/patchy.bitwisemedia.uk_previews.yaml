@@ -62,12 +62,18 @@ spec:
               update the component runtime configuration.
             properties:
               components:
-                description: Slice 2 has one application repository and one runtime
-                  component.
+                description: |-
+                  Components are the runtime components the one preview host routes
+                  to, one per previewed Project repository, in Project order, each
+                  under its own path (at most MaxPreviewComponents). A one-repository
+                  Project has exactly one, at "/".
                 items:
                   description: |-
                     PreviewComponent is the fixed application shape copied from an operator's
-                    Project, with only Revision taken from the live, recorded PR head.
+                    Project, with only Revision taken from the Intent's recorded state: the PR
+                    head of its repository, or the default-branch head recorded once for a
+                    previewed repository the intent did not change. DesiredPreviewComponents
+                    derives the whole list; the writer and the preview-controller both use it.
                   properties:
                     imageRepository:
                       description: ImageRepository is the operator-configured repository,
@@ -76,10 +82,22 @@ spec:
                       pattern: ^[a-z0-9][a-z0-9.:-]*/patchy/previews/[a-z0-9-]+$
                       type: string
                     name:
-                      description: Name identifies the component and its rendered
-                        resources.
+                      description: |-
+                        Name identifies the component and its rendered resources: the Project
+                        repository's key.
                       maxLength: 16
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    path:
+                      description: |-
+                        Path is the URL path prefix the component is served under on the
+                        preview host. Omitted means "/", the form every single-repository
+                        Preview has always been written in: it is deliberately not a schema
+                        default, so a writer comparing specs never finds a defaulted "/" it
+                        did not write and rewrites a live Preview. PreviewComponentPath reads
+                        it.
+                      maxLength: 128
+                      pattern: ^/([a-z0-9-]+(/[a-z0-9-]+)*)?$
                       type: string
                     port:
                       description: Port and ReadinessPath are operator configuration,
@@ -93,8 +111,9 @@ spec:
                       pattern: ^/[a-zA-Z0-9/_-]*$
                       type: string
                     revision:
-                      description: Revision is the full GitHub pull-request head SHA,
-                        never a branch name.
+                      description: |-
+                        Revision is a full commit SHA, never a branch name: the PR head, or a
+                        recorded default-branch head (Intent status.previewBases).
                       pattern: ^[0-9a-f]{40}$
                       type: string
                   required:
@@ -104,9 +123,16 @@ spec:
                   - readinessPath
                   - revision
                   type: object
-                maxItems: 1
+                maxItems: 4
                 minItems: 1
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+                x-kubernetes-validations:
+                - message: two components have the same path (an omitted path is /)
+                  rule: 'self.all(c, self.exists_one(d, (has(d.path) ? d.path : ''/'')
+                    == (has(c.path) ? c.path : ''/'')))'
               hostLabel:
                 description: HostLabel is the single DNS label before the operator's
                   host suffix.
@@ -158,6 +184,9 @@ spec:
                 format: date-time
                 type: string
               components:
+                description: |-
+                  Components records, once the Preview is Ready, what each component
+                  serves, in spec order.
                 items:
                   description: PreviewComponentStatus records the image the kubelet
                     actually ran.
@@ -168,10 +197,16 @@ spec:
                       type: string
                     name:
                       type: string
+                    revision:
+                      description: |-
+                        Revision is the commit the component serves: the spec revision its
+                        Ready Pod runs.
+                      pattern: ^[0-9a-f]{40}$
+                      type: string
                   required:
                   - name
                   type: object
-                maxItems: 1
+                maxItems: 4
                 type: array
               lastDeployedAt:
                 format: date-time
@@ -185,8 +220,9 @@ spec:
                 format: int64
                 type: integer
               observedRevision:
-                description: ObservedRevision is the revision this slot currently
-                  serves or tried.
+                description: |-
+                  ObservedRevision is the revision this slot currently serves or tried:
+                  the first component's (each component's own is in Components).
                 type: string
               phase:
                 description: |-

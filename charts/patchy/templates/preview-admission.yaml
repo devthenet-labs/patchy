@@ -49,6 +49,8 @@ spec:
                 c.image.startsWith('{{ $prefix }}') &&
                 c.image.substring({{ len $prefix }}).matches('^[a-z0-9-]+:sha-[0-9a-f]{40}$'))
           message: only immutable patchy preview ECR images are allowed
+        - expression: size(variables.pod.containers) == 1
+          message: preview pods run exactly one container
         - expression: >-
               has(variables.pod.automountServiceAccountToken) &&
               variables.pod.automountServiceAccountToken == false &&
@@ -199,6 +201,8 @@ spec:
               (!has(object.spec.loadBalancerClass)) &&
               object.spec.ports.all(p, !has(p.nodePort) || p.nodePort == 0)
           message: preview Services must be internal ClusterIP with no external IP or node port
+        # A preview component's Service may carry only its own health-check
+        # path, which the load balancer applies to that Service's targets.
         - expression: >-
               !has(object.metadata.annotations) ||
               object.metadata.annotations.all(k, v,
@@ -207,10 +211,9 @@ spec:
                   (k == 'meta.helm.sh/release-name' && v == {{ .Release.Name | quote }}) ||
                   (k == 'meta.helm.sh/release-namespace' && v == {{ .Release.Namespace | quote }}))) ||
                 (!variables.helmPlaceholder &&
-                  k != 'helm.sh/resource-policy' &&
-                  k != 'meta.helm.sh/release-name' &&
-                  k != 'meta.helm.sh/release-namespace'))
-          message: Helm ownership and keep annotations are reserved for the placeholder Service
+                  k == 'alb.ingress.kubernetes.io/healthcheck-path' &&
+                  v.matches('^/[a-zA-Z0-9/_-]*$')))
+          message: preview Service annotations are restricted to a safe healthcheck path; Helm ownership and keep annotations are reserved for the placeholder Service
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -269,6 +272,21 @@ spec:
               object.spec.rules.all(r, has(r.host) &&
                 r.host.matches('^[a-z0-9-]+[.]{{ replace "." "[.]" $p.hostSuffix }}$'))
           message: preview Ingress hosts must be single-label subdomains of the configured preview suffix
+        # One host, one rule: a Prefix path per component in the component
+        # path grammar, each to a preview Service on port 80. The kept
+        # placeholder routes / to its own selectorless Service instead.
+        - expression: >-
+              has(object.spec.rules) && size(object.spec.rules) == 1 &&
+              object.spec.rules.all(r, has(r.http) && size(r.http.paths) >= 1 && size(r.http.paths) <= 4 &&
+                r.http.paths.all(p,
+                  has(p.pathType) && p.pathType == 'Prefix' &&
+                  has(p.path) && p.path.matches('^/([a-z0-9-]+(/[a-z0-9-]+)*)?$') &&
+                  has(p.backend.service) && has(p.backend.service.port.number) &&
+                  p.backend.service.port.number == 80 &&
+                  (variables.helmPlaceholder ?
+                    p.backend.service.name == 'patchy-preview-placeholder' :
+                    p.backend.service.name.startsWith('preview-'))))
+          message: preview Ingresses have one rule of at most 4 Prefix paths in the component path grammar, each backed by a preview- Service on port 80
         - expression: >-
               !has(object.metadata.annotations) ||
               object.metadata.annotations.all(k, v,

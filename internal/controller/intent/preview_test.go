@@ -5,6 +5,7 @@ package intent
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -113,5 +114,95 @@ func TestPreviewSourceRefusesUnrecordedOrClosedPR(t *testing.T) {
 	in.Status.PullRequests[0].Repository = project.Spec.Repositories[0].URL
 	if _, ok := desiredPreview(in, project); ok {
 		t.Fatal("non-opted-in Project became a preview")
+	}
+}
+
+// The writer derives a Preview exactly when preview-controller would accept
+// it (v1alpha1.DesiredPreviewComponents, the one derivation both read).
+// Regression: a writer of its own created a Preview for an Intent blocked
+// before review, which preview-controller then deleted, and the writer,
+// requeued a second later, created again — a create/delete loop for as long
+// as the block lasted. It also never previewed a one-repository Project
+// written in the per-repository form.
+func TestPreviewSourceSharesTheControllerDerivation(t *testing.T) {
+	ctx := context.Background()
+	const repo = "https://github.com/acme/preview-demo"
+	sha := strings.Repeat("a", 40)
+	contract := v1alpha1.ProjectPreview{
+		ImageRepository: "123456789012.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/preview-demo",
+		Port:            8080, ReadinessPath: "/health",
+	}
+	shorthand := func() *v1alpha1.Project {
+		return &v1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "patchy"},
+			Spec: v1alpha1.ProjectSpec{Repositories: []v1alpha1.ProjectRepository{{Name: "demo", URL: repo}},
+				Preview: &contract}}
+	}
+	perRepository := func(path string) *v1alpha1.Project {
+		p := shorthand()
+		p.Spec.Preview = nil
+		p.Spec.Repositories[0].Preview = &v1alpha1.ProjectRepositoryPreview{ProjectPreview: contract, Path: path}
+		return p
+	}
+	blockedFrom := func(from v1alpha1.IntentPhase) func(*v1alpha1.Intent) {
+		return func(in *v1alpha1.Intent) {
+			in.Status.Phase = v1alpha1.IntentBlocked
+			in.Status.PhaseTimes = []v1alpha1.IntentPhaseTime{{Phase: from}, {Phase: v1alpha1.IntentBlocked}}
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		project *v1alpha1.Project
+		mutate  func(*v1alpha1.Intent)
+		want    bool
+		path    string
+	}{
+		{"in review", shorthand(), func(*v1alpha1.Intent) {}, true, ""},
+		{"blocked from review", shorthand(), blockedFrom(v1alpha1.IntentInReview), true, ""},
+		{"blocked from revising", shorthand(), blockedFrom(v1alpha1.IntentRevising), true, ""},
+		{"blocked from building", shorthand(), blockedFrom(v1alpha1.IntentBuilding), false, ""},
+		{"blocked with no history", shorthand(), blockedFrom(v1alpha1.IntentBlocked), false, ""},
+		{"the per-repository form at the root", perRepository(""), func(*v1alpha1.Intent) {}, true, ""},
+		{"the per-repository form under a path", perRepository("/app"), func(*v1alpha1.Intent) {}, true, "/app"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := &v1alpha1.Intent{
+				ObjectMeta: metav1.ObjectMeta{Name: "demo-1", Namespace: "patchy", UID: types.UID("intent-uid")},
+				Spec:       v1alpha1.IntentSpec{Project: tc.project.Name},
+				Status: v1alpha1.IntentStatus{Phase: v1alpha1.IntentInReview,
+					PullRequests: []v1alpha1.IntentPullRequest{{Repository: repo, State: "open", HeadSHA: sha}}},
+			}
+			tc.mutate(in)
+			want, wantOK := v1alpha1.DesiredPreviewComponents(tc.project, in)
+			if wantOK != tc.want {
+				t.Fatalf("the shared derivation says %v, the case expects %v", wantOK, tc.want)
+			}
+			scheme := kube.Scheme()
+			c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(in).
+				WithObjects(tc.project, in).Build()
+			r := &PreviewSourceReconciler{Client: c, APIReader: c, Scheme: scheme}
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "patchy", Name: in.Name}}
+			for range 2 { // a second pass is where a churning writer would recreate
+				if _, err := r.Reconcile(ctx, req); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var list v1alpha1.PreviewList
+			if err := c.List(ctx, &list); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.want {
+				if len(list.Items) != 0 {
+					t.Fatalf("wrote a Preview preview-controller would delete: %+v", list.Items[0].Spec)
+				}
+				return
+			}
+			if len(list.Items) != 1 || !reflect.DeepEqual(list.Items[0].Spec.Components, want) {
+				t.Fatalf("previews = %+v, want one with components %+v", list.Items, want)
+			}
+			if got := list.Items[0].Spec.Components[0]; got.Revision != sha || got.Path != tc.path ||
+				got.ImageRepository != contract.ImageRepository {
+				t.Errorf("component = %+v, want revision %s at path %q", got, sha, tc.path)
+			}
+		})
 	}
 }

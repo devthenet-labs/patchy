@@ -1,0 +1,96 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Read from devthenet-dev on 2026-10-03 (kubectl get -o yaml) before the slice-3 schema change,
+# server-owned metadata removed. live_envtest_test.go round-trips it under the current schema.
+apiVersion: patchy.bitwisemedia.uk/v1alpha1
+kind: Intent
+metadata:
+  name: preview-demo-4
+  namespace: patchy
+spec:
+  issue:
+    number: 4
+    repository: https://github.com/devthenet-labs/intents
+    url: https://github.com/devthenet-labs/intents/issues/4
+  project: preview-demo
+  requestedBy:
+    at: "2026-10-03T02:19:31Z"
+    eventID: 32377947870
+    login: brvtl
+status:
+  approval:
+    at: "2026-10-03T02:23:25Z"
+    by: brvtl
+    eventID: 32378072685
+    inputDigest: sha256:a7ad7237ed90ab8f2fe4b3dbc5e9e093f4fd6261783eb5dcde3f978854cb8625
+    planDigest: sha256:ef2ecae84ebe292f7fbb8d3c105dbe38c8411ab33223d16d37c01968dc3d31c1
+    planRevision: 1
+    source: label
+  branch: patchy-intent/preview-demo-4
+  commands:
+    seen:
+      at: "2026-10-03T02:22:00Z"
+      id: 5964552798
+  completedAt: "2026-10-03T02:44:31Z"
+  conditions:
+    - lastTransitionTime: "2026-10-03T02:23:33Z"
+      message: plan r1 approved by brvtl
+      observedGeneration: 1
+      reason: Approved
+      status: "False"
+      type: ApprovalRejected
+  input:
+    configMap: preview-demo-4-input-r1
+    digest: sha256:a7ad7237ed90ab8f2fe4b3dbc5e9e093f4fd6261783eb5dcde3f978854cb8625
+    revision: 1
+  observedGeneration: 1
+  phase: Merged
+  phaseTimes:
+    - at: "2026-10-03T02:20:21Z"
+      phase: Pending
+    - at: "2026-10-03T02:20:21Z"
+      phase: Planning
+    - at: "2026-10-03T02:21:59Z"
+      phase: AwaitingApproval
+    - at: "2026-10-03T02:23:31Z"
+      phase: Building
+    - at: "2026-10-03T02:25:29Z"
+      phase: InReview
+    - at: "2026-10-03T02:32:31Z"
+      phase: Revising
+    - at: "2026-10-03T02:34:25Z"
+      phase: InReview
+    - at: "2026-10-03T02:44:31Z"
+      phase: Merged
+  plan:
+    commentDigest: sha256:22a3ac8e3e06ea3934d878aaaf1a55cfb3925dc6b0726bc035bef22afab32eef
+    commentID: 5964552798
+    configMap: preview-demo-4-plan-r1
+    digest: sha256:ef2ecae84ebe292f7fbb8d3c105dbe38c8411ab33223d16d37c01968dc3d31c1
+    postedAt: "2026-10-03T02:22:00Z"
+    repositories:
+      - https://github.com/devthenet-labs/patchy-preview-demo
+    revision: 1
+    summary: Change the welcome page greeting to 'Hello from patchy' and style the page's main card teal (#0d9488)
+  pullRequests:
+    - headSHA: e2256900e8bdff280e280925952c87138487c381
+      mergeCommitSHA: 0f6d1a9450aed71f5ff801c6158979b28427eff3
+      mergedAt: "2026-10-03T02:43:36Z"
+      nodeID: PR_kwDOUuyUYs8AAAABGYpGGQ
+      number: 7
+      repository: https://github.com/devthenet-labs/patchy-preview-demo
+      state: merged
+      url: https://github.com/devthenet-labs/patchy-preview-demo/pull/7
+  revisions: 1
+  roundNoticesThrough: 1
+  rounds: 1
+  tracking:
+    statusCommentID: 5964538856
+    statusDigest: sha256:67a48c1161ae118ccb001d0bb64c3546c2b85c74749865b6d58d9269979372e4
+  usage:
+    cacheCreationTokens: 146935
+    cacheReadTokens: 1392379
+    costMicroUSD: 805473
+    inputTokens: 70
+    outputTokens: 15952

@@ -137,6 +137,15 @@ type ProjectRepository struct {
 	// +kubebuilder:validation:MaxLength=256
 	// +kubebuilder:validation:Pattern=`^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$`
 	URL string `json:"url"`
+	// Preview opts this repository into the Project's previews: its fixed
+	// runtime contract, and the path its component is served under on the
+	// intent's one preview host. Unset means the repository is never
+	// previewed (a library, say); its pull request is still part of the
+	// intent. At most MaxPreviewComponents of a Project's repositories are
+	// previewed, each at its own path, and spec.preview, the one-repository
+	// shorthand, is refused beside any of them (CEL-enforced on the spec).
+	// +optional
+	Preview *ProjectRepositoryPreview `json:"preview,omitempty"`
 }
 
 // StageLimits bound one agent stage of an intent. Zero (or omitted) means the
@@ -235,11 +244,26 @@ type ProjectChecks struct {
 	Timeout *metav1.Duration `json:"timeout,omitempty"`
 }
 
+// MaxPreviewComponents bounds how many of a Project's repositories are
+// previewed, and so the components of one Preview: one host serves them all,
+// each from its own Deployment and Service in one slot, under the slot's
+// quota. The schema markers repeat it as a literal; keep them in lockstep.
+const MaxPreviewComponents = 4
+
 // ProjectSpec is operator configuration: where intents are filed, who may
 // authorise them, which repositories they build in, and what they may spend.
 // The operator writes it (through the patchy-config chart); intent-controller
 // only reads it. Writing projects is admin-only in RBAC, because a Project is
 // the power to point agents at repositories.
+//
+// Previews are configured per repository (repositories[].preview) or, for a
+// one-repository Project, by the spec.preview shorthand, never both. The
+// rules below hold the per-repository form to at most MaxPreviewComponents
+// previewed repositories at distinct paths. An omitted path means "/" (the
+// field's default), and the rules read it that way too.
+// +kubebuilder:validation:XValidation:rule="self.repositories.filter(r, has(r.preview)).size() <= 4",message="at most 4 repositories are previewed (repositories[].preview)"
+// +kubebuilder:validation:XValidation:rule="self.repositories.all(r, !has(r.preview) || self.repositories.exists_one(s, has(s.preview) && (has(s.preview.path) ? s.preview.path : '/') == (has(r.preview.path) ? r.preview.path : '/')))",message="two previewed repositories have the same path (repositories[].preview.path, default /)"
+// +kubebuilder:validation:XValidation:rule="!has(self.preview) || (size(self.repositories) == 1 && !self.repositories.exists(r, has(r.preview)))",message="spec.preview is the one-repository shorthand: it needs exactly one repository and no repositories[].preview"
 type ProjectSpec struct {
 	// IntentRepository is the https URL of the repository whose issues are
 	// this Project's intents (e.g. https://github.com/acme/intents). Several
@@ -263,10 +287,11 @@ type ProjectSpec struct {
 	Approvers ProjectApprovers `json:"approvers"`
 	// Repositories are the application repositories intents build in; the
 	// first entry is also the planning repository. The schema admits up to
-	// 8 — the multi-repo shape — but slice 1 builds in exactly one:
-	// intent-controller reports a Project with more as not Ready rather
-	// than the schema refusing it, so the CRD does not change when
-	// multi-repo intents land. Each entry names a different repository:
+	// 8. Building in more than one is opt-in on intent-controller: without
+	// the opt-in it reports a Project with more than one as not Ready
+	// (UnsupportedRepositories) rather than the schema refusing it, so
+	// turning multi-repository intents on or off never needs a CRD change.
+	// Each entry names a different repository:
 	// the Intent records its pull requests by repository URL, and every
 	// repository's branch is the same patchy-intent/<intent>, so two
 	// entries for one repository would fan two builds into one branch. URLs
@@ -286,10 +311,14 @@ type ProjectSpec struct {
 	// +optional
 	// +kubebuilder:default={}
 	Checks ProjectChecks `json:"checks,omitempty"`
-	// Preview opts this Project into the slice-2 preview flow. Omitted means
-	// its PRs are never deployed, even if the preview-controller is enabled.
-	// Only operator-authored Project configuration can supply the runtime
-	// image repository and serving port; issue and agent text cannot.
+	// Preview is the one-repository shorthand for previews: the runtime
+	// contract of repositories[0], served at "/", exactly as if it were
+	// repositories[0].preview with the default path. It needs exactly one
+	// repository and is refused beside any repositories[].preview
+	// (CEL-enforced on the spec). With neither set, the Project's PRs are never
+	// deployed, even if the preview-controller is enabled. Only
+	// operator-authored Project configuration can supply the runtime image
+	// repository and serving port; issue and agent text cannot.
 	// +optional
 	Preview *ProjectPreview `json:"preview,omitempty"`
 	// RequireRepositoryImage, true by default, launches build and revise
@@ -306,11 +335,14 @@ type ProjectSpec struct {
 	Suspend bool `json:"suspend,omitempty"`
 }
 
-// ProjectPreview is the operator's fixed runtime contract for this Project's
-// sole application repository (slice 2 is single-repository). ImageRepository
-// omits the tag; intent-controller supplies the observed PR head as an
-// immutable sha-<40 hex> tag. No Dockerfile, image name, port or path comes
-// from issue text or from the build agent.
+// ProjectPreview is the operator's fixed runtime contract for one previewed
+// application repository: spec.preview for a one-repository Project, or the
+// fields of a repositories[].preview. ImageRepository omits the tag; the
+// Preview supplies an immutable sha-<40 hex> tag, the observed PR head or,
+// for a previewed repository the intent did not change, the default-branch
+// head recorded once for the intent (Intent status.previewBases). No
+// Dockerfile, image name, port or path comes from issue text or from the
+// build agent.
 type ProjectPreview struct {
 	// ImageRepository is an immutable-tag runtime repository under the
 	// operator's preview registry, such as <registry>/patchy/previews/demo.
@@ -327,6 +359,24 @@ type ProjectPreview struct {
 	// +kubebuilder:validation:Pattern=`^/[a-zA-Z0-9/_-]*$`
 	// +kubebuilder:validation:MaxLength=128
 	ReadinessPath string `json:"readinessPath"`
+}
+
+// ProjectRepositoryPreview is one previewed repository's runtime contract:
+// ProjectPreview's fields plus the path its component is served under.
+type ProjectRepositoryPreview struct {
+	ProjectPreview `json:",inline"`
+	// Path is the URL path prefix the component is served under on the
+	// intent's preview host, "/" by default. The load balancer routes the
+	// longest matching prefix and does not rewrite it, so the application
+	// serves under its path (an API at /api answers /api/...), and a page
+	// calls a sibling component same-origin, from the browser. Lowercase
+	// segments only, so it is safe as an Ingress path. Paths are distinct
+	// across the Project (CEL-enforced on the spec).
+	// +optional
+	// +kubebuilder:default="/"
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^/([a-z0-9-]+(/[a-z0-9-]+)*)?$`
+	Path string `json:"path,omitempty"`
 }
 
 // ProjectStatus is the Project's observed state. Written only by

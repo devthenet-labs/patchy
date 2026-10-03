@@ -39,6 +39,9 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.Duration("preview-rollout-timeout", 10*time.Minute, "one runtime rollout attempt deadline")
 	f.Duration("preview-poll-interval", 15*time.Second, "readiness/queue poll and orphan-sweep interval")
 	f.Int("preview-max-retries", 3, "max timed-out or rejected rollout attempts per PR head")
+	f.Bool("preview-target-health", false, "mark a Preview Ready only once each component's load balancer "+
+		"target is healthy (its Pods' readiness gates, injected in slot namespaces labelled for it): the Ingress "+
+		"precedes the Pods and stays across redeploys")
 	return cmd
 }
 
@@ -61,7 +64,8 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		NodePool: opts.String("preview-node-pool"), NodeClass: opts.String("preview-node-class"),
 		TaintKey:       opts.String("preview-taint-key"),
 		RolloutTimeout: opts.Duration("preview-rollout-timeout"), PollInterval: opts.Duration("preview-poll-interval"),
-		MaxRetries: int32(opts.Int("preview-max-retries")),
+		MaxRetries:   int32(opts.Int("preview-max-retries")),
+		TargetHealth: opts.Bool("preview-target-health"),
 	}
 	if err := settings.Validate(); err != nil {
 		return err

@@ -87,6 +87,61 @@ type IntentRunRepository struct {
 	RepositoryRef LocalObjectReference `json:"repositoryRef"`
 }
 
+// MaxIntentRunTrees bounds spec.trees: a Project has at most 8 repositories,
+// and the planning repository is spec.repository, so a plan run reads at
+// most 7 more. The schema marker repeats it as a literal; keep them in
+// lockstep.
+const MaxIntentRunTrees = 7
+
+// IntentRunTreeRepositoryName returns the name of the Repository a plan run
+// owns for one of its extra trees: <run>-src-<key>, beside the planning
+// repository's <run>-src. Repository names are object names, never label
+// values, so the name budget's 63 characters does not bind them; inside it
+// every such name is a valid object name, and distinct keys give distinct
+// names that no run's own Repository can share.
+func IntentRunTreeRepositoryName(run, key string) string {
+	return run + "-src-" + key
+}
+
+// IntentRunTree is one more Project repository a plan run reads, beside its
+// planning repository (spec.repository): read-only, on the default image.
+type IntentRunTree struct {
+	// Name is the Project repository's key: the tree's directory in the
+	// workspace and the suffix of its Repository's name; the list key.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=16
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+	// URL is the https URL of the repository (one of the Project's).
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:Pattern=`^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$`
+	URL string `json:"url"`
+	// RepositoryRef names the Repository artifact this run owns for the
+	// tree, pinned at the default branch head
+	// (IntentRunTreeRepositoryName).
+	RepositoryRef LocalObjectReference `json:"repositoryRef"`
+}
+
+// IntentRunTreeStatus records what one extra tree was when the run launched,
+// so the run record keeps what the planner saw after its Repositories are
+// deleted with it.
+type IntentRunTreeStatus struct {
+	// Name is the tree's key (spec.trees[].name); the list key.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=16
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+	// BaseSHA is the commit the tree's Repository was pinned at.
+	// +kubebuilder:validation:Pattern=`^([0-9a-f]{40}|[0-9a-f]{64})$`
+	BaseSHA string `json:"baseSHA"`
+	// ArtifactDigest is the hex sha256 of the tarball the Job was handed
+	// for the tree (the Repository's status.artifact.digest), which its init
+	// container verified.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
+	ArtifactDigest string `json:"artifactDigest"`
+}
+
 // IntentRunInputs pins exactly what the run was given, so the record says
 // what the agent saw and a restart or a repeated poll can never consume the
 // same feedback twice. What a revise round consumed is recorded on the
@@ -197,7 +252,9 @@ type IntentRunGrant struct {
 // admission rather than launched: every run names its Intent by UID, a build
 // or revise run always pins an approved plan, and a revise run always names
 // its trigger, records what that trigger consumed (IntentRunInputs), and
-// takes its image from the build round's Repository, named by UID.
+// takes its image from the build round's Repository, named by UID. Only a
+// plan run reads more than its one repository (Trees), and each tree is a
+// different repository.
 //
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="spec is immutable; create a new IntentRun for a new attempt"
 // +kubebuilder:validation:XValidation:rule="has(self.intentRef.uid) && size(self.intentRef.uid) > 0",message="spec.intentRef.uid is required: a run is adopted on AlreadyExists only by its Intent's UID"
@@ -211,6 +268,8 @@ type IntentRunGrant struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.inputs.checkRunIDs) || (has(self.trigger) && self.trigger == 'checks')",message="inputs.checkRunIDs are consumed only by checks rounds"
 // +kubebuilder:validation:XValidation:rule="!has(self.inputs.statusIDs) || (has(self.trigger) && self.trigger == 'checks')",message="inputs.statusIDs are consumed only by checks rounds"
 // +kubebuilder:validation:XValidation:rule="!has(self.inputs.commandID) || (has(self.trigger) && self.trigger == 'command')",message="inputs.commandID is consumed only by command rounds"
+// +kubebuilder:validation:XValidation:rule="!has(self.trees) || self.stage == 'plan'",message="spec.trees is set on plan runs only: a build or revise run works on its one repository"
+// +kubebuilder:validation:XValidation:rule="!has(self.trees) || self.trees.all(t, (t.url.endsWith('.git') ? t.url.substring(0, size(t.url) - 4) : t.url).lowerAscii() != (self.repository.url.endsWith('.git') ? self.repository.url.substring(0, size(self.repository.url) - 4) : self.repository.url).lowerAscii() && self.trees.exists_one(u, (u.url.endsWith('.git') ? u.url.substring(0, size(u.url) - 4) : u.url).lowerAscii() == (t.url.endsWith('.git') ? t.url.substring(0, size(t.url) - 4) : t.url).lowerAscii()))",message="every tree is a different repository from the others and from spec.repository (compared case-insensitively, ignoring a .git suffix)"
 type IntentRunSpec struct {
 	// IntentRef is the owning Intent. Its UID is required (CEL-enforced):
 	// run names can repeat across Intents (see IntentRunName), so the UID is
@@ -222,8 +281,19 @@ type IntentRunSpec struct {
 	// revise run and on no other.
 	// +optional
 	Trigger IntentRunTrigger `json:"trigger,omitempty"`
-	// Repository is the tree the run works on.
+	// Repository is the tree the run works on; for a plan run, the planning
+	// repository (the Project's first).
 	Repository IntentRunRepository `json:"repository"`
+	// Trees are the Project's other repositories a plan run reads beside
+	// Repository, read-only on the default image, so one plan covers every
+	// repository of a multi-repository Project. Set on plan runs only
+	// (CEL-enforced); empty for a one-repository Project. At most
+	// MaxIntentRunTrees.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=7
+	Trees []IntentRunTree `json:"trees,omitempty"`
 	// Round is the round the run belongs to, 1-based and at most
 	// MaxIntentRound, taken from a counter that never repeats:
 	//
@@ -287,6 +357,15 @@ type IntentRunStatus struct {
 	// +optional
 	// +kubebuilder:validation:Pattern=`^([0-9a-f]{40}|[0-9a-f]{64})$`
 	BaseSHA string `json:"baseSHA,omitempty"`
+	// Trees records, for each of spec.trees, the commit and tarball digest
+	// the Job was launched with, written beside JobRef and BaseSHA. The
+	// run record keeps what the planner saw after the tree Repositories
+	// are deleted with the run.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=7
+	Trees []IntentRunTreeStatus `json:"trees,omitempty"`
 	// PushedCommit is the commit created from the run's changeset, recorded
 	// before any ref moves so a restart can adopt its own ref.
 	// +optional

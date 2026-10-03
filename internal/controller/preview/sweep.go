@@ -97,11 +97,10 @@ func (s *Sweeper) sweepSlot(ctx context.Context, namespace string, slot int32, l
 }
 
 func (s *Sweeper) deleteOrphan(ctx context.Context, obj client.Object, slot int32, live map[string]int32) error {
-	l := obj.GetLabels()
-	if !strings.HasPrefix(obj.GetName(), "preview-") || l[labelPreview] == "" ||
-		l[labelPreviewUID] == "" || obj.GetName() != "preview-"+l[labelPreview] {
+	if !renderedName(obj) {
 		return nil // do not adopt or delete an arbitrary object with a copied managed-by label
 	}
+	l := obj.GetLabels()
 	if held, ok := live[l[labelPreviewUID]]; ok && held == slot {
 		return nil
 	}
@@ -115,6 +114,19 @@ func (s *Sweeper) deleteOrphan(ctx context.Context, obj client.Object, slot int3
 		return nil
 	}
 	return err
+}
+
+// renderedName reports whether obj's name is one the controller renders for
+// the Preview its labels name: preview-<p> (the Ingress, and the first or
+// only component's Deployment and Service), or preview-<p>-<c> for a further
+// component whose component label is c.
+func renderedName(obj client.Object) bool {
+	l := obj.GetLabels()
+	p, uid, c := l[labelPreview], l[labelPreviewUID], l[labelComponent]
+	if p == "" || uid == "" || !strings.HasPrefix(obj.GetName(), "preview-") {
+		return false
+	}
+	return obj.GetName() == "preview-"+p || (c != "" && obj.GetName() == "preview-"+p+"-"+c)
 }
 
 func objectKind(obj client.Object) string {

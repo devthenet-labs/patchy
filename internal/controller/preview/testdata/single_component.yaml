@@ -1,0 +1,114 @@
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: patchy-preview-controller
+    patchy.bitwisemedia.uk/preview: preview-demo-5
+    patchy.bitwisemedia.uk/preview-uid: preview-preview-demo-5
+  name: preview-preview-demo-5
+  namespace: patchy-preview-1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/managed-by: patchy-preview-controller
+      patchy.bitwisemedia.uk/preview: preview-demo-5
+      patchy.bitwisemedia.uk/preview-uid: preview-preview-demo-5
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: patchy-preview-controller
+        patchy.bitwisemedia.uk/preview: preview-demo-5
+        patchy.bitwisemedia.uk/preview-uid: preview-preview-demo-5
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/demo:sha-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        imagePullPolicy: IfNotPresent
+        name: demo
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: 250m
+            memory: 256Mi
+          requests:
+            cpu: 25m
+            memory: 32Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+      nodeSelector:
+        eks.amazonaws.com/nodeclass: patchy-preview
+        karpenter.sh/nodepool: patchy-preview
+      securityContext:
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: default
+      tolerations:
+      - effect: NoExecute
+        key: patchy.devthe.net/preview-only
+        operator: Equal
+        value: "true"
+status: {}
+---
+metadata:
+  labels:
+    app.kubernetes.io/managed-by: patchy-preview-controller
+    patchy.bitwisemedia.uk/preview: preview-demo-5
+    patchy.bitwisemedia.uk/preview-uid: preview-preview-demo-5
+  name: preview-preview-demo-5
+  namespace: patchy-preview-1
+spec:
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: http
+  selector:
+    app.kubernetes.io/managed-by: patchy-preview-controller
+    patchy.bitwisemedia.uk/preview: preview-demo-5
+    patchy.bitwisemedia.uk/preview-uid: preview-preview-demo-5
+  type: ClusterIP
+status:
+  loadBalancer: {}
+---
+metadata:
+  annotations:
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+  labels:
+    app.kubernetes.io/managed-by: patchy-preview-controller
+    patchy.bitwisemedia.uk/preview: preview-demo-5
+    patchy.bitwisemedia.uk/preview-uid: preview-preview-demo-5
+  name: preview-preview-demo-5
+  namespace: patchy-preview-1
+spec:
+  ingressClassName: alb-preview
+  rules:
+  - host: preview-demo-5.preview.patchy.example.com
+    http:
+      paths:
+      - backend:
+          service:
+            name: preview-preview-demo-5
+            port:
+              number: 80
+        path: /
+        pathType: Prefix
+status:
+  loadBalancer: {}

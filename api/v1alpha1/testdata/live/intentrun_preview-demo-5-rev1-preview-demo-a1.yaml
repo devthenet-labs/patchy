@@ -1,0 +1,127 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Read from devthenet-dev on 2026-10-03 (kubectl get -o yaml) before the slice-3 schema change,
+# server-owned metadata removed. live_envtest_test.go round-trips it under the current schema.
+apiVersion: patchy.bitwisemedia.uk/v1alpha1
+kind: IntentRun
+metadata:
+  labels:
+    patchy.bitwisemedia.uk/intent: preview-demo-5
+  name: preview-demo-5-rev1-preview-demo-a1
+  namespace: patchy
+spec:
+  attempt: 1
+  grant:
+    maxTurns: 80
+    timeoutMilliseconds: 2700000
+    tokenBudget: 400000
+  imageFrom:
+    name: preview-demo-5-bld-r1-preview-demo-a1-src
+    uid: 70c63692-7f8e-45ba-b856-3b9819498347
+  inputs:
+    checkRunIDs:
+      - 111151376149
+    configMap: preview-demo-5-rev1-preview-demo-a1-input
+    inputDigest: sha256:401ba32134189045603a2cd317e365b67ebdc2fb4c6afef33a6a7ced4d1ba33b
+    planDigest: sha256:047e0490a6a9df800b282f7eda37beaa87aaa71c50c9c2c191e66502617999fe
+    planRevision: 1
+  intentRef:
+    name: preview-demo-5
+    uid: 42db5434-5c1c-4ea5-825a-62baf5e53e44
+  repository:
+    repositoryRef:
+      name: preview-demo-5-rev1-preview-demo-a1-src
+    url: https://github.com/devthenet-labs/patchy-preview-demo
+  round: 1
+  stage: revise
+  trigger: checks
+status:
+  baseSHA: 7f4d2aae6282b7a32da4758d89744ef94353a10f
+  conditions:
+    - lastTransitionTime: "2026-10-03T07:03:18Z"
+      message: ""
+      observedGeneration: 1
+      reason: ok
+      status: "True"
+      type: Complete
+  finishedAt: "2026-10-03T07:03:18Z"
+  jobRef:
+    name: patchy-eec2d4987c-int-a1
+    namespace: patchy-agents
+  observedGeneration: 1
+  outcome: ok
+  phase: Complete
+  pushedCommit: ff75476100fc6ca8f0a2f64723cebf713fa58022
+  report: |
+    ---
+    success: true
+    summary: "Footer feature already built in base commit; added CHANGELOG.md entry for #9 so the changelog CI check passes"
+    tests:
+      ran: true
+      passed: true
+      command: "gofmt -l ./*.go && go vet ./... && go test -v ./..."
+    notes: ["-race could not be run: this image has no C compiler (gcc), and CGO_ENABLED=0 by default, so `go test -race` fails at the cgo build step; plain `go test ./...` passed all 5 tests"]
+    ---
+
+    ## What I found
+
+    The repository's base commit (`02f3106`) already contains the fully-built plan: `server.go` has
+    `<footer>Deployed by patchy</footer>` as the last element inside `<main class="card">` (after the
+    `<nav>` row, before `</main></body></html>`), and `server_test.go` already has `TestFooter`
+    matching the plan's test plan exactly (asserts the exact text and that it appears after the
+    `Built:` marker). `gofmt -l`, `go vet`, and `go test` all pass on this code as-is.
+
+    ## What was still missing
+
+    The round-1 review feedback (the `changelog` CI job) failed because `CHANGELOG.md` has no entry
+    for `#9`. The plan's own risk section anticipated this and said it would leave the changelog entry
+    for the human to add "since the PR number is not known at build time." The review feedback now
+    gives us that PR number directly (`PR_NUMBER: 9` in the job log, and the error names `#9`), so I
+    added the missing line under `## Unreleased` in `CHANGELOG.md`:
+
+    ```
+    - Add a static "Deployed by patchy" footer to the welcome card (#9).
+    ```
+
+    This follows the same format as the existing entry for `#8` and satisfies the `changelog` job's
+    check (`grep -Eq "#9([^0-9]|$)" CHANGELOG.md`).
+
+    ## What I did not change
+
+    No changes to `main.go`, `server.go`, `server_test.go`, `Dockerfile`, `deploy/example.yaml`,
+    `.patchy/`, or `.github/` — the footer code and its test were already correct and complete, and
+    the plan's steps for those files required no further action.
+
+    ## Verification
+
+    - `gofmt -l ./*.go` — empty output (no formatting issues).
+    - `go vet ./...` — clean.
+    - `go test -v ./...` — all 5 tests pass (`TestRoutes`, `TestVersionAndEscaping`, `TestCardColour`,
+      `TestFooter`, `TestHEAD`).
+    - `go test -race ./...` could not run: this image has no `gcc`/C compiler and `CGO_ENABLED=0` by
+      default, and `-race` requires cgo. This is an image/environment limitation, not a code issue;
+      the non-race test run covers the same test cases and all pass.
+
+    ## For reviewers
+
+    - The only change in this round is the one-line `CHANGELOG.md` addition; the footer feature itself
+      was already present and untouched.
+    - `-race` was not run due to the missing C toolchain in this build image; if CI's own test runner
+      has cgo available, it should be able to run `-race` successfully since the code itself has no
+      concurrency changes.
+  runnerImage:
+    image: 377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/app-envs/patchy-preview-demo@sha256:02b294e715053ab37c68165438c680fbc729500d8fcacb0dfacb7e5a28dcfd18
+    manifest: .patchy/agent.yaml
+    source: repository
+  startedAt: "2026-10-03T07:01:26Z"
+  transcript:
+    name: preview-demo-5-rev1-preview-demo-a1-transcript
+    truncated: true
+    turns: 30
+  usage:
+    cacheCreationTokens: 34815
+    cacheReadTokens: 613126
+    costUSD: "0.242211"
+    inputTokens: 24
+    outputTokens: 3250

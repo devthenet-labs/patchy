@@ -161,6 +161,19 @@ cm preview-runtime preview-controller PATCHY_PREVIEW_NODE_POOL patchy-preview
 cm preview-runtime preview-controller PATCHY_PREVIEW_NODE_CLASS patchy-preview
 cm preview-runtime preview-controller PATCHY_PREVIEW_TAINT_KEY patchy.devthe.net/preview-only
 cm preview-runtime intent-controller PATCHY_INTENT_PREVIEWS_ENABLED true
+# Ready waits for the load balancer's target health only once the operator
+# opts in (it is unverified on a live preview, and without the gate every
+# rollout times out); only then do the slot namespaces opt into EKS Auto
+# Mode's readiness-gate injection, so off the slots run exactly as before.
+cm preview-runtime preview-controller PATCHY_PREVIEW_TARGET_HEALTH false
+expect preview-runtime 'select(.kind == "Namespace" and (.metadata.name | test("^patchy-preview-"))) | .metadata.labels."eks.amazonaws.com/pod-readiness-gate-inject"' 'null
+null'
+render preview-runtime-gated -f "$fixtures/preview-foundation.yaml" \
+  -f "$fixtures/intent-controller.yaml" -f "$fixtures/preview-controller.yaml" \
+  --set previewController.config.targetHealth=true
+cm preview-runtime-gated preview-controller PATCHY_PREVIEW_TARGET_HEALTH true
+expect preview-runtime-gated 'select(.kind == "Namespace" and (.metadata.name | test("^patchy-preview-"))) | .metadata.labels."eks.amazonaws.com/pod-readiness-gate-inject"' 'enabled
+enabled'
 expect_fail 'preview controller without slots' 'requires preview.enabled' \
   -f "$fixtures/intent-controller.yaml" -f "$fixtures/preview-controller.yaml"
 expect_fail 'preview controller without stable placeholder' 'requires preview.placeholder.enabled' \
@@ -203,6 +216,17 @@ expect preview 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-i
 http'
 expect preview 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-isolation") | .spec.ingress | length' '1
 1'
+# The slot quota holds one Preview of up to four components: a Service each
+# plus slot 0's placeholder, and every component's Pod replaced at once.
+expect preview 'select(.kind == "ResourceQuota" and .metadata.name == "preview-quota") | .spec.hard.services + "/" + .spec.hard.pods' '5/8
+5/8'
+expect preview 'select(.kind == "ResourceQuota" and .metadata.name == "preview-quota") | .spec.hard."services.loadbalancers" + "/" + .spec.hard."services.nodeports"' '0/0
+0/0'
+# The multi-component admission rules are rendered into the slot policies.
+expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name == "patchy-preview-pods" or .metadata.name == "patchy-preview-deployments")) | .spec.validations[].expression | select(. == "size(variables.pod.containers) == 1")' 'size(variables.pod.containers) == 1
+size(variables.pod.containers) == 1'
+expect preview 'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name == "patchy-preview-ingresses") | .spec.validations[].message | select(test("one rule of at most 4 Prefix paths"))' \
+  'preview Ingresses have one rule of at most 4 Prefix paths in the component path grammar, each backed by a preview- Service on port 80'
 expect preview 'select(.kind == "IngressClass" and .metadata.name == "alb-preview") | .metadata.annotations."ingressclass.kubernetes.io/is-default-class"' 'false'
 expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.namespaceSelector.matchExpressions[0].values | join(",")' 'patchy-preview-0,patchy-preview-1'
 expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.inboundCIDRs | join(",")' '75.70.97.14/32'
@@ -868,6 +892,17 @@ expect_fail_cfg "credentials in a repository url" "projects/0/spec/repositories/
   --set-json "projects=[$(project '.spec.repositories[0].url = "https://x:token@github.com/acme/t"')]"
 expect_fail_cfg "cost ceiling past its cap" "projects/0/spec/limits/maxCostMicroUSD" \
   --set-json "projects=[$(project '.spec.limits.maxCostMicroUSD = 1000000001')]"
+# Per-repository previews (slice 3): rendered verbatim, their fields
+# checked client-side. The CEL rules (at most four, distinct paths, no
+# shorthand beside them) are the API server's; the schema envtest covers them.
+webpreview='{"imageRepository":"registry.example/patchy/previews/acme-web","port":8080,"readinessPath":"/healthz"}'
+render_cfg cfg-repo-preview --set-json "projects=[$(project ".spec.repositories[0].preview = $webpreview | .spec.repositories[0].preview.path = \"/api\"")]"
+expect cfg-repo-preview 'select(.kind == "Project") | .spec.repositories[0].preview.path + " " + .spec.repositories[0].preview.imageRepository' \
+  "/api registry.example/patchy/previews/acme-web"
+expect_fail_cfg "a preview path outside the grammar" "projects/0/spec/repositories/0/preview/path" \
+  --set-json "projects=[$(project ".spec.repositories[0].preview = $webpreview | .spec.repositories[0].preview.path = \"/API\"")]"
+expect_fail_cfg "an unknown repository preview field" "projects/0/spec/repositories/0/preview" \
+  --set-json "projects=[$(project ".spec.repositories[0].preview = $webpreview | .spec.repositories[0].preview.dockerfile = \"x\"")]"
 
 if [ "$failures" -gt 0 ]; then
   echo "chart-render-test: $failures assertion(s) failed" >&2

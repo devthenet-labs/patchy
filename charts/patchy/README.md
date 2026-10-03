@@ -99,9 +99,17 @@ Pod Identity, or internet exception. Admission matches the actual namespace name
 `kubernetes.io/metadata.name` label. An unselected workload in an ordinary namespace is unaffected; only the
 outside-slot toleration and IngressClass rules below change its workload admission. Slot Ingresses must use
 `alb-preview`, which is non-default and refused outside the slots. Slot Pods/Deployments must use immutable full-SHA
-images beneath `<registry>/patchy/previews/`, the default ServiceAccount with token automount explicitly disabled, no
-init/ephemeral containers, and only `emptyDir` volumes. Services must remain ClusterIP. Ingress hosts are single-label
-subdomains of `preview.hostSuffix`; only a safe healthcheck-path annotation is allowed.
+images beneath `<registry>/patchy/previews/`, exactly one container, the default ServiceAccount with token automount
+explicitly disabled, no init/ephemeral containers, and only `emptyDir` volumes. Services must remain ClusterIP, and a
+Service may carry only a safe healthcheck-path annotation (a multi-component Preview's per-component health check).
+Ingress hosts are single-label subdomains of `preview.hostSuffix`; only a safe healthcheck-path annotation is allowed.
+An Ingress has one rule of at most four `Prefix` paths in the component path grammar, each backed by a `preview-`
+Service on port 80; the kept placeholder backs `/` with its own Service. The slot quota fits one Preview of up to four
+components: five Services (one each, plus slot 0's placeholder) and eight Pods. With
+`previewController.config.targetHealth: true` (off by default until a live preview has shown Auto Mode injecting the
+gate) the slot namespaces are labelled `eks.amazonaws.com/pod-readiness-gate-inject: enabled`, so EKS Auto Mode's load
+balancer injects a target-health readiness gate into each slot Pod, and the preview-controller marks a Preview Ready
+only once its targets are healthy; see `docs/configuration/preview-controller.md`.
 
 Slot Pods and Deployment templates must also select the configured NodePool and NodeClass, tolerate the exact
 `NoExecute` taint, use the default scheduler, and leave `nodeName` unset. A second fail-closed policy on **all other

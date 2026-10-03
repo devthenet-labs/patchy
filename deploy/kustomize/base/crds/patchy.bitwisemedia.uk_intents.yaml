@@ -28,7 +28,7 @@ spec:
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - description: The first pull request (slice 1 opens exactly one)
+    - description: The intent's pull requests, one per repository it changed
       jsonPath: .status.pullRequests[*].url
       name: PRs
       type: string
@@ -270,11 +270,17 @@ spec:
                   ChecksObservedHeadSHA is a pushed PR head whose named checks settled,
                   or whose check-poll timeout elapsed without an observed failure. Once
                   recorded, this head is not polled again; a new pushed head resets it.
+                  This Intent-level pair is deprecated in favour of the per-PR pair
+                  (pullRequests[].checksObservedHeadSHA and
+                  checksObservedProjectGeneration), which a multi-repository intent
+                  needs; it is kept so a one-PR intent recorded before the move keeps
+                  its observation, and is then read only as that fallback.
                 type: string
               checksObservedProjectGeneration:
                 description: |-
                   ChecksObservedProjectGeneration is the Project generation whose check
                   names were observed at that head. Changing checks.fix resumes polling.
+                  Deprecated with ChecksObservedHeadSHA.
                 format: int64
                 type: integer
               commands:
@@ -594,6 +600,40 @@ spec:
                 - digest
                 - revision
                 type: object
+              previewBases:
+                description: |-
+                  PreviewBases are the default-branch heads the intent's preview runs
+                  for previewed repositories it has no pull request in, one per
+                  repository, each recorded once and never rewritten, so the preview
+                  does not move when main does. Written by the intent reconciler.
+                items:
+                  description: |-
+                    IntentPreviewBase records the default-branch head an intent previews for a
+                    previewed Project repository it has no pull request in, so its preview
+                    shows the change beside what is already on main.
+                  properties:
+                    repository:
+                      description: Repository is the https URL of the Project repository;
+                        the list key.
+                      maxLength: 256
+                      minLength: 1
+                      pattern: ^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$
+                      type: string
+                    sha:
+                      description: |-
+                        SHA is the default-branch head read once, when the intent's review
+                        began. The preview runs that commit's immutable sha-<SHA> image.
+                      pattern: ^[0-9a-f]{40}$
+                      type: string
+                  required:
+                  - repository
+                  - sha
+                  type: object
+                maxItems: 8
+                type: array
+                x-kubernetes-list-map-keys:
+                - repository
+                x-kubernetes-list-type: map
               pullRequests:
                 description: |-
                   PullRequests are the pull requests patchy opened, one per app
@@ -604,6 +644,23 @@ spec:
                     requests are correlated only by the (repository, number, nodeID) recorded
                     here when patchy opened them — never by head ref, and never a fork's.
                   properties:
+                    checksObservedHeadSHA:
+                      description: |-
+                        ChecksObservedHeadSHA is a pushed head of this pull request whose
+                        named checks settled, or whose check-poll timeout elapsed without an
+                        observed failure. Once recorded, this head is not polled again; a new
+                        pushed head resets it. Recorded per pull request, so a multi-repository
+                        intent watches each repository's checks on their own.
+                      pattern: ^([0-9a-f]{40}|[0-9a-f]{64})$
+                      type: string
+                    checksObservedProjectGeneration:
+                      description: |-
+                        ChecksObservedProjectGeneration is the Project generation whose check
+                        names were observed at ChecksObservedHeadSHA. Changing checks.fix
+                        resumes polling.
+                      format: int64
+                      minimum: 0
+                      type: integer
                     headSHA:
                       description: |-
                         HeadSHA is the head commit last observed (patchy's push, or a human's

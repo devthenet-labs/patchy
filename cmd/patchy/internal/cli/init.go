@@ -284,9 +284,11 @@ func initAppOptions(f *initAppFlags, dir string) (scaffold.Options, error) {
 	return o, nil
 }
 
-// agentBaseRepository is where a patchy release publishes its agent base,
-// tagged v<version>: the FROM of a scaffolded .patchy/Dockerfile.
-const agentBaseRepository = "ghcr.io/devthenet-labs/patchy/agent-base"
+// agentBaseRepository is where the release this CLI was built from publishes
+// its agent base, tagged v<version>: the FROM of a scaffolded
+// .patchy/Dockerfile. It is the release registry stamped in at build time
+// (version.AgentBaseRepository); a plain go build has none.
+var agentBaseRepository = version.AgentBaseRepository
 
 // resolveAgentBase is the one place `init app` chooses the agent base, and
 // it always returns a reference pinned by digest, since the scaffold engine
@@ -294,8 +296,10 @@ const agentBaseRepository = "ghcr.io/devthenet-labs/patchy/agent-base"
 // carries a digest (scaffold.Plan checks it), and a tag is pinned to the
 // digest it names in the registry now. Without an override, a release CLI
 // (exactly X.Y.Z, with or without its v) takes the agent base released with
-// it, pinned the same way. Anything else cannot be resolved, and the error
-// says to pass a digest-pinned --agent-base.
+// it from the release registry the CLI was built with, through
+// imagecheck.ReleaseImage as check image chooses its runner. A development
+// build cannot be resolved, and the error says to pass a digest-pinned
+// --agent-base.
 func resolveAgentBase(ctx context.Context, reg imagecheck.Registry, cliVersion, override string) (string, error) {
 	const pass = "pass --agent-base <image>@sha256:<digest>"
 	ref := override
@@ -305,7 +309,11 @@ func resolveAgentBase(ctx context.Context, reg imagecheck.Registry, cliVersion, 
 			return "", fmt.Errorf("this CLI is a development build (version %q) with no agent base released "+
 				"with it; %s", cliVersion, pass)
 		}
-		ref = agentBaseRepository + ":v" + v.String()
+		img, err := imagecheck.ReleaseImage(ctx, reg, agentBaseRepository, v.String())
+		if err != nil {
+			return "", fmt.Errorf("%w; %s", err, pass)
+		}
+		return img.Reference + "@" + img.Digest, nil
 	} else if strings.Contains(ref, "@") {
 		return ref, nil
 	}

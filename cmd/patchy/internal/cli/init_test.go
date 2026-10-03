@@ -52,6 +52,14 @@ func releaseDeps() initAppDeps {
 	}
 }
 
+// The release registry is stamped in at build time, which go test does not
+// do: pin the one the goldens were generated with.
+func init() {
+	if agentBaseRepository == "" {
+		agentBaseRepository = "ghcr.io/devthenet-labs/patchy/agent-base"
+	}
+}
+
 func TestResolveAgentBase(t *testing.T) {
 	pinned := "registry.example.com/patchy/agent-base:v1@sha256:" + strings.Repeat("a", 64)
 	known := map[string]bool{agentBaseRepository + ":v0.12.14": true, "registry.example.com/base:v2": true}
@@ -94,6 +102,24 @@ func TestResolveAgentBase(t *testing.T) {
 				t.Errorf("asked the registry for %v, want %v", asked, tc.asked)
 			}
 		})
+	}
+}
+
+// TestResolveAgentBaseUnstamped: a release-versioned CLI built without the
+// release registry stamped in (a plain go build) knows no agent base, says
+// so, and asks the registry nothing.
+func TestResolveAgentBaseUnstamped(t *testing.T) {
+	saved := agentBaseRepository
+	agentBaseRepository = ""
+	t.Cleanup(func() { agentBaseRepository = saved })
+	var asked []string
+	_, err := resolveAgentBase(context.Background(), fakeAgentBases{asked: &asked}, "0.12.14", "")
+	if err == nil || !strings.Contains(err.Error(), "built without the release registry") ||
+		!strings.Contains(err.Error(), "--agent-base") {
+		t.Errorf("resolveAgentBase error = %v, want the unstamped build named and --agent-base suggested", err)
+	}
+	if len(asked) != 0 {
+		t.Errorf("asked the registry for %v, want nothing", asked)
 	}
 }
 

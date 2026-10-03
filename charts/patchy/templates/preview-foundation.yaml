@@ -9,7 +9,8 @@
 {{- $p := .Values.preview }}
 {{- if or (lt (int $p.slotCount) 1) (gt (int $p.slotCount) 4) }}{{ fail "preview.slotCount must be between 1 and 4" }}{{ end }}
 {{- if not $p.imageRegistry }}{{ fail "preview.imageRegistry is required when preview.enabled=true" }}{{ end }}
-{{- if not $p.dnsCIDR }}{{ fail "preview.dnsCIDR is required when preview.enabled=true" }}{{ end }}
+{{- $dnsCIDR := $p.dnsCIDR | default .Values.clusterDNSCIDR }}
+{{- if not $dnsCIDR }}{{ fail "preview.dnsCIDR is required when preview.enabled=true: the node-local cluster DNS /32 (it defaults to clusterDNSCIDR when that is set)" }}{{ end }}
 {{- if not $p.albSubnetCIDRs }}{{ fail "preview.albSubnetCIDRs is required when preview.enabled=true" }}{{ end }}
 {{- if and $p.albSubnetIDs (ne (len $p.albSubnetIDs) (len $p.albSubnetCIDRs)) }}{{ fail "preview.albSubnetIDs must name one subnet per preview.albSubnetCIDRs entry: the ALB's subnets are the only sources the slots admit" }}{{ end }}
 {{- if not $p.inboundCIDRs }}{{ fail "preview.inboundCIDRs is required when preview.enabled=true" }}{{ end }}
@@ -66,7 +67,7 @@ spec:
     egress:
         - to:
             - ipBlock:
-                  cidr: {{ $p.dnsCIDR }}
+                  cidr: {{ $dnsCIDR }}
           ports:
             - protocol: UDP
               port: 53

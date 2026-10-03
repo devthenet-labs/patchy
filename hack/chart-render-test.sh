@@ -284,6 +284,157 @@ expect_fail 'preview missing node taint key' 'preview.nodeIsolation.taintKey' -f
 expect_fail 'preview zero slots' 'preview.slotCount' -f "$fixtures/preview-foundation.yaml" --set preview.slotCount=0
 expect_fail 'preview missing cert' 'preview.certificateARN' -f "$fixtures/preview-foundation.yaml" --set preview.certificateARN=
 
+# ---- EKS Auto Mode toggles: off by default, and off means absent ------------
+# clusterDNSCIDR, preview.nodeIsolation.create and edgeIngressClass.create are
+# opt-in: the default render has none of their objects or rules, and setting
+# every one of their other values without the switch renders the default byte
+# for byte, so an install that never sets them never changes.
+pf=$fixtures/preview-foundation.yaml
+am=$fixtures/auto-mode.yaml
+dnsnp='select(.kind == "NetworkPolicy") | .spec.egress[] | select(.ports | map(.port) | contains([53])) | .to[] | select(has("ipBlock")) | .ipBlock.cidr'
+expect default "$dnsnp" ""
+expect default 'select(.kind == "NodeClass" or .kind == "NodePool" or .kind == "IngressClass" or .kind == "IngressClassParams") | .kind' ""
+render toggles-off \
+  --set preview.nodeIsolation.role=example-preview-node \
+  --set-json 'preview.nodeIsolation.subnetIDs=["subnet-0123456789abcdef0"]' \
+  --set-json 'preview.nodeIsolation.securityGroupIDs=["sg-0123456789abcdef0"]' \
+  --set-json 'preview.nodeIsolation.instanceTypes=["m7g.large"]' --set preview.nodeIsolation.arch=arm64 \
+  --set preview.nodeIsolation.cpuLimit=8 --set preview.nodeIsolation.nodeLimit=4 \
+  --set edgeIngressClass.name=edge --set edgeIngressClass.loadBalancerName=example-patchy \
+  --set-json 'edgeIngressClass.certificateARNs=["arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"]'
+if ! cmp -s "$out/default.yaml" "$out/toggles-off.yaml"; then
+  fail "toggles-off: values under preview.nodeIsolation and edgeIngressClass changed the render without their create switch"
+fi
+render toggles-off-ingress --set webhook.host=patchy.example.com --set webhook.ingress.enabled=true \
+  --set statusServer.host=status.patchy.example.com --set statusServer.ingress.enabled=true \
+  --set edgeIngressClass.loadBalancerName=example-patchy
+expect toggles-off-ingress 'select(.kind == "Ingress") | .spec.ingressClassName' "null
+null"
+
+# ---- clusterDNSCIDR: node-local DNS beside every kube-system DNS rule --------
+# EKS Auto Mode serves DNS at the cluster DNS address on each node, not from
+# kube-system pods. The rule lands in exactly the policies that already allow
+# DNS to kube-system, UDP and TCP 53 only, and selects no new pod.
+render dns --set clusterDNSCIDR=10.100.0.10/32
+dnsrule='.spec.egress[] | select(.to // [] | any_c(.ipBlock.cidr == "10.100.0.10/32"))'
+kubedns='select(.kind == "NetworkPolicy" and (.spec.egress // [] | any_c(.to // [] | any_c(.namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "kube-system")))) | .metadata.namespace + "/" + .metadata.name'
+nodedns='select(.kind == "NetworkPolicy" and (.spec.egress // [] | any_c(.to // [] | any_c(.ipBlock.cidr == "10.100.0.10/32")))) | .metadata.namespace + "/" + .metadata.name'
+expect dns "$nodedns" "patchy/patchy-egress-broker
+patchy/patchy-integration-controller
+patchy/patchy-source-controller
+patchy/patchy-context-controller
+patchy/patchy-investigation-controller
+patchy/patchy-remediation-controller
+patchy-agents/patchy-agents-egress
+patchy/patchy-status-server"
+expect dns "select(.kind == \"NetworkPolicy\") | $dnsrule | .ports | map(.protocol + \"/\" + (.port | tostring)) | join(\",\")" \
+  "$(for i in 1 2 3 4 5 6 7 8; do echo UDP/53,TCP/53; done)"
+expect dns "select(.kind == \"NetworkPolicy\") | $dnsrule | .to | length" "$(for i in 1 2 3 4 5 6 7 8; do echo 1; done)"
+npsel='select(.kind == "NetworkPolicy") | .metadata.namespace + "/" + .metadata.name + " " + (.spec.podSelector | to_json(0)) + " " + (.spec.policyTypes | join(","))'
+if [ "$(get default "$npsel")" != "$(get dns "$npsel")" ]; then
+  fail "dns: clusterDNSCIDR changed which pods a NetworkPolicy selects"
+fi
+# Every component that can run, on: the two lists stay equal.
+render dns-all -f "$pf" -f "$fixtures/intent-controller.yaml" -f "$fixtures/preview-controller.yaml" \
+  -f "$fixtures/evaluation-controller.yaml" --set clusterDNSCIDR=10.100.0.10/32
+if [ -z "$(get dns-all "$kubedns")" ] || [ "$(get dns-all "$kubedns")" != "$(get dns-all "$nodedns")" ]; then
+  fail "dns-all: policies with kube-system DNS ($(get dns-all "$kubedns" | tr '\n' ' ')) != policies with node-local DNS ($(get dns-all "$nodedns" | tr '\n' ' '))"
+fi
+expect dns-all "$nodedns | select(test(\"intent-controller|evaluation-controller|preview-controller\"))" "patchy/patchy-evaluation-controller
+patchy/patchy-intent-controller
+patchy/patchy-preview-controller"
+# The preview slot policy's DNS address defaults to it; an explicit
+# preview.dnsCIDR wins; with neither, enabling previews fails.
+render preview-dns-default -f "$pf" --set preview.dnsCIDR= --set clusterDNSCIDR=10.100.0.10/32
+expect preview-dns-default 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-isolation") | .spec.egress[].to[].ipBlock.cidr' '10.100.0.10/32
+10.100.0.10/32'
+render preview-dns-explicit -f "$pf" --set clusterDNSCIDR=10.100.0.10/32
+expect preview-dns-explicit 'select(.kind == "NetworkPolicy" and .metadata.name == "preview-isolation") | .spec.egress[].to[].ipBlock.cidr' '172.20.0.10/32
+172.20.0.10/32'
+expect_fail 'preview without any DNS address' 'preview.dnsCIDR is required when preview.enabled=true' -f "$pf" --set preview.dnsCIDR=
+expect_fail 'clusterDNSCIDR wider than one address' "'/clusterDNSCIDR'" --set clusterDNSCIDR=172.20.0.0/16
+
+# ---- preview.nodeIsolation.create: the DefaultDeny NodeClass and NodePool -----
+render am -f "$pf" -f "$am"
+nc='select(.kind == "NodeClass")'
+np='select(.kind == "NodePool")'
+expect am "$nc | .apiVersion + \" \" + .metadata.name" "eks.amazonaws.com/v1 patchy-preview"
+expect am "$nc | .spec.networkPolicy + \" \" + .spec.networkPolicyEventLogs" "DefaultDeny Disabled"
+expect am "$nc | .spec.role" example-preview-node
+expect am "$nc | .spec.subnetSelectorTerms[].id" "subnet-0123456789abcdef0
+subnet-0fedcba9876543210"
+expect am "$nc | .spec.securityGroupSelectorTerms[].id" sg-0123456789abcdef0
+expect am "$nc | .spec.ephemeralStorage | .size + \" \" + (.iops | tostring) + \" \" + (.throughput | tostring)" "20Gi 3000 125"
+expect am "$np | .apiVersion + \" \" + .metadata.name" "karpenter.sh/v1 patchy-preview"
+expect am "$np | .spec.template.spec.nodeClassRef | .group + \"/\" + .kind + \"/\" + .name" eks.amazonaws.com/NodeClass/patchy-preview
+expect am "$np | .spec.template.spec.taints[] | .key + \"=\" + .value + \":\" + .effect" "patchy.devthe.net/preview-only=true:NoExecute"
+expect am "$np | .spec.template.spec.requirements[] | .key + \" \" + .operator + \" \" + (.values | join(\",\"))" \
+  "node.kubernetes.io/instance-type In t3a.medium
+kubernetes.io/arch In amd64
+kubernetes.io/os In linux
+karpenter.sh/capacity-type In on-demand"
+expect am "$np | .spec.disruption | .consolidationPolicy + \" \" + .consolidateAfter + \" \" + .budgets[0].nodes" "WhenEmpty 30s 1"
+expect am "$np | .spec.limits | .cpu + \"/\" + .nodes" "4/2"
+for kind in NodeClass NodePool IngressClass IngressClassParams; do
+  expect am "select(.kind == \"$kind\") | .metadata.annotations.\"helm.sh/resource-policy\" | select(. != \"keep\")" ""
+done
+render am-tuned -f "$pf" -f "$am" --set-json 'preview.nodeIsolation.instanceTypes=["m7g.large","c7g.large"]' \
+  --set preview.nodeIsolation.arch=arm64 --set preview.nodeIsolation.cpuLimit=8 --set preview.nodeIsolation.nodeLimit=3 \
+  --set preview.nodeIsolation.ephemeralStorage.size=40Gi
+expect am-tuned "$np | .spec.template.spec.requirements[0:2][] | .values | join(\",\")" "m7g.large,c7g.large
+arm64"
+expect am-tuned "$np | .spec.limits | .cpu + \"/\" + .nodes" "8/3"
+expect am-tuned "$nc | .spec.ephemeralStorage.size" 40Gi
+expect_fail 'nodes without previews' 'preview.nodeIsolation.create requires preview.enabled' -f "$am"
+expect_fail 'nodes without a role' 'preview.nodeIsolation.create requires preview.nodeIsolation.role' \
+  -f "$pf" -f "$am" --set preview.nodeIsolation.role=
+expect_fail 'nodes without subnets' 'preview.nodeIsolation.create requires preview.nodeIsolation.subnetIDs' \
+  -f "$pf" -f "$am" --set-json 'preview.nodeIsolation.subnetIDs=[]'
+expect_fail 'nodes without security groups' 'preview.nodeIsolation.create requires preview.nodeIsolation.securityGroupIDs' \
+  -f "$pf" -f "$am" --set-json 'preview.nodeIsolation.securityGroupIDs=[]'
+expect_fail 'node role as an ARN' "'/preview/nodeIsolation/role'" \
+  -f "$pf" -f "$am" --set preview.nodeIsolation.role=arn:aws:iam::123456789012:role/preview
+expect_fail 'node subnet as a CIDR' "'/preview/nodeIsolation/subnetIDs/0'" \
+  -f "$pf" -f "$am" --set-json 'preview.nodeIsolation.subnetIDs=["10.0.0.0/24"]'
+# DefaultDeny is fixed: there is no value to turn it into DefaultAllow.
+expect_fail 'node class network policy as a value' "additional properties 'networkPolicy' not allowed" \
+  -f "$pf" -f "$am" --set preview.nodeIsolation.networkPolicy=DefaultAllow
+
+# ---- edgeIngressClass.create: the edge class the Ingresses fall back to -------
+ec='select(.kind == "IngressClass" and .metadata.name == "patchy-edge")'
+ep='select(.kind == "IngressClassParams" and .metadata.name == "patchy-edge")'
+expect am "$ec | .spec.controller" eks.amazonaws.com/alb
+expect am "$ec | .spec.parameters | .apiGroup + \"/\" + .kind + \"/\" + .name" eks.amazonaws.com/IngressClassParams/patchy-edge
+expect am "$ec | .metadata.annotations.\"ingressclass.kubernetes.io/is-default-class\"" false
+expect am "$ep | .spec | .scheme + \" \" + .loadBalancerName + \" \" + .group.name" "internet-facing example-patchy example-patchy"
+expect am "$ep | .spec.certificateARNs | join(\",\")" \
+  arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000
+expect am "$ep | .spec.namespaceSelector.matchLabels.\"kubernetes.io/metadata.name\"" patchy
+expect am 'select(.kind == "Ingress" and .metadata.namespace == "patchy") | .metadata.name + " " + .spec.ingressClassName' \
+  "patchy-webhook patchy-edge
+patchy-status-server patchy-edge"
+# An explicit className wins; the name, scheme and certificates are values;
+# the namespace pin follows the release namespace.
+render am-edge-tuned -f "$am" --set preview.nodeIsolation.create=false --namespace platform --set webhook.ingress.className=nginx \
+  --set edgeIngressClass.name=public-edge --set edgeIngressClass.scheme=internal --set-json 'edgeIngressClass.certificateARNs=[]'
+expect am-edge-tuned 'select(.kind == "Ingress") | .metadata.name + " " + .spec.ingressClassName' \
+  "patchy-webhook nginx
+patchy-status-server public-edge"
+expect am-edge-tuned 'select(.kind == "IngressClassParams") | .metadata.name + " " + .spec.scheme + " " + (.spec | has("certificateARNs") | tostring)' \
+  "public-edge internal false"
+expect am-edge-tuned 'select(.kind == "IngressClassParams") | .spec.namespaceSelector.matchLabels."kubernetes.io/metadata.name"' platform
+expect_fail 'edge without a load balancer name' 'edgeIngressClass.create requires edgeIngressClass.loadBalancerName' \
+  --set edgeIngressClass.create=true
+expect_fail 'edge on the preview ALB' 'edgeIngressClass.loadBalancerName must differ from preview.albName' \
+  -f "$pf" -f "$am" --set edgeIngressClass.loadBalancerName=devthenet-dev-preview
+expect_fail 'edge named like the preview class' 'edgeIngressClass.name must not be alb-preview' \
+  -f "$am" --set preview.nodeIsolation.create=false --set edgeIngressClass.name=alb-preview
+# The name is the ALB group's name too, and a group name is lowercase.
+expect_fail 'edge load balancer name with capitals' "'/edgeIngressClass/loadBalancerName'" \
+  --set edgeIngressClass.create=true --set edgeIngressClass.loadBalancerName=Example-Patchy
+expect_fail 'edge load balancer name over 32 characters' "'/edgeIngressClass/loadBalancerName'" \
+  --set edgeIngressClass.create=true --set edgeIngressClass.loadBalancerName=abcdefghijklmnopqrstuvwxyz0123456
+
 # ---- feature on: keys on the right controllers ------------------------------
 render on -f "$fixtures/repository-images.yaml"
 cm on source-controller PATCHY_REPOSITORY_IMAGES true

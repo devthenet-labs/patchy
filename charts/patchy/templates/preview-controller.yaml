@@ -211,6 +211,9 @@ spec:
           ports:
               - {protocol: UDP, port: 53}
               - {protocol: TCP, port: 53}
+        {{- with include "patchy.clusterDNSEgress" . }}
+        {{- . | nindent 8 }}
+        {{- end }}
         - to:
               - ipBlock:
                     cidr: {{ $vals.config.apiServerCIDR }}

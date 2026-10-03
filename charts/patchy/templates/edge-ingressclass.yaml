@@ -1,0 +1,59 @@
+{{/*
+Copyright 2026 Bitwise Media Group Ltd.
+SPDX-License-Identifier: MIT
+
+The public edge's EKS Auto Mode IngressClass (edgeIngressClass.create): the
+class the webhook and status-page Ingresses use when their own className is
+empty. Auto Mode ships the load balancer controller but no IngressClass, and
+grouping Ingresses onto one ALB is configurable only on the class (Auto Mode
+ignores the alb.ingress.kubernetes.io/group.name annotation). A template
+comment, not YAML, so the file renders nothing at all while create is off.
+*/}}
+{{- $e := .Values.edgeIngressClass | default dict }}
+{{- if $e.create }}
+{{- $name := include "patchy.edgeIngressClassName" . }}
+{{- if not $e.loadBalancerName }}{{ fail "edgeIngressClass.create requires edgeIngressClass.loadBalancerName: the name of the ALB every edge Ingress joins, at most 32 characters" }}{{ end }}
+{{- if eq $name "alb-preview" }}{{ fail "edgeIngressClass.name must not be alb-preview: that is the preview edge's class" }}{{ end }}
+{{- if and .Values.preview.enabled (eq $e.loadBalancerName .Values.preview.albName) }}{{ fail "edgeIngressClass.loadBalancerName must differ from preview.albName: the edge Ingresses would join the preview ALB" }}{{ end }}
+---
+# One ALB for the whole edge: loadBalancerName fixes its name (stable for DNS
+# alias records) and the group of the same name puts every Ingress of the
+# class on it. Only the release namespace may use the class.
+apiVersion: eks.amazonaws.com/v1
+kind: IngressClassParams
+metadata:
+    name: {{ $name }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" "edge") | nindent 8 }}
+    annotations:
+        {{- include "patchy.annotations" (dict "root" . "extra" (dict "helm.sh/resource-policy" "keep")) | nindent 8 }}
+spec:
+    scheme: {{ $e.scheme | default "internet-facing" }}
+    loadBalancerName: {{ $e.loadBalancerName }}
+    group:
+        name: {{ $e.loadBalancerName }}
+    {{- with $e.certificateARNs }}
+    certificateARNs:
+        {{- range . }}
+        - {{ . }}
+        {{- end }}
+    {{- end }}
+    namespaceSelector:
+        matchLabels:
+            kubernetes.io/metadata.name: {{ .Release.Namespace }}
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+    name: {{ $name }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" "edge") | nindent 8 }}
+    annotations:
+        {{- include "patchy.annotations" (dict "root" . "extra" (dict "helm.sh/resource-policy" "keep" "ingressclass.kubernetes.io/is-default-class" "false")) | nindent 8 }}
+spec:
+    controller: eks.amazonaws.com/alb
+    parameters:
+        apiGroup: eks.amazonaws.com
+        kind: IngressClassParams
+        name: {{ $name }}
+{{- end }}

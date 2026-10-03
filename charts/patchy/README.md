@@ -87,11 +87,14 @@ Supply the ECR registry host, node-local DNS `/32`, ALB public subnet CIDRs, tig
 CIDRs, issued wildcard ACM certificate ARN, preview host suffix, and a distinct ALB name. Before enabling the
 foundation, supply `preview.nodeIsolation.nodePool`, `nodeClass`, and `taintKey` from a dedicated EKS Auto Mode NodePool
 whose NodeClass uses `networkPolicy: DefaultDeny` and whose taint is `<taintKey>=true:NoExecute`. `DefaultAllow` has a
-start-up interval with unrestricted egress even when the slot NetworkPolicy exists. The chart does not create the
-NodePool, NodeClass or node IAM role. The
-[chart-render fixture](../../hack/testdata/chart-render/preview-foundation.yaml) shows the shape; these are
-cluster-specific values, not defaults. The default `alb` class must already be limited to the patchy namespace before
-slots are enabled.
+start-up interval with unrestricted egress even when the slot NetworkPolicy exists. The chart renders that NodeClass
+(with `DefaultDeny` fixed, not a value) and NodePool only with `preview.nodeIsolation.create: true` plus the node
+`role`, `subnetIDs` and `securityGroupIDs` (see `values.yaml`); otherwise they must already exist. It never creates the
+node IAM role. The [chart-render fixture](../../hack/testdata/chart-render/preview-foundation.yaml) shows the shape;
+these are cluster-specific values, not defaults. The default `alb` class must already be limited to the patchy namespace
+before slots are enabled; `edgeIngressClass.create` renders an edge class that is limited to the release namespace and
+is never the default. On EKS Auto Mode set `clusterDNSCIDR` (or `preview.dnsCIDR`) to the node-local DNS `/32`: the slot
+policy allows DNS only there.
 
 The slot policy selects every pod. Inbound traffic can reach only a port named `http` from the configured ALB subnets;
 outbound traffic can reach only the configured DNS IP on UDP/TCP 53. There is no API, broker, patchy Service, metadata,

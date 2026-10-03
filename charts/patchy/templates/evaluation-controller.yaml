@@ -442,6 +442,9 @@ spec:
                 port: 53
               - protocol: TCP
                 port: 53
+        {{- with include "patchy.clusterDNSEgress" . }}
+        {{- . | nindent 8 }}
+        {{- end }}
         - ports:
               - protocol: TCP
                 port: 443

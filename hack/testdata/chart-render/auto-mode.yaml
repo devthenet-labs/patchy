@@ -1,0 +1,28 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# The EKS Auto Mode toggles, all on, with documentation values. Rendered over
+# preview-foundation.yaml (whose nodeIsolation names the nodes).
+clusterDNSCIDR: 10.100.0.10/32
+preview:
+    nodeIsolation:
+        create: true
+        role: example-preview-node
+        subnetIDs:
+            - subnet-0123456789abcdef0
+            - subnet-0fedcba9876543210
+        securityGroupIDs:
+            - sg-0123456789abcdef0
+edgeIngressClass:
+    create: true
+    loadBalancerName: example-patchy
+    certificateARNs:
+        - arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000
+webhook:
+    host: patchy.example.com
+    ingress:
+        enabled: true
+statusServer:
+    host: status.patchy.example.com
+    ingress:
+        enabled: true

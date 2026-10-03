@@ -466,6 +466,9 @@ spec:
                 port: 53
               - protocol: TCP
                 port: 53
+        {{- with include "patchy.clusterDNSEgress" . }}
+        {{- . | nindent 8 }}
+        {{- end }}
         - ports:
               - protocol: TCP
                 port: 443
@@ -488,7 +491,7 @@ metadata:
         {{- . | nindent 8 }}
     {{- end }}
 spec:
-    {{- with $vals.ingress.className }}
+    {{- with $vals.ingress.className | default (include "patchy.edgeIngressClassName" .) }}
     ingressClassName: {{ . }}
     {{- end }}
     {{- with $vals.ingress.tls }}

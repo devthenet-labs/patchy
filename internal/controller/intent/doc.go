@@ -46,13 +46,21 @@
 // accepted image blocks it, naming the repository. activeRun is sticky
 // while Building: it names one in-flight build until that one settles. The
 // pull requests open only once every build has pushed, recorded one per pass,
-// the last record moving the Intent to InReview; then a comment cross-linking
-// them is posted on each, best effort, reported by SiblingsLinked and never
-// holding a phase back. In review, rounds stay serialised per Intent, each on
-// the pull request of one repository: a review on A revises A, a /patchy
-// revise on B revises B, a failed named check on C's patchy head fixes C. A
-// round already leased is adopted before any other is considered, whatever
-// its repository, and the open pull requests are then served in turn. A
+// the last record moving the Intent to InReview; an Intent that ends while
+// they are being opened tells each one already opened, once, that it is no
+// longer tracked (UntrackedPullRequests), and a revival forgets them. A build
+// name another repository's run holds (keys swapped) is never adopted: it
+// blocks (UnsupportedRepositories, RepositoryKeyChanged). In review a comment
+// cross-linking the pull requests is posted on each, best effort, reported by
+// SiblingsLinked, never holding a phase back, and after a refusal tried again
+// only once the Project or a pull request's head changes. In review, rounds
+// stay serialised per Intent, each on the pull request of one repository: a
+// review on A revises A, a /patchy revise on B revises B, a failed named check
+// on C's patchy head fixes C. A round already leased is adopted before any
+// other is considered, whatever its repository (read live before a round is
+// leased, so a cache that lags a lease cannot give its number twice), and the
+// open pull requests are then served in turn; a round needs only its own
+// repository to stay in the Project. A
 // round's review cutoff, feedback window, compare base, image, pushed head,
 // observed checks and repeated-failure signature are its own repository's;
 // its counters and limits, and the blocks they raise (naming the
@@ -66,8 +74,11 @@
 // without a pull request (status.previewBases), once: its preview component
 // runs that commit's image. Without the flag, an Intent of a Project listing
 // more than one repository is held Blocked (UnsupportedRepositories): no run
-// is launched or created and no push made for it, so turning the flag off is
-// a real rollback. A one-repository Project takes the same path either way.
+// is launched or created and no push made for it (a Job already running
+// finishes, and its push waits), so turning the flag off is a real rollback.
+// A revise round blocked mid-flight is the same round when the flag is on
+// again: its held push waits for the resume (errRoundBlocked), and the resume
+// follows its run. A one-repository Project takes the same path either way.
 //   - RunReconciler is the run scheduler: its own slot pool, granted FIFO
 //     with build before plan (schedule.Pick), launches each IntentRun's
 //     agent Job (jobs.Create, kind intent), collects its result, persists the
@@ -108,7 +119,9 @@
 // that is not patchy's own (BranchConflict), resuming to the phase it was
 // blocked from once the block no longer holds. Any phase but a terminal one
 // → Blocked while multi-repository intents are off for a Project that lists
-// several repositories (UnsupportedRepositories).
+// several repositories (UnsupportedRepositories), and Building → Blocked when
+// a build's name is another repository's run (UnsupportedRepositories,
+// RepositoryKeyChanged).
 //
 // # Authority
 //

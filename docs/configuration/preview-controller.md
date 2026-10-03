@@ -62,13 +62,37 @@ spec:
 Each previewed repository becomes one component, named by its key, with its own Deployment and Service: the first keeps
 the single-component name `preview-<project>-<issue>`, and each further one is `preview-<project>-<issue>-<key>`. Their
 selectors carry the component's name, so no Service reaches a sibling's Pods. The one Ingress routes a `Prefix` path per
-component, longest first; the load balancer does not rewrite paths, so an API under `/api` serves `/api/...`, and a page
-calls it same-origin, from the browser (the slot NetworkPolicy keeps components from reaching each other directly). Each
+component, longest first; the load balancer does not rewrite paths, so an API under `/api` serves `/api/...`. Each
 component Service carries its own health-check path; the Ingress carries the `/` component's. The repository name is
 free: the key and the image leaf are the operator's. intent-controller writes every Preview through the derivation the
-preview-controller checks it against, so a one-repository Project may use either form. An intent of a Project with
-several repositories waits for multi-repository intents (the Project reports `UnsupportedRepositories` until then), so
-only one-repository Projects get Previews today.
+preview-controller checks it against, so a one-repository Project may use either form. A Project with several
+repositories needs intent-controller's `--intent-multi-repo` (`intentController.config.multiRepo`); without it the
+Project reports `UnsupportedRepositories` and its intents are held, with no Preview.
+
+!!! warning "Previewed apps call each other from the browser, on the same host"
+
+    The slot NetworkPolicy admits only the load balancer and DNS, so one component can never reach another
+    server-side: a web component's server cannot call the API component, inside the slot or by the preview's URL. An
+    app built to be previewed with its siblings calls them from the browser, same-origin and by path (`fetch("/api/...")`
+    from a page served at `/`), and each component serves under its own `path`, which the load balancer passes through
+    unrewritten. Server-side calls between components are not supported.
+
+Which revision each component runs:
+
+- **A repository the intent changed** runs its pull request's recorded head: the `sha-<head SHA>` image its trusted
+  publisher pushed for that commit. A new push to the pull request redeploys it.
+- **A previewed repository the intent did not change** runs its default branch as it was when review began:
+  intent-controller reads that repository's default-branch head once, on the intent's first review pass, and records it
+  in the Intent's `status.previewBases`, never rewriting it, so the preview does not move when main does. The component
+  runs that commit's `sha-<SHA>` image.
+- There is no Preview until every component has a revision and at least one comes from a pull request, and none once no
+  pull request is open.
+
+So an application repository previewed beside others has a contract with its CI: main's CI must publish a `sha-<SHA>`
+runtime image for **every** main commit (never cancel or skip a main build), and the registry must keep those images for
+as long as an intent may be in review (tag them `main-<SHA>` as well, and keep that tag longer than the PR images'
+expiry). A main image that was never published, or has expired, fails its component after the rollout retries; an image
+still being published is covered by the rollout's retries.
 
 `Pending` takes a free slot, or `Queued` waits in creation order behind other Previews. `Deploying` first prunes the
 objects of components no longer rendered, so a renamed component's Service fits the slot quota, then creates a fixed

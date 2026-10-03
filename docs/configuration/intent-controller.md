@@ -4,8 +4,9 @@ Intent-driven development, and the second **optional** controller: deployments w
 opens an issue in an intent repository and labels it for a project. intent-controller plans the work in a read-only
 agent Job and posts the plan to the issue. An approver approves it by label or command, and it builds exactly that plan
 in the application repository's own image. It pushes the result to a branch it creates once, opens the pull request, and
-closes the issue when the pull request merges. The design, its security posture and the roadmap beyond this first slice
-are in [Intent-driven development](../design/intent-driven-development.md).
+closes the issue when the pull request merges. With `--intent-multi-repo`, one intent can change several application
+repositories of a Project, with one pull request in each (see [Several repositories](#several-repositories)). The
+design, its security posture and the roadmap are in [Intent-driven development](../design/intent-driven-development.md).
 
 ```sh
 intent-controller serve --namespace patchy \
@@ -22,9 +23,9 @@ State lives in three custom resources, all written by intent-controller alone:
 
 | Kind        | What it is                                                                                         |
 | ----------- | -------------------------------------------------------------------------------------------------- |
-| `Project`   | Operator configuration: the intent repository, labels, approvers, app repository and limits        |
+| `Project`   | Operator configuration: the intent repository, labels, approvers, app repositories and limits      |
 | `Intent`    | One per intent issue, named `<project>-<issue>`, carrying the phase and the approved plan's digest |
-| `IntentRun` | One immutable attempt of one stage (`plan` or `build`); it owns its Repository and agent Job       |
+| `IntentRun` | One immutable attempt of one stage (`plan`, `build` or `revise`); it owns its Repositories and Job |
 
 `patchy get intents`, `patchy get irun` and `patchy get proj` list them (see [the CLI](../cli.md)). Humans write only an
 Intent's `spec.suspend`; everything else happens on the issue.
@@ -40,34 +41,34 @@ of the build's attempts, and clearing the suspension starts the next one.
 The [shared flags](index.md#shared-flags-every-controller), plus the settings below. They carry an `intent-` prefix no
 other binary binds, so the shared kustomize ConfigMap cannot set one by accident.
 
-| Flag                              | Env                                    | Default                     | Purpose                                                                                          |
-| --------------------------------- | -------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------ |
-| `--intent-poll-interval`          | `PATCHY_INTENT_POLL_INTERVAL`          | `60s`                       | How often each Project's intent repository and each active intent's issue are polled             |
-| `--intent-approval-poll-interval` | `PATCHY_INTENT_APPROVAL_POLL_INTERVAL` | `30s`                       | How often an intent awaiting approval polls its issue's events                                   |
-| `--intent-pr-poll-interval`       | `PATCHY_INTENT_PR_POLL_INTERVAL`       | `60s`                       | How often an intent in review polls its pull request                                             |
-| `--intent-previews-enabled`       | `PATCHY_INTENT_PREVIEWS_ENABLED`       | `false`                     | PRs, and unchanged repositories' main heads, into Preview CRs; Helm: `previewController.enabled` |
-| `--intent-multi-repo`             | `PATCHY_INTENT_MULTI_REPO`             | `false`                     | Run intents of Projects listing several repositories; off, their intents are held `Blocked`      |
-| `--intent-max-concurrent-runs`    | `PATCHY_INTENT_MAX_CONCURRENT_RUNS`    | `1`                         | Intent agent Jobs running at once: a pool of its own, separate from remediation's                |
-| `--intent-rate-limit-floor`       | `PATCHY_INTENT_RATE_LIMIT_FLOOR`       | `1000`                      | Pause intent polling while the installation has fewer core requests left than this; `0` disables |
-| `--intent-ttl`                    | `PATCHY_INTENT_TTL`                    | `336h` (14 days)            | How long an ended intent is kept, with everything it owns; `0` keeps it forever                  |
-| `--intent-job-deadline`           | `PATCHY_INTENT_JOB_DEADLINE`           | `90m`                       | `activeDeadlineSeconds` on every intent Job; at least both stage timeouts                        |
-| `--intent-plan-model`             | `PATCHY_INTENT_PLAN_MODEL`             | `anthropic/claude-sonnet-5` | Canonical model the plan stage runs                                                              |
-| `--intent-plan-max-turns`         | `PATCHY_INTENT_PLAN_MAX_TURNS`         | `40`                        | Most agent turns a plan run may take                                                             |
-| `--intent-plan-token-budget`      | `PATCHY_INTENT_PLAN_TOKEN_BUDGET`      | `200000`                    | Most output tokens a plan run may spend                                                          |
-| `--intent-plan-timeout`           | `PATCHY_INTENT_PLAN_TIMEOUT`           | `20m`                       | Wall-clock limit of a plan run                                                                   |
-| `--intent-build-model`            | `PATCHY_INTENT_BUILD_MODEL`            | `anthropic/claude-sonnet-5` | Canonical model the build stage runs                                                             |
-| `--intent-build-max-turns`        | `PATCHY_INTENT_BUILD_MAX_TURNS`        | `150`                       | Most agent turns a build run may take                                                            |
-| `--intent-build-token-budget`     | `PATCHY_INTENT_BUILD_TOKEN_BUDGET`     | `800000`                    | Most output tokens a build run may spend                                                         |
-| `--intent-build-timeout`          | `PATCHY_INTENT_BUILD_TIMEOUT`          | `60m`                       | Wall-clock limit of a build run                                                                  |
-| `--intent-revise-max-turns`       | `PATCHY_INTENT_REVISE_MAX_TURNS`       | `80`                        | Most agent turns a revise or check-fix run may take                                              |
-| `--intent-revise-token-budget`    | `PATCHY_INTENT_REVISE_TOKEN_BUDGET`    | `400000`                    | Most output tokens a revise or check-fix run may spend                                           |
-| `--intent-revise-timeout`         | `PATCHY_INTENT_REVISE_TIMEOUT`         | `45m`                       | Wall-clock limit of a revise or check-fix run                                                    |
-| `--agent-namespace`               | `PATCHY_AGENT_NAMESPACE`               | `patchy-agents`             | Namespace the agent Jobs run in                                                                  |
-| `--agent-service-account`         | `PATCHY_AGENT_SERVICE_ACCOUNT`         | `patchy-agent`              | Service account the agent Jobs run as                                                            |
-| `--job-ttl`                       | `PATCHY_JOB_TTL`                       | `1h`                        | `ttlSecondsAfterFinished` on a finished agent Job                                                |
-| `--repository-images`             | `PATCHY_REPOSITORY_IMAGES`             | `false`                     | Run a Repository's pinned repository-declared image; a build requires one (see below)            |
-| `--agent-ephemeral-storage`       | `PATCHY_AGENT_EPHEMERAL_STORAGE`       | —                           | Ephemeral-storage request and limit on both agent containers; **required** with the flag above   |
-| `--changeset-max-entries`         | `PATCHY_CHANGESET_MAX_ENTRIES`         | `500`                       | Most files a build's changeset may touch; more is rejected before any forge call                 |
+| Flag                              | Env                                    | Default                     | Purpose                                                                                                 |
+| --------------------------------- | -------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `--intent-poll-interval`          | `PATCHY_INTENT_POLL_INTERVAL`          | `60s`                       | How often each Project's intent repository and each active intent's issue are polled                    |
+| `--intent-approval-poll-interval` | `PATCHY_INTENT_APPROVAL_POLL_INTERVAL` | `30s`                       | How often an intent awaiting approval polls its issue's events                                          |
+| `--intent-pr-poll-interval`       | `PATCHY_INTENT_PR_POLL_INTERVAL`       | `60s`                       | How often an intent in review polls its pull request                                                    |
+| `--intent-previews-enabled`       | `PATCHY_INTENT_PREVIEWS_ENABLED`       | `false`                     | PRs, and unchanged repositories' main heads, into Preview CRs; Helm: `previewController.enabled`        |
+| `--intent-multi-repo`             | `PATCHY_INTENT_MULTI_REPO`             | `false`                     | Run intents of Projects listing several repositories; off, their intents are held `Blocked`             |
+| `--intent-max-concurrent-runs`    | `PATCHY_INTENT_MAX_CONCURRENT_RUNS`    | `1`                         | Intent agent Jobs at once, a pool apart from remediation's; a multi-repository intent's builds share it |
+| `--intent-rate-limit-floor`       | `PATCHY_INTENT_RATE_LIMIT_FLOOR`       | `1000`                      | Pause intent polling while the installation has fewer core requests left than this; `0` disables        |
+| `--intent-ttl`                    | `PATCHY_INTENT_TTL`                    | `336h` (14 days)            | How long an ended intent is kept, with everything it owns; `0` keeps it forever                         |
+| `--intent-job-deadline`           | `PATCHY_INTENT_JOB_DEADLINE`           | `90m`                       | `activeDeadlineSeconds` on every intent Job; at least both stage timeouts                               |
+| `--intent-plan-model`             | `PATCHY_INTENT_PLAN_MODEL`             | `anthropic/claude-sonnet-5` | Canonical model the plan stage runs                                                                     |
+| `--intent-plan-max-turns`         | `PATCHY_INTENT_PLAN_MAX_TURNS`         | `40`                        | Most agent turns a plan run may take                                                                    |
+| `--intent-plan-token-budget`      | `PATCHY_INTENT_PLAN_TOKEN_BUDGET`      | `200000`                    | Most output tokens a plan run may spend                                                                 |
+| `--intent-plan-timeout`           | `PATCHY_INTENT_PLAN_TIMEOUT`           | `20m`                       | Wall-clock limit of a plan run                                                                          |
+| `--intent-build-model`            | `PATCHY_INTENT_BUILD_MODEL`            | `anthropic/claude-sonnet-5` | Canonical model the build stage runs                                                                    |
+| `--intent-build-max-turns`        | `PATCHY_INTENT_BUILD_MAX_TURNS`        | `150`                       | Most agent turns a build run may take                                                                   |
+| `--intent-build-token-budget`     | `PATCHY_INTENT_BUILD_TOKEN_BUDGET`     | `800000`                    | Most output tokens a build run may spend                                                                |
+| `--intent-build-timeout`          | `PATCHY_INTENT_BUILD_TIMEOUT`          | `60m`                       | Wall-clock limit of a build run                                                                         |
+| `--intent-revise-max-turns`       | `PATCHY_INTENT_REVISE_MAX_TURNS`       | `80`                        | Most agent turns a revise or check-fix run may take                                                     |
+| `--intent-revise-token-budget`    | `PATCHY_INTENT_REVISE_TOKEN_BUDGET`    | `400000`                    | Most output tokens a revise or check-fix run may spend                                                  |
+| `--intent-revise-timeout`         | `PATCHY_INTENT_REVISE_TIMEOUT`         | `45m`                       | Wall-clock limit of a revise or check-fix run                                                           |
+| `--agent-namespace`               | `PATCHY_AGENT_NAMESPACE`               | `patchy-agents`             | Namespace the agent Jobs run in                                                                         |
+| `--agent-service-account`         | `PATCHY_AGENT_SERVICE_ACCOUNT`         | `patchy-agent`              | Service account the agent Jobs run as                                                                   |
+| `--job-ttl`                       | `PATCHY_JOB_TTL`                       | `1h`                        | `ttlSecondsAfterFinished` on a finished agent Job                                                       |
+| `--repository-images`             | `PATCHY_REPOSITORY_IMAGES`             | `false`                     | Run a Repository's pinned repository-declared image; a build requires one (see below)                   |
+| `--agent-ephemeral-storage`       | `PATCHY_AGENT_EPHEMERAL_STORAGE`       | —                           | Ephemeral-storage request and limit on both agent containers; **required** with the flag above          |
+| `--changeset-max-entries`         | `PATCHY_CHANGESET_MAX_ENTRIES`         | `500`                       | Most files a build's changeset may touch; more is rejected before any forge call                        |
 
 The per-stage limits are ceilings. A Project's `limits` may lower them for its own intents, never raise them. The
 controller refuses to start with a Job deadline shorter than either stage timeout. Any longer deadline works: each Job's
@@ -123,8 +124,8 @@ projects:
       intentRepository: https://github.com/acme/intents # immutable
       approvers:
         logins: [octocat] # the only logins whose actions count
-      repositories: # exactly one in this slice
-        - name: target
+      repositories: # one, or up to eight with --intent-multi-repo
+        - name: target # the key: a DNS label of at most 16 characters
           url: https://github.com/acme/target
       # labels: {trigger: patchy:target, approve: patchy:approved}  (the defaults)
       # limits: {maxActiveIntents: 2, maxCostMicroUSD: 10000000, plan: {...}, build: {...}}
@@ -133,10 +134,11 @@ projects:
 
 The Project reports `Ready` once:
 
-- its repository resolves to exactly one Forge (`ForgeUnresolved` otherwise), whose credential Secret intent-controller
-  may read (`ForgeSecretUnreadable` otherwise);
-- the App is installed on the intent and app repositories, with the issues, contents and pull-requests permissions
-  intents use (`AppNotInstalled` otherwise);
+- it lists one repository, or `--intent-multi-repo` is on (`UnsupportedRepositories` otherwise);
+- each of its repositories resolves to exactly one Forge (`ForgeUnresolved` otherwise), whose credential Secret
+  intent-controller may read (`ForgeSecretUnreadable` otherwise); the message names the repository;
+- the App is installed on the intent repository and every app repository, with the issues, contents and pull-requests
+  permissions intents use (`AppNotInstalled` otherwise);
 - no other Project shares its intent repository and trigger label (`AmbiguousIntentRepository`).
 
 It creates the trigger and approve labels when they are missing. An issue whose Intent name is held by another
@@ -187,6 +189,68 @@ and labelled after the TTL deleted the first). Before a build launches, patchy r
 exists at a commit this intent did not push, the intent is `Blocked` with `BranchConflict` before any build is spent,
 and resumes once someone deletes the branch. Delete a merged intent's branch (or let GitHub delete head branches on
 merge) to keep that from happening.
+
+## On the pull request
+
+Once the pull request is open, the intent is `InReview`, and patchy runs rounds on it, each a new agent run on the pull
+request's head, in the same image as its build, pushed as a fast-forward of the intent branch (never forced):
+
+- **Revision rounds** from an approver: a review requesting changes (after a two-minute quiet period, so a review in
+  several parts is read whole), or `/patchy revise <what to change>` commented on the pull request. The round reads the
+  approvers' reviews and comments since the last round. `limits.maxRevisions` bounds them.
+- **CI-fix rounds** from a failed check: when a check the Project names in `checks.fix` (`[test]`, say) fails on the
+  head patchy last pushed, the round reads that check's output, annotations and the tail of its Actions job log.
+  `limits.maxCheckFixes` bounds them. A CI-fix round that does not fix the failure stops automatic fixing: the same
+  failure again (compared without the log's times, runner names, ids and durations) holds the intent `Blocked` with
+  `ChecksFailing` (`RepeatedFailure`) for a human, until the Project changes.
+
+Each round posts one comment on the pull request saying what kind of round it was ("Revision round", or "CI-fix round
+for `test`") and what it pushed, and when it pushed, asks the approvers to review again. The summary patchy posts when
+the intent ends counts revisions and CI-fix rounds apart.
+
+## Several repositories
+
+With `--intent-multi-repo` (`intentController.config.multiRepo: true` in the chart), a Project may list up to eight
+application repositories, and one intent can change several of them:
+
+```yaml
+spec:
+  repositories:
+    - name: web # the key: names the repository's runs, its tree and its preview component
+      url: https://github.com/acme/Acme.Web_App # any owner and name
+    - name: api
+      url: https://github.com/acme/api
+```
+
+- **One plan.** The plan Job reads every repository, read-only, on the default image. The first repository is its
+  working tree; each other one is a tree fetched digest-pinned to `/workspace/repos/<key>`, and the run records the
+  commit and digest of each, so the record keeps what the planner saw. The planner names only the repositories that must
+  change, and when it names several, the plan comment lists them above the plan. The approver approves that one plan.
+- **One build per repository.** Each repository the plan names gets its own build run,
+  `<intent>-bld-r<plan revision>-<key>-a<attempt>`, in that repository's own accepted image, handed the same approved
+  plan and told which repository it is in. The builds launch together and run as the run pool allows, so set
+  `--intent-max-concurrent-runs` (`intentController.config.maxConcurrentRuns`) to at least the number of repositories an
+  intent usually changes, or they run one after another. The Project's cost ceiling is checked once before they launch,
+  so the builds of one intent can pass it by up to one fewer than their number.
+- **Before any build is spent**, every branch is read: a `patchy-intent/<intent>` that an earlier round of the same
+  intent left behind holds the intent `Blocked` with `BranchConflict` (`StaleRoundBranch`), naming the repository, until
+  a human deletes it. Every block names the repository it is about.
+- **Pull requests open only once every build has pushed**, so a failed intent leaves no pull request behind. Each one
+  says it is one of several, and patchy then comments on each with links to the others (best effort: a refused comment
+  is retried and reported as `SiblingsLinked` False, and holds nothing back).
+- **Rounds run one at a time per intent**, each on one pull request's repository: a review or `/patchy revise` on a pull
+  request revises its own repository, a failed check fixes its own. Pull requests with feedback waiting take turns, and
+  feedback that arrives while another pull request's round runs is read by its own next round. The revision and CI-fix
+  limits are per intent.
+- **Endings.** The intent is `Merged` once every pull request has merged. If one is closed without merging, the intent
+  stays in review while any other is open, then ends `Closed`: patchy posts a notice of what merged (already on its
+  default branch; patchy reverts nothing) and what did not, and closes the issue as not planned. patchy never closes a
+  pull request because another closed.
+
+Off, which is the default, a Project listing several repositories is not Ready (`UnsupportedRepositories`), and every
+intent of one is held `Blocked` with `UnsupportedRepositories` wherever it stands: nothing is planned, built, pushed or
+revised. Turning the flag off is therefore a rollback; turning it on again resumes each intent where it was held (an
+approve label applied meanwhile is then honoured). One-repository Projects behave the same either way.
 
 ## Permissions
 

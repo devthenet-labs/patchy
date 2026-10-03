@@ -63,11 +63,15 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   `evolve exec-unit` and emit `EVOLVE-EVENT:` JSONL), and the TTL loop. Patchy never learns eval semantics —
   bounded summaries land on unit status, the opaque results entry in a per-unit ConfigMap.
 - `cmd/intent-controller` — OPTIONAL (default-off in the chart, an opt-in kustomize component): intent-driven
-  development (docs/design/intent-driven-development.md, slice 1a). Polls GitHub instead of taking webhooks: each
+  development (docs/design/intent-driven-development.md). Polls GitHub instead of taking webhooks: each
   `Project`'s intent repository (ETag listing) for issues carrying its trigger label, and each `Intent`'s issue for the
   facts its phase waits on. It plans in a read-only agent Job on the default image, posts the plan verbatim for an
   approver, builds only the approved plan in the repository's accepted image (`runnerguard.PinFor`), pushes it
   two-phase to `patchy-intent/<intent>` (create-only, never forced) and opens the PR. It closes the issue on merge.
+  With `--intent-multi-repo` (slice 3; off, a multi-repository Project is not Ready and its intents are held Blocked)
+  a Project lists up to eight repositories: one plan Job reads them all (the others as digest-pinned `Trees`, recorded
+  on the run), each repository the plan names gets its own build run (`<intent>-bld-r<rev>-<key>-a<n>`, its own image)
+  and PR, rounds are serialised per Intent and keyed by repository, and the Intent is Merged only when every PR is.
   The second forge-writing code path: in the release namespace, `secrets get` is restricted by `resourceNames` to the
   Forge Secrets. Its agent-jobs Role can get, create, update and delete any Secret in the agents namespace, including
   model keys, image-pull credentials and other Jobs' handoffs. It uses a GitHub token per operation
@@ -78,7 +82,10 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   isolated slot namespace. It uses only the Kubernetes API, with namespaced Roles and no GitHub, AWS, ECR or Secret
   access. It owns Preview status, fixed Deployment/Service/Ingress objects, bounded retries, slot cleanup and a
   periodic orphan sweep. Intent-controller projects the operator's Project preview config and recorded PR head into
-  Preview spec only when explicitly enabled. See `docs/configuration/preview-controller.md`.
+  Preview spec only when explicitly enabled: one component per previewed repository (at most four, path-routed on one
+  host), a repository with no PR running its default-branch head from `status.previewBases`, all derived by the one
+  pure `v1alpha1.DesiredPreviewComponents` the writer and the controller's re-check share. See
+  `docs/configuration/preview-controller.md`.
 - `cmd/status-server` — the human-facing status page (NOT a controller: no reconcilers, no leases): the embedded
   SPA + JSON projection of Findings/FindingRollups, SSE refetch signal, OIDC sign-in, the access-review-gated
   approve/retry/expedite/suspend/resume actions, and the user-menu demo tooling (replay → Integration
@@ -127,8 +134,12 @@ e2e/                SEPARATE Go module: envtest carries the CRDs, the real binar
                     fakegithub (in-memory API) stands in at the network edge, recorded webhook
                     fixtures + the replay tool drive it (`make e2e`). envtest has no kubelet, so
                     Finding Jobs never run there; the intent tests register a fake kubelet
-                    (kubelet_test.go) that runs hack/fake-agent for run-kind=intent Jobs, beside an
-                    in-memory OCI registry (registry_test.go) serving the repository runner image.
+                    (kubelet_test.go) that runs hack/fake-agent for run-kind=intent Jobs (staging
+                    the working tree, a plan Job's trees and the handoff as the prepare init
+                    does), beside an in-memory OCI registry (registry_test.go) serving the
+                    repository runner image. fakegithub's refs and PR listings are per
+                    repository, so intent_multirepo_test.go runs multi-repository intents end to
+                    end; cluster.stoppableController restarts a binary with other flags.
 docs/ overrides/    Zensical docs site (zensical.toml at the root; patchy-branded theme in
                     docs/stylesheets/extra.css + overrides/). `mise run serve` to preview,
                     `mise run docs-build` to build; the reusable release workflow publishes it

@@ -111,8 +111,12 @@ consistent across the estate.
   concurrency, aging against starvation), agent Job execution, changeset push + pull request (the finding flow's
   only forge-writing code path), and the rollup/TTL loop.
 - **intent-controller** (optional, off by default) — intent-driven development: polls each `Project`'s intent
-  repository, plans each labelled issue in a read-only agent Job, and builds the approved plan into a pull request (see
-  "Intent-driven development" below). The second code path that writes to a forge.
+  repository, plans each labelled issue in a read-only agent Job, and builds the approved plan into a pull request, one
+  per application repository it changes (see "Intent-driven development" below). The second code path that writes to a
+  forge.
+- **preview-controller** (optional, off by default) — renders each eligible intent's `Preview` (one component per
+  previewed repository, one host) into a fixed, isolated slot namespace. Kubernetes API only: no forge, registry, cloud
+  or Secret access.
 - **agent-runner** — the in-pod coding-agent runtime: one stage per Job (`investigate` or `remediate`, and the
   intent stages `plan` and `build`), reports as `PATCHY-EVENT:` JSONL on stdout. Never talks to GitHub or the
   Kubernetes API; a claude pod holds no credential at all (model traffic authenticates at the egress broker), a
@@ -173,8 +177,9 @@ are authorized by RBAC alone — native create/get/delete on the `evaluations` r
 
 The same machinery optionally carries **general development work driven by a human-written intent**, in a separate,
 default-off binary, **intent-controller**, so the binaries the security flow depends on are untouched. The full design
-is `docs/design/intent-driven-development.md`. The first slice is: plan, approve, build, pull request, merge; replan and
-cancel; one application repository per project.
+is `docs/design/intent-driven-development.md`. It covers: plan, approve, build, pull request, merge; replan and cancel;
+revise and CI-fix rounds on the pull request; previews; and, behind `--intent-multi-repo`, several application
+repositories per project.
 
 - **The work.** A human opens an issue in an intent repository and applies a project's trigger label. The controller
   snapshots the request and plans it in a read-only agent Job on the default runner image. It posts the plan's exact
@@ -184,6 +189,20 @@ cancel; one application repository per project.
   `.patchy/` and `.devcontainer/` are always refused). It creates the commit, records it, creates the branch
   `patchy-intent/<intent>` once without forcing, and opens the pull request. When the pull request merges, it closes
   the issue itself.
+- **Several repositories** (`--intent-multi-repo`, off by default). A Project may list up to eight application
+  repositories. One plan Job reads every one of them, read-only on the default image: the first is its working tree,
+  the others digest-pinned trees beside it, each tree's commit and digest recorded on the run. The approver approves
+  that one plan. Each repository it names gets its own build, in that repository's own image, handed the same approved
+  plan, the builds running side by side up to the run pool's slots. The pull requests open only once every build has
+  pushed, one per repository on `patchy-intent/<intent>`, each linking the others in a comment. Revise and CI-fix
+  rounds run one at a time per intent, each on one pull request's repository. The intent is `Merged` only when every
+  pull request has merged; if one closes unmerged, it ends `Closed` once all have settled, with a notice of what merged.
+  With the flag off, such a Project is not Ready and its intents are held `Blocked`, so turning it off is a rollback.
+- **Previews** (optional). preview-controller renders one host per intent in review, with a path-routed component per
+  previewed repository: an open pull request's head, or, for a repository the intent did not change, its default
+  branch's head as recorded once when review began. Components cannot reach each other inside the slot, so a page
+  calls a sibling's API from the browser, on the same host. A `Preview`'s spec is intent-controller's to write, from
+  operator configuration and recorded heads only, and its status preview-controller's.
 - **State.** Three kinds, with local phase enums outside the Finding transition table:
   - `Project`: operator configuration, written through patchy-config and admin-only in RBAC.
   - `Intent`: one per issue.

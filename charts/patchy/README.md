@@ -165,13 +165,15 @@ remains an open validation gap. Never call those logs checked merely because Pod
 
 `previewController.enabled` requires `preview.enabled`, `intentController.enabled`, and an exact Kubernetes Service
 `/32` in `previewController.config.apiServerCIDR`. With it off, neither a Preview spec projector nor the
-preview-controller runs. With it on, only Projects that have an operator-authored `spec.preview` block get previews; the
-existing `target` Project has none and must never be previewed. The fixed renderer takes the application runtime
-repository, HTTP port and readiness path only from that Project block, and the tag only from the recorded PR head. It
-never reads issue/agent text as deployment configuration, and holds no GitHub, registry, cloud or Secret credential. Its
-release-namespace Role is limited to Preview and Intent reads/writes; one Role per fixed slot grants only Deployment,
-Service and Ingress CRUD and Pod/ReplicaSet reads. No ClusterRole is installed. Its NetworkPolicy permits only DNS and
-the Kubernetes API Service `/32` out; there is no internet or broker egress rule.
+preview-controller runs. With it on, only Projects that have an operator-authored `spec.preview` block, or a `preview`
+block on any of their `repositories` (a Project with several, which needs `intentController.config.multiRepo: true`),
+get previews; the existing `target` Project has none and must never be previewed. The fixed renderer takes each
+component's runtime repository, HTTP port, readiness path and route path only from those Project blocks, and the tag
+only from the recorded PR head, or for a repository the intent did not change, its default-branch head recorded once
+when review began. It never reads issue/agent text as deployment configuration, and holds no GitHub, registry, cloud or
+Secret credential. Its release-namespace Role is limited to Preview and Intent reads/writes; one Role per fixed slot
+grants only Deployment, Service and Ingress CRUD and Pod/ReplicaSet reads. No ClusterRole is installed. Its
+NetworkPolicy permits only DNS and the Kubernetes API Service `/32` out; there is no internet or broker egress rule.
 
 The controller serializes slot leases, queues by creation time, waits for a Ready Pod with a recorded image ID before
 creating the `alb-preview` Ingress, and withdraws the old Ingress before a PR-head update. Each new head gets at most

@@ -850,9 +850,11 @@ Slice 1 enforces one repository per Project.
 
 ## Slice 3: multi-repo intents
 
-**Status:** Proposed, 2026-10-03. Line references are to `main` at 5052706. This section replaces "Multi-repo: types
-now, behaviour in slice 3" and narrows the roadmap's slice 3: the sibling-wide `/patchy revise` and the webhook nudge
-are deferred. Estimate: about 7-9 dev days plus 1 infra day.
+**Status:** Proposed 2026-10-03; implemented behind `--intent-multi-repo` (off by default), wave A in 0.12.14 and wave B
+in the release after it, end to end in `e2e/intent_multirepo_test.go`. The live demo (marigold) is still to run. Line
+references are to `main` at 5052706. This section replaces "Multi-repo: types now, behaviour in slice 3" and narrows the
+roadmap's slice 3: the sibling-wide `/patchy revise` and the webhook nudge are deferred. Estimate: about 7-9 dev days
+plus 1 infra day.
 
 One intent can now change several app repositories of a Project and preview them together:
 

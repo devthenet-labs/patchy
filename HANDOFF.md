@@ -95,6 +95,41 @@ overnight under the owner's authorisation (new repositories, merges, additive te
   README marks the project as not active yet.
 - **Not done; waits for the slice-3 release:** the `marigold` Project and the Helm values (T-02).
 
+**0.12.14 (slice 3 wave A) released and deployed; fresh-Finding gate and the first target-health preview PASSED
+(2026-10-03, 09:47–10:45 UTC).** Release PR #94 (diff: version stamps and CHANGELOG only; its CI run approved, green)
+squash-merged `b86897d`; the Release workflow published the images and both charts at 0.12.14. Live values equalled the
+terraform-devthenet `k8s/` files (comments aside). patchy **rev 48**, patchy-config **rev 29** (rollback points **47 /
+28**); both upgrades succeeded first time (44 s and 4 s, no network drop). The 0.12.14 render differs from 0.12.13 only
+by the slot quota (pods 8, services 5), `PATCHY_PREVIEW_TARGET_HEALTH`, the tightened slot admission policies (the kept
+placeholder still conforms) and the config checksums; patchy-config renders identically. Nine Deployments Ready on
+v0.12.14 with zero restarts, logs with only the known broker-race and status-auth warnings, both Projects Ready, both
+ALBs unchanged, status page 200.
+
+- **Gate:** weak-key alert #40 (`slicegatekey.go`) → `finding-514becf18f-15` → issue #73 → `/patchy expedite` (10:25:04)
+  → Remediating 10:26:49 → InReview 10:28:13 → PR #74 (pushedCommit = PR head `fca4e720`), checks green including
+  CodeQL, merged `9df42243` → Remediated 4 s later, issue closed completed with the remediated label, one comment per
+  marker, main CodeQL marked #40 fixed, no duplicate Finding. **The remediation committed its test**
+  (`slicegatekey_test.go`, a ≥2048-bit assertion). Cost $0.58 (investigation $0.33, remediation $0.24).
+- **Target-health Ready, live: Auto Mode honours the label.** terraform-devthenet #31 set
+  `previewController.config.targetHealth: true` → patchy **rev 49** (rollback point 48; patchy-config stays 29). Both
+  slot namespaces carry `eks.amazonaws.com/pod-readiness-gate-inject: enabled`. Intent `devthenet-labs/intents#7` ("Show
+  the build time in the card footer") → `preview-demo-7`: plan 85 s, approved, build 145 s opened
+  `devthenet-labs/patchy-preview-demo#10` at `4ddd96a1`. The planner's `#10` CHANGELOG guess was right, so `changelog`
+  passed and no check-fix round ran. The Preview kept the single-component names (Deployment, Service and Ingress
+  `preview-preview-demo-7` in slot 0). Its Pod was created with the readiness gate
+  `target-health.eks.amazonaws.com/k8s-patchypr-previewp-b35644c0c5` (the TargetGroupBinding's name): ContainersReady
+  10:40:18, gate True 10:40:20, Pod Ready 10:40:21, Preview Ready 10:40:23. Requesting the URL every second for 60
+  requests from Ready got **zero non-200 responses** (slice 2 gave about 15 s of empty response or 404), and the ALB
+  reported the target healthy. Squash-merged `71964ba9` → Merged 32 s later, issue closed completed, Preview deleted 13
+  s after that, preview node gone and pool resources zero within a minute, old host 404. Intent cost $0.52 (518693
+  µUSD).
+- **Anomalies:** on the cold preview node the first Pod sandbox failed once with aws-cni
+  `failed to setup network policy` and succeeded on retry about 20 s later. It failed closed, but it is the
+  network-policy agent's cold-start race (see the open validation gap). The Pod sat in ImagePullBackOff for about 2 min
+  until the trusted publisher pushed `sha-4ddd96a1`; this is expected, since the Preview follows the PR head before its
+  image exists. The plan named `main.go` for the page template (it is in `server.go`; PR #9's title made the same slip);
+  the build edited the right file. T-02 (the `marigold` Project and its Helm values) is still not done.
+
 **Next (owner's choice):** the "Deployable by others" roadmap (design doc); follow-ups below.
 
 ## Previous checkpoint — 2026-10-02 (Codex stage-1 handover; historical)

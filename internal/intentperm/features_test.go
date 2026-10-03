@@ -4,6 +4,7 @@
 package intentperm
 
 import (
+	"fmt"
 	"math/rand"
 	"reflect"
 	"slices"
@@ -146,10 +147,9 @@ func TestFeatureRows(t *testing.T) {
 // TestForAppProperties states ForApp's contract as properties over random
 // valid selections, seeded so the gate is deterministic:
 //   - metadata read is always held, events are sorted and distinct;
-//   - it is minimal: every grant and event comes from metadata or a
-//     selected feature's row, at the highest access the rows ask for;
-//   - it is complete: every selected row's grants are held at least at
-//     their access, and its events are delivered;
+//   - it is exact: every grant and event comes from metadata or a selected
+//     feature's row, at the highest access the rows ask for, and every
+//     selected row's grants and events are there;
 //   - neither the order of the selection nor repeating a feature changes
 //     it, and adding a feature never takes a grant, an access level or an
 //     event away.
@@ -174,73 +174,19 @@ func TestForAppProperties(t *testing.T) {
 			args[1] = reflect.ValueOf(all[r.Intn(len(all))])
 		},
 	}
-	rank := map[string]int{Read: 1, Write: 2}
 	prop := func(sel []Feature, extra Feature) bool {
 		got, err := ForApp(sel...)
 		if err != nil {
 			t.Logf("ForApp(%v): %v", sel, err)
 			return false
 		}
-		held := map[string]string{}
-		for _, g := range got.Grants {
-			held[g.Permission] = g.Access
-		}
-		if held[Metadata] != Read || !slices.IsSorted(got.Events) || len(slices.Compact(slices.Clone(got.Events))) !=
-			len(got.Events) {
-			t.Logf("ForApp(%v) = %+v: no metadata read, or events unsorted or repeated", sel, got)
-			return false
-		}
-		want := map[string]string{Metadata: Read}
-		wantEvents := map[string]bool{}
-		for _, f := range sel {
-			row, _ := f.Needs()
-			for _, g := range row.Grants {
-				if rank[g.Access] > rank[want[g.Permission]] {
-					want[g.Permission] = g.Access
-				}
-			}
-			for _, e := range row.Events {
-				wantEvents[e] = true
-			}
-		}
-		if !reflect.DeepEqual(held, want) || len(got.Events) != len(wantEvents) {
-			t.Logf("ForApp(%v) = %+v, want grants %v and events %v", sel, got, want, wantEvents)
-			return false
-		}
-		for _, e := range got.Events {
-			if !wantEvents[e] {
-				t.Logf("ForApp(%v) delivers %s, which no selected feature consumes", sel, e)
-				return false
-			}
-		}
-		reordered := slices.Clone(sel)
-		slices.Reverse(reordered)
-		if again, _ := ForApp(append(reordered, sel...)...); !reflect.DeepEqual(again, got) {
-			t.Logf("ForApp(%v) = %+v, but reordered and repeated %+v", sel, got, again)
-			return false
-		}
-		grown := append(slices.Clone(sel), extra)
-		if extra == FeatureChecks {
-			grown = append(grown, FeatureIntents)
-		}
-		more, err := ForApp(grown...)
-		if err != nil {
-			t.Logf("ForApp(%v): %v", grown, err)
-			return false
-		}
-		moreHeld := map[string]string{}
-		for _, g := range more.Grants {
-			moreHeld[g.Permission] = g.Access
-		}
-		for p, a := range held {
-			if rank[moreHeld[p]] < rank[a] {
-				t.Logf("adding %s to %v lowered %s from %s to %q", extra, sel, p, a, moreHeld[p])
-				return false
-			}
-		}
-		for _, e := range got.Events {
-			if !slices.Contains(more.Events, e) {
-				t.Logf("adding %s to %v dropped event %s", extra, sel, e)
+		for _, check := range []func() string{
+			func() string { return exactNeeds(sel, got) },
+			func() string { return orderFree(sel, got) },
+			func() string { return monotone(sel, extra, got) },
+		} {
+			if why := check(); why != "" {
+				t.Logf("ForApp(%v) = %+v: %s", sel, got, why)
 				return false
 			}
 		}
@@ -249,4 +195,73 @@ func TestForAppProperties(t *testing.T) {
 	if err := quick.Check(prop, cfg); err != nil {
 		t.Error(err)
 	}
+}
+
+// accessRank orders access levels; nothing ranks below read.
+var accessRank = map[string]int{Read: 1, Write: 2}
+
+// held is grants as permission to access.
+func held(grants []Grant) map[string]string {
+	out := map[string]string{}
+	for _, g := range grants {
+		out[g.Permission] = g.Access
+	}
+	return out
+}
+
+// exactNeeds reports how got is not exactly metadata read plus sel's rows
+// (highest access wins) and their events, sorted and distinct; "" when it is.
+func exactNeeds(sel []Feature, got Needs) string {
+	want := map[string]string{Metadata: Read}
+	var events []string
+	for _, f := range sel {
+		row, _ := f.Needs()
+		for _, g := range row.Grants {
+			if accessRank[g.Access] > accessRank[want[g.Permission]] {
+				want[g.Permission] = g.Access
+			}
+		}
+		events = append(events, row.Events...)
+	}
+	slices.Sort(events)
+	events = slices.Compact(events)
+	switch {
+	case !reflect.DeepEqual(held(got.Grants), want):
+		return fmt.Sprintf("grants are not exactly %v", want)
+	case !slices.Equal(got.Events, events):
+		return fmt.Sprintf("events are not exactly %v", events)
+	}
+	return ""
+}
+
+// orderFree reports a selection whose reverse, repeated, answers otherwise.
+func orderFree(sel []Feature, got Needs) string {
+	reordered := slices.Clone(sel)
+	slices.Reverse(reordered)
+	if again, _ := ForApp(append(reordered, sel...)...); !reflect.DeepEqual(again, got) {
+		return fmt.Sprintf("reordered and repeated, it is %+v", again)
+	}
+	return ""
+}
+
+// monotone reports a grant, access level or event that adding extra to sel
+// (with intents, which checks extends) takes away.
+func monotone(sel []Feature, extra Feature, got Needs) string {
+	grown := append(slices.Clone(sel), extra, FeatureIntents)
+	more, err := ForApp(grown...)
+	if err != nil {
+		return fmt.Sprintf("ForApp(%v): %v", grown, err)
+	}
+	moreHeld := held(more.Grants)
+	for p, a := range held(got.Grants) {
+		if accessRank[moreHeld[p]] < accessRank[a] {
+			return fmt.Sprintf("adding %s lowered %s from %s to %q", extra, p, a, moreHeld[p])
+		}
+	}
+	for _, e := range got.Events {
+		if !slices.Contains(more.Events, e) {
+			return fmt.Sprintf("adding %s dropped event %s", extra, e)
+		}
+	}
+	return ""
 }

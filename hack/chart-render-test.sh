@@ -233,6 +233,17 @@ expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-
 expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.certificateARNs | length' '1'
 expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.sslPolicy' 'ELBSecurityPolicy-TLS13-1-2-2021-06'
 expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.listeners[0].protocol + "/" + (.spec.listeners[0].port | tostring)' 'HTTPS/443'
+# albSubnetIDs pins the preview ALB to the subnets whose CIDRs the slots
+# admit; unset, placement stays with Auto Mode's discovery, as before.
+expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec | has("subnets")' 'false'
+render preview-subnets -f "$fixtures/preview-foundation.yaml" \
+  --set 'preview.albSubnetIDs={subnet-0123456789abcdef0,subnet-0123456789abcdef1}'
+expect preview-subnets 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.subnets.ids | join(",")' 'subnet-0123456789abcdef0,subnet-0123456789abcdef1'
+expect preview-subnets 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.subnets | keys | join(",")' 'ids'
+expect_fail 'preview subnet IDs not one per CIDR' 'must name one subnet per preview.albSubnetCIDRs entry' \
+  -f "$fixtures/preview-foundation.yaml" --set 'preview.albSubnetIDs={subnet-0123456789abcdef0}'
+expect_fail 'preview subnet ID that is not one' 'does not match pattern' \
+  -f "$fixtures/preview-foundation.yaml" --set 'preview.albSubnetIDs={sg-0123456789abcdef0,subnet-0123456789abcdef1}'
 expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name | test("^patchy-preview-"))) | .spec.failurePolicy' 'Fail
 Fail
 Fail

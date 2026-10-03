@@ -16,3 +16,8 @@ coverage/
 
 # node modules
 node_modules/
+
+# terraform working state (deploy/terraform is a module: no lock file is kept,
+# callers pin providers in their own roots)
+.terraform/
+.terraform.lock.hcl

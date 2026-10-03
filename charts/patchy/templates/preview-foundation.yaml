@@ -11,6 +11,7 @@
 {{- if not $p.imageRegistry }}{{ fail "preview.imageRegistry is required when preview.enabled=true" }}{{ end }}
 {{- if not $p.dnsCIDR }}{{ fail "preview.dnsCIDR is required when preview.enabled=true" }}{{ end }}
 {{- if not $p.albSubnetCIDRs }}{{ fail "preview.albSubnetCIDRs is required when preview.enabled=true" }}{{ end }}
+{{- if and $p.albSubnetIDs (ne (len $p.albSubnetIDs) (len $p.albSubnetCIDRs)) }}{{ fail "preview.albSubnetIDs must name one subnet per preview.albSubnetCIDRs entry: the ALB's subnets are the only sources the slots admit" }}{{ end }}
 {{- if not $p.inboundCIDRs }}{{ fail "preview.inboundCIDRs is required when preview.enabled=true" }}{{ end }}
 {{- if not $p.certificateARN }}{{ fail "preview.certificateARN is required when preview.enabled=true" }}{{ end }}
 {{- if not $p.hostSuffix }}{{ fail "preview.hostSuffix is required when preview.enabled=true" }}{{ end }}
@@ -123,6 +124,16 @@ metadata:
         helm.sh/resource-policy: keep
 spec:
     scheme: internet-facing
+    {{- with $p.albSubnetIDs }}
+    # Exactly the subnets whose CIDRs preview-isolation admits. Unpinned,
+    # Auto Mode places the ALB in a kubernetes.io/role/elb subnet of every
+    # zone it finds one in, and albSubnetCIDRs must then cover all of them.
+    subnets:
+        ids:
+            {{- range $id := . }}
+            - {{ $id }}
+            {{- end }}
+    {{- end }}
     loadBalancerName: {{ $p.albName }}
     group:
         name: {{ $p.albName }}

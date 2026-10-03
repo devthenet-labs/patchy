@@ -1,0 +1,53 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestHandler(t *testing.T) {
+	handler := newHandler("abc123")
+	cases := []struct {
+		name, method, path string
+		status             int
+		contentType, body  string
+	}{
+		{"page", http.MethodGet, "/", http.StatusOK, "text/html; charset=utf-8", "<h1>Hello.Web</h1>"},
+		{"readiness", http.MethodGet, "/healthz", http.StatusOK, "application/json", `"status":"ok"`},
+		{"unknown path", http.MethodGet, "/missing", http.StatusNotFound, "", ""},
+		{"wrong method", http.MethodPost, "/", http.StatusMethodNotAllowed, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, nil))
+			if rec.Code != tc.status {
+				t.Fatalf("%s %s = %d, want %d", tc.method, tc.path, rec.Code, tc.status)
+			}
+			if got := rec.Header().Get("Content-Type"); tc.contentType != "" && got != tc.contentType {
+				t.Errorf("Content-Type = %q, want %q", got, tc.contentType)
+			}
+			if !strings.Contains(rec.Body.String(), tc.body) {
+				t.Errorf("body lacks %q:\n%s", tc.body, rec.Body.String())
+			}
+			if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+			}
+		})
+	}
+}
+
+func TestReadinessReportsRevision(t *testing.T) {
+	rec := httptest.NewRecorder()
+	newHandler("abc123").ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("readiness body is not JSON: %v", err)
+	}
+	if got["revision"] != "abc123" {
+		t.Errorf("revision = %q, want abc123", got["revision"])
+	}
+}

@@ -1,0 +1,90 @@
+# The trusted runtime publisher, called only by publish-images.yml. It is
+# the one workflow that assumes RUNTIME_ROLE_ARN: the role's AWS trust names
+# this file at refs/heads/main (job_workflow_ref) as well as this
+# repository's numeric IDs. It never checks out, builds or runs PR source:
+# it re-reads the build from GitHub's API, validates the image as data and
+# only then asks for the role, to copy opaque blobs.
+name: trusted runtime publisher
+on:
+  workflow_call:
+    inputs:
+      run-id:
+        required: true
+        type: number
+permissions: {}
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      id-token: write
+    concurrency:
+      group: publish-runtime-${{ inputs.run-id }}
+      cancel-in-progress: false
+    # Repository variables only; no secret is used. The role's trust pins
+    # this repository, main and this workflow file, so a wrong
+    # variable can only fail a publish, never send one elsewhere.
+    env:
+      IMAGE_KIND: runtime
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+      IMAGE_REPOSITORY: ${{ vars.RUNTIME_IMAGE_REPOSITORY }}
+      ROLE_ARN: ${{ vars.RUNTIME_ROLE_ARN }}
+    steps:
+      - name: Checkout trusted publisher only, never PR source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: .github/actions/publish
+      - name: Check the publisher's repository variables
+        id: config
+        run: |
+          account_id=$(bash .github/actions/publish/check-config.sh)
+          printf 'account_id=%s\n' "$account_id" >> "$GITHUB_OUTPUT"
+      - name: Re-read authoritative run, workflow, PR and artifact metadata
+        id: guard
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          RUN_ID: ${{ inputs.run-id }}
+          PUBLISH_REPOSITORY_ID: ${{ vars.PUBLISH_REPOSITORY_ID }}
+          PUBLISH_OWNER_ID: ${{ vars.PUBLISH_OWNER_ID }}
+        with:
+          script: |
+            const {guard} = require('./.github/actions/publish/guard.cjs');
+            const result = await guard({github, context, runID: process.env.RUN_ID, kind: process.env.IMAGE_KIND,
+              repositoryID: process.env.PUBLISH_REPOSITORY_ID, ownerID: process.env.PUBLISH_OWNER_ID});
+            for (const [key, value] of Object.entries(result)) core.setOutput(key, value);
+      - name: Download only that run's immutable artifact ID, outside the checkout
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ steps.guard.outputs.artifact_id }}
+          run-id: ${{ inputs.run-id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/incoming
+          merge-multiple: true
+      - name: Validate OCI data; do not load, unpack layers, build or run it
+        id: image
+        run: |
+          test "$(find "$RUNNER_TEMP/incoming" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
+          digest=$(python3 .github/actions/publish/validate_oci.py "$RUNNER_TEMP/incoming/$IMAGE_KIND.oci.tar" "$RUNNER_TEMP/validated" "$IMAGE_KIND")
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+      - name: Install the distribution's image-copy utility
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
+      - name: Obtain the runtime role only after validation
+        uses: aws-actions/configure-aws-credentials@cabfdba3510de1431bac9dba27511d97497fc100 # v5
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-duration-seconds: 900
+          allowed-account-ids: ${{ steps.config.outputs.account_id }}
+          role-to-assume: ${{ vars.RUNTIME_ROLE_ARN }}
+      - name: Copy opaque blobs to the runtime ECR repository
+        env:
+          IMAGE_SHA: ${{ steps.guard.outputs.sha }}
+          IMAGE_SOURCE: ${{ steps.guard.outputs.source }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: bash .github/actions/publish/copy-image.sh

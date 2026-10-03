@@ -1,0 +1,45 @@
+# The uncredentialed build of the image patchy's coding agent runs in, from
+# main only. It holds no OIDC permission, no repository variable and no
+# secret: publish-images.yml picks its artifact up and hands it to the
+# trusted agent publisher, which pushes it as the tag .patchy/agent.yaml
+# declares.
+name: agent image
+on:
+  push:
+    branches: ['main']
+    # The recipe, its inputs and the tag it publishes as: a tag bump in
+    # .patchy/agent.yaml alone rebuilds, and a rebuild that changes nothing
+    # reproduces the published digest.
+    paths: ['.patchy/**', 'go.mod', 'go.sum', '.dockerignore', '.github/workflows/agent-image.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      # A fixed SOURCE_DATE_EPOCH, not the commit's, and every layer's
+      # timestamps rewritten to it: the toolchain image depends only on its
+      # pinned bases and the dependency set, so an unchanged toolchain
+      # rebuilt at a later commit has the same digest, and the publisher
+      # finds its tag already published instead of refusing a changed image.
+      - name: Uncredentialed, reproducible toolchain build
+        env:
+          SOURCE_DATE_EPOCH: '0'
+        run: |
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+            -f .patchy/Dockerfile --output "type=oci,dest=$RUNNER_TEMP/agent.oci.tar,rewrite-timestamp=true" .
+          python3 .github/actions/publish/validate_oci.py "$RUNNER_TEMP/agent.oci.tar" "$RUNNER_TEMP/agent-validated" agent
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agent.oci.tar
+          retention-days: 3
+          if-no-files-found: error

@@ -1,0 +1,89 @@
+# Image builds and trusted publishers
+
+This repository publishes two images to ECR for [patchy](https://github.com/devthenet-labs/patchy):
+
+- **Runtime image**, what a patchy preview of a pull request runs. `ci.yml` (`test`) builds it
+  for pull request heads and `main` commits; `publish-runtime.yml` pushes it to `RUNTIME_IMAGE_REPOSITORY` as
+  `sha-<commit>`, and a `main` commit also as `main-<commit>`, the tag the registry's lifecycle keeps.
+- **Agent toolchain image**, what patchy's coding agent runs in for this repository, with the toolchain and the
+  dependencies baked in, since the agent has no network. `agent-image.yml` (`agent image`) builds it from `main`
+  only; `publish-agent.yml` pushes it to `AGENT_IMAGE_REPOSITORY` as the tag `.patchy/agent.yaml` declares.
+
+## The boundary
+
+Build jobs have only `contents: read`: no OIDC permission, no repository variables, no cloud or model credentials and no
+persisted checkout credential. Fork pull requests may test and build but never publish. The uploaded artifact is
+untrusted data, not authority.
+
+`publish images` (`publish-images.yml`) runs on `workflow_run`, from the default branch's trusted copy of the workflows,
+and holds no role itself: it calls the publisher for the image kind. A publisher never checks out, builds or runs pull
+request source and never unpacks image layers. Before it asks for AWS credentials, it:
+
+1. checks its repository variables (`check-config.sh`): an unset or malformed one fails closed;
+2. re-reads the repository, run, workflow, pull request and artifact metadata from GitHub's API (`guard.cjs`). The
+   repository's identity is its immutable numeric ID and owner ID; a pull request must still be open, in this exact
+   repository, targeting `main`, at the successful run's exact head. The artifact is selected by ID from that
+   specific run. For the agent image it also reads `.patchy/agent.yaml` at the built commit, which must name
+   `ECR_REGISTRY/AGENT_IMAGE_REPOSITORY` with a `toolchain-v<N>` tag;
+3. validates a bounded, single-image linux/amd64 OCI archive (`validate_oci.py`): blob hashes and descriptor sizes, no
+   links, traversal, duplicates, foreign URLs or unreferenced blobs.
+
+Only then does it assume its own role and copy the opaque blobs with the distribution's
+`skopeo copy --preserve-digests` (`copy-image.sh`). Tags are immutable: a re-run with the same digest is a no-op, and a
+different digest at an existing tag is a hard failure, never an overwrite. The builds are reproducible
+(`SOURCE_DATE_EPOCH`, with every layer's timestamps rewritten to it): a re-run of the same commit rebuilds the same
+runtime digest, and the agent image, built at a fixed epoch, keeps its digest until its recipe, its pinned bases or the
+dependency set change.
+
+The roles are the boundary. AWS binds each one to this repository's OIDC subject, its numeric repository and owner IDs,
+the `main` ref, audience `sts.amazonaws.com` and its **own** publisher workflow, the only workflows in this
+repository that assume a role:
+
+| Trusted workflow (`job_workflow_ref`)                                  | Assumes            | Publishes                                                                            |
+| ---------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------ |
+| `acme/Hello.Web/.github/workflows/publish-runtime.yml@refs/heads/main` | `RUNTIME_ROLE_ARN` | the runtime image as `sha-<commit>`, and `main-<commit>` for a default-branch commit |
+| `acme/Hello.Web/.github/workflows/publish-agent.yml@refs/heads/main`   | `AGENT_ROLE_ARN`   | the agent image as the `toolchain-v<N>` tag `.patchy/agent.yaml` declares            |
+
+The `job_workflow_ref` is compared exactly, case included. The runtime publisher therefore cannot assume the agent role,
+and neither role can write any other repository. A wrong repository variable can only make a publish fail.
+
+Changes to `.github/` and `.patchy/` need human review; patchy's intent changesets refuse both paths. These protections
+assume the default branch's maintainers stay trusted.
+
+## Repository variables
+
+None of them is secret. Set the configuration first and the two `*_PUBLISH_ENABLED` gates last:
+
+| Variable                   | Value                                          | What it is                                                          |
+| -------------------------- | ---------------------------------------------- | ------------------------------------------------------------------- |
+| `PUBLISH_REPOSITORY_ID`    | `gh api repos/acme/Hello.Web --jq .id`         | this repository's immutable numeric ID, which the guard checks      |
+| `PUBLISH_OWNER_ID`         | `gh api repos/acme/Hello.Web --jq .owner.id`   | its owner's immutable numeric ID                                    |
+| `AWS_REGION`               | `eu-west-2`                                    | the registry's AWS region                                           |
+| `ECR_REGISTRY`             | `123456789012.dkr.ecr.eu-west-2.amazonaws.com` | the ECR registry host                                               |
+| `AGENT_IMAGE_REPOSITORY`   | `patchy/app-envs/hello-web`                    | the agent image's ECR repository, which `.patchy/agent.yaml` names  |
+| `AGENT_ROLE_ARN`           | the agent publisher role ARN                   | assumed only by `publish-agent.yml`                                 |
+| `RUNTIME_IMAGE_REPOSITORY` | `patchy/previews/hello-web`                    | the runtime (preview) image's ECR repository                        |
+| `RUNTIME_ROLE_ARN`         | the runtime publisher role ARN                 | assumed only by `publish-runtime.yml`                               |
+| `AGENT_PUBLISH_ENABLED`    | `true`                                         | publishes the agent image; anything else skips it                   |
+| `PREVIEW_PUBLISH_ENABLED`  | `true`                                         | publishes runtime images; set it last, once previews are configured |
+
+A skipped publisher is not a successful publication. To stop publishing, set a `*_PUBLISH_ENABLED` variable to anything
+but `true`; to revoke publishing, remove the roles' trust policies.
+
+## Changing the agent toolchain
+
+Edit `.patchy/Dockerfile` and bump the tag in `.patchy/agent.yaml` (`toolchain-v1` to `toolchain-v2`, and so on) in the
+same commit. When it merges, `agent image` builds and the publisher pushes the new tag; the repository then declares an
+image that exists. A dependency change (`go.mod`, `go.sum`) needs a bump too: the agent has no network, so a module
+missing from the baked cache fails its build. If the agent image rebuilds to a different digest without a bump, the
+publish fails and says so; nothing is overwritten.
+
+If the registry moves, change `ECR_REGISTRY` and `AGENT_IMAGE_REPOSITORY` and the image in `.patchy/agent.yaml`
+together: patchy reads the image from the file, and the publisher refuses a declaration that names another repository.
+
+## Tests
+
+```sh
+node --test .github/actions/publish/guard.test.cjs
+python3 -m unittest discover -s .github/actions/publish -p 'test_*.py'
+```

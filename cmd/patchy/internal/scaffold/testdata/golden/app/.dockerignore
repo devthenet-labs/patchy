@@ -1,0 +1,8 @@
+# The build context holds only what the two images are built from: the Go
+# sources and module files. The .git directory, CI definitions and local
+# binaries stay out. Add anything else the build reads, such as the files a
+# go:embed directive embeds.
+*
+!go.mod
+!go.sum
+!**/*.go

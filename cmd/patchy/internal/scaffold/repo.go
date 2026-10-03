@@ -94,13 +94,19 @@ func originURL(config []byte) string {
 }
 
 // repoFromURL takes owner/name from a remote URL: https://host/o/n(.git),
-// ssh://git@host/o/n(.git) or the scp-like git@host:o/n(.git).
+// ssh://git@host/o/n(.git) or the scp-like git@host:o/n(.git). A local
+// path or file:// remote names no GitHub repository and is refused.
 func repoFromURL(raw string) (Repo, error) {
-	path := raw
+	var path string
 	if u, err := url.Parse(raw); err == nil && u.Scheme != "" && u.Host != "" {
 		path = u.Path
-	} else if _, rest, ok := strings.Cut(raw, ":"); ok {
+	} else if host, rest, ok := strings.Cut(raw, ":"); ok && len(host) > 1 && !strings.Contains(host, "/") &&
+		!strings.HasPrefix(rest, "//") {
+		// scp-like host:path, as git reads it; a one-letter "host" is a
+		// Windows drive.
 		path = rest
+	} else {
+		return Repo{}, fmt.Errorf("origin %q is not a remote URL", raw)
 	}
 	path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
 	parts := strings.Split(path, "/")

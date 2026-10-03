@@ -11,3 +11,4 @@ internal/mirror/spec/testdata/**
 overrides/**
 internal/jobs/testdata/**
 internal/controller/preview/testdata/**
+cmd/patchy/internal/scaffold/testdata/**

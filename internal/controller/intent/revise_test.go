@@ -728,8 +728,13 @@ func TestSettledChecksAreNotPolledAgainAtSameHead(t *testing.T) {
 		Status: "completed", Conclusion: "success"}}
 	e.clock.Advance(2 * time.Minute)
 	e.mustIntent(name)
-	if got := e.get(name).Status.ChecksObservedHeadSHA; got != head {
-		t.Fatalf("settled head = %q, want %q", got, head)
+	// The observation is the pull request's own; the deprecated Intent-level
+	// pair is only ever read, as a one-PR intent's fallback.
+	if st := e.get(name).Status; st.PullRequests[0].ChecksObservedHeadSHA != head ||
+		st.PullRequests[0].ChecksObservedProjectGeneration != 1 || st.ChecksObservedHeadSHA != "" {
+		t.Fatalf("settled head = %q (generation %d), intent-level %q; want %q on the pull request alone",
+			st.PullRequests[0].ChecksObservedHeadSHA, st.PullRequests[0].ChecksObservedProjectGeneration,
+			st.ChecksObservedHeadSHA, head)
 	}
 	before := e.gh.calls["ListCheckRuns"]
 	e.clock.Advance(2 * time.Minute)

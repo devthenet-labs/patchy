@@ -16,6 +16,9 @@ import (
 // InReview also covers legacy rounds whose refusal was incorrectly discarded.
 // Callers enforce the repository rate floor and still observe merge/cancel
 // before attempting delivery, so a failing projection cannot strand the work.
+// Each round's notice goes on the pull request of the round's own repository
+// (finishPRRound); round numbers never repeat across repositories, so one
+// cursor covers every pull request.
 func (p *pass) syncPRRoundNotices(ctx context.Context) (bool, error) {
 	upto := p.in.Status.Rounds
 	if p.in.Status.ActiveRun != nil && !terminal(p.in.Status.Phase) {
@@ -26,7 +29,7 @@ func (p *pass) syncPRRoundNotices(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	run := p.round(v1alpha1.IntentStageRevise, next, anyRepository).latest()
-	if run == nil || len(p.in.Status.PullRequests) != 1 {
+	if run == nil || p.pullRequest(run.Spec.Repository.URL) == nil {
 		return false, fmt.Errorf("round %d notice lacks its run or recorded PR", next)
 	}
 	if err := p.finishPRRound(ctx, run); err != nil {

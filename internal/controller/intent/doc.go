@@ -47,7 +47,20 @@
 // pull requests open only once every build has pushed, recorded one per pass,
 // the last record moving the Intent to InReview; then a comment cross-linking
 // them is posted on each, best effort, reported by SiblingsLinked and never
-// holding a phase back. Without the flag, an Intent of a Project listing
+// holding a phase back. In review, rounds stay serialised per Intent, each on
+// the pull request of one repository: a review on A revises A, a /patchy
+// revise on B revises B, a failed named check on C's patchy head fixes C. A
+// round already leased is adopted before any other is considered, whatever
+// its repository, and the open pull requests are then served in turn. A
+// round's review cutoff, feedback window, compare base, image, pushed head,
+// observed checks and repeated-failure signature are its own repository's;
+// its counters and limits, and the blocks they raise (naming the
+// repository), stay the Intent's. A round whose pull request is merged or
+// closed under it ends unpushed and is not retried. The Intent is Merged only
+// when every pull request has merged; once every one has settled with any
+// closed unmerged it is Closed, the issue closed as not planned after a
+// notice naming what merged and what did not. patchy never closes one pull
+// request because another closed. Without the flag, an Intent of a Project listing
 // more than one repository is held Blocked (UnsupportedRepositories): no run
 // is launched or created and no push made for it, so turning the flag off is
 // a real rollback. A one-repository Project takes the same path either way.
@@ -84,7 +97,8 @@
 // when attempts are exhausted (two per stage; a plan the approval comment
 // cannot show counts as an invalid attempt), Failed → Planning when an
 // approver applies the trigger label again, any non-terminal phase →
-// Closed on a human close, a cancel, or every pull request closed unmerged,
+// Closed on a human close, a cancel, or every pull request settled with at
+// least one closed unmerged,
 // and Planning or Building → Blocked on the cost ceiling, a missing,
 // rejected or unusable repository image, or an intent branch or pull request
 // that is not patchy's own (BranchConflict), resuming to the phase it was

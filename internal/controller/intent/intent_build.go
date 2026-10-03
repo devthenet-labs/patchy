@@ -185,12 +185,27 @@ func (p *pass) pullRequestsOpened() bool {
 
 // pullRequest is the recorded pull request in repoURL, or nil.
 func (p *pass) pullRequest(repoURL string) *v1alpha1.IntentPullRequest {
-	for i := range p.in.Status.PullRequests {
-		if sameRepo(p.in.Status.PullRequests[i].Repository, repoURL) {
-			return &p.in.Status.PullRequests[i]
+	return recordedPullRequest(p.in, repoURL)
+}
+
+// recordedPullRequest is in's recorded pull request in repoURL, or nil: how
+// every round finds the one pull request it works on, by its run's
+// repository.
+func recordedPullRequest(in *v1alpha1.Intent, repoURL string) *v1alpha1.IntentPullRequest {
+	for i := range in.Status.PullRequests {
+		if sameRepo(in.Status.PullRequests[i].Repository, repoURL) {
+			return &in.Status.PullRequests[i]
 		}
 	}
 	return nil
+}
+
+// roundOpen reports whether the pull request of run's repository is
+// recorded open: a round on one merged or closed has nothing left to push
+// to.
+func (p *pass) roundOpen(run *v1alpha1.IntentRun) bool {
+	pr := p.pullRequest(run.Spec.Repository.URL)
+	return pr != nil && pr.State == prOpen
 }
 
 // openPullRequests opens the pull request of the first approved repository,
@@ -368,9 +383,9 @@ func (p *pass) ownPullRequest(ctx context.Context, repoURL string, pr *ghclient.
 }
 
 // review polls the recorded pull requests, by repository and number, and
-// ends the Intent when every one has merged (Merged) or closed unmerged
-// (Closed). Under the rate floor of a pull request's repository it polls
-// nothing and waits a whole interval.
+// ends the Intent once every one has settled: Merged when every one merged,
+// Closed when any closed unmerged (endReview). Under the rate floor of a pull
+// request's repository it polls nothing and waits a whole interval.
 func (p *pass) review(ctx context.Context) (bool, error) {
 	var last time.Time
 	p.r.memo(func() { last = p.r.prPolled[p.in.Name] })
@@ -384,7 +399,14 @@ func (p *pass) review(ctx context.Context) (bool, error) {
 	return p.reviewNow(ctx)
 }
 
-// reviewNow is review without waiting for the poll interval.
+// reviewNow is review without waiting for the poll interval. In InReview it
+// then starts at most one round, on one open pull request: rounds are
+// serialised per Intent, each on the pull request of one repository. A round
+// already leased (its run created, its Revising write lost) is adopted first,
+// whatever its repository and whatever its pull request's state, so no lease
+// can keep another pull request's round waiting. The open pull requests are
+// then served in turn (roundOrder), each with its review, command and checks
+// round in that order.
 func (p *pass) reviewNow(ctx context.Context) (bool, error) {
 	p.r.memo(func() { p.r.prPolled[p.in.Name] = p.now })
 	prs := make([]v1alpha1.IntentPullRequest, len(p.in.Status.PullRequests))
@@ -411,23 +433,69 @@ func (p *pass) reviewNow(ctx context.Context) (bool, error) {
 	if changed, err := p.syncPRRoundNotices(ctx); changed || err != nil {
 		return changed, err
 	}
-	if p.in.Status.Phase == v1alpha1.IntentInReview && len(prs) == 1 && prs[0].State == prOpen {
-		if started, err := p.reviewRound(ctx, &prs[0]); started || err != nil {
+	if p.in.Status.Phase != v1alpha1.IntentInReview {
+		return false, nil
+	}
+	return p.startRound(ctx, prs)
+}
+
+// startRound starts at most one round: the leased one adopted first, then
+// the first open pull request in roundOrder with a review, command or checks
+// round due.
+func (p *pass) startRound(ctx context.Context, prs []v1alpha1.IntentPullRequest) (bool, error) {
+	if adopted, err := p.adoptPendingRound(ctx); adopted || err != nil {
+		return adopted, err
+	}
+	for _, i := range p.roundOrder(prs) {
+		pr := &prs[i]
+		if pr.State != prOpen {
+			continue
+		}
+		if started, err := p.reviewRound(ctx, pr); started || err != nil {
 			return started, err
 		}
-		if started, err := p.commandRound(ctx, &prs[0]); started || err != nil {
+		if started, err := p.commandRound(ctx, pr); started || err != nil {
 			return started, err
 		}
-		return p.checkRound(ctx, &prs[0])
+		if started, err := p.checkRound(ctx, pr); started || err != nil {
+			return started, err
+		}
 	}
 	return false, nil
 }
 
-// endReview ends the Intent when every pull request in prs (read just now)
-// has merged (Merged) or closed unmerged (Closed, the issue closed). While
-// the pull requests are still being opened (Building, one record per pass)
-// the ones recorded are not every one the intent opens, and their state ends
-// nothing.
+// roundOrder is the order the pull requests in prs are offered a round in:
+// starting after the one the latest round worked on, and wrapping round, so
+// feedback arriving on every pull request at once is served in turn rather
+// than the first one's starving the rest. With no round yet it is the
+// recorded (plan) order.
+func (p *pass) roundOrder(prs []v1alpha1.IntentPullRequest) []int {
+	start := 0
+	if last := p.round(v1alpha1.IntentStageRevise, p.in.Status.Rounds, anyRepository).latest(); last != nil {
+		for i := range prs {
+			if sameRepo(prs[i].Repository, last.Spec.Repository.URL) {
+				start = i + 1
+				break
+			}
+		}
+	}
+	order := make([]int, 0, len(prs))
+	for k := range prs {
+		order = append(order, (start+k)%len(prs))
+	}
+	return order
+}
+
+// endReview ends the Intent once every pull request in prs (read just now)
+// has settled: Merged when every one merged; Closed, the issue closed as not
+// planned, when any closed unmerged. A multi-repository intent's Closed
+// first posts the notice naming what merged (already on its repository's
+// default branch, never reverted) and what did not; a one-repository
+// intent's ends as it always has, with no notice. patchy never closes one
+// pull request because another closed: while any is still open, the Intent
+// stays in review. While the pull requests are still being opened (Building,
+// one record per pass) the ones recorded are not every one the intent opens,
+// and their state ends nothing.
 func (p *pass) endReview(ctx context.Context, prs []v1alpha1.IntentPullRequest, merged, closed int,
 	mergedAt time.Time) (bool, error) {
 	if !p.pullRequestsOpened() {
@@ -436,8 +504,14 @@ func (p *pass) endReview(ctx context.Context, prs []v1alpha1.IntentPullRequest, 
 	switch {
 	case merged == len(prs):
 		return true, p.merged(ctx, prs, mergedAt)
-	case closed == len(prs):
-		// Every pull request closed unmerged: patchy closes the issue.
+	case merged+closed == len(prs):
+		if len(prs) > 1 {
+			if err := p.partialNotice(ctx, prs, mergedAt); err != nil {
+				return false, err
+			}
+		}
+		// Every pull request settled and not all merged: patchy closes the
+		// issue.
 		if err := p.r.GitHub.CloseIssue(ctx, p.repo(), p.number(), ghclient.CloseNotPlanned); err != nil {
 			return false, fmt.Errorf("close the issue: %w", err)
 		}
@@ -446,6 +520,52 @@ func (p *pass) endReview(ctx context.Context, prs []v1alpha1.IntentPullRequest, 
 		})
 	}
 	return false, nil
+}
+
+// partialNotice posts, once, the notice of a multi-repository intent that
+// ended with some of its pull requests closed unmerged: which merged and
+// which did not, with the round counts and the spend. It can only have been
+// posted once every pull request had settled, so after the earliest merge
+// when any merged, and in any case after the builds finished.
+func (p *pass) partialNotice(ctx context.Context, prs []v1alpha1.IntentPullRequest, mergedAt time.Time) error {
+	n := templates.IntentPartialNotice{
+		Namespace: p.in.Namespace, Intent: p.in.Name, Revisions: p.in.Status.Revisions,
+		CheckFixes: p.in.Status.CheckFixes, CostMicroUSD: p.in.Status.Usage.CostMicroUSD,
+	}
+	for _, pr := range prs {
+		t := templates.IntentPullRequest{Repository: repoSlug(pr.Repository), Number: pr.Number, URL: pr.URL,
+			State: pr.State}
+		if pr.State == prMerged {
+			n.Merged = append(n.Merged, t)
+		} else {
+			n.Closed = append(n.Closed, t)
+		}
+	}
+	since := mergedAt
+	if since.IsZero() {
+		since = p.buildsFinished().Add(-clockSkew)
+	}
+	body, err := templates.RenderIntentPartialNotice(n)
+	return p.notice(ctx, templates.PartialKey, since, body, err)
+}
+
+// buildsFinished is when the approved round's first build finished: no pull
+// request, and so nothing that answers one, is older. Without a finished
+// build it is when the Intent entered its phase.
+func (p *pass) buildsFinished() time.Time {
+	var at time.Time
+	if ap := p.in.Status.Approval; ap != nil {
+		for _, run := range p.runs {
+			if run.Spec.Stage == v1alpha1.IntentStageBuild && run.Spec.Round == ap.PlanRevision &&
+				run.Status.FinishedAt != nil && (at.IsZero() || run.Status.FinishedAt.Time.Before(at)) {
+				at = run.Status.FinishedAt.Time
+			}
+		}
+	}
+	if at.IsZero() {
+		return p.enteredAt()
+	}
+	return at
 }
 
 func (p *pass) readReviewPRStates(ctx context.Context, prs []v1alpha1.IntentPullRequest) (

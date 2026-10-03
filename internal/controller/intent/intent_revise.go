@@ -43,7 +43,12 @@ var errNoUsableFeedback = errors.New("no usable feedback was found after filteri
 
 // revising follows its active round while independently observing a human
 // merge or close. A failed round returns to InReview; it never fails the
-// Intent or silently pushes the failed agent's output.
+// Intent or silently pushes the failed agent's output. The round works on its
+// own repository's pull request alone: one merged or closed under it while
+// siblings stay in review (a multi-repository intent) has nothing left to
+// push to, so the round is not carried on there. The run reconciler aborts
+// its run (roundEnded), and the round then ends like a failed one, with its
+// notice, and is never retried.
 func (p *pass) revising(ctx context.Context) (bool, error) {
 	if changed, err := p.review(ctx); changed || err != nil {
 		return changed, err
@@ -82,6 +87,11 @@ func (p *pass) revising(ctx context.Context) (bool, error) {
 	case v1alpha1.RunFailed:
 		return p.failedRevise(ctx, run, rs)
 	default:
+		if !p.roundOpen(run) {
+			// Its pull request ended under it: the run reconciler aborts the
+			// run, and nothing is created or launched for it meanwhile.
+			return false, nil
+		}
 		if blocked, err := p.missingPendingReviseBranch(ctx, run); blocked || err != nil {
 			return blocked, err
 		}
@@ -89,6 +99,8 @@ func (p *pass) revising(ctx context.Context) (bool, error) {
 	}
 }
 
+// missingPendingReviseBranch blocks a round not yet launched whose intent
+// branch is gone from its repository before its Repository could pin it.
 func (p *pass) missingPendingReviseBranch(ctx context.Context, run *v1alpha1.IntentRun) (bool, error) {
 	if run.Status.Phase == v1alpha1.RunRunning {
 		return false, nil
@@ -105,23 +117,27 @@ func (p *pass) missingPendingReviseBranch(ctx context.Context, run *v1alpha1.Int
 	_, err = p.r.GitHub.HeadSHA(ctx, run.Spec.Repository.URL, branchName(p.in.Name))
 	if ghclient.IsNotFound(err) {
 		return true, p.block(ctx, v1alpha1.ConditionBranchConflict, ReasonBranchMissing,
-			"the intent PR branch was deleted before its revision could be pinned; restore it to resume")
+			fmt.Sprintf("the intent PR branch%s was deleted before its revision could be pinned; restore it to "+
+				"resume", p.inRepository(run.Spec.Repository.URL)))
 	}
 	return false, err
 }
 
+// failedRevise retries a failed round's attempt when the failure allows it,
+// on the round's own repository, and otherwise ends the round. A round whose
+// pull request is no longer open is ended, never retried.
 func (p *pass) failedRevise(ctx context.Context, run *v1alpha1.IntentRun, rs roundRuns) (bool, error) {
 	if run.Status.Outcome == OutcomeInputUnavailable || run.Status.Outcome == OutcomeImageRequired ||
-		run.Status.Outcome == OutcomeNoUsableFeedback {
+		run.Status.Outcome == OutcomeNoUsableFeedback || !p.roundOpen(run) {
 		return p.endReviseRound(ctx, run)
 	}
 	if run.Status.Outcome == OutcomeHeadMoved && run.Spec.Trigger != v1alpha1.IntentRunTriggerChecks &&
 		rs.next() <= v1alpha1.MaxIntentRunAttempt {
-		if len(p.in.Status.PullRequests) == 1 {
-			pr := p.in.Status.PullRequests[0]
+		if pr := p.pullRequest(run.Spec.Repository.URL); pr != nil {
 			if _, err := p.r.GitHub.HeadSHA(ctx, pr.Repository, branchName(p.in.Name)); ghclient.IsNotFound(err) {
 				return true, p.block(ctx, v1alpha1.ConditionBranchConflict, ReasonBranchMissing,
-					"the intent PR branch was deleted during revision; restore it to resume")
+					fmt.Sprintf("the intent PR branch%s was deleted during revision; restore it to resume",
+						p.inRepository(pr.Repository)))
 			} else if err != nil {
 				return false, err
 			}
@@ -151,11 +167,17 @@ func (p *pass) endReviseRound(ctx context.Context, run *v1alpha1.IntentRun) (boo
 	})
 }
 
+// finishPRRound posts the round's notice on the pull request of the round's
+// own repository, once (adopting the bot's earlier one by its marker, whose
+// round number never repeats across repositories): what the round pushed and
+// that review is requested again, or that it ended without a push. A round
+// whose repository has no recorded pull request has nowhere to say it.
 func (p *pass) finishPRRound(ctx context.Context, run *v1alpha1.IntentRun) error {
-	if len(p.in.Status.PullRequests) != 1 {
+	rec := p.pullRequest(run.Spec.Repository.URL)
+	if rec == nil {
 		return nil
 	}
-	pr := p.in.Status.PullRequests[0]
+	pr := *rec
 	marker := fmt.Sprintf("<!-- patchy:intent-pr-round:%s:%d -->", p.in.Name, run.Spec.Round)
 	since := run.CreationTimestamp.Add(-clockSkew)
 	comments, err := p.r.GitHub.ListPullRequestComments(ctx, pr.Repository, pr.Number, since)
@@ -326,10 +348,14 @@ func (p *pass) reviseInput(ctx context.Context, run *v1alpha1.IntentRun, plan []
 	if !controlledBy(repo.OwnerReferences, run.UID) || repo.Status.ResolvedSHA == "" {
 		return nil, fmt.Errorf("revise Repository %s lacks an owned SHA pin", repo.Name)
 	}
-	if len(p.in.Status.PullRequests) != 1 {
-		return nil, fmt.Errorf("revise round needs exactly one PR")
+	// The round reads the feedback on, and the patch of, its own
+	// repository's pull request alone.
+	rec := p.pullRequest(run.Spec.Repository.URL)
+	if rec == nil {
+		return nil, fmt.Errorf("revise round %s has no recorded pull request in %s", run.Name,
+			repoSlug(run.Spec.Repository.URL))
 	}
-	pr := p.in.Status.PullRequests[0]
+	pr := *rec
 	var feedback, signature string
 	var checks []string
 	var err error
@@ -421,7 +447,11 @@ func (p *pass) reviseFeedback(ctx context.Context, run *v1alpha1.IntentRun,
 }
 
 // The first attempt leases the feedback time window for all retries. A later
-// comment or edit cannot expand the agent's authority mid-round.
+// comment or edit cannot expand the agent's authority mid-round. The window
+// is the round's own repository's: it opens after that repository's build,
+// or its previous round, never after a sibling's round, so feedback left on
+// one pull request while a round worked on another is read by its own next
+// round rather than dropped.
 func (p *pass) reviseWindow(run *v1alpha1.IntentRun) (time.Time, time.Time) {
 	upper := run.CreationTimestamp.Time
 	if leased := p.roundLeasedAt(run.Spec.Round); !leased.IsZero() {
@@ -434,7 +464,8 @@ func (p *pass) reviseWindow(run *v1alpha1.IntentRun) (time.Time, time.Time) {
 		cutoff = build.Status.FinishedAt.Time
 	}
 	for _, older := range p.runs {
-		if older.Spec.Stage == v1alpha1.IntentStageRevise && older.Spec.Round < run.Spec.Round {
+		if older.Spec.Stage == v1alpha1.IntentStageRevise && older.Spec.Round < run.Spec.Round &&
+			sameRepo(older.Spec.Repository.URL, run.Spec.Repository.URL) {
 			if leased := p.roundLeasedAt(older.Spec.Round); leased.After(cutoff) {
 				cutoff = leased
 			}
@@ -657,8 +688,8 @@ func (p *pass) commandRound(ctx context.Context, pr *v1alpha1.IntentPullRequest)
 		if limit := maxRevisions(p.proj); p.revisionRounds() >= limit ||
 			p.in.Status.Rounds >= v1alpha1.MaxIntentRound {
 			return true, p.block(ctx, v1alpha1.ConditionRevisionLimitReached, "MaxRevisions",
-				fmt.Sprintf("PR command waits: %d of %d permitted revision rounds have started",
-					p.revisionRounds(), limit))
+				fmt.Sprintf("PR command%s waits: %d of %d permitted revision rounds have started",
+					p.inRepository(pr.Repository), p.revisionRounds(), limit))
 		}
 		run, err := p.createReviseRun(ctx, pr, p.in.Status.Rounds+1,
 			v1alpha1.IntentRunTriggerCommand, nil, nil, nil, c.ID)
@@ -712,12 +743,15 @@ func (p *pass) eligiblePRCommand(ctx context.Context, pr *v1alpha1.IntentPullReq
 // ackPRCommand writes one eyes reaction and one marker reply, adopting an
 // earlier reply if a status write or restart interrupted the pass. A marker
 // counts only when the App's own bot wrote it, never merely for its text.
+// The command is on the pull request of the round's own repository, where
+// the reply goes.
 func (p *pass) ackPRCommand(ctx context.Context, run *v1alpha1.IntentRun) error {
 	id := run.Spec.Inputs.CommandID
-	if id < 1 || len(p.in.Status.PullRequests) != 1 {
+	rec := p.pullRequest(run.Spec.Repository.URL)
+	if id < 1 || rec == nil {
 		return nil
 	}
-	pr := p.in.Status.PullRequests[0]
+	pr := *rec
 	c, err := p.r.GitHub.GetPullRequestComment(ctx, pr.Repository, id)
 	if ghclient.IsNotFound(err) {
 		return nil // the immutable run input will refuse the vanished command
@@ -798,20 +832,31 @@ func fencedBounded(s string, maxBytes int) string {
 	return fenced(s)
 }
 
-// reviewRound starts one review-driven round after approvers' reviews have
-// been quiet for two minutes (at most ten from the first request). A run
-// created just before a failed status write is adopted before another
-// review is considered: its deterministic create is the round's lease.
+// adoptPendingRound enters Revising on the round a pass created just before
+// its status write failed (or the controller restarted): the run of round
+// Rounds+1, whatever its repository and whatever state its pull request is
+// in now. Its deterministic create is the round's lease, and it is adopted
+// before any pull request's feedback is considered, so a lease left on one
+// pull request never stands in the way of another's round: a round whose
+// pull request has since been merged or closed is entered all the same, and
+// ends there without a push (revising), freeing the Intent for the next.
+func (p *pass) adoptPendingRound(ctx context.Context) (bool, error) {
+	pending := p.round(v1alpha1.IntentStageRevise, p.in.Status.Rounds+1, anyRepository).latest()
+	if pending == nil {
+		return false, nil
+	}
+	if pending.Spec.Trigger == v1alpha1.IntentRunTriggerCommand {
+		if err := p.ackPRCommand(ctx, pending); err != nil {
+			return false, err
+		}
+	}
+	return true, p.enterRevising(ctx, pending)
+}
+
+// reviewRound starts one review-driven round on pr after approvers' reviews
+// have been quiet for two minutes (at most ten from the first request).
 func (p *pass) reviewRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (bool, error) {
 	round := p.in.Status.Rounds + 1
-	if pending := p.round(v1alpha1.IntentStageRevise, round, anyRepository).latest(); pending != nil {
-		if pending.Spec.Trigger == v1alpha1.IntentRunTriggerCommand {
-			if err := p.ackPRCommand(ctx, pending); err != nil {
-				return false, err
-			}
-		}
-		return true, p.enterRevising(ctx, pending)
-	}
 	reviews, err := p.r.GitHub.ListPullRequestReviews(ctx, pr.Repository, pr.Number)
 	if err != nil {
 		return false, fmt.Errorf("list reviews on %s#%d: %w", pr.Repository, pr.Number, err)
@@ -838,8 +883,8 @@ func (p *pass) reviewRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) 
 	}
 	if limit := maxRevisions(p.proj); p.revisionRounds() >= limit || round > v1alpha1.MaxIntentRound {
 		return true, p.block(ctx, v1alpha1.ConditionRevisionLimitReached, "MaxRevisions",
-			fmt.Sprintf("review feedback waits: %d of %d permitted revision rounds have started", p.revisionRounds(),
-				limit))
+			fmt.Sprintf("review feedback%s waits: %d of %d permitted revision rounds have started",
+				p.inRepository(pr.Repository), p.revisionRounds(), limit))
 	}
 	slices.SortFunc(eligible, func(a, b ghclient.Review) int { return a.SubmittedAt.Compare(b.SubmittedAt) })
 	if len(eligible) > 32 {
@@ -913,9 +958,12 @@ func (p *pass) revisionRounds() int32 {
 }
 
 // reviewCutoff ignores feedback on the pull request in repoURL predating its
-// build, and predating the previous round. IDs consumed by its run are also
-// recorded there; the time bound covers a burst larger than the schema's 32
-// IDs without starting duplicate rounds from its tail.
+// build, and predating its own previous round. IDs consumed by its run are
+// also recorded there; the time bound covers a burst larger than the
+// schema's 32 IDs without starting duplicate rounds from its tail. Only
+// rounds in repoURL move it: rounds are serialised per Intent, so a review on
+// one pull request may wait out a round on another, and is still read by its
+// own pull request's next round.
 func (p *pass) reviewCutoff(repoURL string) time.Time {
 	var at time.Time
 	if ap := p.in.Status.Approval; ap != nil {
@@ -925,7 +973,7 @@ func (p *pass) reviewCutoff(repoURL string) time.Time {
 		}
 	}
 	for _, run := range p.runs {
-		if run.Spec.Stage != v1alpha1.IntentStageRevise {
+		if run.Spec.Stage != v1alpha1.IntentStageRevise || !sameRepo(run.Spec.Repository.URL, repoURL) {
 			continue
 		}
 		if t := p.roundLeasedAt(run.Spec.Round); t.After(at) {

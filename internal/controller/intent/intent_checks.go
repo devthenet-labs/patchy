@@ -21,13 +21,15 @@ import (
 
 const defaultChecksTimeout = 30 * time.Minute
 
+// checkRound starts a check-fix round on pr when a named check failed on the
+// head patchy last pushed in its repository, once the checks settled (or
+// their timeout passed). Each pull request's checks are its own: observed per
+// pull request, against its own repository's pushes and earlier fixes.
 func (p *pass) checkRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (bool, error) {
-	if len(p.proj.Spec.Checks.Fix) == 0 || pr.HeadSHA == "" ||
-		p.in.Status.ChecksObservedHeadSHA == pr.HeadSHA &&
-			p.in.Status.ChecksObservedProjectGeneration == p.proj.Generation {
+	if len(p.proj.Spec.Checks.Fix) == 0 || pr.HeadSHA == "" || p.checksObserved(pr) {
 		return false, nil
 	}
-	latest := p.latestPushedRun()
+	latest := p.latestPushedRun(pr.Repository)
 	if latest == nil || latest.Status.PushedCommit != pr.HeadSHA {
 		// A human moved the branch. Patchy may report the failure, but does
 		// not launch an automatic fix on a head it did not push.
@@ -50,12 +52,14 @@ func (p *pass) checkRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (
 	}
 	if len(failed.checkIDs) == 0 && len(failed.statusIDs) == 0 {
 		return true, p.update(ctx, func(cur *v1alpha1.Intent) error {
-			cur.Status.ChecksObservedHeadSHA = pr.HeadSHA
-			cur.Status.ChecksObservedProjectGeneration = p.proj.Generation
+			if rec := recordedPullRequest(cur, pr.Repository); rec != nil {
+				rec.ChecksObservedHeadSHA = pr.HeadSHA
+				rec.ChecksObservedProjectGeneration = p.proj.Generation
+			}
 			return nil
 		})
 	}
-	if p.checksConsumed(failed) {
+	if p.checksConsumed(pr.Repository, failed) {
 		return false, nil
 	}
 	diagnosis, err := p.checkDiagnostics(ctx, pr.Repository, pr.HeadSHA, failed)
@@ -65,10 +69,29 @@ func (p *pass) checkRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (
 	return p.startCheckFix(ctx, pr, failed, diagnosis.signature)
 }
 
+// checksObserved reports whether pr's head had its named checks observed
+// under the Project's current generation: as recorded on pr itself, or, for
+// a one-pull-request intent whose pull request has no record of its own (one
+// observed before the record moved onto the pull request), as the deprecated
+// Intent-level pair records it. That pair is only ever read, never written,
+// so an upgrade neither polls a settled head again nor starts a second fix.
+func (p *pass) checksObserved(pr *v1alpha1.IntentPullRequest) bool {
+	head, gen := pr.ChecksObservedHeadSHA, pr.ChecksObservedProjectGeneration
+	if head == "" && len(p.in.Status.PullRequests) == 1 {
+		head, gen = p.in.Status.ChecksObservedHeadSHA, p.in.Status.ChecksObservedProjectGeneration
+	}
+	return head == pr.HeadSHA && gen == p.proj.Generation
+}
+
+// startCheckFix starts the check-fix round of pr's repository, unless a
+// fix there already failed the same way (RepeatedFailure) or the Intent's
+// check-fix rounds are spent. Both blocks hold the whole Intent, and name the
+// repository whose checks failed.
 func (p *pass) startCheckFix(ctx context.Context, pr *v1alpha1.IntentPullRequest,
 	failed failedChecks, signature string) (bool, error) {
 	for _, prior := range p.runs {
-		if prior.Spec.Trigger != v1alpha1.IntentRunTriggerChecks || prior.Status.Phase != v1alpha1.RunComplete {
+		if prior.Spec.Trigger != v1alpha1.IntentRunTriggerChecks || prior.Status.Phase != v1alpha1.RunComplete ||
+			!sameRepo(prior.Spec.Repository.URL, pr.Repository) {
 			continue
 		}
 		var cm corev1.ConfigMap
@@ -78,8 +101,9 @@ func (p *pass) startCheckFix(ctx context.Context, pr *v1alpha1.IntentPullRequest
 		}
 		if cm.Data[keyCheckSignature] == signature {
 			return true, p.block(ctx, v1alpha1.ConditionChecksFailing, "RepeatedFailure",
-				fmt.Sprintf("project-generation=%d: a named check failed again with the same diagnostic "+
-					"after a check-fix round; review the PR manually", p.proj.Generation))
+				fmt.Sprintf("project-generation=%d: a named check%s failed again with the same diagnostic "+
+					"after a check-fix round; review the PR manually", p.proj.Generation,
+					p.inRepository(pr.Repository)))
 		}
 	}
 	limit := v1alpha1.DefaultMaxCheckFixes
@@ -88,7 +112,8 @@ func (p *pass) startCheckFix(ctx context.Context, pr *v1alpha1.IntentPullRequest
 	}
 	if p.checkFixRounds() >= limit || p.in.Status.Rounds >= v1alpha1.MaxIntentRound {
 		return true, p.block(ctx, v1alpha1.ConditionChecksFailing, "MaxCheckFixes",
-			fmt.Sprintf("%d of %d check-fix rounds used; raise limits.maxCheckFixes to retry", p.checkFixRounds(), limit))
+			fmt.Sprintf("%d of %d check-fix rounds used%s; raise limits.maxCheckFixes to retry",
+				p.checkFixRounds(), limit, failedIn(p.inRepository(pr.Repository))))
 	}
 	run, err := p.createReviseRun(ctx, pr, p.in.Status.Rounds+1, v1alpha1.IntentRunTriggerChecks,
 		nil, failed.checkIDs, failed.statusIDs, 0)
@@ -169,10 +194,23 @@ func failedConclusion(s string) bool {
 	return false
 }
 
-func (p *pass) latestPushedRun() *v1alpha1.IntentRun {
+// failedIn is how a MaxCheckFixes block names the repository whose checks
+// failed (in, from inRepository): nothing for a one-repository Project.
+func failedIn(in string) string {
+	if in == "" {
+		return ""
+	}
+	return " (a named check failed" + in + ")"
+}
+
+// latestPushedRun is the run that last pushed to the intent branch in
+// repoURL: its build, or a later round there. A sibling repository's later
+// push says nothing about this pull request's head.
+func (p *pass) latestPushedRun(repoURL string) *v1alpha1.IntentRun {
 	var latest *v1alpha1.IntentRun
 	for _, run := range p.runs {
-		if run.Status.Phase != v1alpha1.RunComplete || run.Status.PushedCommit == "" {
+		if run.Status.Phase != v1alpha1.RunComplete || run.Status.PushedCommit == "" ||
+			!sameRepo(run.Spec.Repository.URL, repoURL) {
 			continue
 		}
 		if latest == nil || pushedAfter(run, latest) {
@@ -199,9 +237,11 @@ func pushedAfter(a, b *v1alpha1.IntentRun) bool {
 	return a.Spec.Attempt > b.Spec.Attempt
 }
 
-func (p *pass) checksConsumed(f failedChecks) bool {
+// checksConsumed reports a check-fix round in repoURL that already took
+// exactly these failures.
+func (p *pass) checksConsumed(repoURL string, f failedChecks) bool {
 	for _, run := range p.runs {
-		if run.Spec.Trigger != v1alpha1.IntentRunTriggerChecks {
+		if run.Spec.Trigger != v1alpha1.IntentRunTriggerChecks || !sameRepo(run.Spec.Repository.URL, repoURL) {
 			continue
 		}
 		if slices.Equal(run.Spec.Inputs.CheckRunIDs, f.checkIDs) && slices.Equal(run.Spec.Inputs.StatusIDs, f.statusIDs) {

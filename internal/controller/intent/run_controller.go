@@ -170,13 +170,14 @@ func pushHeld(run *v1alpha1.IntentRun) bool {
 
 // launchable reports a pending run that could launch now: its input and the
 // artifact of its Repository, and of every tree Repository of a plan run,
-// ready; its Intent active and not suspended; its Project not suspended, and
-// one this controller runs intents of (Settings.multiRepoOff). A run waiting
-// on any of them holds no slot.
+// ready; its Intent active and not suspended (and, for a revise round, its
+// pull request still open: roundEnded); its Project not suspended, and one
+// this controller runs intents of (Settings.multiRepoOff). A run waiting on
+// any of them holds no slot.
 func (r *RunReconciler) launchable(ctx context.Context, run *v1alpha1.IntentRun) bool {
 	var in v1alpha1.Intent
 	if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name}, &in); err != nil ||
-		in.UID != run.Spec.IntentRef.UID || in.Spec.Suspend || terminal(in.Status.Phase) {
+		in.UID != run.Spec.IntentRef.UID || in.Spec.Suspend || terminal(in.Status.Phase) || roundEnded(&in, run) {
 		return false
 	}
 	var proj v1alpha1.Project
@@ -352,16 +353,21 @@ func runInputKey(run *v1alpha1.IntentRun) types.NamespacedName {
 }
 
 // intentEnded aborts an unfinished run whose Intent is gone, is not the one
-// that created it, or has ended: its Job is deleted and nothing it produces
-// is used.
+// that created it, or has ended, and a revise round whose pull request was
+// merged or closed while the Intent's other pull requests stay in review
+// (roundEnded): its Job is deleted and nothing it produces is used.
 func (r *RunReconciler) intentEnded(ctx context.Context, run *v1alpha1.IntentRun) (bool, error) {
 	var in v1alpha1.Intent
 	err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name}, &in)
 	if err != nil && !kerrors.IsNotFound(err) {
 		return false, err
 	}
+	detail := "the intent ended before the run did"
 	if err == nil && in.UID == run.Spec.IntentRef.UID && in.DeletionTimestamp.IsZero() && !terminal(in.Status.Phase) {
-		return false, nil
+		if !roundEnded(&in, run) {
+			return false, nil
+		}
+		detail = roundEndedDetail(run)
 	}
 	if run.Status.JobRef != nil {
 		if err := r.Jobs.Delete(ctx, run.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
@@ -370,8 +376,29 @@ func (r *RunReconciler) intentEnded(ctx context.Context, run *v1alpha1.IntentRun
 	}
 	// A build that pushed its commit, or was held for a suspension, already
 	// recorded its report, usage and transcript: they are kept.
-	return true, r.settle(ctx, run, result{outcome: OutcomeAborted, detail: "the intent ended before the run did",
+	return true, r.settle(ctx, run, result{outcome: OutcomeAborted, detail: detail,
 		keep: run.Status.PushedCommit != "" || pushHeld(run)})
+}
+
+// roundEnded reports a revise round of in whose pull request in.Status
+// records as merged or closed (or does not record at all): a round has
+// nothing to push to but its own repository's open pull request. The intent
+// reconciler records a pull request's state from GitHub as it reads it; with
+// one pull request, its merge or close ends the Intent in the same write, so
+// only a multi-repository intent, its siblings still in review, ever has a
+// round end this way.
+func roundEnded(in *v1alpha1.Intent, run *v1alpha1.IntentRun) bool {
+	if run.Spec.Stage != v1alpha1.IntentStageRevise {
+		return false
+	}
+	pr := recordedPullRequest(in, run.Spec.Repository.URL)
+	return pr == nil || pr.State != prOpen
+}
+
+// roundEndedDetail says why a revise round ended unpushed: its own
+// repository's pull request was merged or closed.
+func roundEndedDetail(run *v1alpha1.IntentRun) string {
+	return "the pull request in " + repoSlug(run.Spec.Repository.URL) + " was merged or closed before the round ended"
 }
 
 // launch creates the run's agent Job. A plan runs read-only on the default
@@ -699,7 +726,7 @@ func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (c
 		case errors.Is(err, errHeld):
 			return r.heldOr(err)
 		case errors.Is(err, errIntentEnded):
-			return ctrl.Result{}, r.endedBeforePush(ctx, run, result{keep: true})
+			return ctrl.Result{}, r.endedBeforePush(ctx, run, result{keep: true}, err)
 		case err != nil:
 			return ctrl.Result{}, err
 		}
@@ -799,13 +826,20 @@ var errMultiRepoOff = fmt.Errorf("%w: multi-repository intents are off", errHeld
 // close). Nothing more of the build reaches GitHub.
 var errIntentEnded = errors.New("the intent ended before the build's push")
 
+// errPullRequestEnded: the pull request a revise round of a multi-repository
+// intent works on was merged or closed while its siblings stay in review.
+// Like an ended intent, nothing more of the round reaches GitHub.
+var errPullRequestEnded = fmt.Errorf("%w: the round's pull request was merged or closed", errIntentEnded)
+
 // pushGate reads the run's Intent uncached before each write the push makes
 // to GitHub (the commit, then the branch), which are the only writes the run
 // reconciler makes: the cache it decided to collect from can lag a cancel or
 // a suspension written a moment ago. It is errIntentEnded when the Intent no
 // longer wants the build, errHeld while it is suspended (errMultiRepoOff, an
 // errHeld, while its Project is one this controller runs no intent of), and
-// nil to push.
+// nil to push. A revise round pushes only to the pull request of its own
+// repository, read live, while it is open: one merged or closed beside open
+// siblings is errPullRequestEnded.
 func (r *RunReconciler) pushGate(ctx context.Context, run *v1alpha1.IntentRun) error {
 	var in v1alpha1.Intent
 	err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name}, &in)
@@ -825,15 +859,18 @@ func (r *RunReconciler) pushGate(ctx context.Context, run *v1alpha1.IntentRun) e
 		return errMultiRepoOff
 	}
 	if run.Spec.Stage == v1alpha1.IntentStageRevise {
-		if in.Status.Phase != v1alpha1.IntentRevising || len(in.Status.PullRequests) != 1 {
+		pr := recordedPullRequest(&in, run.Spec.Repository.URL)
+		if in.Status.Phase != v1alpha1.IntentRevising || pr == nil {
 			return errIntentEnded
 		}
-		pr := in.Status.PullRequests[0]
 		live, err := r.GitHub.GetPullRequest(ctx, pr.Repository, pr.Number)
 		if err != nil {
 			return fmt.Errorf("verify revise PR before push: %w", err)
 		}
 		if live.State != prOpen || live.Merged || pr.NodeID != "" && live.NodeID != pr.NodeID {
+			if len(in.Status.PullRequests) > 1 {
+				return errPullRequestEnded
+			}
 			return errIntentEnded
 		}
 	}
@@ -841,10 +878,12 @@ func (r *RunReconciler) pushGate(ctx context.Context, run *v1alpha1.IntentRun) e
 }
 
 // endedBeforePush settles a build whose Intent ended before its push was
-// complete: aborted, keeping what the build reported, with its Job deleted
-// and nothing (more) written to GitHub. A commit already created is left
-// dangling, with no branch at it.
-func (r *RunReconciler) endedBeforePush(ctx context.Context, run *v1alpha1.IntentRun, res result) error {
+// complete (why is the gate's errIntentEnded): aborted, keeping what the
+// build reported, with its Job deleted and nothing (more) written to GitHub.
+// A commit already created is left dangling, with no branch at it. A revise
+// round whose own pull request ended beside open siblings
+// (errPullRequestEnded) says so instead.
+func (r *RunReconciler) endedBeforePush(ctx context.Context, run *v1alpha1.IntentRun, res result, why error) error {
 	if run.Status.JobRef != nil {
 		if err := r.Jobs.Delete(ctx, run.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
 			return fmt.Errorf("delete job %s: %w", run.Status.JobRef.Name, err)
@@ -855,6 +894,13 @@ func (r *RunReconciler) endedBeforePush(ctx context.Context, run *v1alpha1.Inten
 	if run.Status.PushedCommit != "" {
 		res.detail = "the intent ended before the build's branch was created; commit " + run.Status.PushedCommit +
 			" was made, and no branch points at it"
+	}
+	if errors.Is(why, errPullRequestEnded) {
+		res.detail = roundEndedDetail(run) + "; nothing was pushed"
+		if run.Status.PushedCommit != "" {
+			res.detail = roundEndedDetail(run) + "; commit " + run.Status.PushedCommit +
+				" was made, and the branch was not moved to it"
+		}
 	}
 	r.log().LogAttrs(ctx, slog.LevelInfo, "intent ended; the build's push is abandoned", slog.String("run", run.Name))
 	return r.settle(ctx, run, res)
@@ -1121,7 +1167,7 @@ func legacyEmptyReviewHandoff(handoff string) bool {
 func (r *RunReconciler) push(ctx context.Context, run *v1alpha1.IntentRun, ev *envelope.Remediation, res result) error {
 	switch err := r.pushGate(ctx, run); {
 	case errors.Is(err, errIntentEnded):
-		return r.endedBeforePush(ctx, run, res)
+		return r.endedBeforePush(ctx, run, res, err)
 	case errors.Is(err, errHeld):
 		return r.hold(ctx, run, &res, err)
 	case err != nil:
@@ -1183,7 +1229,7 @@ func (r *RunReconciler) push(ctx context.Context, run *v1alpha1.IntentRun, ev *e
 func (r *RunReconciler) advanceBranch(ctx context.Context, run *v1alpha1.IntentRun) error {
 	switch err := r.pushGate(ctx, run); {
 	case errors.Is(err, errIntentEnded):
-		return r.endedBeforePush(ctx, run, result{keep: true})
+		return r.endedBeforePush(ctx, run, result{keep: true}, err)
 	case errors.Is(err, errHeld):
 		return r.hold(ctx, run, nil, err)
 	case err != nil:
@@ -1230,7 +1276,7 @@ func (r *RunReconciler) advanceBranch(ctx context.Context, run *v1alpha1.IntentR
 func (r *RunReconciler) createBranch(ctx context.Context, run *v1alpha1.IntentRun) error {
 	switch err := r.pushGate(ctx, run); {
 	case errors.Is(err, errIntentEnded):
-		return r.endedBeforePush(ctx, run, result{keep: true})
+		return r.endedBeforePush(ctx, run, result{keep: true}, err)
 	case errors.Is(err, errHeld):
 		return r.hold(ctx, run, nil, err)
 	case err != nil:

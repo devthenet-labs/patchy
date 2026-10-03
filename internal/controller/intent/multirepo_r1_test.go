@@ -69,33 +69,9 @@ func TestMultiRepoOffMidRoundResumesTheRound(t *testing.T) {
 		}
 		t.Run(order, func(t *testing.T) {
 			e := newMultiEnv(t)
-			name := e.inReviewLinked()
-			e.reviewOn(2, 901, "Web: show the sha.")
-			e.clock.Advance(3 * time.Minute)
-			job := e.holdJob(name, 1, "web")
-			e.driveUntil(name, func(*v1alpha1.Intent) bool {
-				r := e.reviseRun(name, 1)
-				return r != nil && r.Status.JobRef != nil
-			})
-			commits := len(e.gh.commits)
-
-			e.multiRepo(false)
-			e.mustIntent(name)
-			if in := e.get(name); in.Status.Phase != v1alpha1.IntentBlocked ||
-				v1alpha1.IntentBlockedFrom(in) != v1alpha1.IntentRevising {
-				t.Fatalf("phase %s with the flag off mid-round, want Blocked from Revising", in.Status.Phase)
-			}
-			e.releaseJob(job)
-			e.runRuns()
-			run := e.reviseRun(name, 1)
-			held := meta.FindStatusCondition(run.Status.Conditions, v1alpha1.ConditionPushHeld)
-			if run.Status.Phase != v1alpha1.RunRunning || held == nil || held.Reason != ReasonMultiRepositoryOff ||
-				len(e.gh.commits) != commits {
-				t.Fatalf("round %s, PushHeld %+v, %d new commits; want its push held on the flag", run.Status.Phase,
-					held, len(e.gh.commits)-commits)
-			}
-
+			name, commits := heldMidRound(t, e)
 			e.multiRepo(true)
+			run := e.reviseRun(name, 1)
 			if runFirst {
 				e.runRuns()
 				if run = e.reviseRun(name, 1); run.Status.Phase != v1alpha1.RunRunning || !pushHeld(run) ||
@@ -104,43 +80,89 @@ func TestMultiRepoOffMidRoundResumesTheRound(t *testing.T) {
 						run.Status.Phase, run.Status.Outcome, run.Status.Detail, len(e.gh.commits)-commits)
 				}
 			} else {
-				e.passUntil(name, func() bool { return e.get(name).Status.Phase != v1alpha1.IntentBlocked })
-				in := e.get(name)
-				if in.Status.Phase != v1alpha1.IntentRevising || in.Status.ActiveRun == nil ||
-					in.Status.ActiveRun.Name != run.Name {
-					t.Fatalf("resumed to %s with activeRun %+v, want Revising following %s", in.Status.Phase,
-						in.Status.ActiveRun, run.Name)
-				}
-				e.clock.Advance(2 * time.Minute) // the pull request poll is due
-				e.mustIntent(name)
-				if n := e.roundNoticeCount(name, 2, 1); n != 0 {
-					t.Fatalf("%d round notices before the round pushed, want none: %v", n, e.roundNotices(name, 2))
-				}
+				checkResumedFollowsTheRound(t, e, name, run.Name)
 			}
-
-			e.drive(name, v1alpha1.IntentInReview, repoImage)
-			run = e.reviseRun(name, 1)
-			if run.Status.Phase != v1alpha1.RunComplete || run.Status.PushedCommit == "" ||
-				e.branchIn(name, webRepoURL) != run.Status.PushedCommit {
-				t.Fatalf("round %s %s %q, web branch %s; want it pushed", run.Status.Phase, run.Status.Outcome,
-					run.Status.Detail, e.branchIn(name, webRepoURL))
-			}
-			e.settleActions(name)
-			want := "Revision round pushed commit `" + run.Status.PushedCommit + "`. Review is requested again."
-			if n := e.roundNoticeCount(name, 2, 1); n != 1 || !strings.Contains(e.roundNotices(name, 2)[1], want) {
-				t.Errorf("%d round notices %v, want one: %q", n, e.roundNotices(name, 2), want)
-			}
-			e.gh.mu.Lock()
-			requested := len(e.gh.requestedReviewers[2])
-			e.gh.mu.Unlock()
-			if requested == 0 {
-				t.Error("review was not requested again on the web pull request")
-			}
-			if in := e.get(name); in.Status.Revisions != 1 || in.Status.RoundNoticesThrough != 1 {
-				t.Errorf("revisions %d, notices through %d; want 1, 1", in.Status.Revisions,
-					in.Status.RoundNoticesThrough)
-			}
+			checkHeldRoundPushed(t, e, name)
 		})
+	}
+}
+
+// heldMidRound drives a multi-repository intent into a review round on web,
+// turns --intent-multi-repo off while its Job runs, and lets the Job finish:
+// the intent is Blocked from Revising and the round's push held. commits is
+// how many commits were made before the round.
+func heldMidRound(t *testing.T, e *env) (name string, commits int) {
+	t.Helper()
+	name = e.inReviewLinked()
+	e.reviewOn(2, 901, "Web: show the sha.")
+	e.clock.Advance(3 * time.Minute)
+	job := e.holdJob(name, 1, "web")
+	e.driveUntil(name, func(*v1alpha1.Intent) bool {
+		r := e.reviseRun(name, 1)
+		return r != nil && r.Status.JobRef != nil
+	})
+	commits = len(e.gh.commits)
+
+	e.multiRepo(false)
+	e.mustIntent(name)
+	if in := e.get(name); in.Status.Phase != v1alpha1.IntentBlocked ||
+		v1alpha1.IntentBlockedFrom(in) != v1alpha1.IntentRevising {
+		t.Fatalf("phase %s with the flag off mid-round, want Blocked from Revising", in.Status.Phase)
+	}
+	e.releaseJob(job)
+	e.runRuns()
+	run := e.reviseRun(name, 1)
+	held := meta.FindStatusCondition(run.Status.Conditions, v1alpha1.ConditionPushHeld)
+	if run.Status.Phase != v1alpha1.RunRunning || held == nil || held.Reason != ReasonMultiRepositoryOff ||
+		len(e.gh.commits) != commits {
+		t.Fatalf("round %s, PushHeld %+v, %d new commits; want its push held on the flag", run.Status.Phase,
+			held, len(e.gh.commits)-commits)
+	}
+	return name, commits
+}
+
+// checkResumedFollowsTheRound: the intent, reconciled before the run, resumes
+// to Revising following the round's run, and its next pull request poll
+// posts no notice for the round, which has not pushed yet.
+func checkResumedFollowsTheRound(t *testing.T, e *env, name, run string) {
+	t.Helper()
+	e.passUntil(name, func() bool { return e.get(name).Status.Phase != v1alpha1.IntentBlocked })
+	in := e.get(name)
+	if in.Status.Phase != v1alpha1.IntentRevising || in.Status.ActiveRun == nil || in.Status.ActiveRun.Name != run {
+		t.Fatalf("resumed to %s with activeRun %+v, want Revising following %s", in.Status.Phase,
+			in.Status.ActiveRun, run)
+	}
+	e.clock.Advance(2 * time.Minute) // the pull request poll is due
+	e.mustIntent(name)
+	if n := e.roundNoticeCount(name, 2, 1); n != 0 {
+		t.Fatalf("%d round notices before the round pushed, want none: %v", n, e.roundNotices(name, 2))
+	}
+}
+
+// checkHeldRoundPushed: the held round, driven to its end, pushed to web's
+// branch, said so once on web's pull request, and asked for review again.
+func checkHeldRoundPushed(t *testing.T, e *env, name string) {
+	t.Helper()
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	run := e.reviseRun(name, 1)
+	if run.Status.Phase != v1alpha1.RunComplete || run.Status.PushedCommit == "" ||
+		e.branchIn(name, webRepoURL) != run.Status.PushedCommit {
+		t.Fatalf("round %s %s %q, web branch %s; want it pushed", run.Status.Phase, run.Status.Outcome,
+			run.Status.Detail, e.branchIn(name, webRepoURL))
+	}
+	e.settleActions(name)
+	want := "Revision round pushed commit `" + run.Status.PushedCommit + "`. Review is requested again."
+	if n := e.roundNoticeCount(name, 2, 1); n != 1 || !strings.Contains(e.roundNotices(name, 2)[1], want) {
+		t.Errorf("%d round notices %v, want one: %q", n, e.roundNotices(name, 2), want)
+	}
+	e.gh.mu.Lock()
+	requested := len(e.gh.requestedReviewers[2])
+	e.gh.mu.Unlock()
+	if requested == 0 {
+		t.Error("review was not requested again on the web pull request")
+	}
+	if in := e.get(name); in.Status.Revisions != 1 || in.Status.RoundNoticesThrough != 1 {
+		t.Errorf("revisions %d, notices through %d; want 1, 1", in.Status.Revisions, in.Status.RoundNoticesThrough)
 	}
 }
 

@@ -137,10 +137,10 @@ The Project reports `Ready` once:
 - it lists one repository, or `--intent-multi-repo` is on (`UnsupportedRepositories` otherwise);
 - each of its repositories resolves to exactly one Forge (`ForgeUnresolved` otherwise), whose credential Secret
   intent-controller may read (`ForgeSecretUnreadable` otherwise); the message names the repository;
-- the App is installed on the intent repository and every app repository, with the permissions intents use: issues
-  write on the intent repository; contents and pull requests write and issues read (a reviewer's permission and the
-  rate budget are read with it) on each app repository; and, when `spec.checks.fix` names a check, checks, statuses
-  and actions read on each app repository too (`AppNotInstalled` otherwise, naming the repository and the permission);
+- the App is installed on the intent repository and every app repository, with the permissions intents use: issues write
+  on the intent repository; contents and pull requests write and issues read (a reviewer's permission and the rate
+  budget are read with it) on each app repository; and, when `spec.checks.fix` names a check, checks, statuses and
+  actions read on each app repository too (`AppNotInstalled` otherwise, naming the repository and the permission);
 - no other Project shares its intent repository and trigger label (`AmbiguousIntentRepository`).
 
 It creates the trigger and approve labels when they are missing. An issue whose Intent name is held by another
@@ -246,9 +246,9 @@ spec:
 - **The pull requests open one per pass**, so an intent can end while they are being opened: a `/patchy cancel` or the
   issue closed, or an approved repository removed from the Project (which fails it), perhaps while a block on a later
   one holds it. The ones already opened are left open, and patchy comments on each, once, that the intent ended, that
-  the pull request is no longer tracked and not part of a completed change, and which repositories never got theirs;
-  the intent's `UntrackedPullRequests` condition records it. patchy closes none of them. Reviving a failed intent starts
-  its pull requests afresh.
+  the pull request is no longer tracked and not part of a completed change, and which repositories never got theirs; the
+  intent's `UntrackedPullRequests` condition records it. patchy closes none of them. Reviving a failed intent starts its
+  pull requests afresh.
 - **Repository keys name the runs.** Changing a key while an intent builds is safe; giving one repository's key to
   another (a swap) can make a build's name another repository's run, and then the intent is held `Blocked` with
   `UnsupportedRepositories` (`RepositoryKeyChanged`), naming both, until the Project changes again.
@@ -265,8 +265,8 @@ Off, which is the default, a Project listing several repositories is not Ready (
 intent of one is held `Blocked` with `UnsupportedRepositories` wherever it stands: no run is launched and nothing is
 pushed. A Job already running when the flag goes off finishes, and spends, all the same, and its push waits: turning the
 flag on again resumes each intent where it was held, its held push made (an approve label applied meanwhile is then
-honoured). A wait longer than the Job TTL (`agent.jobTTL`, `--job-ttl`) loses the finished Job, and with it the
-unpushed work, which is then run again (the attempt does not count). One-repository Projects behave the same either way.
+honoured). A wait longer than the Job TTL (`agent.jobTTL`, `--job-ttl`) loses the finished Job, and with it the unpushed
+work, which is then run again (the attempt does not count). One-repository Projects behave the same either way.
 
 Turning the flag off is the supported rollback. Do not roll intent-controller back to a release before multi-repository
 intents while an intent of a multi-repository Project is open: the older controller does not hold them, and would lose

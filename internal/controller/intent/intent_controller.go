@@ -197,35 +197,7 @@ func (p *pass) run(ctx context.Context) (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 	if terminal(p.in.Status.Phase) {
-		if p.in.Status.RoundNoticesThrough < p.in.Status.Rounds {
-			if ok, err := p.rateOKForPullRequests(ctx); err != nil || !ok {
-				return ctrl.Result{RequeueAfter: p.set.PRPollInterval}, err
-			}
-			if changed, err := p.syncPRRoundNotices(ctx); changed || err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		// Before any hand-off: a revival clears the pull requests recorded.
-		changed, wait, err := p.noticeUntracked(ctx)
-		if changed || err != nil {
-			return ctrl.Result{}, err
-		}
-		if wait {
-			return ctrl.Result{RequeueAfter: p.set.PRPollInterval}, nil
-		}
-		if p.r.Nudger.take(p.in.Name) {
-			stop, err := p.handOff(ctx)
-			if err != nil {
-				// Not answered yet: the hand-off stays pending for the
-				// retry, since nothing else would bring it back.
-				p.r.Nudger.restore(p.in.Name)
-				return ctrl.Result{}, err
-			}
-			if stop {
-				return ctrl.Result{}, nil
-			}
-		}
-		return ctrl.Result{}, p.syncStatusComment(ctx)
+		return p.ended(ctx)
 	}
 
 	if wait := p.pollWait(); wait <= 0 {
@@ -242,6 +214,41 @@ func (p *pass) run(ctx context.Context) (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: max(time.Second, p.nextWake())}, nil
+}
+
+// ended is the pass of an ended intent: the round notices still owed, the
+// notice on pull requests it left open while opening them, any hand-off
+// discovery made, and the status comment.
+func (p *pass) ended(ctx context.Context) (ctrl.Result, error) {
+	if p.in.Status.RoundNoticesThrough < p.in.Status.Rounds {
+		if ok, err := p.rateOKForPullRequests(ctx); err != nil || !ok {
+			return ctrl.Result{RequeueAfter: p.set.PRPollInterval}, err
+		}
+		if changed, err := p.syncPRRoundNotices(ctx); changed || err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	// Before any hand-off: a revival clears the pull requests recorded.
+	changed, wait, err := p.noticeUntracked(ctx)
+	if changed || err != nil {
+		return ctrl.Result{}, err
+	}
+	if wait {
+		return ctrl.Result{RequeueAfter: p.set.PRPollInterval}, nil
+	}
+	if p.r.Nudger.take(p.in.Name) {
+		stop, err := p.handOff(ctx)
+		if err != nil {
+			// Not answered yet: the hand-off stays pending for the retry,
+			// since nothing else would bring it back.
+			p.r.Nudger.restore(p.in.Name)
+			return ctrl.Result{}, err
+		}
+		if stop {
+			return ctrl.Result{}, nil
+		}
+	}
+	return ctrl.Result{}, p.syncStatusComment(ctx)
 }
 
 // step does the phase's own work, the part driven by the resources rather

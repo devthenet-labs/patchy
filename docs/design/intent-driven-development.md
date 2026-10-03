@@ -1102,7 +1102,8 @@ preview image path prefix.
 
 ### API changes
 
-All are additive or relaxing. `mise run codegen` regenerates both CRD copies and the patchy-config schema.
+The fields are additive and the Preview bounds relax, but the new CEL rules tighten (see **Rollback** below for what
+that means for a CRD rollback). `mise run codegen` regenerates both CRD copies and the patchy-config schema.
 
 - **Project.**
   - `repositories[].preview` (optional).
@@ -1168,8 +1169,8 @@ All are additive or relaxing. `mise run codegen` regenerates both CRD copies and
   Then one values change turns the flag on, raises `maxConcurrentRuns` to 2, sets the prefix explicitly (to the same
   value) and adds the demo Project.
 
-- **Rollback.** The flag is the supported rollback. Off, multi-repo Projects go not Ready and every intent of one is held
-  `Blocked` where it stands: no run is launched and nothing is pushed, a Job already running finishes and its push
+- **Rollback.** The flag is the supported rollback. Off, multi-repo Projects go not Ready and every intent of one is
+  held `Blocked` where it stands: no run is launched and nothing is pushed, a Job already running finishes and its push
   waits, and a wait longer than the Job TTL discards that finished work, which is run again when the flag is on.
   - Do not roll intent-controller back past wave B while any intent of a multi-repo Project is open. The older
     controller does not hold them: its `openPullRequest` overwrites `status.pullRequests` with one record, losing the

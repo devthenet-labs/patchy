@@ -14,19 +14,17 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 )
 
-// RunnerImageRepository is where the release publishes the claude runner
-// image, the trusted donor of agent-runner and the claude CLI.
-const RunnerImageRepository = "ghcr.io/devthenet-labs/patchy/claude-agent-runner"
-
 // passRunnerImage ends every reason no runner image could be chosen for.
 const passRunnerImage = "pass --runner-image to take agent-runner and claude from a runner image of your choice " +
 	"(it is used as given)"
 
 // RunnerImage is the trusted image a sandbox run takes agent-runner and the
-// claude CLI from.
+// claude CLI from; ReleaseImage chooses any other released image (the
+// agent-base, say) as one too.
 type RunnerImage struct {
-	// Reference is the image as chosen: a release tag of
-	// RunnerImageRepository, or --runner-image as given.
+	// Reference is the image as chosen: a release tag of the runner image
+	// repository the CLI was built with (version.RunnerImageRepository), or
+	// --runner-image as given.
 	Reference string `json:"reference"`
 	// Digest is the manifest digest the image runs at: the one the release
 	// tag named in the registry when it was chosen, or the one a
@@ -107,46 +105,69 @@ func (r RemoteRegistry) Digest(ctx context.Context, reference string) (string, e
 	return desc.Digest.String(), nil
 }
 
-// DefaultRunnerImage chooses the runner image for a CLI of the given version
-// when no --runner-image is given. A release (exactly X.Y.Z, with or without
-// its v) takes the runner image released with it, whose agent-runner speaks
-// every subcommand this CLI drives. Any other build (a plain go build's
-// "dev", hack/build.sh's git describe, a goreleaser snapshot) has no runner
-// image of its own and takes the newest release: the highest vX.Y.Z tag in
-// the registry, never latest or a pre-release, since what a local docker
-// store holds under latest can be any age. Either way the tag is pinned to
-// the digest it names in the registry now, so a stale local copy of it
-// never runs. The error, when there is no such image or the registry cannot
-// say, is written for the report and says to pass --runner-image.
-func DefaultRunnerImage(ctx context.Context, reg Registry, version string) (RunnerImage, error) {
+// ReleaseImage chooses the image a CLI of the given version takes from
+// repository, one of the release registry's repositories the CLI was built
+// with (version.RunnerImageRepository or version.AgentBaseRepository,
+// stamped in at build time). A release (exactly X.Y.Z, with or without its
+// v) takes the image released with it. Any other build (hack/build.sh's git
+// describe, a goreleaser snapshot) has no release of its own and takes the
+// newest release: the highest vX.Y.Z tag in the registry, never latest or a
+// pre-release, since what a local docker store holds under latest can be
+// any age. Either way the tag is pinned to the digest it names in the
+// registry now, so a stale local copy of it never stands in for it. A CLI
+// built without a release registry (an empty repository: a plain go build)
+// knows no such image, and the registry is not asked. The error, when there
+// is no such image or the registry cannot say, is written for a report;
+// what to do instead is the caller's to add.
+func ReleaseImage(ctx context.Context, reg Registry, repository, version string) (RunnerImage, error) {
+	if repository == "" {
+		return RunnerImage{}, fmt.Errorf("this CLI (version %q) was built without the release registry its "+
+			"images are published to (a release or goreleaser build stamps it in; a plain go build does not), "+
+			"so it knows no released image", version)
+	}
 	tag, isRelease := releaseTag(version)
 	if !isRelease {
-		dev := fmt.Sprintf("this CLI is a development build (version %q) with no runner image of its own", version)
-		tags, err := reg.Tags(ctx, RunnerImageRepository)
+		dev := fmt.Sprintf("this CLI is a development build (version %q) with no release of its own", version)
+		tags, err := reg.Tags(ctx, repository)
 		if err != nil {
 			return RunnerImage{}, fmt.Errorf("%s, and the newest release could not be found, since the tags of %s "+
-				"could not be listed: %w; %s", dev, RunnerImageRepository, err, passRunnerImage)
+				"could not be listed: %w", dev, repository, err)
 		}
 		if tag = newestRelease(tags); tag == "" {
-			return RunnerImage{}, fmt.Errorf("%s, and %s has no release (a vX.Y.Z tag); %s", dev,
-				RunnerImageRepository, passRunnerImage)
+			return RunnerImage{}, fmt.Errorf("%s, and %s has no release (a vX.Y.Z tag)", dev, repository)
 		}
 	}
-	ref := RunnerImageRepository + ":" + tag
+	ref := repository + ":" + tag
 	digest, err := reg.Digest(ctx, ref)
 	if err != nil {
-		return RunnerImage{}, fmt.Errorf("%s did not resolve in the registry: %w; %s", ref, err, passRunnerImage)
+		return RunnerImage{}, fmt.Errorf("%s did not resolve in the registry: %w", ref, err)
 	}
 	return RunnerImage{Reference: ref, Digest: digest}, nil
+}
+
+// DefaultRunnerImage chooses the runner image for a CLI of the given version
+// when no --runner-image is given: ReleaseImage from repository, the runner
+// image repository of the release registry the CLI was built with
+// (version.RunnerImageRepository). The runner image released with a
+// release CLI is the one whose agent-runner speaks every subcommand that
+// CLI drives. The error, when there is no such image, the CLI knows none or
+// the registry cannot say, is written for the report and says to pass
+// --runner-image.
+func DefaultRunnerImage(ctx context.Context, reg Registry, repository, version string) (RunnerImage, error) {
+	img, err := ReleaseImage(ctx, reg, repository, version)
+	if err != nil {
+		return RunnerImage{}, fmt.Errorf("%w; %s", err, passRunnerImage)
+	}
+	return img, nil
 }
 
 // ChooseRunner picks the runner image for a sandbox run and reports the
 // pick as the runner-image check, so a report always says which image its
 // agent-runner came from: override (--runner-image) as given, without
-// asking the registry, otherwise DefaultRunnerImage for the CLI's version.
-// A nil image is a run that cannot happen, and the check is then a FAIL
-// saying why.
-func ChooseRunner(ctx context.Context, reg Registry, override, version string) (*RunnerImage, Check) {
+// asking the registry, otherwise DefaultRunnerImage from repository for the
+// CLI's version. A nil image is a run that cannot happen, and the check is
+// then a FAIL saying why.
+func ChooseRunner(ctx context.Context, reg Registry, override, repository, version string) (*RunnerImage, Check) {
 	var r Report
 	if override != "" {
 		img := RunnerImage{Reference: override}
@@ -159,7 +180,7 @@ func ChooseRunner(ctx context.Context, reg Registry, override, version string) (
 		r.add(CheckRunnerImage, Pass, reason)
 		return &img, r.Checks[0]
 	}
-	img, err := DefaultRunnerImage(ctx, reg, version)
+	img, err := DefaultRunnerImage(ctx, reg, repository, version)
 	if err != nil {
 		r.add(CheckRunnerImage, Fail, err.Error())
 		return nil, r.Checks[0]

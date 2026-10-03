@@ -22,25 +22,27 @@ docker: agent-runner and the claude CLI are copied out of the claude runner
 image released with this CLI or, for a development build, which has none, the
 newest release in the registry (the highest vX.Y.Z tag, never latest), pinned
 to the digest its tag names there now, so no stale local copy of the tag stands
-in for it; --runner-image overrides it and is used as given (a tag as your
-local docker has it). The runner-image line names the image and digest used;
-when none can be chosen (the registry is unreachable, say) it fails, the rest
-of the run is skipped, and --runner-image is the way on. The image runs
-as uid 65532 with a read-only root filesystem, no network, no capabilities, no
-privilege escalation, bounded processes, memory and CPU, sized executable tmpfs
-mounts at /tmp and /workspace, the two binaries read-only at /patchy/bin,
-PATH=/patchy/bin:<the image's PATH> and the rest of the pod's environment; each
-container is removed when its run ends, even an interrupted one. In it,
-agent-runner's own preflight (the check a stage runs before its first model
-call: claude --version, git --version and bash -c true) runs, then bash -c true
-and git --version on their own. A pod may land on a node of any platform the
-image serves, so all of that runs once per platform: the docker host's own
-natively and first, any other under docker's emulation (Docker Desktop has it;
-on Linux, binfmt_misc with QEMU). A platform the docker host cannot emulate is
-reported as SKIP. Without a docker CLI the run is skipped, not failed. An image
-that exists only in your local docker store fails the registry checks but
-still runs; to check both before publishing, push it to a scratch tag or a
-local registry.
+in for it. Which registry that is was stamped into this CLI by the build that
+made it: a release names the registry it published its images to, and a plain
+go build names none. --runner-image overrides the choice and is used as given
+(a tag as your local docker has it). The runner-image line names the image and
+digest used; when none can be chosen (the registry is unreachable, or the CLI
+knows none) it fails, the rest of the run is skipped, and --runner-image is the
+way on. The image runs as uid 65532 with a read-only root filesystem, no
+network, no capabilities, no privilege escalation, bounded processes, memory
+and CPU, sized executable tmpfs mounts at /tmp and /workspace, the two binaries
+read-only at /patchy/bin, PATH=/patchy/bin:<the image's PATH> and the rest of
+the pod's environment; each container is removed when its run ends, even an
+interrupted one. In it, agent-runner's own preflight (the check a stage runs
+before its first model call: claude --version, git --version and bash -c true)
+runs, then bash -c true and git --version on their own. A pod may land on a
+node of any platform the image serves, so all of that runs once per platform:
+the docker host's own natively and first, any other under docker's emulation
+(Docker Desktop has it; on Linux, binfmt_misc with QEMU). A platform the docker
+host cannot emulate is reported as SKIP. Without a docker CLI the run is
+skipped, not failed. An image that exists only in your local docker store fails
+the registry checks but still runs; to check both before publishing, push it
+to a scratch tag or a local registry.
 
 Each check prints one line: PASS, FAIL or SKIP, the check, the platform for a
 --run check, and the reason.
@@ -68,7 +70,7 @@ patchy check image <reference> [flags]
   -h, --help                  help for image
       --max-bytes int         largest compressed layer total per platform, as the operator's --repository-image-max-bytes (default 4294967296)
       --run                   also run the image the way the agent pod does, on the local docker
-      --runner-image string   claude runner image to take agent-runner and claude from with --run, used as given (default: the one released with this CLI, or the newest release for a development build, pinned to its digest)
+      --runner-image string   claude runner image to take agent-runner and claude from with --run, used as given (default: the one released with this CLI, or the newest release for a development build, in the release registry this CLI was built with, pinned to its digest)
 ```
 
 ### Options inherited from parent commands

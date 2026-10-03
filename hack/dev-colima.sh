@@ -34,20 +34,25 @@ kubectl --context colima get ingressclass traefik >/dev/null 2>&1 || {
   echo "      'colima stop' and re-run to reinstall k3s with the ingress controller" >&2
 }
 
-mise run snapshot
+# goreleaser names its images under the release registry it reads from
+# PATCHY_IMAGE_REGISTRY (.goreleaser.yaml). A local-only name by default keeps
+# the snapshot apart from any pulled release image, and this script tied to
+# no one registry; nothing is pushed either way.
+registry="${PATCHY_IMAGE_REGISTRY:-patchy.snapshot.local}"
+PATCHY_IMAGE_REGISTRY="$registry" mise run snapshot
 
 # retag the host-arch snapshot images as patchy/<app>:dev (dev overlay names)
 arch=$(uname -m)
 [ "$arch" = x86_64 ] && arch=amd64
 for app in integration-controller source-controller context-controller investigation-controller remediation-controller \
   evaluation-controller egress-broker claude-agent-runner codex-agent-runner copilot-agent-runner status-server; do
-  tag=$(docker images "ghcr.io/devthenet-labs/patchy/$app" --format '{{.Tag}}' |
+  tag=$(docker images "$registry/$app" --format '{{.Tag}}' |
     grep -- "-$arch$" | head -1)
   [ -n "$tag" ] || {
     echo "error: no snapshot image for $app ($arch)" >&2
     exit 1
   }
-  docker tag "ghcr.io/devthenet-labs/patchy/$app:$tag" "patchy/$app:dev"
+  docker tag "$registry/$app:$tag" "patchy/$app:dev"
 done
 
 # PATCHY_OVERLAY=dev-fake swaps in the credential-less stack: the scripted

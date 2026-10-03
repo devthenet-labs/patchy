@@ -75,9 +75,9 @@ preview:
     imageRegistry: "" # ECR registry host only; images must be patchy/previews/<app>:sha-<full SHA>
     dnsCIDR: "" # Node-local CoreDNS service /32, not a broad service CIDR.
     albSubnetCIDRs: [] # Public ALB source subnets, not 0.0.0.0/0.
-    inboundCIDRs: [] # Operator IP /32 or tightly scoped CIDRs.
+    inboundCIDRs: [] # Reviewer IPs, each a /32 (the schema refuses wider), at most 8.
     certificateARN: "" # Issued wildcard certificate for preview hosts.
-    hostSuffix: "" # e.g. preview.patchy.devthe.net, without leading dot.
+    hostSuffix: "" # e.g. preview.example.com, without leading dot.
     albName: "" # Distinct from the normal patchy ALB.
 
 # Namespaced runtime renderer for opt-in Projects. Kept off while preview

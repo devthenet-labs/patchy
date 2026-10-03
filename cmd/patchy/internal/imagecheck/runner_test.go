@@ -60,6 +60,28 @@ func digestOf(reference string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// testRunnerRepository stands in for the runner image repository a build
+// stamps in from its release registry (version.RunnerImageRepository).
+const testRunnerRepository = "registry.example.com/acme/patchy/claude-agent-runner"
+
+// otherRunnerRepository is a second release registry's runner image
+// repository: a fork's build, say, which must take its own.
+const otherRunnerRepository = "registry.example.org/fork/patchy/claude-agent-runner"
+
+// repositoryFor is the runner image repository a test case's CLI was built
+// with: testRunnerRepository unless the case names another, and none at all
+// for a build without a release registry.
+func repositoryFor(repository string, unstamped bool) string {
+	switch {
+	case unstamped:
+		return ""
+	case repository != "":
+		return repository
+	default:
+		return testRunnerRepository
+	}
+}
+
 // publishedTags is what the runner image repository holds: releases (one
 // with a two-digit patch that sorts first as a string), latest, cosign's
 // signature tags, a pre-release and tags that only look like releases.
@@ -73,53 +95,70 @@ var publishedTags = []string{
 // never latest, a pre-release or a tag that only looks like a release;
 // either way the tag is pinned to the digest the registry has for it now,
 // and when there is none to take, the error says to pass --runner-image.
+// The repository is the one the build stamped in, whichever that is; a
+// build with none (a plain go build) never asks the registry and says so.
 func TestDefaultRunnerImage(t *testing.T) {
-	newest := RunnerImageRepository + ":v0.11.10"
+	newest := testRunnerRepository + ":v0.11.10"
 	offline := errors.New("dial tcp: lookup ghcr.io: no such host")
 	cases := []struct {
-		name     string
-		version  string
-		registry *fakeRegistry
-		want     string   // the chosen tag reference; empty when none is
-		errHas   []string // substrings of the error when none is chosen
-		calls    []string // the registry calls, in order
+		name       string
+		repository string // the stamped repository, when not testRunnerRepository
+		unstamped  bool   // built without a release registry
+		version    string
+		registry   *fakeRegistry
+		want       string   // the chosen tag reference; empty when none is
+		errHas     []string // substrings of the error when none is chosen
+		calls      []string // the registry calls, in order
 	}{
 		{name: "release", version: "0.11.6", registry: &fakeRegistry{tags: publishedTags},
-			want: RunnerImageRepository + ":v0.11.6", calls: []string{"digest " + RunnerImageRepository + ":v0.11.6"}},
+			want: testRunnerRepository + ":v0.11.6", calls: []string{"digest " + testRunnerRepository + ":v0.11.6"}},
 		{name: "release with its v", version: "v0.12.0", registry: &fakeRegistry{tags: publishedTags},
-			want: RunnerImageRepository + ":v0.12.0", calls: []string{"digest " + RunnerImageRepository + ":v0.12.0"}},
+			want: testRunnerRepository + ":v0.12.0", calls: []string{"digest " + testRunnerRepository + ":v0.12.0"}},
 		{name: "development build", version: "dev", registry: &fakeRegistry{tags: publishedTags}, want: newest,
-			calls: []string{"tags " + RunnerImageRepository, "digest " + newest}},
+			calls: []string{"tags " + testRunnerRepository, "digest " + newest}},
 		{name: "no version at all", version: "", registry: &fakeRegistry{tags: publishedTags}, want: newest,
-			calls: []string{"tags " + RunnerImageRepository, "digest " + newest}},
+			calls: []string{"tags " + testRunnerRepository, "digest " + newest}},
 		{name: "git describe of a commit past a release", version: "v0.11.7-2-gb4c563a-dirty",
 			registry: &fakeRegistry{tags: publishedTags}, want: newest,
-			calls: []string{"tags " + RunnerImageRepository, "digest " + newest}},
+			calls: []string{"tags " + testRunnerRepository, "digest " + newest}},
 		{name: "git describe of an untagged history", version: "b4c563a",
 			registry: &fakeRegistry{tags: publishedTags}, want: newest,
-			calls: []string{"tags " + RunnerImageRepository, "digest " + newest}},
+			calls: []string{"tags " + testRunnerRepository, "digest " + newest}},
 		{name: "goreleaser snapshot", version: "0.11.8-SNAPSHOT-b4c563a",
 			registry: &fakeRegistry{tags: publishedTags}, want: newest,
-			calls: []string{"tags " + RunnerImageRepository, "digest " + newest}},
+			calls: []string{"tags " + testRunnerRepository, "digest " + newest}},
 		{name: "a pre-release version is not a release", version: "0.12.0-rc.1",
 			registry: &fakeRegistry{tags: publishedTags}, want: newest,
-			calls: []string{"tags " + RunnerImageRepository, "digest " + newest}},
+			calls: []string{"tags " + testRunnerRepository, "digest " + newest}},
 		{name: "development build, registry unreachable", version: "dev",
 			registry: &fakeRegistry{tagsErr: offline},
 			errHas:   []string{"development build", "no such host", "--runner-image"},
-			calls:    []string{"tags " + RunnerImageRepository}},
+			calls:    []string{"tags " + testRunnerRepository}},
 		{name: "development build, no release published", version: "dev",
 			registry: &fakeRegistry{tags: []string{"latest", "v0.12.0-rc.1", "main", "0.13.0"}},
 			errHas:   []string{"development build", "no release", "--runner-image"},
-			calls:    []string{"tags " + RunnerImageRepository}},
+			calls:    []string{"tags " + testRunnerRepository}},
 		{name: "release, registry unreachable", version: "0.11.6",
 			registry: &fakeRegistry{digestErr: offline},
-			errHas:   []string{RunnerImageRepository + ":v0.11.6", "no such host", "--runner-image"},
-			calls:    []string{"digest " + RunnerImageRepository + ":v0.11.6"}},
+			errHas:   []string{testRunnerRepository + ":v0.11.6", "no such host", "--runner-image"},
+			calls:    []string{"digest " + testRunnerRepository + ":v0.11.6"}},
+		{name: "release from another release registry", repository: otherRunnerRepository, version: "0.11.6",
+			registry: &fakeRegistry{tags: publishedTags},
+			want:     otherRunnerRepository + ":v0.11.6", calls: []string{"digest " + otherRunnerRepository + ":v0.11.6"}},
+		{name: "development build from another release registry", repository: otherRunnerRepository,
+			version: "dev", registry: &fakeRegistry{tags: publishedTags}, want: otherRunnerRepository + ":v0.11.10",
+			calls: []string{"tags " + otherRunnerRepository, "digest " + otherRunnerRepository + ":v0.11.10"}},
+		{name: "development build without a release registry", unstamped: true, version: "dev",
+			registry: &fakeRegistry{tags: publishedTags},
+			errHas:   []string{`version "dev"`, "without the release registry", "plain go build", "--runner-image"}},
+		{name: "release without a release registry", unstamped: true, version: "0.11.6",
+			registry: &fakeRegistry{tags: publishedTags},
+			errHas:   []string{`version "0.11.6"`, "without the release registry", "--runner-image"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := DefaultRunnerImage(context.Background(), tc.registry, tc.version)
+			got, err := DefaultRunnerImage(context.Background(), tc.registry,
+				repositoryFor(tc.repository, tc.unstamped), tc.version)
 			switch {
 			case tc.want != "" && err != nil:
 				t.Fatalf("DefaultRunnerImage(%q): %v", tc.version, err)
@@ -146,6 +185,39 @@ func TestDefaultRunnerImage(t *testing.T) {
 	}
 }
 
+// TestReleaseImage: any released image (the agent-base here, not the
+// runner) is chosen from the repository the build stamped in by the same
+// rule, and its errors carry no runner-specific advice, which is the
+// caller's to add.
+func TestReleaseImage(t *testing.T) {
+	const agentBase = "registry.example.com/acme/patchy/agent-base"
+	reg := &fakeRegistry{tags: publishedTags}
+	got, err := ReleaseImage(context.Background(), reg, agentBase, "dev")
+	if want := (RunnerImage{Reference: agentBase + ":v0.11.10", Digest: digestOf(agentBase + ":v0.11.10")}); err != nil ||
+		got != want {
+		t.Fatalf("ReleaseImage(dev) = %+v, %v; want %+v", got, err, want)
+	}
+	if img := got.Image(); img != agentBase+"@"+digestOf(agentBase+":v0.11.10") {
+		t.Errorf("Image() = %q, want the repository pinned to its digest", img)
+	}
+	for _, tc := range []struct {
+		name       string
+		repository string
+		registry   *fakeRegistry
+	}{
+		{"built without a release registry", "", &fakeRegistry{tags: publishedTags}},
+		{"registry unreachable", agentBase, &fakeRegistry{tagsErr: errors.New("connection refused")}},
+		{"no release published", agentBase, &fakeRegistry{tags: []string{"latest"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ReleaseImage(context.Background(), tc.registry, tc.repository, "dev")
+			if err == nil || strings.Contains(err.Error(), "--runner-image") {
+				t.Errorf("ReleaseImage = %v, want an error without runner advice", err)
+			}
+		})
+	}
+}
+
 // TestChooseRunner: the choice is always reported as the runner-image
 // check, naming the image and its digest and why it was chosen; an
 // explicit --runner-image is used as given, without asking the registry;
@@ -155,6 +227,7 @@ func TestChooseRunner(t *testing.T) {
 	cases := []struct {
 		name      string
 		override  string
+		unstamped bool // built without a release registry
 		version   string
 		registry  *fakeRegistry
 		want      *RunnerImage
@@ -164,19 +237,19 @@ func TestChooseRunner(t *testing.T) {
 		calls     int
 	}{
 		{name: "development build", version: "dev", registry: &fakeRegistry{tags: publishedTags},
-			want: &RunnerImage{Reference: RunnerImageRepository + ":v0.11.10",
-				Digest: digestOf(RunnerImageRepository + ":v0.11.10")},
-			image:  RunnerImageRepository + "@" + digestOf(RunnerImageRepository+":v0.11.10"),
+			want: &RunnerImage{Reference: testRunnerRepository + ":v0.11.10",
+				Digest: digestOf(testRunnerRepository + ":v0.11.10")},
+			image:  testRunnerRepository + "@" + digestOf(testRunnerRepository+":v0.11.10"),
 			status: Pass,
-			reasonHas: []string{RunnerImageRepository + ":v0.11.10@" + digestOf(RunnerImageRepository+":v0.11.10"),
+			reasonHas: []string{testRunnerRepository + ":v0.11.10@" + digestOf(testRunnerRepository+":v0.11.10"),
 				"newest release", "development build"},
 			calls: 2},
 		{name: "release", version: "0.11.6", registry: &fakeRegistry{},
-			want: &RunnerImage{Reference: RunnerImageRepository + ":v0.11.6",
-				Digest: digestOf(RunnerImageRepository + ":v0.11.6")},
-			image:  RunnerImageRepository + "@" + digestOf(RunnerImageRepository+":v0.11.6"),
+			want: &RunnerImage{Reference: testRunnerRepository + ":v0.11.6",
+				Digest: digestOf(testRunnerRepository + ":v0.11.6")},
+			image:  testRunnerRepository + "@" + digestOf(testRunnerRepository+":v0.11.6"),
 			status: Pass,
-			reasonHas: []string{RunnerImageRepository + ":v0.11.6@" + digestOf(RunnerImageRepository+":v0.11.6"),
+			reasonHas: []string{testRunnerRepository + ":v0.11.6@" + digestOf(testRunnerRepository+":v0.11.6"),
 				"released with this CLI"},
 			calls: 1},
 		{name: "--runner-image tag", override: "runner:test", version: "dev", registry: &fakeRegistry{},
@@ -188,10 +261,17 @@ func TestChooseRunner(t *testing.T) {
 			reasonHas: []string{pinned, "--runner-image"}},
 		{name: "none to be had", version: "dev", registry: &fakeRegistry{tagsErr: errors.New("connection refused")},
 			status: Fail, reasonHas: []string{"connection refused", "pass --runner-image"}, calls: 1},
+		{name: "none known to a build without a release registry", unstamped: true, version: "dev",
+			registry: &fakeRegistry{tags: publishedTags}, status: Fail,
+			reasonHas: []string{"without the release registry", "pass --runner-image"}},
+		{name: "--runner-image on a build without a release registry", override: "runner:test", unstamped: true,
+			version: "dev", registry: &fakeRegistry{}, want: &RunnerImage{Reference: "runner:test"},
+			image: "runner:test", status: Pass, reasonHas: []string{"runner:test", "--runner-image"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, check := ChooseRunner(context.Background(), tc.registry, tc.override, tc.version)
+			got, check := ChooseRunner(context.Background(), tc.registry, tc.override,
+				repositoryFor("", tc.unstamped), tc.version)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("ChooseRunner = %+v, want %+v", got, tc.want)
 			}

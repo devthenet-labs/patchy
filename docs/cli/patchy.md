@@ -37,6 +37,7 @@ Run `patchy can-i` to see your grants.
 * [patchy dev](patchy_dev.md)	 - Local test harnesses for generic-integration authors
 * [patchy expedite](patchy_expedite.md)	 - Expedite a finding past the accumulation window and the queue
 * [patchy get](patchy_get.md)	 - List patchy resources
+* [patchy init](patchy_init.md)	 - Scaffold what a repository needs to work with patchy, without a cluster
 * [patchy mirror](patchy_mirror.md)	 - Mirror upstream helm charts and OCI artifacts into a platform registry
 * [patchy resume](patchy_resume.md)	 - Resume a suspended finding
 * [patchy retry](patchy_retry.md)	 - Retry a failed finding from the state it failed in

@@ -1,0 +1,46 @@
+# The dispatcher: when an uncredentialed build finishes, hand its run to the
+# trusted publisher for that image kind. It holds no role and runs no step
+# of its own; each publisher is a workflow of its own because the AWS role
+# trusts exactly one workflow path (job_workflow_ref). It runs on
+# workflow_run, from main's copy of the workflows, never a PR's.
+name: publish images
+on:
+  workflow_run:
+    workflows: [runtime image, agent image]
+    types: [completed]
+permissions: {}
+jobs:
+  # Runtime (preview) images, from PR heads and main commits. Off
+  # unless the repository variable PREVIEW_PUBLISH_ENABLED is 'true'.
+  runtime:
+    if: >-
+      vars.PREVIEW_PUBLISH_ENABLED == 'true' &&
+      github.event.workflow_run.name == 'runtime image' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.id == github.event.repository.id
+    # A called workflow can hold no more than its caller grants.
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      id-token: write
+    uses: ./.github/workflows/publish-runtime.yml
+    with:
+      run-id: ${{ github.event.workflow_run.id }}
+  # Agent toolchain images, from main only. Gated on its own
+  # variable, AGENT_PUBLISH_ENABLED, so a repository without previews still
+  # publishes the image its agent runs in.
+  agent:
+    if: >-
+      vars.AGENT_PUBLISH_ENABLED == 'true' &&
+      github.event.workflow_run.name == 'agent image' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event != 'pull_request' &&
+      github.event.workflow_run.head_repository.id == github.event.repository.id
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    uses: ./.github/workflows/publish-agent.yml
+    with:
+      run-id: ${{ github.event.workflow_run.id }}

@@ -1,0 +1,9 @@
+# The image patchy's coding agent runs in for this repository: an immutable
+# tag that the trusted agent publisher (.github/workflows/publish-agent.yml)
+# pushes from main, built from .patchy/Dockerfile.
+#
+# To change the toolchain, edit .patchy/Dockerfile and bump the tag below
+# (toolchain-v2, toolchain-v3, ...) in the same commit: tags are immutable,
+# so a changed image at a published tag fails to publish. The publisher
+# reads the tag from this file, so keep it to this one image line.
+image: 123456789012.dkr.ecr.eu-west-2.amazonaws.com/patchy/app-envs/hello-web:toolchain-v1

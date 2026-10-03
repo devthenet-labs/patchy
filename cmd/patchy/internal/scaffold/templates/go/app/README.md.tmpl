@@ -1,0 +1,53 @@
+# <% .Repo.Name %>
+
+A small Go HTTP service, scaffolded by `patchy init app` so that [patchy](https://github.com/devthenet-labs/patchy) can
+build intents in it and preview its pull requests. It listens on port <% .Port %>, answers `<% .ReadinessPath %>` once it is
+ready and writes nothing to disk.
+
+## Develop
+
+Use Go <% .GoVersion %>.
+
+```sh
+gofmt -l .
+go vet ./...
+go test -race ./...
+go run .
+```
+
+The root `Dockerfile` builds the runtime image a preview runs: a static binary on distroless, uid 65532, no shell,
+listening on <% .Port %>. A preview runs it with a read-only root filesystem and no writable `/tmp`:
+
+```sh
+docker build -t <% .Slug %>:local .
+docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges \
+  -p 127.0.0.1:<% .Port %>:<% .Port %> <% .Slug %>:local
+curl -s localhost:<% .Port %><% .ReadinessPath %>
+```
+
+`.patchy/Dockerfile` is a different image: the one patchy's coding agent works in, which is patchy's agent base plus the
+pinned Go toolchain and this module's dependencies, offline. `.patchy/agent.yaml` declares its immutable tag.
+
+## CI and images
+
+- `<% .RuntimeWorkflowName %>` (`<% .RuntimeWorkflowFile %>`) tests the exact head and builds the runtime image without credentials.
+- `agent image` (`agent-image.yml`) builds the agent image from `<% .Branch %>`, also without credentials.
+- `publish images` (`publish-images.yml`) hands each successful build to its trusted publisher, which pushes it to ECR.
+  [`.github/actions/publish/README.md`](.github/actions/publish/README.md) describes the trust boundary.
+
+### Repository variables
+
+None of them is secret. Set the configuration first and the two `*_PUBLISH_ENABLED` gates last:
+
+<% .VariablesTable %>
+
+### Trusted workflows
+
+Only these two workflows assume an AWS role, and each role trusts only its own workflow at `<% .Branch %>`:
+
+<% .PublishersTable %>
+
+### Changing the agent toolchain
+
+Edit `.patchy/Dockerfile` (or the dependencies in `go.mod`) and bump the `toolchain-v<N>` tag in `.patchy/agent.yaml` in
+the same commit: published tags are immutable, so a changed image needs a new tag.

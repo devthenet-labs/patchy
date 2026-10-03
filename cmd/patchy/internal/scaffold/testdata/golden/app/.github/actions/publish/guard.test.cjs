@@ -1,0 +1,229 @@
+'use strict';
+const {test} = require('node:test');
+const assert = require('node:assert/strict');
+const {guard, validate, parseID, declaredTag} = require('./guard.cjs');
+const sha = 'a'.repeat(40);
+const branchHead = 'b'.repeat(40);
+const BRANCH = 'main';
+const REPO_ID = 1234567890;
+const OWNER_ID = 987654321;
+const RUNTIME_WORKFLOW = '.github/workflows/ci.yml';
+const AGENT_WORKFLOW = '.github/workflows/agent-image.yml';
+const AGENT_REPOSITORY = '123456789012.dkr.ecr.us-east-1.amazonaws.com/team/agents/example-app';
+const AGENT_YAML = `# a comment\nimage: ${AGENT_REPOSITORY}:toolchain-v3\n`;
+
+// The default branch as the branches API names it, with the comparison
+// from the built commit to its head: here two commits ahead, so the built
+// commit is an ancestor of the head.
+function onBranch() {
+  return {name: BRANCH, head: branchHead, comparison: {status: 'ahead', ahead_by: 2, behind_by: 0,
+    base_commit: {sha}, merge_base_commit: {sha}}};
+}
+
+function fixture(kind = 'runtime', event = 'pull_request') {
+  const identity = {owner: 'example-org', name: 'Example.App', repoID: REPO_ID, ownerID: OWNER_ID};
+  const repo = {id: REPO_ID, owner: {id: OWNER_ID}, full_name: 'example-org/Example.App', fork: false, default_branch: BRANCH};
+  const path = kind === 'runtime' ? RUNTIME_WORKFLOW : AGENT_WORKFLOW;
+  return [identity, repo, {repository: repo, head_repository: repo, status: 'completed', conclusion: 'success',
+    head_sha: sha, workflow_id: 5, path, event, head_branch: BRANCH, run_attempt: 1, pull_requests: [{number: 3}]},
+  {id: 5, path, state: 'active'}, {number: 3, state: 'open', base: {ref: BRANCH, repo}, head: {repo, sha}},
+  [{id: 7, name: `${kind}-${sha}-1`, expired: false, size_in_bytes: 123}], kind,
+  {yaml: AGENT_YAML, repository: AGENT_REPOSITORY}, event === 'pull_request' ? undefined : onBranch()];
+}
+
+test('same-repo current PR, default-branch runtime, dispatched runtime and agent accepted', () => {
+  for (const [args, source] of [[fixture(), 'pull_request'], [fixture('runtime', 'push'), 'main'],
+    [fixture('runtime', 'workflow_dispatch'), 'main']]) {
+    assert.deepEqual(validate(...args), {artifact_id: '7', sha, kind: 'runtime', source});
+  }
+  for (const event of ['push', 'workflow_dispatch']) {
+    assert.deepEqual(validate(...fixture('agent', event)),
+      {artifact_id: '7', sha, kind: 'agent', source: 'main', tag: 'toolchain-v3'});
+  }
+});
+
+for (const [name, mutate] of Object.entries({
+  fork: a => {a[2].head_repository = {...a[1], id: 888, fork: true};},
+  reused_name: a => {a[1].id++;},
+  wrong_owner: a => {a[1].owner.id++;},
+  renamed_but_unconfigured: a => {a[1].full_name = 'example-org/other';},
+  other_default_branch: a => {a[1].default_branch = 'other';},
+  unset_repository_id: a => {a[0].repoID = NaN;},
+  zero_owner_id: a => {a[0].ownerID = 0;},
+  failed_run: a => {a[2].conclusion = 'failure';},
+  in_progress: a => {a[2].status = 'in_progress';},
+  wrong_workflow: a => {a[3].path = '.github/workflows/evil.yml';},
+  inactive_workflow: a => {a[3].state = 'disabled_manually';},
+  stale_head: a => {a[4].head.sha = 'b'.repeat(40);},
+  closed_pr: a => {a[4].state = 'closed';},
+  fork_pr: a => {a[4].head.repo = {...a[1], fork: true, id: 888};},
+  missing_pr: a => {a[2].pull_requests = [];},
+  ambiguous_pr: a => {a[2].pull_requests.push({number: 9});},
+  wrong_base: a => {a[4].base.ref = 'other';},
+  unsafe_sha: a => {a[2].head_sha = '$(id)';},
+  old_attempt: a => {a[2].run_attempt = 2;},
+  missing_artifact: a => {a[5] = [];},
+  duplicate_artifact: a => {a[5].push({...a[5][0]});},
+  expired_artifact: a => {a[5][0].expired = true;},
+  huge_artifact: a => {a[5][0].size_in_bytes = 2 ** 32;},
+  target_event: a => {a[2].event = 'pull_request_target';},
+  wrong_branch: a => {a[2].event = 'push'; a[2].head_branch = 'other';},
+  agent_pr: a => {a[6] = 'agent'; a[3].path = a[2].path = AGENT_WORKFLOW;},
+  unknown_kind: a => {a[6] = 'constructor';},
+})) {
+  test(`reject ${name}`, () => {const args = fixture(); mutate(args); assert.throws(() => validate(...args));});
+}
+
+test('the built commit may be the default branch head itself', () => {
+  const args = fixture('agent', 'push');
+  Object.assign(args[8].comparison, {status: 'identical', ahead_by: 0});
+  args[8].head = sha;
+  assert.equal(validate(...args).source, 'main');
+});
+
+// head_branch names the default branch for a run of a tag named after it
+// too, at a commit no review reached; only ancestry proves the branch.
+test('a default-branch build must be on the branch, not only named for it', () => {
+  const elsewhere = 'c'.repeat(40);
+  for (const [name, mutate] of Object.entries({
+    unproved: a => {a[8] = undefined;},
+    // A tag named after the branch, at a commit on a side branch: the
+    // branch head is behind it.
+    tag_named_like_the_branch: a => {Object.assign(a[8].comparison,
+      {status: 'behind', ahead_by: 0, behind_by: 1, merge_base_commit: {sha: branchHead}});},
+    diverged: a => {Object.assign(a[8].comparison,
+      {status: 'diverged', ahead_by: 2, behind_by: 1, merge_base_commit: {sha: elsewhere}});},
+    other_merge_base: a => {a[8].comparison.merge_base_commit = {sha: elsewhere};},
+    other_base: a => {a[8].comparison.base_commit = {sha: elsewhere};},
+    missing_merge_base: a => {delete a[8].comparison.merge_base_commit;},
+    behind_count: a => {a[8].comparison.behind_by = 1;},
+    no_comparison: a => {delete a[8].comparison;},
+    other_branch: a => {a[8].name = 'other';},
+    unsafe_head: a => {a[8].head = BRANCH;},
+  })) {
+    for (const kind of ['runtime', 'agent']) {
+      for (const event of ['push', 'workflow_dispatch']) {
+        const args = fixture(kind, event);
+        mutate(args);
+        assert.throws(() => validate(...args), /must be on/, `${name} ${kind} ${event}`);
+      }
+    }
+  }
+});
+
+// A fake GitHub API holding exactly the fixture: getBranch names the branch
+// head, and the comparison is whatever the test says it is.
+function fakeGitHub(args, comparison) {
+  const [, repo, run, workflow, pr, artifacts] = args;
+  const calls = [];
+  const data = value => Promise.resolve({data: value});
+  const github = {
+    rest: {
+      repos: {
+        get: () => data(repo),
+        getBranch: p => {calls.push(`getBranch ${p.branch}`); return data({name: p.branch, commit: {sha: branchHead}});},
+        compareCommitsWithBasehead: p => {calls.push(`compare ${p.basehead}`); return data(comparison);},
+        getContent: p => {
+          calls.push(`getContent ${p.path}@${p.ref}`);
+          return data({type: 'file', encoding: 'base64', size: AGENT_YAML.length,
+            content: Buffer.from(AGENT_YAML).toString('base64')});
+        },
+      },
+      actions: {
+        getWorkflowRun: () => data(run),
+        getWorkflow: () => data(workflow),
+        listWorkflowRunArtifacts: () => data({artifacts}),
+      },
+      pulls: {get: () => data(pr)},
+    },
+    paginate: async (method, params) => (await method(params)).data.artifacts,
+  };
+  return {github, calls};
+}
+
+function guardArgs(github, kind) {
+  return {github, context: {repo: {owner: 'example-org', repo: 'Example.App'}}, runID: '42', kind,
+    repositoryID: String(REPO_ID), ownerID: String(OWNER_ID), agentRepository: AGENT_REPOSITORY};
+}
+
+test('guard compares the built commit with the branch head by SHA', async () => {
+  for (const kind of ['runtime', 'agent']) {
+    const args = fixture(kind, 'push');
+    const {github, calls} = fakeGitHub(args, args[8].comparison);
+    const result = await guard(guardArgs(github, kind));
+    assert.equal(result.source, 'main', kind);
+    assert.deepEqual(calls.slice(0, 2), [`getBranch ${BRANCH}`, `compare ${sha}...${branchHead}`], kind);
+  }
+});
+
+test('guard refuses a run of a tag named after the default branch', async () => {
+  for (const kind of ['runtime', 'agent']) {
+    // The run reports head_branch as the branch's name, but the tag's
+    // commit sits on a side branch: the branch head is behind it.
+    const args = fixture(kind, 'push');
+    const {github} = fakeGitHub(args, {status: 'behind', ahead_by: 0, behind_by: 1,
+      base_commit: {sha}, merge_base_commit: {sha: branchHead}});
+    await assert.rejects(guard(guardArgs(github, kind)), /must be on/, kind);
+  }
+});
+
+test('guard never compares a pull request head with the branch', async () => {
+  const args = fixture();
+  const {github, calls} = fakeGitHub(args, undefined);
+  assert.equal((await guard(guardArgs(github, 'runtime'))).source, 'pull_request');
+  assert.deepEqual(calls, []);
+});
+
+test('agent images come only from default-branch runs of the agent workflow', () => {
+  const args = fixture('agent', 'push');
+  args[2].path = args[3].path = RUNTIME_WORKFLOW;
+  assert.throws(() => validate(...args), /workflow identity/);
+});
+
+test('an agent image needs a readable declaration naming this repository', () => {
+  for (const [name, agent] of Object.entries({
+    missing: undefined,
+    unread: {repository: AGENT_REPOSITORY},
+    no_repository: {yaml: AGENT_YAML},
+    other_repository: {yaml: AGENT_YAML, repository: `${AGENT_REPOSITORY}-other`},
+  })) {
+    const args = fixture('agent', 'push');
+    args[7] = agent;
+    assert.throws(() => validate(...args), Error, name);
+  }
+});
+
+test('the declared toolchain tag is read strictly', () => {
+  const ok = {
+    [`image: ${AGENT_REPOSITORY}:toolchain-v1\n`]: 'toolchain-v1',
+    [`# c\n\nimage: "${AGENT_REPOSITORY}:toolchain-v12"  # trailing\r\n`]: 'toolchain-v12',
+    [`image: '${AGENT_REPOSITORY}:toolchain-v999999'`]: 'toolchain-v999999',
+  };
+  for (const [text, tag] of Object.entries(ok)) assert.equal(declaredTag(text, AGENT_REPOSITORY), tag, text);
+  for (const text of [
+    '',
+    '# only a comment\n',
+    `image: ${AGENT_REPOSITORY}:latest\n`,
+    `image: ${AGENT_REPOSITORY}:toolchain-v0\n`,
+    `image: ${AGENT_REPOSITORY}:toolchain-v01\n`,
+    `image: ${AGENT_REPOSITORY}:toolchain-v1234567\n`,
+    `image: ${AGENT_REPOSITORY}:toolchain-v1@sha256:${'c'.repeat(64)}\n`,
+    `image: ${AGENT_REPOSITORY}-evil:toolchain-v1\n`,
+    `image: other.example.com/x:toolchain-v1\n`,
+    `image: ${AGENT_REPOSITORY}:toolchain-v1\nimage: ${AGENT_REPOSITORY}:toolchain-v2\n`,
+    `image: ${AGENT_REPOSITORY}:toolchain-v1\nbuild: .\n`,
+    `---\nimage: ${AGENT_REPOSITORY}:toolchain-v1\n`,
+    `image: "${AGENT_REPOSITORY}:toolchain-v1'\n`,
+    `  image: ${AGENT_REPOSITORY}:toolchain-v1\n`,
+    'x'.repeat(64 * 1024 + 1),
+  ]) {
+    assert.throws(() => declaredTag(text, AGENT_REPOSITORY), Error, JSON.stringify(text.slice(0, 80)));
+  }
+});
+
+test('repository variables must be canonical numeric IDs', () => {
+  assert.equal(parseID('1234567890', 'X'), 1234567890);
+  for (const bad of [undefined, '', '0', '01', '-1', '1e9', ' 1', '1 ', '12345678901234567', 'abc']) {
+    assert.throws(() => parseID(bad, 'X'), /must be a numeric ID/, String(bad));
+  }
+});

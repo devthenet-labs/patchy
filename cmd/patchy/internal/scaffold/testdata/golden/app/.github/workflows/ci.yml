@@ -1,0 +1,66 @@
+# The uncredentialed build of the runtime image a patchy preview runs,
+# after the application's tests. It holds no OIDC permission, no
+# repository variable and no secret: publish-images.yml picks its artifact
+# up and hands it to the trusted runtime publisher.
+name: test
+on:
+  pull_request:
+  push:
+    branches: ['main']
+  workflow_dispatch:
+permissions:
+  contents: read
+# A PR's newer push supersedes its older run. main is different: every
+# commit there must build and publish its own runtime image (a preview of an
+# unchanged repository runs the default branch's image), so each gets a
+# group of its own and is never cancelled or replaced as a pending run.
+concurrency:
+  group: test-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.26.6
+          cache: false
+      - name: Test the app and the publishers' rejection rules
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race ./...
+          node --test .github/actions/publish/guard.test.cjs
+          python3 -m unittest discover -s .github/actions/publish -p 'test_*.py'
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 \
+            .github/workflows/ci.yml \
+            .github/workflows/agent-image.yml \
+            .github/workflows/publish-images.yml \
+            .github/workflows/publish-runtime.yml \
+            .github/workflows/publish-agent.yml
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      # SOURCE_DATE_EPOCH is the commit's time and every layer's timestamps
+      # are rewritten to it, so a re-run of the same head rebuilds the same
+      # digest and the publisher finds it already published.
+      - name: Build the exact head without credentials or OIDC
+        env:
+          BUILD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH
+          docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+            --build-arg BUILD_SHA="$BUILD_SHA" \
+            --output "type=oci,dest=$RUNNER_TEMP/runtime.oci.tar,rewrite-timestamp=true" .
+          python3 .github/actions/publish/validate_oci.py "$RUNNER_TEMP/runtime.oci.tar" "$RUNNER_TEMP/runtime-validated" runtime
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime.oci.tar
+          retention-days: 3
+          if-no-files-found: error

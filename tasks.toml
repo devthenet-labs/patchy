@@ -159,6 +159,19 @@ description = "check the reference AWS terraform module"
 dir = "{{cwd}}"
 run = "./hack/tf-lint.sh"
 
+# The trees `patchy init app` generates, checked the way their own CI would
+# (hack/scaffold-check.sh): actionlint, shellcheck and hadolint over the
+# golden trees under cmd/patchy/internal/scaffold/testdata, the guard's node
+# tests, the publishers' python tests and a vet and race test of the
+# generated Go service. The golden test pins the bytes; this proves they
+# work. In `make pr` and in CI's scaffold-check job. Building and running the
+# images needs a tree generated with real images:
+# `hack/scaffold-check.sh --docker <tree>`.
+[scaffold-check]
+description = "lint and test the init app golden trees as their own CI would"
+dir = "{{cwd}}"
+run = "./hack/scaffold-check.sh"
+
 # Everything derived from the CLI's cobra command tree: the per-command
 # reference under docs/cli (nav'd from docs/cli.md) and the shell completions.
 # Kept repo-local because the archetype leaves `docs` to the app — see the
@@ -207,9 +220,9 @@ run = [
 ]
 
 # The envtest suite (CRD schema assertions), the codegen drift check, the
-# chart gate (helm-lint: lint, renders and the render assertions) and the
-# terraform module gate (tf-lint) run here because the reusable CI workflow
-# runs none of them; see [ci] above.
+# chart gate (helm-lint: lint, renders and the render assertions), the
+# terraform module gate (tf-lint) and the init app tree check (scaffold-check)
+# run here because the reusable CI workflow runs none of them; see [ci] above.
 [pr]
 description = "full local gate before a pull request"
 run = [
@@ -219,6 +232,7 @@ run = [
   { task = "lint" },
   { task = "helm-lint" },
   { task = "tf-lint" },
+  { task = "scaffold-check" },
   { task = "test" },
   { task = "envtest" },
   { task = "build" },

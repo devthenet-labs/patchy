@@ -238,7 +238,7 @@ type componentReadiness int
 
 const (
 	// componentPending: no Pod running the component's exact image has a
-	// Ready container yet.
+	// Ready container yet, or none the Deployment counts available.
 	componentPending componentReadiness = iota
 	// componentGateless: gated, and the component's Pod is up but carries no
 	// load-balancer readiness gate, so its target health is never reported.
@@ -254,6 +254,12 @@ const (
 // out and a Pod running the component's exact image is Ready — and, when
 // gated, its load balancer target is healthy too (targetHealthy). Short of
 // that, it reports how far the furthest Pod has got.
+//
+// Each Pod is classified whether or not the Deployment counts one available
+// yet: the kubelet holds a Pod's Ready condition False until every readiness
+// gate is True, and only a Ready Pod is available, so a gated Pod whose
+// target is unhealthy leaves the Deployment with no available replica for as
+// long as it stays unhealthy. Availability gates only componentReady.
 func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, i int, slot int32,
 	gated bool) (string, componentReadiness, error) {
 	c := p.Spec.Components[i]
@@ -262,9 +268,10 @@ func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, i int,
 	if err := r.Get(ctx, key, &dep); err != nil {
 		return "", componentPending, err
 	}
-	if dep.Status.ObservedGeneration < dep.Generation || dep.Status.AvailableReplicas < 1 {
+	if dep.Status.ObservedGeneration < dep.Generation {
 		return "", componentPending, nil
 	}
+	available := dep.Status.AvailableReplicas >= 1
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(key.Namespace),
 		client.MatchingLabels(componentLabels(p, i))); err != nil {
@@ -290,7 +297,7 @@ func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, i int,
 			state = componentGateless
 		case gated && !targetHealthy(&pod):
 			state = componentUnhealthy
-		case !podCondition(&pod, corev1.PodReady):
+		case !podCondition(&pod, corev1.PodReady) || !available:
 			state = componentPending
 		}
 		if state == componentReady {

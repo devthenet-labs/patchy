@@ -61,11 +61,6 @@ func (e *testEnv) startPod(p *v1alpha1.Preview, i int, name string, gated bool,
 	if err := e.slotObject(componentName(p, i), &dep); err != nil {
 		e.t.Fatalf("component %d Deployment: %v", i, err)
 	}
-	dep.Status.ObservedGeneration = dep.Generation
-	dep.Status.AvailableReplicas = 1
-	if err := e.c.Status().Update(ctx, &dep); err != nil {
-		e.t.Fatal(err)
-	}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Name: name, Namespace: dep.Namespace, Labels: maps.Clone(dep.Spec.Template.Labels),
 		Annotations: map[string]string{testPodDeployment: dep.Name},
@@ -87,17 +82,48 @@ func (e *testEnv) startPod(p *v1alpha1.Preview, i int, name string, gated bool,
 	if err := e.c.Status().Update(ctx, pod); err != nil {
 		e.t.Fatal(err)
 	}
+	e.syncAvailability(dep.Name)
 	return pod
 }
 
 // setTargetHealth plays the load balancer controller reporting the Pod's
-// target health on its gate, and the kubelet recomputing Ready from it.
+// target health on its gate, the kubelet recomputing Ready from it, and the
+// Deployment controller recounting what is available.
 func (e *testEnv) setTargetHealth(pod *corev1.Pod, health corev1.ConditionStatus) {
 	e.t.Helper()
 	pod.Status.Conditions = []corev1.PodCondition{
 		{Type: corev1.PodReady, Status: health}, {Type: targetHealthGate, Status: health},
 	}
 	if err := e.c.Status().Update(context.Background(), pod); err != nil {
+		e.t.Fatal(err)
+	}
+	e.syncAvailability(pod.Annotations[testPodDeployment])
+}
+
+// syncAvailability plays the ReplicaSet and Deployment controllers: the
+// Deployment's available replicas are its Pods whose Ready condition is
+// True. A gated Pod whose target is unhealthy is not Ready, so it is never
+// counted, however Ready its containers are.
+func (e *testEnv) syncAvailability(deployment string) {
+	e.t.Helper()
+	ctx := context.Background()
+	var dep appsv1.Deployment
+	if err := e.slotObject(deployment, &dep); err != nil {
+		e.t.Fatalf("Deployment %s: %v", deployment, err)
+	}
+	var pods corev1.PodList
+	if err := e.c.List(ctx, &pods, client.InNamespace(dep.Namespace)); err != nil {
+		e.t.Fatal(err)
+	}
+	var available int32
+	for i := range pods.Items {
+		if pods.Items[i].Annotations[testPodDeployment] == deployment && podCondition(&pods.Items[i], corev1.PodReady) {
+			available++
+		}
+	}
+	dep.Status.ObservedGeneration = dep.Generation
+	dep.Status.AvailableReplicas = available
+	if err := e.c.Status().Update(ctx, &dep); err != nil {
 		e.t.Fatal(err)
 	}
 }
@@ -308,6 +334,62 @@ func TestTargetHealthNamesAMissingGate(t *testing.T) {
 		if p.Status.Retries != 1 || !strings.Contains(p.Status.Message, want) {
 			t.Errorf("status = %+v, want one retry whose message has %q", p.Status, want)
 		}
+	}
+}
+
+// Regression: a gated Pod whose target is not healthy is not Ready (the
+// kubelet holds Ready until every gate is True), so its Deployment counts no
+// replica available. The rollout check stopped at that count, before looking
+// at the Pod, and the retry said the component "did not become Ready" though
+// its containers were; it now names the target. A Pod whose containers are
+// not Ready still gets the plain message.
+func TestTargetHealthRetryNamesTheCause(t *testing.T) {
+	const unhealthy = "component demo's load balancer target did not become healthy within 10m0s"
+	for _, tc := range []struct {
+		name string
+		// observe plays the kubelet and the load balancer on the started,
+		// gated Pod, whose target is reported unhealthy.
+		observe func(*corev1.Pod)
+		want    string
+	}{
+		{name: "unhealthy target", want: unhealthy},
+		{name: "target not yet reported", observe: func(pod *corev1.Pod) {
+			pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}}
+		}, want: unhealthy},
+		{name: "containers not Ready", observe: func(pod *corev1.Pod) {
+			pod.Status.ContainerStatuses[0].Ready = false
+		}, want: "component demo did not become Ready within 10m0s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			at := time.Date(2026, 10, 1, 11, 0, 0, 0, time.UTC)
+			in, p := testPreview("demo-1", at)
+			e := newHealthEnv(t, in, p)
+			p = e.untilSlot(p.Name)
+			e.step(p.Name)
+			e.admitIngress(p)
+			e.step(p.Name)
+			pod := e.startPod(p, 0, "gated", true, corev1.ConditionFalse)
+			if tc.observe != nil {
+				tc.observe(pod)
+				if err := e.c.Status().Update(context.Background(), pod); err != nil {
+					t.Fatal(err)
+				}
+				e.syncAvailability(componentName(p, 0))
+			}
+			var dep appsv1.Deployment
+			if err := e.slotObject(componentName(p, 0), &dep); err != nil {
+				t.Fatal(err)
+			}
+			if dep.Status.AvailableReplicas != 0 {
+				t.Fatalf("available replicas = %d, want 0: a Pod with a gate not True is never available",
+					dep.Status.AvailableReplicas)
+			}
+			e.now = e.now.Add(11 * time.Minute)
+			p = e.step(p.Name)
+			if p.Status.Retries != 1 || !strings.Contains(p.Status.Message, tc.want) {
+				t.Fatalf("status = %+v, want one retry whose message has %q", p.Status, tc.want)
+			}
+		})
 	}
 }
 

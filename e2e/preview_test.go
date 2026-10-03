@@ -237,11 +237,6 @@ func TestPreviewTargetHealthRuntime(t *testing.T) {
 	}
 	var dep appsv1.Deployment
 	eventually(t, "the Deployment once the Ingress is admitted", func() bool { return cl.client.Get(ctx, key, &dep) == nil })
-	dep.Status.ObservedGeneration = dep.Generation
-	dep.Status.Replicas, dep.Status.ReadyReplicas, dep.Status.AvailableReplicas = 1, 1, 1
-	if err := cl.client.Status().Update(ctx, &dep); err != nil {
-		t.Fatal(err)
-	}
 	const gate = corev1.PodConditionType("target-health.elbv2.k8s.aws/k8s-patchypr-previewd-0123456789")
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "preview-demo-1-pod", Namespace: key.Namespace,
 		Labels: dep.Spec.Template.Labels}, Spec: dep.Spec.Template.Spec}
@@ -249,12 +244,27 @@ func TestPreviewTargetHealthRuntime(t *testing.T) {
 	if err := cl.client.Create(ctx, pod); err != nil {
 		t.Fatal(err)
 	}
+	// setHealth plays the load balancer reporting the target on the gate, the
+	// kubelet holding Ready until the gate is True, and the Deployment
+	// controller counting only a Ready Pod available.
 	setHealth := func(health corev1.ConditionStatus) {
 		t.Helper()
 		pod.Status.Phase = corev1.PodRunning
 		pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: health}, {Type: gate, Status: health}}
 		pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "demo", Ready: true, ImageID: "repo@sha256:123"}}
 		if err := cl.client.Status().Update(ctx, pod); err != nil {
+			t.Fatal(err)
+		}
+		if err := cl.client.Get(ctx, key, &dep); err != nil {
+			t.Fatal(err)
+		}
+		ready := int32(0)
+		if health == corev1.ConditionTrue {
+			ready = 1
+		}
+		dep.Status.ObservedGeneration = dep.Generation
+		dep.Status.Replicas, dep.Status.ReadyReplicas, dep.Status.AvailableReplicas = 1, ready, ready
+		if err := cl.client.Status().Update(ctx, &dep); err != nil {
 			t.Fatal(err)
 		}
 	}

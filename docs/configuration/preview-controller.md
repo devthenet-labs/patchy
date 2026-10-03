@@ -103,7 +103,10 @@ serving on its Pods rather than being restarted to grow a gate. The Auto Mode la
 blog post and a maintainer's answer on aws/containers-roadmap#2511), not from the EKS user guide, and has not yet been
 checked on a live preview, which is why the mode is off by default: if Auto Mode injects no gate, every rollout times
 out and retries, the retry's message naming the missing gate, and `targetHealth: false` restores the ungated behaviour.
-Turn it on for a live single-repository preview check, and keep it on once a Preview reaches `Ready` on a gated Pod.
+A Pod that has the gate but whose target never turns healthy (a readiness path the component does not serve, or a
+security group or network policy keeping the load balancer's health checks out) is retried with a message naming the
+unhealthy target instead. Turn the mode on for a live single-repository preview check, and keep it on once a Preview
+reaches `Ready` on a gated Pod.
 
 Before enabling any Project preview, complete the separate ALB, placeholder Ingress and wildcard DNS check-in, then run
 the cold-start isolation gate in `hack/preview-isolation-probe/README.md` with a disposable PR image. Repeat that gate

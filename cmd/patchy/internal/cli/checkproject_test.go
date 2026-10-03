@@ -41,7 +41,9 @@ func (noGitHub) File(context.Context, string, string, string, int64) ([]byte, in
 // noDNS resolves nothing.
 type noDNS struct{}
 
-func (noDNS) LookupHost(context.Context, string) ([]string, error) { return nil, errors.New("no such host") }
+func (noDNS) LookupHost(context.Context, string) ([]string, error) {
+	return nil, errors.New("no such host")
+}
 
 // checkProjectDepsFake reaches nothing beyond the fake cluster.
 var checkProjectDepsFake = checkProjectDeps{

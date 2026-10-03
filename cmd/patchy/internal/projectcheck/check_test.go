@@ -126,7 +126,9 @@ type world struct {
 }
 
 // agentImage and previewRepo are where repository key's images live.
-func (w *world) agentImage(key string) string { return w.host + "/patchy/app-envs/" + key + ":toolchain-v1" }
+func (w *world) agentImage(key string) string {
+	return w.host + "/patchy/app-envs/" + key + ":toolchain-v1"
+}
 func (w *world) previewRepo(key string) string { return w.host + "/patchy/previews/" + key }
 
 // newWorld is a Project with three repositories, web and api previewed and
@@ -206,11 +208,11 @@ func newWorld(t *testing.T) *world {
 }
 
 // testForge is a Forge covering github.com, limited to orgs when given.
-func testForge(name string, ready metav1.ConditionStatus, orgs ...string) *v1alpha1.Forge {
+func testForge(forgeName string, ready metav1.ConditionStatus, orgs ...string) *v1alpha1.Forge {
 	return &v1alpha1.Forge{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: forgeName, Namespace: testNamespace},
 		Spec: v1alpha1.ForgeSpec{Provider: v1alpha1.ForgeProviderGitHub, Orgs: orgs,
-			SecretRef: v1alpha1.LocalSecretReference{Name: name + "-app"}},
+			SecretRef: v1alpha1.LocalSecretReference{Name: forgeName + "-app"}},
 		Status: v1alpha1.ForgeStatus{Conditions: []metav1.Condition{
 			{Type: v1alpha1.ConditionReady, Status: ready, Reason: "CredentialValid"},
 		}},
@@ -218,9 +220,9 @@ func testForge(name string, ready metav1.ConditionStatus, orgs ...string) *v1alp
 }
 
 // configMap is a controller's chart-rendered settings.
-func (w *world) configMap(name, controller string, data map[string]string) *corev1.ConfigMap {
+func (w *world) configMap(cmName, controller string, data map[string]string) *corev1.ConfigMap {
 	return &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testNamespace,
+		ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: testNamespace,
 			Labels: map[string]string{labelName: controller, labelPartOf: partOf}},
 		Data: data,
 	}

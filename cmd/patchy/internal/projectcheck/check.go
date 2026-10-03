@@ -113,8 +113,8 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	return r.report, nil
 }
 
-func (r *run) add(name, repository string, status checkreport.Status, format string, args ...any) {
-	r.report.add(name, repository, status, fmt.Sprintf(format, args...))
+func (r *run) add(check, repository string, status checkreport.Status, format string, args ...any) {
+	r.report.add(check, repository, status, fmt.Sprintf(format, args...))
 }
 
 // verdict reports intent-controller's own conditions.
@@ -195,7 +195,8 @@ type target struct{ key, url string }
 
 // repositories are the intent repository, then every app repository.
 func (r *run) repositories() []target {
-	out := []target{{IntentRepository, r.p.Spec.IntentRepository}}
+	out := make([]target, 0, 1+len(r.p.Spec.Repositories))
+	out = append(out, target{IntentRepository, r.p.Spec.IntentRepository})
 	for _, repo := range r.p.Spec.Repositories {
 		out = append(out, target{repo.Name, repo.URL})
 	}
@@ -296,14 +297,21 @@ func (r *run) agentImage(ctx context.Context, repo v1alpha1.ProjectRepository, r
 		return
 	}
 	declared := fmt.Sprintf("%s (%s at %s)", decl.Image, decl.Manifest, at)
+	r.judgeAgentImage(ctx, key, decl.Image, declared, require, cfg, pol, polErr)
+}
+
+// judgeAgentImage judges one declared image under source-controller's
+// policy; declared names it and where it was declared, for the reasons.
+func (r *run) judgeAgentImage(ctx context.Context, key, image, declared string, require bool, cfg controllerConfig,
+	pol imagePolicy, polErr error) {
 	switch {
 	case polErr != nil:
 		r.add(CheckAgentImage, key, checkreport.Skip, "%s: cannot read source-controller's policy: %v; "+
-			"`patchy check image %s --allow <registry path>` checks it by hand", declared, polErr, decl.Image)
+			"`patchy check image %s --allow <registry path>` checks it by hand", declared, polErr, image)
 		return
 	case !cfg.found():
 		r.add(CheckAgentImage, key, checkreport.Skip, "%s: no source-controller ConfigMap in namespace %s, so its "+
-			"policy is unknown; `patchy check image %s` checks it by hand", declared, r.p.Namespace, decl.Image)
+			"policy is unknown; `patchy check image %s` checks it by hand", declared, r.p.Namespace, image)
 		return
 	case !pol.enabled && require:
 		r.add(CheckAgentImage, key, checkreport.Fail, "%s: source-controller does not resolve repository-declared "+
@@ -316,7 +324,7 @@ func (r *run) agentImage(ctx context.Context, repo v1alpha1.ProjectRepository, r
 		return
 	}
 	rep, err := imagecheck.Static(ctx, imagecheck.StaticConfig{
-		Reference: decl.Image, Policy: pol.policy, MaxBytes: pol.maxBytes, PublicKey: pol.key,
+		Reference: image, Policy: pol.policy, MaxBytes: pol.maxBytes, PublicKey: pol.key,
 		KeyName: "source-controller's cosign key", Keychain: r.cfg.Keychain,
 	})
 	if err != nil {
@@ -333,7 +341,7 @@ func (r *run) agentImage(ctx context.Context, repo v1alpha1.ProjectRepository, r
 	if slices.Equal(failedNames, []string{imagecheck.CheckResolve}) {
 		// Only the registry read failed: tell an image that is not there
 		// from credentials of the caller's that cannot read it.
-		_, err := r.fetch(ctx, decl.Image)
+		_, err := r.fetch(ctx, image)
 		switch code := registryCode(err); {
 		case err == nil:
 		case code == transport.NameUnknownErrorCode || code == transport.ManifestUnknownErrorCode || code == "404":
@@ -348,7 +356,7 @@ func (r *run) agentImage(ctx context.Context, repo v1alpha1.ProjectRepository, r
 	}
 	if len(failed) > 0 {
 		r.add(CheckAgentImage, key, checkreport.Fail, "%s fails source-controller's policy from %s: %s; "+
-			"`patchy check image %s` lists every check", declared, pol.from, strings.Join(failed, "; "), decl.Image)
+			"`patchy check image %s` lists every check", declared, pol.from, strings.Join(failed, "; "), image)
 		return
 	}
 	r.add(CheckAgentImage, key, checkreport.Pass, "%s pins to %s and passes source-controller's policy from %s "+
@@ -638,4 +646,3 @@ func orNone(from, namespace string) string {
 	}
 	return from
 }
-

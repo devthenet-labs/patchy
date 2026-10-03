@@ -161,14 +161,18 @@ cm preview-runtime preview-controller PATCHY_PREVIEW_NODE_POOL patchy-preview
 cm preview-runtime preview-controller PATCHY_PREVIEW_NODE_CLASS patchy-preview
 cm preview-runtime preview-controller PATCHY_PREVIEW_TAINT_KEY patchy.devthe.net/preview-only
 cm preview-runtime intent-controller PATCHY_INTENT_PREVIEWS_ENABLED true
-# Ready waits for the load balancer's target health by default, and the slot
-# namespaces opt into EKS Auto Mode's readiness-gate injection for it.
-cm preview-runtime preview-controller PATCHY_PREVIEW_TARGET_HEALTH true
-render preview-runtime-ungated -f "$fixtures/preview-foundation.yaml" \
+# Ready waits for the load balancer's target health only once the operator
+# opts in (it is unverified on a live preview, and without the gate every
+# rollout times out); only then do the slot namespaces opt into EKS Auto
+# Mode's readiness-gate injection, so off the slots run exactly as before.
+cm preview-runtime preview-controller PATCHY_PREVIEW_TARGET_HEALTH false
+expect preview-runtime 'select(.kind == "Namespace" and (.metadata.name | test("^patchy-preview-"))) | .metadata.labels."eks.amazonaws.com/pod-readiness-gate-inject"' 'null
+null'
+render preview-runtime-gated -f "$fixtures/preview-foundation.yaml" \
   -f "$fixtures/intent-controller.yaml" -f "$fixtures/preview-controller.yaml" \
-  --set previewController.config.targetHealth=false
-cm preview-runtime-ungated preview-controller PATCHY_PREVIEW_TARGET_HEALTH false
-expect preview 'select(.kind == "Namespace" and (.metadata.name | test("^patchy-preview-"))) | .metadata.labels."eks.amazonaws.com/pod-readiness-gate-inject"' 'enabled
+  --set previewController.config.targetHealth=true
+cm preview-runtime-gated preview-controller PATCHY_PREVIEW_TARGET_HEALTH true
+expect preview-runtime-gated 'select(.kind == "Namespace" and (.metadata.name | test("^patchy-preview-"))) | .metadata.labels."eks.amazonaws.com/pod-readiness-gate-inject"' 'enabled
 enabled'
 expect_fail 'preview controller without slots' 'requires preview.enabled' \
   -f "$fixtures/intent-controller.yaml" -f "$fixtures/preview-controller.yaml"

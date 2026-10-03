@@ -17,6 +17,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/kube"
@@ -61,6 +62,13 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T, objects ...client.Object) *testEnv {
 	t.Helper()
+	return newTestEnvWith(t, interceptor.Funcs{}, objects...)
+}
+
+// newTestEnvWith is newTestEnv with an API server behaviour the fake client
+// lacks (an admission refusal, say) played by funcs.
+func newTestEnvWith(t *testing.T, funcs interceptor.Funcs, objects ...client.Object) *testEnv {
+	t.Helper()
 	scheme := kube.Scheme()
 	project := &v1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "patchy"},
 		Spec: v1alpha1.ProjectSpec{
@@ -71,7 +79,7 @@ func newTestEnv(t *testing.T, objects ...client.Object) *testEnv {
 	objects = append(objects, project)
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&v1alpha1.Preview{}, &v1alpha1.Intent{}, &appsv1.Deployment{}, &corev1.Pod{}).
-		WithObjects(objects...).Build()
+		WithObjects(objects...).WithInterceptorFuncs(funcs).Build()
 	e := &testEnv{c: c, now: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC), t: t}
 	e.r = &Reconciler{Client: c, Settings: testSettings(), Now: func() time.Time { return e.now }}
 	return e

@@ -226,8 +226,10 @@ func TestTargetHealthRetryKeepsIngress(t *testing.T) {
 	e.startPod(p, 1, "api", true, corev1.ConditionFalse) // never healthy
 	e.now = e.now.Add(11 * time.Minute)
 	p = e.step(p.Name)
-	if p.Status.Retries != 1 || !strings.Contains(p.Status.Message, "component api did not become Ready") {
-		t.Fatalf("status = %+v, want one retry naming api", p.Status)
+	// Its containers are Ready: the message names the unhealthy target.
+	if p.Status.Retries != 1 ||
+		!strings.Contains(p.Status.Message, "component api's load balancer target did not become healthy") {
+		t.Fatalf("status = %+v, want one retry naming api's target", p.Status)
 	}
 	for i := range p.Spec.Components {
 		if err := e.slotObject(componentName(p, i), &appsv1.Deployment{}); !kerrors.IsNotFound(err) {
@@ -284,5 +286,92 @@ func TestTargetHealthKeepsAReadyPreviewServing(t *testing.T) {
 	}
 	if dep.ResourceVersion != before {
 		t.Errorf("serving Deployment rewritten (resourceVersion %s -> %s)", before, dep.ResourceVersion)
+	}
+}
+
+// Regression: a Pod the load balancer injected no gate into is Ready, so a
+// retry that said the component "did not become Ready" pointed away from the
+// cause. The retry names the missing gate and how to stop waiting for it.
+func TestTargetHealthNamesAMissingGate(t *testing.T) {
+	at := time.Date(2026, 10, 1, 11, 0, 0, 0, time.UTC)
+	in, p := testPreview("demo-1", at)
+	e := newHealthEnv(t, in, p)
+	p = e.untilSlot(p.Name)
+	e.step(p.Name)
+	e.admitIngress(p)
+	e.step(p.Name)
+	e.startPod(p, 0, "gateless", false, "")
+	e.now = e.now.Add(11 * time.Minute)
+	p = e.step(p.Name)
+	for _, want := range []string{"component demo's Ready Pod got no load-balancer readiness gate within 10m0s",
+		"eks.amazonaws.com/pod-readiness-gate-inject", "targetHealth: false"} {
+		if p.Status.Retries != 1 || !strings.Contains(p.Status.Message, want) {
+			t.Errorf("status = %+v, want one retry whose message has %q", p.Status, want)
+		}
+	}
+}
+
+// Regression: a component added to a Ready Preview started its Pod as soon as
+// the kept Ingress was patched to route to it, on the strength of an address
+// the load balancer had published for the Ingress before that route existed.
+// The Pod then came up before its target group binding, got no gate, and held
+// the Preview until the rollout timeout and a retry. An Ingress that lacks a
+// backend is now replaced, and the new component starts only once the load
+// balancer has admitted the replacement.
+func TestTargetHealthAddedComponentWaitsForAFreshIngress(t *testing.T) {
+	at := time.Date(2026, 10, 1, 11, 0, 0, 0, time.UTC)
+	in, p := multiPreview(t, at)
+	project := shopProject()
+	api := project.Spec.Repositories[2].Preview
+	project.Spec.Repositories[2].Preview = nil
+	both := p.Spec.Components
+	p.Spec.Components = both[:1]
+	e := newHealthEnv(t, project, in, p)
+	p = e.untilSlot(p.Name)
+	e.step(p.Name)
+	e.admitIngress(p)
+	e.step(p.Name)
+	e.startPod(p, 0, "web", true, corev1.ConditionTrue)
+	if p = e.step(p.Name); p.Status.Phase != v1alpha1.PreviewReady {
+		t.Fatalf("phase = %s, want Ready", p.Status.Phase)
+	}
+	ctx := context.Background()
+	// The operator previews the API too: a second component, and a route.
+	if err := e.c.Get(ctx, client.ObjectKeyFromObject(project), project); err != nil {
+		t.Fatal(err)
+	}
+	project.Spec.Repositories[2].Preview = api
+	if err := e.c.Update(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	p.Spec.Components = both
+	p.Generation++
+	if err := e.c.Update(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		p = e.step(p.Name)
+		e.collectGarbage()
+	}
+	if p.Status.Phase == v1alpha1.PreviewFailed || p.Status.Retries != 0 {
+		t.Fatalf("status = %+v, want still deploying", p.Status)
+	}
+	if err := e.slotObject(componentName(p, 1), &appsv1.Deployment{}); !kerrors.IsNotFound(err) {
+		t.Fatalf("api Deployment created before the load balancer admitted an Ingress routing to it: %v", err)
+	}
+	var ing networkingv1.Ingress
+	if err := e.slotObject(resourceName(p), &ing); err != nil {
+		t.Fatalf("Ingress not recreated: %v", err)
+	}
+	if !ingressBackends(&ing)[componentName(p, 1)] || len(ing.Status.LoadBalancer.Ingress) != 0 {
+		t.Fatalf("Ingress = %+v, want a fresh, unadmitted one routing to api", ing)
+	}
+	e.admitIngress(p)
+	for range 2 { // the web Deployment is replaced first: its selector gains the component label
+		p = e.step(p.Name)
+		e.collectGarbage()
+	}
+	if err := e.slotObject(componentName(p, 1), &appsv1.Deployment{}); err != nil {
+		t.Fatalf("api Deployment not created once the fresh Ingress was admitted: %v", err)
 	}
 }

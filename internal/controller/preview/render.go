@@ -68,7 +68,9 @@ type Settings struct {
 	// into a slot Pod (its namespace opts in by label) only when the Pod is
 	// created after the target group binding exists, which follows the
 	// Ingress. So the Ingress comes first and stays across redeploys and
-	// retries, Deployments wait until the load balancer has admitted it, and
+	// retries (one that lacks a newly added component's backend is replaced
+	// instead: only a new Ingress's address proves that backend's binding
+	// exists), Deployments wait until the load balancer has admitted it, and
 	// a component is Ready only once its Pod carries a readiness gate and
 	// every gate is True. The controller renders no gate of its own, so the
 	// one a slot Pod carries is the load balancer's (its condition type,

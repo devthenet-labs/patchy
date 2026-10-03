@@ -92,13 +92,15 @@ previewController:
         pollInterval: 15s
         maxRetries: 3
         # Mark a Preview Ready only once each component's load balancer
-        # target is healthy. The slot namespaces are labelled for EKS Auto
+        # target is healthy. true labels the slot namespaces for EKS Auto
         # Mode's pod readiness gate injection
         # (eks.amazonaws.com/pod-readiness-gate-inject); the Ingress is
         # created before the Pods so their gates are injected, and stays
-        # across redeploys. false restores slice 2's Ready (Pod Ready, then
-        # the Ingress), which can answer 404 briefly after Ready.
-        targetHealth: true
+        # across redeploys. Off by default until a live preview has shown
+        # Auto Mode injecting the gate: without it every rollout times out.
+        # false is slice 2's Ready (Pod Ready, then the Ingress), which can
+        # answer 404 briefly after Ready.
+        targetHealth: false
         extra: {}
     resources:
         requests:

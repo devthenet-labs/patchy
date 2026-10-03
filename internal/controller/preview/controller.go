@@ -265,37 +265,45 @@ func (r *Reconciler) slotHasManagedObjects(ctx context.Context, slot int32) (boo
 	return len(ingresses.Items) > 0, nil
 }
 
-// deploy renders every component into the slot: it ensures each component's
-// Service and Deployment (a Deployment whose spec did not change is not
-// touched, so it is not rolled), prunes the objects of components no longer
-// rendered, and marks the Preview Ready once every component is. The host is
-// exposed only then too — unless Ready waits for target health, when the
+// deploy renders every component into the slot: it prunes the objects of
+// components no longer rendered, ensures each component's Service and
+// Deployment (a Deployment whose spec did not change is not touched, so it is
+// not rolled), and marks the Preview Ready once every component is. The host
+// is exposed only then too — unless Ready waits for target health, when the
 // Ingress precedes the Pods (Settings.TargetHealth).
+//
+// Pruning comes first so that a renamed component's Service fits the slot
+// quota, which in slot 0 has no Service to spare beside four components and
+// the placeholder. Nothing still routes to what it prunes: without target
+// health the Ingress was withdrawn for the new spec (or was rendered for it),
+// and with it prepareIngress has dropped stale routes from the kept one.
 func (r *Reconciler) deploy(ctx context.Context, p *v1alpha1.Preview) (ctrl.Result, error) {
 	slot := *p.Status.Slot
-	for i := range p.Spec.Components {
+	if r.Settings.TargetHealth {
+		if err := r.prepareIngress(ctx, p, slot); err != nil {
+			return r.renderError(ctx, p, err)
+		}
+	}
+	if err := r.prune(ctx, p, slot); err != nil {
+		return ctrl.Result{}, err
+	}
+	for i, c := range p.Spec.Components {
 		if err := r.ensureService(ctx, p, i, slot); err != nil {
-			if errors.Is(err, errDeleting) {
-				return r.wait(), nil
+			if quotaExceeded(err) {
+				// The quota controller releases a pruned Service's share
+				// after the delete, not with it: wait rather than spend a
+				// retry, which would restart every component.
+				return r.notYet(ctx, p, fmt.Sprintf("the slot quota had no room for component %s's Service", c.Name))
 			}
-			return r.retryError(ctx, p, err)
+			return r.renderError(ctx, p, err)
 		}
 	}
 	if r.Settings.TargetHealth {
 		// The Pods must start after their target group bindings exist, or
 		// the load balancer never injects the gate Ready waits for.
 		if err := r.ensureIngress(ctx, p, slot); err != nil {
-			if errors.Is(err, errDeleting) {
-				return r.wait(), nil
-			}
-			return r.retryError(ctx, p, err)
+			return r.renderError(ctx, p, err)
 		}
-	}
-	// Pruned only once a kept Ingress no longer routes to what is pruned.
-	if err := r.prune(ctx, p, slot); err != nil {
-		return ctrl.Result{}, err
-	}
-	if r.Settings.TargetHealth {
 		// A Preview already Ready has its Pods; it does not wait again.
 		if p.Status.Phase != v1alpha1.PreviewReady {
 			admitted, err := r.ingressAdmitted(ctx, p, slot)
@@ -311,28 +319,39 @@ func (r *Reconciler) deploy(ctx context.Context, p *v1alpha1.Preview) (ctrl.Resu
 		if p.Status.Retries > 0 {
 			// A retry deleted the component's Deployment; its old Pods must
 			// be gone before a new one starts beside them.
-			var dep appsv1.Deployment
-			key := types.NamespacedName{Namespace: r.Settings.slotName(slot), Name: componentName(p, i)}
-			if err := r.Get(ctx, key, &dep); kerrors.IsNotFound(err) {
-				children, err := r.childrenRemain(ctx, p, i, slot)
-				if err != nil {
-					return ctrl.Result{}, err
-				}
-				if children {
-					return r.wait(), nil
-				}
-			} else if err != nil {
+			remain, err := r.oldPodsRemain(ctx, p, i, slot)
+			if err != nil {
 				return ctrl.Result{}, err
+			}
+			if remain {
+				return r.wait(), nil
 			}
 		}
 		if err := r.ensureDeployment(ctx, p, i, slot); err != nil {
-			if errors.Is(err, errDeleting) {
-				return r.wait(), nil
-			}
-			return r.retryError(ctx, p, err)
+			return r.renderError(ctx, p, err)
 		}
 	}
 	return r.completeDeployment(ctx, p, slot)
+}
+
+// renderError waits for a rendered object that is still deleting, and spends
+// a retry on any other failure to render one.
+func (r *Reconciler) renderError(ctx context.Context, p *v1alpha1.Preview, err error) (ctrl.Result, error) {
+	if errors.Is(err, errDeleting) {
+		return r.wait(), nil
+	}
+	return r.retryError(ctx, p, err)
+}
+
+// oldPodsRemain reports whether component i's Deployment is gone while its
+// Pods or ReplicaSets remain.
+func (r *Reconciler) oldPodsRemain(ctx context.Context, p *v1alpha1.Preview, i int, slot int32) (bool, error) {
+	var dep appsv1.Deployment
+	key := types.NamespacedName{Namespace: r.Settings.slotName(slot), Name: componentName(p, i)}
+	if err := r.Get(ctx, key, &dep); !kerrors.IsNotFound(err) {
+		return false, err
+	}
+	return r.childrenRemain(ctx, p, i, slot)
 }
 
 func (r *Reconciler) completeDeployment(ctx context.Context, p *v1alpha1.Preview, slot int32) (ctrl.Result, error) {
@@ -342,11 +361,21 @@ func (r *Reconciler) completeDeployment(ctx context.Context, p *v1alpha1.Preview
 	gated := r.Settings.TargetHealth && p.Status.Phase != v1alpha1.PreviewReady
 	components := make([]v1alpha1.PreviewComponentStatus, 0, len(p.Spec.Components))
 	for i, c := range p.Spec.Components {
-		imageID, ready, err := r.readyImage(ctx, p, i, slot, gated)
+		imageID, state, err := r.readyImage(ctx, p, i, slot, gated)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		if !ready {
+		switch state {
+		case componentReady:
+		case componentGateless:
+			// The Pod is Ready, so "did not become Ready" would point away
+			// from the cause: the load balancer injected no gate.
+			return r.notYet(ctx, p, fmt.Sprintf("component %s's Ready Pod got no load-balancer readiness gate", c.Name),
+				"is the slot namespace's eks.amazonaws.com/pod-readiness-gate-inject label honoured? "+
+					"previewController.config.targetHealth: false stops waiting for the gate")
+		case componentUnhealthy:
+			return r.notYet(ctx, p, fmt.Sprintf("component %s's load balancer target did not become healthy", c.Name))
+		default:
 			return r.notYet(ctx, p, fmt.Sprintf("component %s did not become Ready", c.Name))
 		}
 		components = append(components, v1alpha1.PreviewComponentStatus{
@@ -354,10 +383,7 @@ func (r *Reconciler) completeDeployment(ctx context.Context, p *v1alpha1.Preview
 		})
 	}
 	if err := r.ensureIngress(ctx, p, slot); err != nil {
-		if errors.Is(err, errDeleting) {
-			return r.wait(), nil
-		}
-		return r.retryError(ctx, p, err)
+		return r.renderError(ctx, p, err)
 	}
 	url := "https://" + r.Settings.host(p)
 	if p.Status.Phase != v1alpha1.PreviewReady || p.Status.URL != url ||
@@ -376,11 +402,17 @@ func (r *Reconciler) completeDeployment(ctx context.Context, p *v1alpha1.Preview
 }
 
 // notYet waits for the attempt to progress, and retries it once the rollout
-// deadline has passed with `what` still true.
-func (r *Reconciler) notYet(ctx context.Context, p *v1alpha1.Preview, what string) (ctrl.Result, error) {
+// deadline has passed with `what` still true. Any advice follows `what` in
+// the retry's message.
+func (r *Reconciler) notYet(ctx context.Context, p *v1alpha1.Preview, what string,
+	advice ...string) (ctrl.Result, error) {
 	if p.Status.AttemptStartedAt != nil &&
 		r.now().Sub(p.Status.AttemptStartedAt.Time) >= r.Settings.RolloutTimeout {
-		return r.retryError(ctx, p, fmt.Errorf("%s within %s", what, r.Settings.RolloutTimeout))
+		cause := fmt.Sprintf("%s within %s", what, r.Settings.RolloutTimeout)
+		for _, a := range advice {
+			cause += "; " + a
+		}
+		return r.retryError(ctx, p, errors.New(cause))
 	}
 	return r.wait(), nil
 }

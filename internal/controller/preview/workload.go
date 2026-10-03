@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -124,6 +126,65 @@ func (r *Reconciler) ensureIngress(ctx context.Context, p *v1alpha1.Preview, slo
 	return r.Patch(ctx, &live, client.MergeFrom(old))
 }
 
+// prepareIngress readies a kept Ingress for the current spec before anything
+// is pruned or started. One that lacks a backend the spec renders is deleted,
+// to be created afresh: the load balancer publishes an Ingress's address once,
+// after its first reconcile, and keeps it, so only a new Ingress's address
+// shows that every backend's target group binding exists. A Pod started
+// before its binding never gets the gate Ready waits for, so trusting a kept
+// Ingress's stale address would hold a newly added component until the
+// rollout timeout. Any other Ingress is patched to the spec, which then only
+// drops routes, so nothing pruned next is still routed to.
+func (r *Reconciler) prepareIngress(ctx context.Context, p *v1alpha1.Preview, slot int32) error {
+	desired := r.Settings.ingress(p, slot)
+	var live networkingv1.Ingress
+	err := r.Get(ctx, client.ObjectKeyFromObject(desired), &live)
+	if kerrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !ownedBy(&live, p) {
+		return fmt.Errorf("ingress %s is foreign", desired.Name)
+	}
+	if !live.DeletionTimestamp.IsZero() {
+		return errDeleting
+	}
+	routed := ingressBackends(&live)
+	for name := range ingressBackends(desired) {
+		if !routed[name] {
+			if err := r.Delete(ctx, &live); err != nil && !kerrors.IsNotFound(err) {
+				return err
+			}
+			return errDeleting
+		}
+	}
+	return r.ensureIngress(ctx, p, slot)
+}
+
+// ingressBackends are the names of the Services an Ingress routes to.
+func ingressBackends(ing *networkingv1.Ingress) map[string]bool {
+	out := map[string]bool{}
+	for _, rule := range ing.Spec.Rules {
+		if rule.HTTP == nil {
+			continue
+		}
+		for _, path := range rule.HTTP.Paths {
+			if path.Backend.Service != nil {
+				out[path.Backend.Service.Name] = true
+			}
+		}
+	}
+	return out
+}
+
+// quotaExceeded reports whether the slot's ResourceQuota refused a create.
+// The API server's quota admission refuses as Forbidden, naming the quota.
+func quotaExceeded(err error) bool {
+	return kerrors.IsForbidden(err) && strings.Contains(err.Error(), "exceeded quota")
+}
+
 func (r *Reconciler) deleteIngress(ctx context.Context, p *v1alpha1.Preview, slot int32) error {
 	var live networkingv1.Ingress
 	key := types.NamespacedName{Namespace: r.Settings.slotName(slot), Name: resourceName(p)}
@@ -172,43 +233,72 @@ func (r *Reconciler) prune(ctx context.Context, p *v1alpha1.Preview, slot int32)
 	return nil
 }
 
+// componentReadiness is how far a component's rollout has got, furthest last.
+type componentReadiness int
+
+const (
+	// componentPending: no Pod running the component's exact image has a
+	// Ready container yet.
+	componentPending componentReadiness = iota
+	// componentGateless: gated, and the component's Pod is up but carries no
+	// load-balancer readiness gate, so its target health is never reported.
+	componentGateless
+	// componentUnhealthy: gated, and the Pod carries the load balancer's gate
+	// but its target is not yet healthy.
+	componentUnhealthy
+	// componentReady: the Pod is Ready, and when gated its target healthy.
+	componentReady
+)
+
 // readyImage reports component i's ready image ID: its Deployment has rolled
 // out and a Pod running the component's exact image is Ready — and, when
-// gated, its load balancer target is healthy too (targetHealthy).
+// gated, its load balancer target is healthy too (targetHealthy). Short of
+// that, it reports how far the furthest Pod has got.
 func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, i int, slot int32,
-	gated bool) (string, bool, error) {
+	gated bool) (string, componentReadiness, error) {
 	c := p.Spec.Components[i]
 	var dep appsv1.Deployment
 	key := types.NamespacedName{Namespace: r.Settings.slotName(slot), Name: componentName(p, i)}
 	if err := r.Get(ctx, key, &dep); err != nil {
-		return "", false, err
+		return "", componentPending, err
 	}
 	if dep.Status.ObservedGeneration < dep.Generation || dep.Status.AvailableReplicas < 1 {
-		return "", false, nil
+		return "", componentPending, nil
 	}
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(key.Namespace),
 		client.MatchingLabels(componentLabels(p, i))); err != nil {
-		return "", false, err
+		return "", componentPending, err
 	}
+	furthest := componentPending
 	for _, pod := range pods.Items {
 		if !pod.DeletionTimestamp.IsZero() || len(pod.Spec.Containers) != 1 ||
 			pod.Spec.Containers[0].Image != image(c) {
 			continue
 		}
-		if !podCondition(&pod, corev1.PodReady) {
+		idx := slices.IndexFunc(pod.Status.ContainerStatuses, func(s corev1.ContainerStatus) bool {
+			return s.Name == c.Name && s.Ready && s.ImageID != ""
+		})
+		if idx < 0 {
 			continue
 		}
-		if gated && !targetHealthy(&pod) {
-			continue
+		state := componentReady
+		switch {
+		case gated && len(pod.Spec.ReadinessGates) == 0:
+			// The kubelet counts a Pod with no gate Ready on its
+			// containers alone.
+			state = componentGateless
+		case gated && !targetHealthy(&pod):
+			state = componentUnhealthy
+		case !podCondition(&pod, corev1.PodReady):
+			state = componentPending
 		}
-		for _, status := range pod.Status.ContainerStatuses {
-			if status.Name == c.Name && status.Ready && status.ImageID != "" {
-				return status.ImageID, true, nil
-			}
+		if state == componentReady {
+			return pod.Status.ContainerStatuses[idx].ImageID, componentReady, nil
 		}
+		furthest = max(furthest, state)
 	}
-	return "", false, nil
+	return "", furthest, nil
 }
 
 // podCondition reports whether the Pod's condition of type t is True.

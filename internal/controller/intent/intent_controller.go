@@ -197,6 +197,14 @@ func (p *pass) run(ctx context.Context) (ctrl.Result, error) {
 				return ctrl.Result{}, err
 			}
 		}
+		// Before any hand-off: a revival clears the pull requests recorded.
+		changed, wait, err := p.noticeUntracked(ctx)
+		if changed || err != nil {
+			return ctrl.Result{}, err
+		}
+		if wait {
+			return ctrl.Result{RequeueAfter: p.set.PRPollInterval}, nil
+		}
 		if p.r.Nudger.take(p.in.Name) {
 			stop, err := p.handOff(ctx)
 			if err != nil {

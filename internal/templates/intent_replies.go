@@ -284,6 +284,50 @@ func RenderIntentPartialNotice(n IntentPartialNotice) (string, error) {
 	})
 }
 
+// UntrackedKey is the notice key of the comment patchy posts on each pull
+// request a multi-repository intent left open when it ended before every
+// one of its pull requests was opened.
+const UntrackedKey = "untracked"
+
+// IntentUntrackedNotice is the comment patchy posts, once, on each pull
+// request it opened for an intent that then ended (closed, or failed) while
+// the others were still to be opened: the pull request is not part of a
+// completed change, and patchy no longer tracks it. patchy closes no pull
+// request itself.
+type IntentUntrackedNotice struct {
+	// Namespace and Intent name the Intent, for the marker (NoticeMarker,
+	// keyed UntrackedKey).
+	Namespace string
+	Intent    string
+	// Failed is true for an intent that failed, false for one closed (a
+	// cancel, or the issue closed).
+	Failed bool
+	// Opened are the pull requests patchy opened for the intent, in plan
+	// order; NeverOpened the repositories ("owner/name") of the approved plan
+	// that have none.
+	Opened      []IntentPullRequest
+	NeverOpened []string
+}
+
+// RenderIntentUntrackedNotice renders an IntentUntrackedNotice.
+func RenderIntentUntrackedNotice(n IntentUntrackedNotice) (string, error) {
+	never := make([]string, len(n.NeverOpened))
+	for i, r := range n.NeverOpened {
+		never[i] = oneLine(r)
+	}
+	return render("intent_notice_untracked.md.tmpl", struct {
+		Marker      string
+		Failed      bool
+		Opened      []statusPR
+		NeverOpened []string
+	}{
+		Marker:      NoticeMarker(n.Namespace, n.Intent, UntrackedKey),
+		Failed:      n.Failed,
+		Opened:      linkedPRs(n.Opened),
+		NeverOpened: never,
+	})
+}
+
 // SiblingsKey is the notice key of the comment cross-linking the pull
 // requests of an intent that opened more than one: one such comment on each
 // of them, so a repeated pass finds the one it posted.

@@ -140,6 +140,21 @@ func TestMultiRepoGoldens(t *testing.T) {
 				Merged: prs[:1], Closed: prs[1:], Revisions: 1, CheckFixes: 2, CostMicroUSD: 2_345_678,
 			})
 		}},
+		{"intent_notice_untracked.md", func() (string, error) {
+			prs := testMultiPRs()
+			prs[0].State = "open"
+			return RenderIntentUntrackedNotice(IntentUntrackedNotice{
+				Namespace: "patchy", Intent: "marigold-3", Opened: prs[:1], NeverOpened: []string{testAPI},
+			})
+		}},
+		{"intent_notice_untracked_failed.md", func() (string, error) {
+			prs := testMultiPRs()
+			prs[0].State = "open"
+			return RenderIntentUntrackedNotice(IntentUntrackedNotice{
+				Namespace: "patchy", Intent: "marigold-3", Failed: true, Opened: prs[:1],
+				NeverOpened: []string{testAPI},
+			})
+		}},
 		{"intent_summary_check_fixes.md", func() (string, error) {
 			return RenderIntentSummaryComment(IntentSummaryComment{
 				Namespace: "patchy", Intent: "preview-demo-5",
@@ -507,7 +522,21 @@ func TestSiblingCommentProperties(t *testing.T) {
 			failure = fmt.Sprintf("partial: %v", err)
 			return false
 		}
-		return check("partial notice", partial)
+		if !check("partial notice", partial) {
+			return false
+		}
+		never := make([]string, 0, len(prs)-1)
+		for _, pr := range prs[1:] {
+			never = append(never, pr.Repository)
+		}
+		untracked, err := RenderIntentUntrackedNotice(IntentUntrackedNotice{
+			Namespace: "patchy", Intent: "marigold-3", Opened: prs[:1], NeverOpened: never,
+		})
+		if err != nil {
+			failure = fmt.Sprintf("untracked: %v", err)
+			return false
+		}
+		return check("untracked notice", untracked)
 	}
 	if err := quick.Check(holds, pullRequestConfig(20261004)); err != nil {
 		t.Errorf("%v\n%s", err, failure)
@@ -519,7 +548,7 @@ func TestSiblingCommentProperties(t *testing.T) {
 // comment's.
 func TestNoticeKeys(t *testing.T) {
 	keys := map[string]bool{}
-	for _, k := range []string{SummaryKey, PartialKey, SiblingsKey} {
+	for _, k := range []string{SummaryKey, PartialKey, SiblingsKey, UntrackedKey} {
 		if keys[k] {
 			t.Errorf("notice key %q is used twice", k)
 		}
@@ -540,5 +569,12 @@ func TestNoticeKeys(t *testing.T) {
 	}
 	if want := NoticeMarker("patchy", "marigold-3", PartialKey) + "\n"; !strings.HasPrefix(body, want) {
 		t.Errorf("partial notice is not headed by %q:\n%s", want, body)
+	}
+	body, err = RenderIntentUntrackedNotice(IntentUntrackedNotice{Namespace: "patchy", Intent: "marigold-3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := NoticeMarker("patchy", "marigold-3", UntrackedKey) + "\n"; !strings.HasPrefix(body, want) {
+		t.Errorf("untracked notice is not headed by %q:\n%s", want, body)
 	}
 }

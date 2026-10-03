@@ -1,0 +1,24 @@
+{{- /* Posted once on each pull request a multi-repository intent left open
+when it ended (closed, or failed) while its pull requests were still being
+opened: the others were never opened, so this one is not part of a completed
+change, and nothing tracks it any more. The pull requests are patchy's own,
+linked on purpose. One line per paragraph: GitHub renders a line break inside
+a comment as a hard break. */ -}}
+{{ .Marker }}
+### patchy: no longer tracked
+
+The intent this pull request was opened for {{ if .Failed }}failed{{ else }}was closed{{ end }} before patchy had opened a pull request in every repository its approved plan changes. This pull request is therefore not part of a completed change, and patchy no longer reviews, revises or merges anything for it. Merging it on its own lands only part of the change: close it unless that is what you want.
+{{- with .Opened }}
+
+**Opened for the intent:**
+{{ range . }}
+- [{{ .Ref }}]({{ .URL }})
+{{- end }}
+{{- end }}
+{{- with .NeverOpened }}
+
+**Never opened:**
+{{ range . }}
+- {{ code . }}
+{{- end }}
+{{- end }}

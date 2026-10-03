@@ -110,6 +110,13 @@ const (
 	// not be. The comment is cosmetic: it is posted after the Intent entered
 	// InReview, and never holds a phase back.
 	ConditionSiblingsLinked = "SiblingsLinked"
+	// ConditionUntrackedPullRequests marks an Intent that ended (Closed or
+	// Failed) while its pull requests were still being opened, leaving the
+	// ones already opened open with nothing tracking them. It is set once
+	// each of them carries the notice saying so (reason Noticed, or
+	// NoticeRefused naming any GitHub refused), and cleared when the Intent
+	// is revived.
+	ConditionUntrackedPullRequests = "UntrackedPullRequests"
 
 	// ConditionPushHeld marks a Running build IntentRun whose Job has
 	// finished while its Intent is suspended (or, reason

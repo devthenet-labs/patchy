@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -79,32 +78,9 @@ func (p *pass) linkSiblings(ctx context.Context) (changed bool, err error) {
 }
 
 // linkSibling posts the siblings comment on pr unless the App's bot already
-// did. The comment can only have been posted after pr was opened, which was
-// after its repository's build finished: the look for it starts there, never
-// at the start of the thread.
+// did (postOnceOnPullRequest).
 func (p *pass) linkSibling(ctx context.Context, pr v1alpha1.IntentPullRequest,
 	prs []v1alpha1.IntentPullRequest) error {
-	var since time.Time
-	if ap := p.in.Status.Approval; ap != nil {
-		if build := p.round(v1alpha1.IntentStageBuild, ap.PlanRevision, pr.Repository).latest(); build != nil &&
-			build.Status.FinishedAt != nil {
-			since = build.Status.FinishedAt.Add(-clockSkew)
-		}
-	}
-	comments, err := p.r.GitHub.ListPullRequestComments(ctx, pr.Repository, pr.Number, since)
-	if err != nil {
-		return err
-	}
-	bot, err := p.r.GitHub.BotLogin(ctx, pr.Repository)
-	if err != nil {
-		return err
-	}
-	marker := templates.NoticeMarker(p.in.Namespace, p.in.Name, templates.SiblingsKey)
-	for _, c := range comments {
-		if markerOf(c.Body) == marker && (bot == "" || strings.EqualFold(c.UserLogin, bot)) {
-			return nil
-		}
-	}
 	c := templates.IntentSiblingsComment{Namespace: p.in.Namespace, Intent: p.in.Name,
 		Repository: repoSlug(pr.Repository)}
 	for _, o := range prs {
@@ -116,6 +92,5 @@ func (p *pass) linkSibling(ctx context.Context, pr v1alpha1.IntentPullRequest,
 	if err != nil {
 		return err
 	}
-	_, err = p.r.GitHub.CreatePullRequestComment(ctx, pr.Repository, pr.Number, body)
-	return err
+	return p.postOnceOnPullRequest(ctx, pr, templates.SiblingsKey, body)
 }

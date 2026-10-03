@@ -67,7 +67,11 @@ func imageReason(run *v1alpha1.IntentRun) string {
 // One whose build had no accepted image to run on blocks the Intent, naming
 // the repository, while the siblings already running finish and push. The
 // pull requests open only once every approved repository's build is
-// Complete, so a Failed intent never leaves one behind.
+// Complete, so a build that fails leaves none behind. They open one per
+// pass, though, so an intent that ends while they are being opened (a cancel,
+// the issue closed, or an approved repository leaving the Project, which
+// fails it) can leave the ones already opened open: each is told it is no
+// longer tracked (noticeUntracked).
 func (p *pass) building(ctx context.Context) (bool, error) {
 	ap := p.in.Status.Approval
 	if ap == nil {

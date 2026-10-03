@@ -38,5 +38,7 @@
 // prompts and comments are byte-identical to what they were before. The
 // pull requests of such an intent are cross-linked by a comment on each
 // (IntentSiblingsComment), never by editing a body, and a mixed ending is
-// told by its own notice (IntentPartialNotice).
+// told by its own notice (IntentPartialNotice), as is an ending while the
+// pull requests were still being opened, on each one already opened
+// (IntentUntrackedNotice).
 package templates

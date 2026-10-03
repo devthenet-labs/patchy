@@ -13,6 +13,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -101,6 +102,12 @@ func (p *pass) startPlanning(ctx context.Context, issue *ghclient.Issue, trigger
 		cur.Status.Plan = nil
 		cur.Status.Approval = nil
 		cur.Status.ActiveRun = nil
+		// A revival builds anew: the pull requests a failed intent recorded
+		// while it was opening them (told they are no longer tracked) are
+		// not the new round's, and its own are recorded as it opens them.
+		cur.Status.PullRequests = nil
+		cur.Status.Branch = ""
+		meta.RemoveStatusCondition(&cur.Status.Conditions, v1alpha1.ConditionUntrackedPullRequests)
 		if trigger != nil {
 			cur.Status.LastTrigger = trigger
 		}

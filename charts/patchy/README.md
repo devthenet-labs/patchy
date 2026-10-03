@@ -5,10 +5,11 @@ SPDX-License-Identifier: MIT
 
 # patchy Helm chart
 
-Deploys the patchy stack: the `patchy.bitwisemedia.uk` CRDs and the five controllers (integration, source, context,
-investigation, remediation) into the release namespace, plus the agent sandbox namespace, RBAC, ConfigMaps, Services,
-and NetworkPolicies. It is the Helm rendering of [`deploy/kustomize`](../../deploy/kustomize) — same resources, same
-defaults, same isolation model — published to OCI on every release.
+Deploys the patchy stack: the `patchy.bitwisemedia.uk` CRDs, the five pipeline controllers (integration, source,
+context, investigation, remediation), the egress broker and the status server into the release namespace, plus the agent
+sandbox namespace, RBAC, ConfigMaps, Services, and NetworkPolicies. The intent, preview and evaluation controllers are
+opt-in. It is the Helm rendering of [`deploy/kustomize`](../../deploy/kustomize) — same resources, same defaults, same
+isolation model — published to OCI on every release.
 
 ```sh
 helm install patchy oci://ghcr.io/devthenet-labs/patchy/charts/patchy \
@@ -22,7 +23,7 @@ runs images `vX.Y.Z`.
 
 The custom resources are the state machine: findings, investigations, and remediations live as CRs in the release
 namespace, and the Kubernetes API is the only state store (`kubectl get patchy -n <namespace>` shows the pipeline). The
-five controllers split the work:
+five pipeline controllers split the work:
 
 | Controller                   | Role                                                                                                                                                                                           |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -33,9 +34,9 @@ five controllers split the work:
 | **remediation-controller**   | Queue admission, the remediation agent Jobs, push/PR, and the rollup/TTL loop                                                                                                                  |
 
 All five run as singletons (`replicas: 1` + `Recreate`, with leader election as rollout insurance) and mount their
-service-account tokens; [`templates/rbac.yaml`](templates/rbac.yaml) pins verb-by-verb what each identity may do. Only
-two Services exist — the integration-controller's :8080 and the source-controller's :9790; every other port is a
-kubelet-probed :8081.
+service-account tokens; [`templates/rbac.yaml`](templates/rbac.yaml) pins verb-by-verb what each identity may do. Of the
+five, only two have Services — the integration-controller's :8080 and the source-controller's :9790; every other port is
+a kubelet-probed :8081.
 
 The CRDs render as templates gated by `crds.install` — living in `templates/crds/` rather than the chart's install-only
 `crds/` directory means `helm upgrade` keeps them current — with `helm.sh/resource-policy: keep` stamped when
@@ -114,7 +115,7 @@ seen injecting the gate on a live preview) the slot namespaces are labelled
 `eks.amazonaws.com/pod-readiness-gate-inject: enabled`, so EKS Auto Mode's load balancer injects a target-health
 readiness gate into each slot Pod, and the preview-controller marks a Preview Ready only once its targets are healthy;
 `false` restores the ungated Ready. See `docs/configuration/preview-controller.md`. The default was `false` up to
-0.12.14, so an upgrade from there that never set it turns it on, and a Preview deploying during that upgrade may spend
+0.12.15, so an upgrade from there that never set it turns it on, and a Preview deploying during that upgrade may spend
 one retry (the upgrade note in `docs/deployment/helm.md`).
 
 Slot Pods and Deployment templates must also select the configured NodePool and NodeClass, tolerate the exact
@@ -173,13 +174,14 @@ remains an open validation gap. Never call those logs checked merely because Pod
 `/32` in `previewController.config.apiServerCIDR`. With it off, neither a Preview spec projector nor the
 preview-controller runs. With it on, only Projects that have an operator-authored `spec.preview` block, or a `preview`
 block on any of their `repositories` (a Project with several, which needs `intentController.config.multiRepo: true`),
-get previews; the existing `target` Project has none and must never be previewed. The fixed renderer takes each
-component's runtime repository, HTTP port, readiness path and route path only from those Project blocks, and the tag
-only from the recorded PR head, or for a repository the intent did not change, its default-branch head recorded once
-when review began. It never reads issue/agent text as deployment configuration, and holds no GitHub, registry, cloud or
-Secret credential. Its release-namespace Role is limited to Preview and Intent reads/writes; one Role per fixed slot
-grants only Deployment, Service and Ingress CRUD and Pod/ReplicaSet reads. No ClusterRole is installed. Its
-NetworkPolicy permits only DNS and the Kubernetes API Service `/32` out; there is no internet or broker egress rule.
+get previews; a Project whose application must never be exposed (a deliberately vulnerable test target, say) has none.
+The fixed renderer takes each component's runtime repository, HTTP port, readiness path and route path only from those
+Project blocks, and the tag only from the recorded PR head, or for a repository the intent did not change, its
+default-branch head recorded once when review began. It never reads issue/agent text as deployment configuration, and
+holds no GitHub, registry, cloud or Secret credential. Its release-namespace Role is limited to Preview and Intent
+reads/writes; one Role per fixed slot grants only Deployment, Service and Ingress CRUD and Pod/ReplicaSet reads. No
+ClusterRole is installed. Its NetworkPolicy permits only DNS and the Kubernetes API Service `/32` out; there is no
+internet or broker egress rule.
 
 The controller serializes slot leases, queues by creation time, waits for a Ready Pod with a recorded image ID before
 creating the `alb-preview` Ingress, and withdraws the old Ingress before a PR-head update. Each new head gets at most
@@ -191,8 +193,8 @@ restore the old slot count and drain via the Preview finalizer first. Helm's `ke
 and guardrails but are not a substitute for that drain.
 
 The chart renders the placeholder only when both `preview.enabled` and `preview.placeholder.enabled` are true. The
-devthenet rollout keeps preview and preview-controller disabled; the separate ALB and wildcard DNS require their own
-operator-reviewed infrastructure check-ins before apply.
+separate ALB and the wildcard DNS record are staged with the infrastructure, in order:
+[Deploying intents and previews](../../docs/intents/deploying.md) walks through the stages and their rollback points.
 
 ## Agent isolation
 

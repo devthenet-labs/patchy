@@ -23,17 +23,19 @@ To opt in one benign application Project, set a fixed runtime contract on its `P
 ```yaml
 spec:
   preview:
-    imageRepository: 377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/patchy-preview-demo
+    imageRepository: 123456789012.dkr.ecr.us-west-2.amazonaws.com/patchy/previews/shop-web
     port: 8080
-    readinessPath: /health
+    readinessPath: /healthz
 ```
 
 `spec.preview` is the one-repository shorthand: it needs exactly one application repository. Do **not** add this block
-to patchy-target. The runtime publisher must publish the immutable `sha-<full PR head SHA>` image before the preview can
-become Ready. No fork PR may publish; the uncredentialed build has no `id-token` access, and the trusted main-context
-publisher never checks out or executes PR code. The Preview's host is `<project>-<issue>.<preview.hostSuffix>`; its spec
-contains the Intent UID, host label, each component's name/image repository/full head SHA/port/readiness path/route
-path, and a 72-hour TTL.
+to a Project whose application must never be exposed, such as a deliberately vulnerable test target. The runtime
+publisher must publish the immutable `sha-<full PR head SHA>` image before the preview can become Ready.
+[Deploying intents and previews](../intents/deploying.md) and [Onboarding an application](../intents/onboarding-app.md)
+cover the whole setup. No fork PR may publish; the uncredentialed build has no `id-token` access, and the trusted
+main-context publisher never checks out or executes PR code. The Preview's host is
+`<project>-<issue>.<preview.hostSuffix>`; its spec contains the Intent UID, host label, each component's name/image
+repository/full head SHA/port/readiness path/route path, and a 72-hour TTL.
 
 A Project with several repositories previews them per repository instead, at most four, each under its own path on the
 one host:
@@ -44,7 +46,7 @@ spec:
     - name: web
       url: https://github.com/acme/Acme.Web_App
       preview:
-        imageRepository: 377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/acme-web
+        imageRepository: 123456789012.dkr.ecr.us-west-2.amazonaws.com/patchy/previews/acme-web
         port: 8080
         readinessPath: /healthz
         path: / # the default
@@ -53,7 +55,7 @@ spec:
     - name: api
       url: https://github.com/acme/api
       preview:
-        imageRepository: 377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/acme-api
+        imageRepository: 123456789012.dkr.ecr.us-west-2.amazonaws.com/patchy/previews/acme-api
         port: 8080
         readinessPath: /api/healthz
         path: /api
@@ -128,7 +130,7 @@ blog post and a maintainer's answer on aws/containers-roadmap#2511), not from th
 a live preview (patchy 0.12.14): Auto Mode injected the gate, and the host answered 200 to all 60 requests made once a
 second from the moment the Preview was `Ready`, where the ungated `Ready` gave about 15 seconds of 404s and empty
 replies. Previews require EKS Auto Mode, and a preview whose host does not answer yet is not ready to review, so the
-chart turns the mode on by default. That default was off up to 0.12.14, so an upgrade from there that never set the
+chart turns the mode on by default. That default was off up to 0.12.15, so an upgrade from there that never set the
 value turns it on, and a Preview deploying during that upgrade may spend one retry: its Pods predate the label and carry
 no gate (see [the upgrade note](../deployment/helm.md#eks-auto-mode-and-previews)). If Auto Mode ever injects no gate,
 every rollout times out and retries, the retry's message naming the missing gate, and `targetHealth: false` restores the

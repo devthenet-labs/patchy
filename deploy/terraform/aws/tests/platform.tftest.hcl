@@ -100,6 +100,27 @@ override_data {
   }
 }
 
+# The two private node subnets, private and in the ALB subnets' zones.
+override_data {
+  target = data.aws_subnet.preview_node["subnet-node-a"]
+  values = {
+    vpc_id                  = "vpc-0acme"
+    availability_zone       = "eu-west-2a"
+    cidr_block              = "10.40.0.0/19"
+    map_public_ip_on_launch = false
+  }
+}
+
+override_data {
+  target = data.aws_subnet.preview_node["subnet-node-b"]
+  values = {
+    vpc_id                  = "vpc-0acme"
+    availability_zone       = "eu-west-2b"
+    cidr_block              = "10.40.32.0/19"
+    map_public_ip_on_launch = false
+  }
+}
+
 override_resource {
   target = aws_acm_certificate.preview[0]
   values = {
@@ -573,6 +594,7 @@ run "public_node_subnet_is_refused" {
     target = data.aws_subnet.preview_node["subnet-node-a"]
     values = {
       vpc_id                  = "vpc-0acme"
+      availability_zone       = "eu-west-2a"
       cidr_block              = "10.40.130.0/24"
       map_public_ip_on_launch = true
     }
@@ -650,6 +672,7 @@ run "subnet_outside_the_cluster_vpc_is_refused" {
     target = data.aws_subnet.preview_node["subnet-node-a"]
     values = {
       vpc_id                  = "vpc-0other"
+      availability_zone       = "eu-west-2a"
       cidr_block              = "10.50.0.0/19"
       map_public_ip_on_launch = false
     }
@@ -908,6 +931,55 @@ run "alb_subnets_must_be_in_distinct_zones" {
   }
 
   expect_failures = [aws_iam_role.preview_node]
+}
+
+# The ALB sends no traffic to a target in a zone it has not enabled
+# (Target.NotInUse), so a preview node in a zone no ALB subnet covers could
+# never serve its preview.
+run "node_subnet_outside_the_alb_zones_is_refused" {
+  command = plan
+
+  override_data {
+    target = data.aws_subnet.preview_node["subnet-node-b"]
+    values = {
+      vpc_id                  = "vpc-0acme"
+      availability_zone       = "eu-west-2c"
+      cidr_block              = "10.40.64.0/19"
+      map_public_ip_on_launch = false
+    }
+  }
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-a", "subnet-node-b"]
+      inbound_cidrs   = ["203.0.113.7/32"]
+    }
+  }
+
+  expect_failures = [aws_iam_role.preview_node]
+}
+
+# Fewer node zones than ALB zones is fine: every node is still reachable.
+run "node_subnets_may_cover_fewer_zones_than_the_alb" {
+  command = plan
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-b"]
+      inbound_cidrs   = ["203.0.113.7/32"]
+    }
+  }
+
+  assert {
+    condition     = length(aws_iam_role.preview_node) == 1
+    error_message = "a node subnet in one of the ALB's zones was refused"
+  }
 }
 
 # Previews get an ALB of their own: the preview IngressClassParams limits its

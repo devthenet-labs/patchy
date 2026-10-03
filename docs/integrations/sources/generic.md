@@ -26,9 +26,9 @@ a generic Integration may not be named after a built-in source id (`ghas`, `gcp-
 must fit in a label value (63 characters).
 
 This page is the payload contract. The Go types live in
-[`pkg/generic`](https://github.com/bitwise-media-group/patchy/tree/main/pkg/generic) — a public package an external
-process written in Go can import directly; every shape below round-trips through it. All bodies are JSON; the contract
-version is `v1`.
+[`pkg/generic`](https://github.com/devthenet-labs/patchy/tree/main/pkg/generic) — a public package an external process
+written in Go can import directly; every shape below round-trips through it. All bodies are JSON; the contract version
+is `v1`.
 
 ## Configuration
 

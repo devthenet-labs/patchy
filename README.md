@@ -66,17 +66,20 @@ helm install patchy oci://ghcr.io/devthenet-labs/patchy/charts/patchy --namespac
 
 ## The CLI
 
-The workstation CLI ships separately from the cluster components — as a Homebrew cask, or as the `patchy-cli` release
-archive for anything brew does not cover:
+The workstation CLI ships separately from the cluster components, as the `patchy-cli` archive attached to each
+[release](https://github.com/devthenet-labs/patchy/releases), with a keyless cosign signature for each binary:
 
 ```sh
-brew install bitwise-media-group/tap/patchy
+gh release download vX.Y.Z --repo devthenet-labs/patchy --pattern 'patchy-cli_X.Y.Z_darwin_arm64.tar.gz'
 ```
 
-It talks to the Kubernetes API with your own kubeconfig, so what you can do is exactly what your RBAC allows. The cask
-also installs `kubectl-patchy`, so every command works as `kubectl patchy …`, with shell completion for both spellings.
-See [`docs/cli.md`](docs/cli.md) for the tour and [`docs/cli/patchy.md`](docs/cli/patchy.md) for the generated command
-reference.
+[`docs/cli.md`](docs/cli.md#install) has the verification and install steps. The Homebrew tap
+`bitwise-media-group/tap/patchy` is the upstream project's older CLI, without `setup`, `init` or `check project`.
+
+It talks to the Kubernetes API with your own kubeconfig, so what you can do is exactly what your RBAC allows. The
+archive also carries `kubectl-patchy`, so every command works as `kubectl patchy …`, with shell completion for both
+spellings. See [`docs/cli.md`](docs/cli.md) for the tour and [`docs/cli/patchy.md`](docs/cli/patchy.md) for the
+generated command reference.
 
 ## Status
 

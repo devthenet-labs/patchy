@@ -37,7 +37,16 @@ pinned Go toolchain and this module's dependencies, offline. `.patchy/agent.yaml
 
 ### Repository variables
 
-None of them is secret. Set the configuration first and the two `*_PUBLISH_ENABLED` gates last:
+None of them is secret. Set them on this repository, never on the organization: an organization variable reaches every
+repository with these workflows, a template repository and its copies included. patchy's reference terraform module
+(`deploy/terraform/aws/modules/app`) outputs the configuration as `github_variables_dotenv`; export it from your
+terraform root and set it in one command:
+
+```sh
+terraform output -raw patchy_app_hello_web_variables | gh variable set -f - --repo acme/Hello.Web
+```
+
+Set the configuration first and the two `*_PUBLISH_ENABLED` gates last:
 
 | Variable                   | Value                                          | What it is                                                          |
 | -------------------------- | ---------------------------------------------- | ------------------------------------------------------------------- |

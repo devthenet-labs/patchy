@@ -1,12 +1,14 @@
 # Helm charts
 
-The `patchy` chart (in-repo at `charts/patchy`) renders the full stack: the `patchy.bitwisemedia.uk` CRDs, five
-singleton controller Deployments — each with its own ConfigMap, ServiceAccount, and NetworkPolicy — the two Services
-(integration `:8080`, source `:9790`), and the agent namespace with its RBAC and sandbox policies. The companion
-`patchy-config` chart (`charts/patchy-config`) renders the `Integration`/`Forge` custom resources — a separate chart
-because Helm validates every manifest against the API server before applying anything, so the CRs cannot ride in the
-same first install as the CRDs they depend on. Both are published to `oci://ghcr.io/devthenet-labs/patchy/charts/` on
-every release; release-please stamps `version` and `appVersion` 1:1 with the app, and the default image tag is
+The `patchy` chart (in-repo at `charts/patchy`) renders the full stack: the `patchy.bitwisemedia.uk` CRDs, the five
+pipeline controllers, the egress broker and the status server as singleton Deployments — each with its own ConfigMap,
+ServiceAccount, and NetworkPolicy — their Services (integration `:8080`, source `:9790`, the broker and the status
+page), and the agent namespace with its RBAC and sandbox policies. Three more controllers are opt-in:
+`intentController`, `previewController` (with the `preview` foundation) and `evaluationController`. The companion
+`patchy-config` chart (`charts/patchy-config`) renders the `Integration`/`Forge`/`Project` custom resources — a separate
+chart because Helm validates every manifest against the API server before applying anything, so the CRs cannot ride in
+the same first install as the CRDs they depend on. Both are published to `oci://ghcr.io/devthenet-labs/patchy/charts/`
+on every release; release-please stamps `version` and `appVersion` 1:1 with the app, and the default image tag is
 `v<appVersion>` — chart `X.Y.Z` runs images `vX.Y.Z`.
 
 ```sh
@@ -137,17 +139,49 @@ require Auto Mode, which was seen injecting the gate on a live preview, and with
 nothing for several seconds after an ungated `Ready`. Set it to `false` only if Auto Mode stops injecting the gate
 (every rollout then times out, naming the missing gate).
 
-**Upgrading from 0.12.14 or earlier**, where the default was `false`: an install with previews on that never set
+**Upgrading from 0.12.15 or earlier**, where the default was `false`: an install with previews on that never set
 `targetHealth` turns it on. The slot namespaces gain the gate-injection label and the preview-controller restarts with
 the new setting. A Preview already `Ready` is not regated. A Preview deploying during the upgrade has Pods created
 before the label, so they carry no gate: that attempt waits out `rolloutTimeout` (10 minutes by default) and spends one
 of `maxRetries`, and a Preview on its last retry ends `Failed`. To avoid that, upgrade while no Preview is deploying, or
 set `targetHealth` explicitly (`false` keeps the old behaviour).
 
-The rest of the preview values (`preview.*` and `previewController.*`) and the security model are in the
+The preview security model is in the
 [chart README](https://github.com/devthenet-labs/patchy/blob/main/charts/patchy/README.md#preview-security-foundation-opt-in)
 and [Preview controller](../configuration/preview-controller.md). With `preview.enabled` the install NOTES list what is
 left: the placeholder ALB's hostname, the wildcard DNS record, the isolation probe and what previews cost.
+[Deploying intents and previews](../intents/deploying.md) walks through every value below in order.
+
+### Intents and previews
+
+All three blocks default off. The infrastructure-derived keys marked † are what the reference terraform module's
+`helm_values` output sets ([the module](../intents/terraform-module.md)).
+
+| Key                                           | Default           | Purpose                                                                                                                                                                                              |
+| --------------------------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `intentController.enabled`                    | `false`           | Run the [intent-controller](../configuration/intent-controller.md). Builds need `agent.repositoryImages`, or every Project must set `requireRepositoryImage: false`                                  |
+| `intentController.forgeSecrets`               | `[patchy-github]` | The Secrets your Forges reference: intent-controller's `secrets get` is limited to exactly these names. **Required** and non-empty                                                                   |
+| `intentController.config.pollInterval`        | `60s`             | How often each intent repository and active intent are polled; `approvalPollInterval` (`30s`) and `prPollInterval` (`60s`) for intents awaiting approval and in review                               |
+| `intentController.config.multiRepo`           | `false`           | Intents of Projects that list several repositories: one plan, a build and a pull request per changed repository ([Several repositories](../configuration/intent-controller.md#several-repositories)) |
+| `intentController.config.maxConcurrentRuns`   | `1`               | Intent agent Jobs at once, a pool separate from remediation's; a multi-repository intent's builds share it                                                                                           |
+| `intentController.config.rateLimitFloor`      | `1000`            | Pause intent polling below this many remaining GitHub core requests; `0` disables                                                                                                                    |
+| `intentController.config.intentTTL`           | `336h`            | How long an ended intent is kept; `"0s"` keeps it                                                                                                                                                    |
+| `intentController.config.jobDeadline`         | `90m`             | `activeDeadlineSeconds` on intent Jobs; at least both stage timeouts                                                                                                                                 |
+| `intentController.config.{plan,build,revise}` | see `values.yaml` | Per-stage `model`, `maxTurns`, `tokenBudget`, `timeout`: ceilings a Project's `limits` may lower, never raise                                                                                        |
+| `intentController.networkPolicy.extraEgress`  | `[]`              | Extra egress rules, such as a Forge's egress proxy                                                                                                                                                   |
+| `preview.enabled`                             | `false`           | The preview foundation: slot namespaces, their admission policies, NetworkPolicies and quotas, and the `alb-preview` class. One release per cluster                                                  |
+| `preview.placeholder.enabled`                 | `true`            | The kept placeholder Ingress and Service in slot 0, which create the preview ALB and keep its name stable. `false` stages the guardrails without an ALB                                              |
+| `preview.imageRegistry` †                     | `""`              | The ECR registry host preview images come from; they must be `<registry>/patchy/previews/<app>:sha-<40 hex>`                                                                                         |
+| `preview.albSubnetCIDRs` † / `albSubnetIDs` † | `[]`              | The public subnets the preview ALB sits in: their CIDRs are the only sources slot Pods admit, and the IDs pin the ALB to them                                                                        |
+| `preview.inboundCIDRs` †                      | `[]`              | Who may open previews: `/32`s only, at most 8                                                                                                                                                        |
+| `preview.certificateARN` †                    | `""`              | The issued ACM wildcard certificate for `*.<hostSuffix>`                                                                                                                                             |
+| `preview.hostSuffix` †                        | `""`              | Preview hosts are `<project>-<issue>.<hostSuffix>`                                                                                                                                                   |
+| `preview.albName` †                           | `""`              | The preview ALB's name, distinct from the edge's                                                                                                                                                     |
+| `previewController.enabled`                   | `false`           | Run the [preview-controller](../configuration/preview-controller.md). Requires `preview.enabled`, the placeholder and `intentController.enabled`                                                     |
+| `previewController.config.apiServerCIDR` †    | `""`              | The Kubernetes API Service `/32`, the controller's only egress besides DNS. **Required** with `enabled`                                                                                              |
+| `previewController.config.rolloutTimeout`     | `10m`             | Per-attempt rollout deadline                                                                                                                                                                         |
+| `previewController.config.maxRetries`         | `3`               | Rollout attempts per PR head before the Preview fails                                                                                                                                                |
+| `previewController.config.targetHealth`       | `true`            | `Ready` only once the load balancer reports each target healthy (see above)                                                                                                                          |
 
 ### Shared pipeline config
 
@@ -417,7 +451,7 @@ Jobs run under the same per-pod limits.
 
 !!! warning "Singletons by design"
 
-    All five controllers are `replicas: 1` with `strategy: Recreate`; the leader-election Lease is insurance
+    Every controller, optional ones included, is `replicas: 1` with `strategy: Recreate`; the leader-election Lease is insurance
     against a botched rollout, not a scaling mechanism. Do not scale the Deployments.
 
 - `helm uninstall` deletes the agent namespace (killing any running agent Job) but — with `crds.keep` — never the CRDs,

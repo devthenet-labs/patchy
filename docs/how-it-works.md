@@ -1,10 +1,12 @@
 # How it works
 
-Patchy is six Go binaries sharing one source of truth: the Kubernetes API. The `patchy.bitwisemedia.uk/v1alpha1` custom
-resources — `Integration`, `Forge`, `Finding`, `Repository`, `Investigation`, `Remediation`, `FindingRollup` — carry all
-pipeline state; etcd is the only state store, and there is no shadow database or queue. GitHub issues are a **one-way,
-human-facing projection**: labels and comments are rendered from the Finding, and human actions flow back in as webhook
-signals, never by re-parsing issue state.
+Patchy is a set of Go binaries — the five pipeline controllers below, the in-pod agent runtime, the egress broker and
+the status server, the optional intent, preview and evaluation controllers, and the workstation CLI — sharing one source
+of truth: the Kubernetes API. The `patchy.bitwisemedia.uk/v1alpha1` custom resources — `Integration`, `Forge`,
+`Finding`, `Repository`, `Investigation`, `Remediation`, `FindingRollup` — carry all pipeline state; etcd is the only
+state store, and there is no shadow database or queue. GitHub issues are a **one-way, human-facing projection**: labels
+and comments are rendered from the Finding, and human actions flow back in as webhook signals, never by re-parsing issue
+state.
 
 Webhooks enter through one door: the GitHub App's single webhook URL points at the **integration-controller**'s
 `/github/webhooks` receiver, which validates each delivery against the webhook secrets of your configured `Integration`
@@ -30,10 +32,10 @@ flowchart LR
     RC -->|branch push · pull request| GH
 ```
 
-Two namespaces, and the split is the security boundary: the five controllers run in `patchy` (single replicas, leader
-election as rollout insurance) alongside the egress credential broker, and the ephemeral agent Jobs run in
-`patchy-agents`, which holds no model credential for the default claude runner at all — its model traffic authenticates
-at the broker. See the [isolation model](deployment/isolation.md).
+Two namespaces, and the split is the security boundary: the controllers run in `patchy` (single replicas, leader
+election as rollout insurance) alongside the egress credential broker and the status server, and the ephemeral agent
+Jobs run in `patchy-agents`, which holds no model credential for the default claude runner at all — its model traffic
+authenticates at the broker. See the [isolation model](deployment/isolation.md).
 
 ## 1. Findings arrive and accumulate
 

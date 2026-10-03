@@ -211,8 +211,8 @@ func (e *intentEnv) checkTreesPlanJob(t *testing.T, r agentRun, planRun, own, ow
 	e.checkCredentiallessWith(t, r, secretTrees, secretRepositories)
 
 	run := e.run(t, planRun)
-	var wantSpec []v1alpha1.IntentRunTree
-	var wantStatus []v1alpha1.IntentRunTreeStatus
+	wantSpec := make([]v1alpha1.IntentRunTree, 0, len(trees))
+	wantStatus := make([]v1alpha1.IntentRunTreeStatus, 0, len(trees))
 	for _, tr := range trees {
 		wantSpec = append(wantSpec, v1alpha1.IntentRunTree{Name: tr.key, URL: tr.url,
 			RepositoryRef: v1alpha1.LocalObjectReference{Name: v1alpha1.IntentRunTreeRepositoryName(planRun, tr.key)}})
@@ -273,7 +273,8 @@ func (e *intentEnv) previewOf(name string) (*v1alpha1.Preview, bool) {
 // components, in order: the first keeps the single-component name
 // preview-<intent>, each other one preview-<intent>-<component>.
 func previewObjects(name string, components ...string) []string {
-	out := []string{"preview-" + name}
+	out := make([]string, 0, len(components))
+	out = append(out, "preview-"+name)
 	for _, c := range components[1:] {
 		out = append(out, "preview-"+name+"-"+c)
 	}
@@ -516,7 +517,8 @@ func TestMultiRepoIntentLifecycle(t *testing.T) {
 		t.Errorf("the api pull request carries the web round's comment: %+v", got)
 	}
 	webPreview.Revision = heads["web"]
-	e.waitPreview(t, name, "the web component moved to the revised head", []v1alpha1.PreviewComponent{webPreview, apiPreview})
+	e.waitPreview(t, name, "the web component moved to the revised head",
+		[]v1alpha1.PreviewComponent{webPreview, apiPreview})
 
 	// 7. A CI-fix round on the API pull request, started by its failed
 	//    named check, labelled as one.
@@ -527,7 +529,8 @@ func TestMultiRepoIntentLifecycle(t *testing.T) {
 	fixJob := e.kubelet.waitRun(t, "the api CI-fix job to run", func(r agentRun) bool {
 		return r.Job.Name == jobs.NameFor(fixRun, intentRunKind, 1)
 	})
-	if fixJob.Env["PATCHY_REPO"] != "acme/api" || !strings.Contains(string(fixJob.Investigation), "--- FAIL: TestGreeting") {
+	if fixJob.Env["PATCHY_REPO"] != "acme/api" ||
+		!strings.Contains(string(fixJob.Investigation), "--- FAIL: TestGreeting") {
 		t.Errorf("CI-fix job in %q, handoff %q; want the api repository and the failing check's log",
 			fixJob.Env["PATCHY_REPO"], fixJob.Investigation)
 	}
@@ -544,7 +547,8 @@ func TestMultiRepoIntentLifecycle(t *testing.T) {
 		t.Errorf("api round comments = %+v, want one saying the CI-fix round for test pushed %s", got, heads["api"])
 	}
 	apiPreview.Revision = heads["api"]
-	e.waitPreview(t, name, "the api component moved to the fixed head", []v1alpha1.PreviewComponent{webPreview, apiPreview})
+	e.waitPreview(t, name, "the api component moved to the fixed head",
+		[]v1alpha1.PreviewComponent{webPreview, apiPreview})
 
 	// Each branch was created once, then only fast-forwarded by its own
 	// repository's round.
@@ -664,7 +668,8 @@ func TestMultiRepoIntentPartialEnding(t *testing.T) {
 		Revision: fakegithub.BaseSHA, Port: 8080, ReadinessPath: "/healthz"}
 	apiPreview := v1alpha1.PreviewComponent{Name: "api", ImageRepository: previewPrefix + "acme-api",
 		Revision: api.HeadSHA, Port: 8080, ReadinessPath: "/api/healthz", Path: "/api"}
-	e.waitPreview(t, name, "web at main and the API at its pull request", []v1alpha1.PreviewComponent{webPreview, apiPreview})
+	e.waitPreview(t, name, "web at main and the API at its pull request",
+		[]v1alpha1.PreviewComponent{webPreview, apiPreview})
 
 	// The API's check fails; its CI-fix round pushes a fix.
 	e.gh.SetComparePatch(fakegithub.BaseSHA, api.HeadSHA, "diff --git a/VERSION b/VERSION\n+0.1.0\n")

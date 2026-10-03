@@ -159,7 +159,8 @@ func withIntentsFor(t *testing.T, cl *cluster, gh *fakegithub.Server, spec v1alp
 	}
 	eventually(t, "the project to be Ready", func() bool {
 		var p v1alpha1.Project
-		if err := cl.client.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: projectName}, &p); err != nil {
+		key := types.NamespacedName{Namespace: namespace, Name: projectName}
+		if err := cl.client.Get(context.Background(), key, &p); err != nil {
 			return false
 		}
 		return meta.IsStatusConditionTrue(p.Status.Conditions, v1alpha1.ConditionReady)

@@ -683,7 +683,10 @@ func TestKubelet(t *testing.T) {
 	k := startKubelet(t, cl, runKind)
 	ctx := context.Background()
 	artifact := tarGz(t, "acme-shop-0000000", map[string]string{"README.md": "# acme/shop\n"})
-	apiTree := tarGz(t, "acme-api-0000000", map[string]string{"README.md": "# acme/api\n", "cmd/api/main.go": "package main\n"})
+	apiTree := tarGz(t, "acme-api-0000000",
+		map[string]string{"README.md": "# acme/api\n", "cmd/api/main.go": "package main\n"})
+	const manifest = "shop /workspace/repo https://github.example/acme/shop\n" +
+		"api /workspace/repos/api https://github.example/acme/api\n"
 	art := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api" {
 			_, _ = w.Write(apiTree)
@@ -723,12 +726,12 @@ func TestKubelet(t *testing.T) {
 		{"a plan with trees", runKind, "plan", map[string]string{
 			"issue.md":         "# a request\n",
 			secretTrees:        "api " + digest(apiTree) + " " + art.URL + "/api\n",
-			secretRepositories: "shop /workspace/repo https://github.example/acme/shop\napi /workspace/repos/api https://github.example/acme/api\n",
+			secretRepositories: manifest,
 		}, batchv1.JobComplete, corev1.PodSucceeded, `"type":"plan"`, map[string]string{
 			"repo/README.md":              "# acme/shop\n",
 			"repos/api/README.md":         "# acme/api\n",
 			"repos/api/cmd/api/main.go":   "package main\n",
-			"input/" + secretRepositories: "shop /workspace/repo https://github.example/acme/shop\napi /workspace/repos/api https://github.example/acme/api\n",
+			"input/" + secretRepositories: manifest,
 		}},
 	}
 	for i, tc := range tests {

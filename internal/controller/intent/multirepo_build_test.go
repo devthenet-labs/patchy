@@ -241,8 +241,11 @@ func TestSiblingCommentExactlyOnceAcrossALostWrite(t *testing.T) {
 // TestSiblingRefusalNeverHoldsReview: GitHub refusing the cross-link on one
 // pull request (a locked conversation) holds nothing back: the intent is in
 // review, the other pull request has its comment, and SiblingsLinked says
-// which one was refused, once. Once the conversation is unlocked the comment
-// is posted and the condition turns True.
+// which one was refused, once. The refused comment is not tried again at
+// every poll (a locked conversation stays locked for days): nothing more is
+// written while nothing changed, even once the conversation is unlocked. Once
+// the Project changes it is tried again, posted, and the condition turns
+// True.
 func TestSiblingRefusalNeverHoldsReview(t *testing.T) {
 	e := newMultiEnv(t)
 	e.gh.lockedPRs[2] = true
@@ -259,14 +262,31 @@ func TestSiblingRefusalNeverHoldsReview(t *testing.T) {
 			len(e.siblingComments(2)))
 	}
 	writes := e.writes
+	e.gh.mu.Lock()
+	tries := e.gh.calls["CreateIssueComment"]
+	e.gh.mu.Unlock()
 	e.settleActions(name)
-	if e.writes != writes {
-		t.Errorf("%d status writes repeating the same refusal", e.writes-writes)
+	e.gh.mu.Lock()
+	tries = e.gh.calls["CreateIssueComment"] - tries
+	e.gh.mu.Unlock()
+	if e.writes != writes || tries != 0 {
+		t.Errorf("%d status writes and %d comments tried repeating the same refusal, want none", e.writes-writes,
+			tries)
 	}
 
 	e.gh.mu.Lock()
 	e.gh.lockedPRs[2] = false
 	e.gh.mu.Unlock()
+	e.settleActions(name)
+	if len(e.siblingComments(2)) != 0 {
+		t.Fatal("the refused comment was tried again with nothing changed")
+	}
+	p := e.getProject()
+	p.Spec.Labels.Approve = "patchy:go"
+	p.Generation++
+	if err := e.c.Update(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
 	e.settleActions(name)
 	if !meta.IsStatusConditionTrue(e.get(name).Status.Conditions, v1alpha1.ConditionSiblingsLinked) ||
 		len(e.siblingComments(1)) != 1 || len(e.siblingComments(2)) != 1 {

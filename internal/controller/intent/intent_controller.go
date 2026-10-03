@@ -64,6 +64,10 @@ type IntentReconciler struct {
 	// blockedAt is the Project generation each Blocked Intent was blocked
 	// under: a Project changed since may lift an image block.
 	blockedAt map[string]int64
+	// siblings is what linkSiblings knows of each Intent's cross-links; a
+	// restart lists each pull request once more, which costs requests and
+	// nothing else.
+	siblings map[string]*siblingLinks
 }
 
 func (r *IntentReconciler) now() time.Time {
@@ -87,6 +91,9 @@ func (r *IntentReconciler) memo(f func()) {
 	if r.polled == nil {
 		r.polled, r.prPolled, r.blockedAt = map[string]time.Time{}, map[string]time.Time{}, map[string]int64{}
 	}
+	if r.siblings == nil {
+		r.siblings = map[string]*siblingLinks{}
+	}
 	f()
 }
 
@@ -95,6 +102,7 @@ func (r *IntentReconciler) forget(name string) {
 		delete(r.polled, name)
 		delete(r.prPolled, name)
 		delete(r.blockedAt, name)
+		delete(r.siblings, name)
 	})
 }
 

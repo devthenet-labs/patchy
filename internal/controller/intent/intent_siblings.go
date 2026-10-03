@@ -26,18 +26,42 @@ const (
 	ReasonSiblingsRefused = "Refused"
 )
 
+// siblingLinks is what linkSiblings remembers of one Intent between passes:
+// the pull requests confirmed to carry the comment (by "owner/name#n"), never
+// listed again, and the state the last refusal was met in (siblingsState),
+// "" when there was none.
+type siblingLinks struct {
+	posted  map[string]bool
+	refused string
+}
+
+// siblingsState is what a refused cross-link waits to change before it is
+// tried again: the Project's generation (a permission restored is often a
+// Project edit away) and every pull request's head.
+func (p *pass) siblingsState() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d", p.proj.Generation)
+	for _, pr := range p.in.Status.PullRequests {
+		fmt.Fprintf(&b, " %s#%d@%s", repoSlug(pr.Repository), pr.Number, pr.HeadSHA)
+	}
+	return b.String()
+}
+
 // linkSiblings posts, on each pull request of an intent that opened more than
 // one, the comment listing the others (templates.RenderIntentSiblingsComment):
 // once per pull request, a repeated pass adopting the one the App's bot
 // posted by its marker. It runs only once the Intent is in review: the
 // cross-link is cosmetic, so it never holds a phase back, and the pull
 // requests are open, and their records written, before any of it is
-// attempted. It is best effort. A transient failure is logged and the whole
-// thing retried at the next poll of the pull requests; a refusal records
-// SiblingsLinked False saying which pull request and why, once, and is
-// retried all the same. Once every pull request carries the comment,
-// SiblingsLinked is True and nothing is listed again. changed reports a
-// status write.
+// attempted. It is best effort. A transient failure is logged and the rest
+// retried at the next poll of the pull requests. A refusal records
+// SiblingsLinked False saying which pull request and why, once, and is tried
+// again only once the Project changes or a pull request's head moves, never
+// at every poll: a locked conversation would otherwise cost a refused write
+// and a listing of every pull request each minute for the whole review. A
+// pull request confirmed to carry the comment is not listed again. Once every
+// one carries it, SiblingsLinked is True and nothing is listed again. changed
+// reports a status write.
 func (p *pass) linkSiblings(ctx context.Context) (changed bool, err error) {
 	prs := p.in.Status.PullRequests
 	if phase := p.in.Status.Phase; phase != v1alpha1.IntentInReview && phase != v1alpha1.IntentRevising {
@@ -46,14 +70,37 @@ func (p *pass) linkSiblings(ctx context.Context) (changed bool, err error) {
 	if len(prs) < 2 || meta.IsStatusConditionTrue(p.in.Status.Conditions, v1alpha1.ConditionSiblingsLinked) {
 		return false, nil
 	}
+	state := p.siblingsState()
+	links := siblingLinks{posted: map[string]bool{}}
+	p.r.memo(func() {
+		if known := p.r.siblings[p.in.Name]; known != nil {
+			links.refused = known.refused
+			for k := range known.posted {
+				links.posted[k] = true
+			}
+		}
+	})
+	if links.refused == state {
+		return false, nil
+	}
+	remember := func(refusedIn string) {
+		links.refused = refusedIn
+		p.r.memo(func() { p.r.siblings[p.in.Name] = &links })
+	}
 	var refused []string
 	for _, pr := range prs {
+		ref := fmt.Sprintf("%s#%d", repoSlug(pr.Repository), pr.Number)
+		if links.posted[ref] {
+			continue
+		}
 		err := p.linkSibling(ctx, pr, prs)
 		switch {
 		case err == nil:
+			links.posted[ref] = true
 		case ghclient.IsRefused(err):
-			refused = append(refused, fmt.Sprintf("%s#%d: %v", repoSlug(pr.Repository), pr.Number, err))
+			refused = append(refused, fmt.Sprintf("%s: %v", ref, err))
 		default:
+			remember(links.refused)
 			p.r.log().LogAttrs(ctx, slog.LevelWarn, "link the intent's pull requests; retried at the next poll",
 				slog.String("intent", p.in.Name), slog.String("repository", pr.Repository),
 				slog.Int64("number", pr.Number), slog.Any("error", err))
@@ -62,19 +109,30 @@ func (p *pass) linkSiblings(ctx context.Context) (changed bool, err error) {
 	}
 	status, reason, msg := metav1.ConditionTrue, ReasonSiblingsPosted,
 		"every pull request of the intent carries the comment linking the others"
+	refusedIn := ""
 	if len(refused) > 0 {
+		refusedIn = state
 		status, reason = metav1.ConditionFalse, ReasonSiblingsRefused
 		msg = "GitHub refused the comment linking the intent's pull requests on " + strings.Join(refused, "; ") +
-			"; patchy retries it at every poll of the pull requests, and nothing waits on it"
+			"; patchy tries it again once the project changes or a pull request's head moves, and nothing " +
+			"waits on it"
 	}
 	if c := meta.FindStatusCondition(p.in.Status.Conditions, v1alpha1.ConditionSiblingsLinked); c != nil &&
 		c.Status == status && c.Reason == reason && c.Message == msg {
+		remember(refusedIn)
 		return false, nil
 	}
-	return true, p.update(ctx, func(cur *v1alpha1.Intent) error {
+	// The refusal is remembered only once recorded: a lost write tries
+	// again rather than leave it unsaid.
+	remember(links.refused)
+	if err := p.update(ctx, func(cur *v1alpha1.Intent) error {
 		setCondition(cur, v1alpha1.ConditionSiblingsLinked, status, reason, msg)
 		return nil
-	})
+	}); err != nil {
+		return false, err
+	}
+	remember(refusedIn)
+	return true, nil
 }
 
 // linkSibling posts the siblings comment on pr unless the App's bot already

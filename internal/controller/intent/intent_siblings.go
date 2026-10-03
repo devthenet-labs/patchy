@@ -13,7 +13,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
-	"github.com/bitwise-media-group/patchy/internal/ghclient"
 	"github.com/bitwise-media-group/patchy/internal/templates"
 )
 
@@ -21,8 +20,10 @@ import (
 const (
 	// ReasonSiblingsPosted: every pull request carries the comment.
 	ReasonSiblingsPosted = "Posted"
-	// ReasonSiblingsRefused: GitHub refused the comment on a pull request
-	// (a locked conversation, a permission the App lost).
+	// ReasonSiblingsRefused: the comment could not be posted on a pull
+	// request, and asking again would meet the same answer: GitHub refused
+	// it (a locked conversation, a permission the App lost), or patchy can
+	// no longer reach its repository (no Forge covers it).
 	ReasonSiblingsRefused = "Refused"
 )
 
@@ -54,14 +55,17 @@ func (p *pass) siblingsState() string {
 // cross-link is cosmetic, so it never holds a phase back, and the pull
 // requests are open, and their records written, before any of it is
 // attempted. It is best effort. A transient failure is logged and the rest
-// retried at the next poll of the pull requests. A refusal records
-// SiblingsLinked False saying which pull request and why, once, and is tried
-// again only once the Project changes or a pull request's head moves, never
-// at every poll: a locked conversation would otherwise cost a refused write
-// and a listing of every pull request each minute for the whole review. A
-// pull request confirmed to carry the comment is not listed again. Once every
-// one carries it, SiblingsLinked is True and nothing is listed again. changed
-// reports a status write.
+// retried at the next poll of the pull requests. A refusal, or a repository
+// patchy can no longer reach (unreachable), records SiblingsLinked False
+// saying which pull request and why, once, and is tried again only once the
+// Project changes or a pull request's head moves, never at every poll: a
+// locked conversation would otherwise cost a refused write and a listing of
+// every pull request each minute for the whole review. A pull request whose
+// repository has left the Project is written nothing (nor listed): the
+// condition names it, and the comment on the others still lists it. A pull
+// request confirmed to carry the comment is not listed again. Once every one
+// whose repository the Project still holds carries it, SiblingsLinked is True
+// and nothing is listed again. changed reports a status write.
 func (p *pass) linkSiblings(ctx context.Context) (changed bool, err error) {
 	prs := p.in.Status.PullRequests
 	if phase := p.in.Status.Phase; phase != v1alpha1.IntentInReview && phase != v1alpha1.IntentRevising {
@@ -87,17 +91,21 @@ func (p *pass) linkSiblings(ctx context.Context) (changed bool, err error) {
 		links.refused = refusedIn
 		p.r.memo(func() { p.r.siblings[p.in.Name] = &links })
 	}
-	var refused []string
+	var refused, left []string
 	for _, pr := range prs {
 		ref := fmt.Sprintf("%s#%d", repoSlug(pr.Repository), pr.Number)
 		if links.posted[ref] {
+			continue
+		}
+		if p.leftProject(pr.Repository) {
+			left = append(left, ref)
 			continue
 		}
 		err := p.linkSibling(ctx, pr, prs)
 		switch {
 		case err == nil:
 			links.posted[ref] = true
-		case ghclient.IsRefused(err):
+		case unreachable(err):
 			refused = append(refused, fmt.Sprintf("%s: %v", ref, err))
 		default:
 			remember(links.refused)
@@ -107,15 +115,10 @@ func (p *pass) linkSiblings(ctx context.Context) (changed bool, err error) {
 			return false, nil
 		}
 	}
-	status, reason, msg := metav1.ConditionTrue, ReasonSiblingsPosted,
-		"every pull request of the intent carries the comment linking the others"
+	status, reason, msg := siblingsOutcome(refused, left)
 	refusedIn := ""
 	if len(refused) > 0 {
 		refusedIn = state
-		status, reason = metav1.ConditionFalse, ReasonSiblingsRefused
-		msg = "GitHub refused the comment linking the intent's pull requests on " + strings.Join(refused, "; ") +
-			"; patchy tries it again once the project changes or a pull request's head moves, and nothing " +
-			"waits on it"
 	}
 	if c := meta.FindStatusCondition(p.in.Status.Conditions, v1alpha1.ConditionSiblingsLinked); c != nil &&
 		c.Status == status && c.Reason == reason && c.Message == msg {
@@ -133,6 +136,33 @@ func (p *pass) linkSiblings(ctx context.Context) (changed bool, err error) {
 	}
 	remember(refusedIn)
 	return true, nil
+}
+
+// siblingsOutcome is the SiblingsLinked condition once every pull request
+// was tried: False naming each refused one ("owner/name#n: why") while any
+// was, True otherwise, and either way naming each one left unlinked because
+// its repository left the Project.
+func siblingsOutcome(refused, left []string) (metav1.ConditionStatus, string, string) {
+	status, reason, msg := metav1.ConditionTrue, ReasonSiblingsPosted,
+		"every pull request of the intent carries the comment linking the others"
+	if len(left) > 0 {
+		msg = "every pull request of the intent whose repository the project still holds carries the comment " +
+			"linking the others"
+	}
+	if len(refused) > 0 {
+		status, reason = metav1.ConditionFalse, ReasonSiblingsRefused
+		msg = "the comment linking the intent's pull requests could not be posted on " +
+			strings.Join(refused, "; ") + "; patchy tries it again once the project changes or a pull " +
+			"request's head moves, and nothing waits on it"
+	}
+	switch len(left) {
+	case 0:
+	case 1:
+		msg += "; " + left[0] + " was not linked, its repository having left the project"
+	default:
+		msg += "; " + strings.Join(left, ", ") + " were not linked, their repositories having left the project"
+	}
+	return status, reason, msg
 }
 
 // linkSibling posts the siblings comment on pr unless the App's bot already

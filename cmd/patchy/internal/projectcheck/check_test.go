@@ -577,6 +577,18 @@ func TestRunAgentImage(t *testing.T) {
 		{"not allowlisted", func(w *world) {
 			w.setting(sourceController, keyImageRegistries, "ghcr.io/acme/")
 		}, "web", checkreport.Fail, []string{"fails source-controller's policy", "allowlist", "ghcr.io/acme/"}},
+		// The chart denies the preview image prefix: an agent image there
+		// fails as source-controller would refuse it, allowlisted or not.
+		{"under a denied registry path", func(w *world) {
+			w.setting(sourceController, keyImageRegistries, w.host+"/patchy/")
+			w.setting(sourceController, keyImageDenied, w.host+"/patchy/app-envs/")
+		}, "web", checkreport.Fail, []string{"fails source-controller's policy", "agent images may never come from",
+			"/patchy/app-envs/`"}},
+		{"a denied path elsewhere", func(w *world) {
+			w.setting(sourceController, keyImageDenied, w.host+"/patchy/previews/")
+		}, "web", checkreport.Pass, []string{"/patchy/app-envs/web"}},
+		{"unparsable denied path", func(w *world) { w.setting(sourceController, keyImageDenied, "ghcr.io") },
+			"web", checkreport.Skip, []string{"cannot read source-controller's policy", keyImageDenied}},
 		{"not published", func(w *world) {
 			w.github.files[w.repo("web").URL][".patchy/agent.yaml"] = "image: " + w.host + "/patchy/app-envs/web:v2\n"
 		}, "web", checkreport.Fail, []string{"is not published", "MANIFEST_UNKNOWN"}},

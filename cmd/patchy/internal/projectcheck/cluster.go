@@ -42,6 +42,7 @@ const (
 const (
 	keyRepositoryImages      = "PATCHY_REPOSITORY_IMAGES"
 	keyImageRegistries       = "PATCHY_REPOSITORY_IMAGE_REGISTRIES"
+	keyImageDenied           = "PATCHY_REPOSITORY_IMAGE_DENIED_REGISTRIES"
 	keyImageMaxBytes         = "PATCHY_REPOSITORY_IMAGE_MAX_BYTES"
 	keyImageAllowUnsigned    = "PATCHY_REPOSITORY_IMAGE_ALLOW_UNSIGNED"
 	keyImageCosignKeyFile    = "PATCHY_REPOSITORY_IMAGE_COSIGN_KEY_FILE"
@@ -70,6 +71,18 @@ func (c controllerConfig) found() bool { return c.err == nil && c.from != "" }
 func (c controllerConfig) bool(key string) bool {
 	v, err := strconv.ParseBool(strings.TrimSpace(c.data[key]))
 	return err == nil && v
+}
+
+// list reads a comma-separated setting the way a controller's StringList
+// does: entries trimmed, empty ones dropped.
+func (c controllerConfig) list(key string) []string {
+	var out []string
+	for e := range strings.SplitSeq(c.data[key], ",") {
+		if e = strings.TrimSpace(e); e != "" {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // settings are the controllers' configuration, read once per run. Never a
@@ -168,15 +181,14 @@ func (s settings) policy() (imagePolicy, error) {
 	if !p.enabled {
 		return p, nil
 	}
-	var entries []string
-	for e := range strings.SplitSeq(c.data[keyImageRegistries], ",") {
-		if e = strings.TrimSpace(e); e != "" {
-			entries = append(entries, e)
-		}
-	}
-	policy, err := runnerimage.NewPolicy(entries)
+	policy, err := runnerimage.NewPolicy(c.list(keyImageRegistries))
 	if err != nil {
 		return p, fmt.Errorf("%s: %s: %w", c.from, keyImageRegistries, err)
+	}
+	// The registry paths source-controller refuses declared images from
+	// whatever the allowlist says: the chart's preview image prefix.
+	if policy, err = policy.Deny(c.list(keyImageDenied)); err != nil {
+		return p, fmt.Errorf("%s: %s: %w", c.from, keyImageDenied, err)
 	}
 	p.policy = &policy
 	if v := strings.TrimSpace(c.data[keyImageMaxBytes]); v != "" {

@@ -56,6 +56,9 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 		"resolve repository-declared agent runner images (.patchy/agent.yaml, devcontainer.json); the kill switch")
 	f.String("repository-image-registries", "",
 		"comma-separated host/path prefixes a declared image must sit under (required with --repository-images)")
+	f.String("repository-image-denied-registries", "",
+		"comma-separated host/path prefixes a declared image may never sit under, even inside an allowed one "+
+			"(the chart sets the preview image prefix: preview images are built from unreviewed pull requests)")
 	f.Int("repository-image-max-bytes", int(resolve.DefaultMaxBytes),
 		"largest compressed layer total per platform of a declared image")
 	f.String("repository-image-cosign-key-file", "",
@@ -79,6 +82,9 @@ func runnerImages(opts *cli.Options) (*source.RunnerImages, error) {
 	policy, err := runnerimage.NewPolicy(opts.StringList("repository-image-registries"))
 	if err != nil {
 		return nil, fmt.Errorf("repository-image-registries: %w", err)
+	}
+	if policy, err = policy.Deny(opts.StringList("repository-image-denied-registries")); err != nil {
+		return nil, fmt.Errorf("repository-image-denied-registries: %w", err)
 	}
 	onReject := opts.String("repository-image-on-reject")
 	if onReject != source.OnRejectHandoff && onReject != source.OnRejectDefault {

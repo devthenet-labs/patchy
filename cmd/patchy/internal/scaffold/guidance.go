@@ -64,6 +64,10 @@ func NextSteps(o Options, present Present) string {
 	w("     output, on this repository only: an organization variable reaches every")
 	w("     repository with these workflows, a template repository and its copies included.")
 	w("       terraform output -raw %s | gh variable set -f - --repo %s", moduleName(o)+"_variables", repo)
+	w("     With the platform module, from a root output that re-exports its")
+	w("     github_variables_dotenv:")
+	w(`       terraform output -json github_variables_dotenv | jq -r '."%s"' | gh variable set -f - --repo %s`,
+		o.ImageName, repo)
 	w("     Without the module, .github/actions/publish/README.md lists the variables. Then")
 	w("     switch on the agent image's publisher:")
 	gate(AgentPublishEnabled)

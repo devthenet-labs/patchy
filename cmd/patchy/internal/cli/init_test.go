@@ -161,6 +161,8 @@ func TestInitAppWritesAndRefusesToOverwrite(t *testing.T) {
 	for _, want := range []string{"wrote 24 files for acme/Hello.Web", "image name hello-web",
 		"//deploy/terraform/aws/modules/app?ref=v0.12.14\"",
 		"terraform output -raw patchy_app_hello_web_variables | gh variable set -f - --repo acme/Hello.Web",
+		"terraform output -json github_variables_dotenv | jq -r '.\"hello-web\"' | " +
+			"gh variable set -f - --repo acme/Hello.Web",
 		"imageRepository: " + testRegistryHost + "/patchy/previews/hello-web"} {
 		if !strings.Contains(errOut, want) {
 			t.Errorf("stderr lacks %q:\n%s", want, errOut)

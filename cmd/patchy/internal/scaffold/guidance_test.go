@@ -40,6 +40,10 @@ func TestNextStepsSetTheVariablesFromTheModule(t *testing.T) {
 		}
 		for _, wantLine := range []string{
 			"       terraform output -raw patchy_app_hello_web_variables | gh variable set -f - --repo acme/Hello.Web\n",
+			// The platform module's root output, keyed by the slug: the
+			// standalone module's output does not exist in that root.
+			"       terraform output -json github_variables_dotenv | jq -r '.\"hello-web\"' | " +
+				"gh variable set -f - --repo acme/Hello.Web\n",
 			`       output "patchy_app_hello_web_variables" {`,
 			"value = module.patchy_app_hello_web.github_variables_dotenv",
 			"on this repository only: an organization variable reaches every",

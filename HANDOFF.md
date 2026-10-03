@@ -189,14 +189,37 @@ patchy **rev 51**, patchy-config **rev 32** (rollback **50 / 31**); nine Deploym
   `marigold-9` Ready 20:16:31 (web at `/`, api at `/api`; valid, Unicode and rejected names behaved as planned; the page
   inserts with `textContent` only; 40/40 requests 200) → api merged first: the intent stayed InReview → web merged →
   Merged 38 s later, preview gone 12 s after, issue closed completed, summary listing both PRs. $1.51.
-- **In review:** W11 operator guide (PR 108: "Deploying intents and previews", onboarding page, module reference, the
-  W10 docs bugs, a fresh-eyes validation against a fictional org whose gaps were fixed); being rebased onto main.
+- **Done:** W11 operator guide merged (see below).
 
-**Next:** merge PR 108; W1 (configurable preview image prefix with enforced agent/preview disjointness); release 0.12.17
-(PR 109, the W11 CLI text) and gate. Owner decisions pending: external-dns support (W4); the home IP / account ID in
-this public repository (current files and history); whether a permanently unreachable but still-listed repository should
-stop blocking an ended intent's hand-off (today it retries forever, by design); whether a removed repository's
-unreadable, last-seen-open pull request should keep an intent in review until a human closes the issue (today it does).
+**0.12.17 released and deployed; gate PASSED; "Deployable by others" complete except the owner's decisions (2026-10-03,
+20:30–22:44 UTC).** Merged: PR 108 (W11 operator guide: "Intents & previews" nav with deploying.md, onboarding-app.md
+and the module reference, all seven W10 docs bugs including the `init app` next steps, a fresh-eyes validation against a
+fictional org whose 19 unanswered questions and 33 review findings were fixed, then refreshed for 0.12.16 and
+multi-repository Projects), PR 113 (W1: `preview.imagePathPrefix`, default `patchy/previews`, with agent/preview prefix
+disjointness enforced by the chart render, the terraform module's validation and a new source-controller deny list set
+by the chart; the CRD leaf is now a strict DNS label; default render byte-identical), PR 112 (the flaky
+`TestBuildPackagesChangeset` cleanup: git auto-gc off in test repos), PR 114 (the account ID and the owner IP replaced
+in current files by `111122223333` / `203.0.113.10`; history still has them). Release PR 110 (stamps and CHANGELOG only,
+CI approved at the verified head, every job green). Render 0.12.16→0.12.17 with live values: only the source-controller
+ConfigMap (`PATCHY_REPOSITORY_IMAGE_DENIED_REGISTRIES` = the preview prefix) and the Project/Preview CRD patterns.
+patchy **rev 53**, patchy-config **rev 34** (rollback **52 / 33**); nine Deployments on v0.12.17, zero restarts; all
+four Projects Ready; status page 200.
+
+- **Live W1 proof:** a server dry-run of a Project whose preview leaf is `app-` is now refused by the CRD pattern; the
+  same with `app` is accepted.
+- **Gate:** weak-key alert → `finding-514becf18f-18` → issue #79 → `/patchy expedite` 22:39:17 → InReview 22:42:10 → PR
+  #80 (with `prefixgatekey_test.go`) → merged 22:43:27 → Remediated within a second, issue closed completed (tracking
+  state caught up a few seconds later), no duplicate.
+- **Process slip, recorded:** a background waiter merged the docs-only PR 111 although `ci / test` was red (the flaky
+  test PR 112 then fixed). Waiters now merge only when every check concluded SUCCESS/SKIPPED/NEUTRAL.
+
+**Next (owner's choice):** external-dns support (W4, not built; terraform alias records are the documented path);
+rewriting git history to drop the old account ID and IP; whether a permanently unreachable but still-listed repository
+should stop blocking an ended intent's hand-off; whether a removed repository's unreadable, last-seen-open pull request
+should keep an intent in review; the admission policy's preview leaf regex is deliberately wider than the CRD's
+(tightening it changes the live VAP). Small follow-ups: `patchy init app --preview-prefix`; the module's `helm_values`
+does not emit `preview.nodeIsolation.*`; intent-controller never posts the preview URL on the PR or issue; AGENTS.md
+still mentions a Homebrew cask for the fork's CLI.
 
 ## Previous checkpoint — 2026-10-02 (Codex stage-1 handover; historical)
 

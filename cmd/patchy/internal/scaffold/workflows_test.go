@@ -5,6 +5,7 @@ package scaffold
 
 import (
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -214,6 +215,63 @@ func TestPublishersCheckOutOnlyThemselves(t *testing.T) {
 			if strings.HasPrefix(s.Uses, "actions/checkout@") {
 				t.Errorf("%s checks out a second time", name)
 			}
+		}
+	}
+}
+
+// commitPins is the commit each action the generated workflows use is
+// pinned to. Every SHA here was checked to name a commit, not an annotated
+// tag object: the GitHub API's commits endpoint for the action's repository
+// answers a commit and fails with 422 "No commit found" for a tag object. A
+// tag object resolves only while its tag points at it: once a floating tag
+// such as v5 moves on, the object can be garbage collected and every
+// scaffolded workflow stops resolving the action, and pin checkers do not
+// read it as a commit pin. This test cannot tell the two apart offline, so a
+// new or bumped pin is added here only after that check.
+var commitPins = map[string]string{
+	"actions/checkout":                      "3d3c42e5aac5ba805825da76410c181273ba90b1", // v7.0.1
+	"actions/download-artifact":             "d3f86a106a0bac45b974a628896c90dbdf5c8093", // v4.3.0
+	"actions/github-script":                 "ed597411d8f924073f98dfc5c65a23a2325f34cd", // v8.0.0
+	"actions/setup-go":                      "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e", // v7.0.0
+	"actions/upload-artifact":               "ea165f8d65b6e75b540449e92b4886f43607fa02", // v4.6.2
+	"aws-actions/configure-aws-credentials": "e1253824e5c10ff9df46874f81ed3ec929e19cfd", // v6.3.0
+	"docker/setup-buildx-action":            "8d2750c68a42422c14e847fe6c8ac0403b4cbd6f", // v3.12.0
+}
+
+// TestActionsArePinnedToCommits: every action a generated workflow uses,
+// in both modes, is pinned by full SHA to the commit commitPins records,
+// and every recorded pin is still used.
+func TestActionsArePinnedToCommits(t *testing.T) {
+	fullSHA := regexp.MustCompile(`^[0-9a-f]{40}$`)
+	used := map[string]bool{}
+	for _, existing := range []bool{false, true} {
+		for name, w := range workflows(t, plan(t, testOptions(existing))) {
+			for jobName, job := range w.Jobs {
+				refs := []string{job.Uses}
+				for _, step := range job.Steps {
+					refs = append(refs, step.Uses)
+				}
+				for _, ref := range refs {
+					if ref == "" || strings.HasPrefix(ref, "./") {
+						continue
+					}
+					action, pin, _ := strings.Cut(ref, "@")
+					switch want, ok := commitPins[action]; {
+					case !fullSHA.MatchString(pin):
+						t.Errorf("%s/%s uses %s, not pinned by full SHA", name, jobName, ref)
+					case !ok:
+						t.Errorf("%s/%s uses %s, whose pin commitPins does not record as a commit", name, jobName, ref)
+					case pin != want:
+						t.Errorf("%s/%s uses %s, not the commit %s that commitPins records", name, jobName, ref, want)
+					}
+					used[action] = true
+				}
+			}
+		}
+	}
+	for action := range commitPins {
+		if !used[action] {
+			t.Errorf("commitPins records %s, which no generated workflow uses", action)
 		}
 	}
 }

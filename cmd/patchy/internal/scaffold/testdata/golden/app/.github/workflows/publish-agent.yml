@@ -80,7 +80,7 @@ jobs:
       - name: Install the distribution's image-copy utility
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends skopeo
       - name: Obtain the agent role only after validation
-        uses: aws-actions/configure-aws-credentials@cabfdba3510de1431bac9dba27511d97497fc100 # v5
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           aws-region: ${{ vars.AWS_REGION }}
           role-duration-seconds: 900

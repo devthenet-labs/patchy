@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.12.13](https://github.com/devthenet-labs/patchy/compare/v0.12.12...v0.12.13) (2026-10-03)
+
+
+### Bug Fixes
+
+* **chart:** let the preview-controller record Events ([#85](https://github.com/devthenet-labs/patchy/issues/85)) ([f0c8dc5](https://github.com/devthenet-labs/patchy/commit/f0c8dc5e1e2d6cc800579969ffc351a08f24fa22))
+* **hack:** make chart-render-test independent of the caller's locale ([#86](https://github.com/devthenet-labs/patchy/issues/86)) ([e2ee65b](https://github.com/devthenet-labs/patchy/commit/e2ee65b5892276a3dc3b2b131dd79bc3f4cb0557))
+* **templates:** make a remediation's regression test part of the fix ([#87](https://github.com/devthenet-labs/patchy/issues/87)) ([8aab4f0](https://github.com/devthenet-labs/patchy/commit/8aab4f05db41e08d50f8de70bfabfef5418b81e0))
+
 ## [0.12.12](https://github.com/devthenet-labs/patchy/compare/v0.12.11...v0.12.12) (2026-10-02)
 
 

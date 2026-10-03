@@ -20,8 +20,8 @@ variable "github" {
   description = <<-EOT
     The app's GitHub repository. Take every value from the API, exactly as it is returned (IAM compares them
     case-sensitively):
-    - owner, name, repository_id, owner_id, default_branch: `gh api repos/<owner>/<name> --jq '{owner: .owner.login,
-      name: .name, repository_id: .id, owner_id: .owner.id, default_branch: .default_branch}'`
+    - owner, name, repository_id, owner_id, default_branch: from `gh api repos/<owner>/<name>`, as `.owner.login`,
+      `.name`, `.id`, `.owner.id` and `.default_branch`
     - sub_claim_prefix: `gh api repos/<owner>/<name>/actions/oidc/customization/sub --jq .sub_claim_prefix`
   EOT
   type = object({
@@ -101,7 +101,7 @@ variable "agent_path_prefix" {
 }
 
 variable "role_name_prefix" {
-  description = "Prefix of both IAM role and policy names: <role_name_prefix><slug>-<agent|runtime>-push. IAM names are account-wide, so the prefix keeps two installs in one account apart."
+  description = "Prefix of both IAM role and policy names: `<role_name_prefix><slug>-agent-push` and `<role_name_prefix><slug>-runtime-push`. IAM names are account-wide, so the prefix keeps two installs in one account apart."
   type        = string
   default     = "patchy-app-"
 

@@ -15,7 +15,7 @@ variable "cluster_name" {
 }
 
 variable "name_prefix" {
-  description = "Prefix of the platform IAM names: <name_prefix>-patchy-source-controller and <name_prefix>-patchy-preview-node. Null means cluster_name. IAM names are account-wide, so the prefix keeps two installs in one account apart."
+  description = "Prefix of the platform IAM names: `<name_prefix>-patchy-source-controller` and `<name_prefix>-patchy-preview-node`. Null means cluster_name. IAM names are account-wide, so the prefix keeps two installs in one account apart."
   type        = string
   default     = null
 
@@ -80,7 +80,7 @@ variable "agent_path_prefix" {
 }
 
 variable "app_role_name_prefix" {
-  description = "Prefix of every app's publisher role and policy names: <app_role_name_prefix><slug>-<agent|runtime>-push. Null means \"<name_prefix>-app-\"."
+  description = "Prefix of every app's publisher role and policy names: `<app_role_name_prefix><slug>-agent-push` and `<app_role_name_prefix><slug>-runtime-push`. Null means `<name_prefix>-app-`."
   type        = string
   default     = null
 
@@ -98,7 +98,7 @@ variable "apps" {
     - github: the repository exactly as the API reports it (IAM compares case-sensitively). owner, name,
       repository_id, owner_id and default_branch come from `gh api repos/<owner>/<name>`; sub_claim_prefix,
       which is required, from `gh api repos/<owner>/<name>/actions/oidc/customization/sub --jq .sub_claim_prefix`.
-      It must be GitHub's immutable form, repo:<owner>@<owner_id>/<name>@<repository_id>.
+      It must be GitHub's immutable form, `repo:<owner>@<owner_id>/<name>@<repository_id>`.
   EOT
   type = map(object({
     github = object({
@@ -150,10 +150,10 @@ variable "apps" {
 variable "previews" {
   description = <<-EOT
     Preview infrastructure; null (the default) creates none. Set, the module creates the preview node role and its
-    EKS access entry, and a wildcard certificate for *.<host_suffix> validated in zone_id.
-    - host_suffix: preview hosts are <project>-<issue>.<host_suffix>. A separate registrable domain is recommended.
+    EKS access entry, and a wildcard certificate for `*.<host_suffix>` validated in zone_id.
+    - host_suffix: preview hosts are `<project>-<issue>.<host_suffix>`. A separate registrable domain is recommended.
     - zone_id: the Route53 hosted zone that holds host_suffix.
-    - alb_name: the preview ALB, at most 32 characters. Null means "<cluster_name>-preview". It must differ from
+    - alb_name: the preview ALB, at most 32 characters. Null means `<cluster_name>-preview`. It must differ from
       edge.alb_name: previews get an ALB of their own.
     - alb_subnet_ids: the public subnets the preview ALB is placed in: 2 to 4, one per Availability Zone, each in the
       cluster's VPC and tagged kubernetes.io/role/elb. helm_values pins the ALB to exactly these subnets
@@ -284,7 +284,7 @@ variable "create_edge_alias_records" {
 }
 
 variable "create_preview_alias_record" {
-  description = "Create the *.<previews.host_suffix> Route53 alias record, pointing at the preview ALB looked up by its name. Set it once Helm stage 2 (previews on, with the placeholder Ingress) has created the preview ALB: the lookup fails the plan while the ALB is missing."
+  description = "Create the `*.<previews.host_suffix>` Route53 alias record, pointing at the preview ALB looked up by its name. Set it once Helm stage 2 (previews on, with the placeholder Ingress) has created the preview ALB: the lookup fails the plan while the ALB is missing."
   type        = bool
   default     = false
 }

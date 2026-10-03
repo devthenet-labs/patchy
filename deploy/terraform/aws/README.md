@@ -22,7 +22,11 @@ emits those values. Kubernetes objects stay the chart's.
 
 The module has no provider and no backend block: configure both in your root. Only ECR on EKS Auto Mode is supported,
 because the preview edge depends on Auto Mode's ALB IngressClassParams and the chart accepts only an ECR preview
-registry. source-controller's identity is EKS Pod Identity, which Auto Mode runs natively.
+registry. source-controller's identity is EKS Pod Identity, which Auto Mode runs natively. The commands below read the
+module's outputs with `terraform output`, which sees only the root's: re-export the ones you read
+(`output "helm_values" { value = module.patchy.helm_values }`, and likewise `github_variables_dotenv` and
+`preview_node_class`). The operator guide, [Deploying intents and previews](../../../docs/intents/deploying.md), walks
+the whole path.
 
 ## Example
 
@@ -99,8 +103,10 @@ module "patchy" {
 3. **Edge DNS.** Once Helm has created the edge Ingresses, and so the edge ALB, set `create_edge_alias_records = true`
    and apply again. The webhook host then resolves, so intents work before previews are on. The lookup fails the plan
    while the edge ALB is missing; it never needs the preview ALB.
-4. **Helm, stage 2** (previews on). Apply the isolated preview NodeClass and NodePool first: `preview_node_class` gives
-   their role, subnets and security group. Enabling the placeholder creates the preview ALB, and charges start there.
+4. **Helm, stage 2** (previews on). The isolated preview NodeClass and NodePool come first: with the chart's
+   `preview.nodeIsolation.create: true`, set `preview.nodeIsolation.role`, `subnetIDs` and `securityGroupIDs` from the
+   `preview_node_class` output, or apply your own NodeClass and NodePool with those values. Enabling the placeholder
+   creates the preview ALB, and charges start there.
 5. **Preview DNS.** Set `create_preview_alias_record = true` and apply again. The lookup fails the plan while the
    preview ALB is missing.
 6. **Each app repository.** Set its Actions variables, publish the agent image, and enable previews last:
@@ -195,7 +201,9 @@ immutable, a toolchain change publishes under a new tag.
 - **A separate preview ALB.** `previews.alb_name` (default `<cluster_name>-preview`) must differ from `edge.alb_name`.
   The preview ALB admits only `inbound_cidrs`, so sharing it would put the GitHub webhook behind those /32s.
 - **What the module cannot see.** It cannot check that the cluster enforces NetworkPolicy (`kube-system/amazon-vpc-cni`
-  with `enable-network-policy-controller: "true"`); `patchy check project` reports that.
+  with `enable-network-policy-controller: "true"`), and neither does `patchy check project`: read the ConfigMap
+  yourself, and prove the preview slots' isolation with the cold-start isolation probe
+  (`hack/preview-isolation-probe/README.md`) before any Project previews.
 
 ## Adopting existing resources
 
@@ -218,6 +226,8 @@ domain (`aws_route53_record.preview_validation["*.preview.acme-apps.dev"]`).
 
 ## Reference
 
+<!-- The docs site embeds what lies between the two snippet markers (docs/intents/terraform-module.md). -->
+<!-- --8<-- [start:reference] -->
 <!-- BEGIN_TF_DOCS -->
 <!-- prettier-ignore-start -->
 ### Requirements
@@ -276,15 +286,15 @@ domain (`aws_route53_record.preview_validation["*.preview.acme-apps.dev"]`).
 | ---- | ----------- | ---- | ------- | :------: |
 | cluster\_name | The EKS Auto Mode cluster patchy runs on. Its ARN, VPC, primary security group and service CIDR are read from it. | `string` | n/a | yes |
 | agent\_path\_prefix | ECR path the agent toolchain images live under, with no leading or trailing slash. source-controller may read every repository under it, and helm\_values admits declared images only there. It must be disjoint from patchy/previews. | `string` | `"patchy/app-envs"` | no |
-| app\_role\_name\_prefix | Prefix of every app's publisher role and policy names: <app\_role\_name\_prefix><slug>-<agent\|runtime>-push. Null means "<name\_prefix>-app-". | `string` | `null` | no |
-| apps | The application repositories patchy works on, keyed by slug: the image name, lowercase letters, digits and<br/>inner hyphens, independent of the GitHub name (Hello.Web -> hello-web). Each app gets an agent toolchain<br/>repository and its publisher role; with preview (default true) also a runtime repository and its publisher.<br/>- github: the repository exactly as the API reports it (IAM compares case-sensitively). owner, name,<br/>  repository\_id, owner\_id and default\_branch come from `gh api repos/<owner>/<name>`; sub\_claim\_prefix,<br/>  which is required, from `gh api repos/<owner>/<name>/actions/oidc/customization/sub --jq .sub_claim_prefix`.<br/>  It must be GitHub's immutable form, repo:<owner>@<owner\_id>/<name>@<repository\_id>. | <pre>map(object({<br/>    github = object({<br/>      owner            = string<br/>      name             = string<br/>      repository_id    = string<br/>      owner_id         = string<br/>      default_branch   = optional(string, "main")<br/>      sub_claim_prefix = string<br/>    })<br/>    preview = optional(bool, true)<br/>  }))</pre> | `{}` | no |
+| app\_role\_name\_prefix | Prefix of every app's publisher role and policy names: `<app_role_name_prefix><slug>-agent-push` and `<app_role_name_prefix><slug>-runtime-push`. Null means `<name_prefix>-app-`. | `string` | `null` | no |
+| apps | The application repositories patchy works on, keyed by slug: the image name, lowercase letters, digits and<br/>inner hyphens, independent of the GitHub name (Hello.Web -> hello-web). Each app gets an agent toolchain<br/>repository and its publisher role; with preview (default true) also a runtime repository and its publisher.<br/>- github: the repository exactly as the API reports it (IAM compares case-sensitively). owner, name,<br/>  repository\_id, owner\_id and default\_branch come from `gh api repos/<owner>/<name>`; sub\_claim\_prefix,<br/>  which is required, from `gh api repos/<owner>/<name>/actions/oidc/customization/sub --jq .sub_claim_prefix`.<br/>  It must be GitHub's immutable form, `repo:<owner>@<owner_id>/<name>@<repository_id>`. | <pre>map(object({<br/>    github = object({<br/>      owner            = string<br/>      name             = string<br/>      repository_id    = string<br/>      owner_id         = string<br/>      default_branch   = optional(string, "main")<br/>      sub_claim_prefix = string<br/>    })<br/>    preview = optional(bool, true)<br/>  }))</pre> | `{}` | no |
 | create\_edge\_alias\_records | Create the Route53 alias records for edge.webhook\_host and edge.status\_host, pointing at the edge ALB looked up by edge.alb\_name. Set it once Helm stage 1 has created the edge Ingresses and so the ALB: the lookup fails the plan while the ALB is missing. It is independent of the preview alias, so the webhook resolves before previews are turned on. | `bool` | `false` | no |
-| create\_preview\_alias\_record | Create the *.<previews.host\_suffix> Route53 alias record, pointing at the preview ALB looked up by its name. Set it once Helm stage 2 (previews on, with the placeholder Ingress) has created the preview ALB: the lookup fails the plan while the ALB is missing. | `bool` | `false` | no |
+| create\_preview\_alias\_record | Create the `*.<previews.host_suffix>` Route53 alias record, pointing at the preview ALB looked up by its name. Set it once Helm stage 2 (previews on, with the placeholder Ingress) has created the preview ALB: the lookup fails the plan while the ALB is missing. | `bool` | `false` | no |
 | edge | An ACM certificate, and after Helm stage 1 alias records, for patchy's own public edge on an ALB: the GitHub<br/>webhook and the status page. Null (the default) creates none; the edge then works with any ingress and<br/>certificate source, cert-manager included.<br/>- zone\_id: the Route53 hosted zone that holds the hosts.<br/>- webhook\_host, status\_host: the two hostnames; status\_host is optional.<br/>- certificate\_domains: the names the certificate covers, which must cover both hosts. Null means the hosts.<br/>- alb\_name: the ALB the edge Ingresses share, looked up by name only for the alias records. | <pre>object({<br/>    zone_id             = string<br/>    webhook_host        = string<br/>    status_host         = optional(string)<br/>    certificate_domains = optional(list(string))<br/>    alb_name            = string<br/>  })</pre> | `null` | no |
 | github\_oidc\_provider\_arn | ARN of the account's existing IAM OIDC provider for token.actions.githubusercontent.com. Null creates one. An account holds at most one provider per issuer, so pass the ARN when it already exists. | `string` | `null` | no |
-| name\_prefix | Prefix of the platform IAM names: <name\_prefix>-patchy-source-controller and <name\_prefix>-patchy-preview-node. Null means cluster\_name. IAM names are account-wide, so the prefix keeps two installs in one account apart. | `string` | `null` | no |
+| name\_prefix | Prefix of the platform IAM names: `<name_prefix>-patchy-source-controller` and `<name_prefix>-patchy-preview-node`. Null means cluster\_name. IAM names are account-wide, so the prefix keeps two installs in one account apart. | `string` | `null` | no |
 | namespace | The patchy Helm release namespace, where source-controller runs. | `string` | `"patchy"` | no |
-| previews | Preview infrastructure; null (the default) creates none. Set, the module creates the preview node role and its<br/>EKS access entry, and a wildcard certificate for *.<host\_suffix> validated in zone\_id.<br/>- host\_suffix: preview hosts are <project>-<issue>.<host\_suffix>. A separate registrable domain is recommended.<br/>- zone\_id: the Route53 hosted zone that holds host\_suffix.<br/>- alb\_name: the preview ALB, at most 32 characters. Null means "<cluster\_name>-preview". It must differ from<br/>  edge.alb\_name: previews get an ALB of their own.<br/>- alb\_subnet\_ids: the public subnets the preview ALB is placed in: 2 to 4, one per Availability Zone, each in the<br/>  cluster's VPC and tagged kubernetes.io/role/elb. helm\_values pins the ALB to exactly these subnets<br/>  (preview.albSubnetIDs), and their CIDRs become preview.albSubnetCIDRs, the only sources preview pods admit.<br/>- node\_subnet\_ids: the private subnets preview nodes run in (the NodeClass subnetSelectorTerms). Untrusted<br/>  preview workloads must never get public IPs, so a subnet that assigns them fails the plan.<br/>- inbound\_cidrs: who may reach previews: 1 to 8 IPv4 /32s.<br/>- dns\_cidr, api\_server\_cidr: the cluster DNS and Kubernetes API Service /32s. Null derives .10 and .1 of the<br/>  cluster's service CIDR, which is what EKS assigns. | <pre>object({<br/>    host_suffix     = string<br/>    zone_id         = string<br/>    alb_name        = optional(string)<br/>    alb_subnet_ids  = list(string)<br/>    node_subnet_ids = list(string)<br/>    inbound_cidrs   = list(string)<br/>    dns_cidr        = optional(string)<br/>    api_server_cidr = optional(string)<br/>  })</pre> | `null` | no |
+| previews | Preview infrastructure; null (the default) creates none. Set, the module creates the preview node role and its<br/>EKS access entry, and a wildcard certificate for `*.<host_suffix>` validated in zone\_id.<br/>- host\_suffix: preview hosts are `<project>-<issue>.<host_suffix>`. A separate registrable domain is recommended.<br/>- zone\_id: the Route53 hosted zone that holds host\_suffix.<br/>- alb\_name: the preview ALB, at most 32 characters. Null means `<cluster_name>-preview`. It must differ from<br/>  edge.alb\_name: previews get an ALB of their own.<br/>- alb\_subnet\_ids: the public subnets the preview ALB is placed in: 2 to 4, one per Availability Zone, each in the<br/>  cluster's VPC and tagged kubernetes.io/role/elb. helm\_values pins the ALB to exactly these subnets<br/>  (preview.albSubnetIDs), and their CIDRs become preview.albSubnetCIDRs, the only sources preview pods admit.<br/>- node\_subnet\_ids: the private subnets preview nodes run in (the NodeClass subnetSelectorTerms). Untrusted<br/>  preview workloads must never get public IPs, so a subnet that assigns them fails the plan.<br/>- inbound\_cidrs: who may reach previews: 1 to 8 IPv4 /32s.<br/>- dns\_cidr, api\_server\_cidr: the cluster DNS and Kubernetes API Service /32s. Null derives .10 and .1 of the<br/>  cluster's service CIDR, which is what EKS assigns. | <pre>object({<br/>    host_suffix     = string<br/>    zone_id         = string<br/>    alb_name        = optional(string)<br/>    alb_subnet_ids  = list(string)<br/>    node_subnet_ids = list(string)<br/>    inbound_cidrs   = list(string)<br/>    dns_cidr        = optional(string)<br/>    api_server_cidr = optional(string)<br/>  })</pre> | `null` | no |
 | source\_controller\_service\_account | The source-controller ServiceAccount the Pod Identity association binds. helm\_values sets sourceController.serviceAccount.name to it, so the chart creates exactly this name whatever the release is called. | `string` | `"patchy-source-controller"` | no |
 | tags | Tags added to every taggable resource the module creates. | `map(string)` | `{}` | no |
 | wait\_for\_certificate\_validation | Hold apply until ACM has issued the certificates, so helm\_values never carries a certificate the ALB cannot attach yet. Set false while the zones are not yet delegated; ACM then issues the certificates on its own once they are. | `bool` | `true` | no |
@@ -297,11 +307,12 @@ domain (`aws_route53_record.preview_validation["*.preview.acme-apps.dev"]`).
 | edge\_certificate\_arn | ACM certificate for the webhook and status hosts (helm\_values edge annotations); null without edge |
 | github\_oidc\_provider\_arn | ARN of the GitHub Actions OIDC provider the publisher roles trust: the one this module created, or the one it was given |
 | github\_variables | Per app slug, the repository variables its publish workflows read, as a map: AWS\_REGION, ECR\_REGISTRY, PUBLISH\_REPOSITORY\_ID, PUBLISH\_OWNER\_ID, AGENT\_IMAGE\_REPOSITORY, AGENT\_ROLE\_ARN and, with previews, RUNTIME\_IMAGE\_REPOSITORY and RUNTIME\_ROLE\_ARN. |
-| github\_variables\_dotenv | Per app slug, the same variables as a sorted dotenv string: terraform output -json github\_variables\_dotenv \| jq -r '."<slug>"' \| gh variable set --repo <owner>/<name> -f - |
-| helm\_values | YAML values for the patchy chart, derived from the infrastructure: pass it last, after the operator's own values file (helm install ... -f operator-values.yaml -f <(terraform output -raw helm\_values)). It carries no enable flag and no security opt-out. |
-| preview\_certificate\_arn | ACM certificate for *.<previews.host\_suffix> (helm\_values preview.certificateARN); null without previews |
+| github\_variables\_dotenv | Per app slug, the same variables as a sorted dotenv string: `terraform output -json github_variables_dotenv`, piped through `jq -r '."<slug>"'` to `gh variable set --repo <owner>/<name> -f -` |
+| helm\_values | YAML values for the patchy chart, derived from the infrastructure: pass it last, after the operator's own values file (`helm install ... -f operator-values.yaml -f <(terraform output -raw helm_values)`). It carries no enable flag and no security opt-out. |
+| preview\_certificate\_arn | ACM certificate for `*.<previews.host_suffix>` (helm\_values preview.certificateARN); null without previews |
 | preview\_node\_class | What the isolated preview NodeClass names: the node role (spec.role), the private subnets (subnetSelectorTerms) and the cluster's primary security group (securityGroupSelectorTerms). Null without previews. |
-| registry | The account's ECR registry host (<account>.dkr.ecr.<region>.amazonaws.com) |
-| source\_controller\_role\_arn | IAM role source-controller assumes through EKS Pod Identity (read-only on <agent\_path\_prefix>/*) |
+| registry | The account's ECR registry host (`<account>.dkr.ecr.<region>.amazonaws.com`) |
+| source\_controller\_role\_arn | IAM role source-controller assumes through EKS Pod Identity (read-only on `<agent_path_prefix>/*`) |
 <!-- prettier-ignore-end -->
 <!-- END_TF_DOCS -->
+<!-- --8<-- [end:reference] -->

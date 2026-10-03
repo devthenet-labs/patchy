@@ -58,6 +58,8 @@ immutable subject claims.
 
 ## Reference
 
+<!-- The docs site embeds what lies between the two snippet markers (docs/intents/terraform-module.md). -->
+<!-- --8<-- [start:reference] -->
 <!-- BEGIN_TF_DOCS -->
 <!-- prettier-ignore-start -->
 ### Requirements
@@ -88,26 +90,27 @@ immutable subject claims.
 
 | Name | Description | Type | Default | Required |
 | ---- | ----------- | ---- | ------- | :------: |
-| github | The app's GitHub repository. Take every value from the API, exactly as it is returned (IAM compares them<br/>case-sensitively):<br/>- owner, name, repository\_id, owner\_id, default\_branch: `gh api repos/<owner>/<name> --jq '{owner: .owner.login,<br/>  name: .name, repository_id: .id, owner_id: .owner.id, default_branch: .default_branch}'`<br/>- sub\_claim\_prefix: `gh api repos/<owner>/<name>/actions/oidc/customization/sub --jq .sub_claim_prefix` | <pre>object({<br/>    owner            = string<br/>    name             = string<br/>    repository_id    = string<br/>    owner_id         = string<br/>    default_branch   = optional(string, "main")<br/>    sub_claim_prefix = string<br/>  })</pre> | n/a | yes |
+| github | The app's GitHub repository. Take every value from the API, exactly as it is returned (IAM compares them<br/>case-sensitively):<br/>- owner, name, repository\_id, owner\_id, default\_branch: from `gh api repos/<owner>/<name>`, as `.owner.login`,<br/>  `.name`, `.id`, `.owner.id` and `.default_branch`<br/>- sub\_claim\_prefix: `gh api repos/<owner>/<name>/actions/oidc/customization/sub --jq .sub_claim_prefix` | <pre>object({<br/>    owner            = string<br/>    name             = string<br/>    repository_id    = string<br/>    owner_id         = string<br/>    default_branch   = optional(string, "main")<br/>    sub_claim_prefix = string<br/>  })</pre> | n/a | yes |
 | github\_oidc\_provider\_arn | ARN of the account's IAM OIDC provider for token.actions.githubusercontent.com. The platform module creates one, or passes on the existing one it was given. | `string` | n/a | yes |
 | slug | Short name for the app. It is the leaf of both ECR repository names and part of both IAM role names, and it is independent of the GitHub repository name (Hello.Web -> hello-web). A rename on GitHub never changes it. | `string` | n/a | yes |
 | agent\_path\_prefix | ECR path the agent image repository goes under (no leading or trailing slash). Must match the platform module's agent\_path\_prefix, and must never overlap patchy/previews. | `string` | `"patchy/app-envs"` | no |
 | preview | Whether the app has previews: a runtime ECR repository under patchy/previews/ and its own runtime publisher role. The agent repository and role are always created. | `bool` | `true` | no |
-| role\_name\_prefix | Prefix of both IAM role and policy names: <role\_name\_prefix><slug>-<agent\|runtime>-push. IAM names are account-wide, so the prefix keeps two installs in one account apart. | `string` | `"patchy-app-"` | no |
+| role\_name\_prefix | Prefix of both IAM role and policy names: `<role_name_prefix><slug>-agent-push` and `<role_name_prefix><slug>-runtime-push`. IAM names are account-wide, so the prefix keeps two installs in one account apart. | `string` | `"patchy-app-"` | no |
 | tags | Tags added to every taggable resource. | `map(string)` | `{}` | no |
 
 ### Outputs
 
 | Name | Description |
 | ---- | ----------- |
-| agent\_repository\_url | Agent image repository URL. .patchy/agent.yaml names <this>:toolchain-v<N>; tags are immutable, so a toolchain change bumps N |
+| agent\_repository\_url | Agent image repository URL. .patchy/agent.yaml names `<this>:toolchain-v<N>`; tags are immutable, so a toolchain change bumps N |
 | agent\_role\_arn | IAM role the agent publisher (.github/workflows/publish-agent.yml) assumes |
 | github\_variables | The app repository's Actions variables, as a map |
-| github\_variables\_dotenv | The same variables as a sorted dotenv string, for: gh variable set --repo <owner>/<name> -f <file> |
+| github\_variables\_dotenv | The same variables as a sorted dotenv string, for: `gh variable set --repo <owner>/<name> -f <file>` |
 | oidc\_subject | The OIDC subject both publisher roles trust. A first publish failing with "Not authorized to perform sts:AssumeRoleWithWebIdentity" usually means it differs from the repository's real subject |
-| registry | ECR registry host (<account>.dkr.ecr.<region>.amazonaws.com) |
+| registry | ECR registry host (`<account>.dkr.ecr.<region>.amazonaws.com`) |
 | runtime\_repository\_url | Runtime (preview) image repository URL, the Project's preview imageRepository; null without previews |
 | runtime\_role\_arn | IAM role the runtime publisher (.github/workflows/publish-runtime.yml) assumes; null without previews |
 | slug | The app's slug |
 <!-- prettier-ignore-end -->
 <!-- END_TF_DOCS -->
+<!-- --8<-- [end:reference] -->

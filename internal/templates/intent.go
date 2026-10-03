@@ -116,6 +116,11 @@ type IntentStatusComment struct {
 	// ApprovedRevision the plan revision approved; empty before approval.
 	ApprovedBy       string
 	ApprovedRevision int32
+	// Repositories are the repositories the approved plan changes, as
+	// "owner/name" in the Project's spelling, in plan order. With more than
+	// one, the comment names each, as code; fewer omits the line, and the
+	// comment is exactly the one-repository comment.
+	Repositories []string
 	// PullRequests are the pull requests patchy opened.
 	PullRequests []IntentPullRequest
 	// Revisions and MaxRevisions count the revision rounds against the
@@ -180,6 +185,7 @@ func RenderIntentStatusComment(c IntentStatusComment) (string, error) {
 		Summary          string
 		ApprovedBy       string
 		ApprovedRevision int32
+		Repositories     string
 		PullRequests     []statusPR
 		Revisions        int32
 		MaxRevisions     int32
@@ -196,6 +202,7 @@ func RenderIntentStatusComment(c IntentStatusComment) (string, error) {
 		Summary:          SanitizeInline(c.Summary),
 		ApprovedBy:       oneLine(c.ApprovedBy),
 		ApprovedRevision: c.ApprovedRevision,
+		Repositories:     repositoryList(c.Repositories, false),
 		PullRequests:     prs,
 		Revisions:        c.Revisions,
 		MaxRevisions:     c.MaxRevisions,
@@ -236,6 +243,13 @@ type PlanComment struct {
 	// ApproveLabel and TriggerLabel are the Project's labels.
 	ApproveLabel string
 	TriggerLabel string
+	// Repositories are the repositories the plan changes, as "owner/name"
+	// in the Project's own spelling (never the planner's), in plan order.
+	// With more than one, the header names each, as code, as a repository
+	// patchy opens a pull request in, and the dependency advice speaks of
+	// each repository's image; fewer omits both, and the comment is exactly
+	// the one-repository comment.
+	Repositories []string
 }
 
 // RenderPlanComment renders a plan for approval: headed by PlanMarker over
@@ -301,6 +315,7 @@ func planComment(p PlanComment, digest string, view planView) (string, error) {
 		Approve         string
 		Replan          string
 		Cancel          string
+		Repositories    string
 		Plan            string
 	}{
 		Marker:          PlanMarker(p.Namespace, p.Intent, p.Revision, digest),
@@ -319,8 +334,40 @@ func planComment(p PlanComment, digest string, view planView) (string, error) {
 		Approve:         slashCommand(action.VerbApprove),
 		Replan:          slashCommand(action.VerbReplan),
 		Cancel:          slashCommand(action.VerbCancel),
+		Repositories:    repositoryList(p.Repositories, false),
 		Plan:            verbatim("markdown", string(p.Report)),
 	})
+}
+
+// repositoryList renders the repositories an intent changes, "owner/name"
+// each, as one comma-separated list of code spans (repositoryItems), or ""
+// for fewer than two: that is how a template tells a multi-repository
+// intent from a one-repository one.
+func repositoryList(repos []string, plain bool) string {
+	return strings.Join(repositoryItems(repos, plain), ", ")
+}
+
+// repositoryItems renders each repository an intent changes as a code span,
+// on one line, with any character that renders as nothing shown by its code
+// point, so the spans are sanitiser output whatever the names hold; plain
+// defangs each as well, for text that may land on a default branch as plain
+// text, where a code span protects nothing. Fewer than two (blank names
+// dropped) is nil.
+func repositoryItems(repos []string, plain bool) []string {
+	items := make([]string, 0, len(repos))
+	for _, r := range repos {
+		r = strings.TrimSpace(strings.ReplaceAll(visibleText(r), "\n", " "))
+		if plain {
+			r = defang(r)
+		}
+		if r != "" {
+			items = append(items, code(r))
+		}
+	}
+	if len(items) < 2 {
+		return nil
+	}
+	return items
 }
 
 // planRefusal says why RenderPlanComment refuses a plan: size is what its
@@ -563,10 +610,20 @@ type IntentPRBody struct {
 	PlanDigest   string
 	// ApprovedBy is the approver's login.
 	ApprovedBy string
+	// Repositories are every repository the intent opens a pull request
+	// in, this one's included, as "owner/name" in the Project's spelling,
+	// in plan order. With more than one, the footer says this pull request
+	// is one of that many, names each repository (code, and defanged: no
+	// reference) and says the intent completes when every one has merged;
+	// fewer omits all of it, and the body is exactly the one-repository
+	// body. The body is never edited after it is opened, so it links no
+	// sibling: patchy cross-links them in a comment (IntentSiblingsComment).
+	Repositories []string
 }
 
 // RenderIntentPRBody renders an intent pull request's body.
 func RenderIntentPRBody(b IntentPRBody) (string, error) {
+	repos := repositoryItems(b.Repositories, true)
 	return render("intent_pr_body.md.tmpl", struct {
 		IntentRepository string
 		IssueNumber      int64
@@ -574,6 +631,8 @@ func RenderIntentPRBody(b IntentPRBody) (string, error) {
 		PlanRevision     int32
 		Digest           string
 		ApprovedBy       string
+		Count            int
+		Repositories     string
 	}{
 		IntentRepository: oneLine(b.IntentRepository),
 		IssueNumber:      b.IssueNumber,
@@ -585,6 +644,8 @@ func RenderIntentPRBody(b IntentPRBody) (string, error) {
 		PlanRevision: b.PlanRevision,
 		Digest:       shortDigest(oneLine(b.PlanDigest)),
 		ApprovedBy:   oneLine(b.ApprovedBy),
+		Count:        len(repos),
+		Repositories: strings.Join(repos, ", "),
 	})
 }
 

@@ -10,4 +10,4 @@ Part of {{ .IntentRepository }}#{{ .IssueNumber }}
 
 ---
 
-_patchy built this pull request from plan r{{ .PlanRevision }} (`{{ .Digest }}`) of the intent{{ with .ApprovedBy }}, approved by {{ code . }}{{ end }}. Review it like any other change. Merging it completes the intent, and patchy updates the intent issue itself._
+_patchy built this pull request from plan r{{ .PlanRevision }} (`{{ .Digest }}`) of the intent{{ with .ApprovedBy }}, approved by {{ code . }}{{ end }}. Review it like any other change. {{ if .Repositories }}It is one of {{ .Count }} pull requests patchy opened for the intent, one in each of: {{ .Repositories }}. The intent completes when every one of them has merged, and patchy updates the intent issue itself.{{ else }}Merging it completes the intent, and patchy updates the intent issue itself.{{ end }}_

@@ -218,8 +218,8 @@ func (p *Plan) validate() error {
 
 // validRepositories checks the plan names at least one repository, at most
 // PlanMaxRepositories, each a bounded https repository URL, none twice —
-// compared as the Project compares its own (case-insensitively, ignoring a
-// .git suffix).
+// compared as the Project compares its own (SameRepository:
+// case-insensitively, ignoring a .git suffix).
 func validRepositories(urls []string) error {
 	switch {
 	case len(urls) == 0:
@@ -238,14 +238,37 @@ func validRepositories(urls []string) error {
 			errs = append(errs, fmt.Errorf("repositories[%d] %q is not an https://<host>/<owner>/<name> URL", i, u))
 			continue
 		}
-		// Lowercased before the suffix is cut, so ".GIT" is cut too.
-		key := strings.TrimSuffix(strings.ToLower(u), ".git")
+		key := repositoryKey(u)
 		if seen[key] {
 			errs = append(errs, fmt.Errorf("repositories[%d] %q is listed twice", i, u))
 		}
 		seen[key] = true
 	}
 	return errors.Join(errs...)
+}
+
+// SameRepository reports whether two repository references spelled alike —
+// two https URLs, or two "owner/name" paths — name one repository, compared
+// as ParsePlan compares a plan's repositories against each other: ignoring
+// case and a ".git" suffix, in any case. It is how agent-runner checks a
+// plan against the repositories its Job was handed, and how a build finds
+// the plan's entry for its own repository (RepositoryPath).
+func SameRepository(a, b string) bool { return repositoryKey(a) == repositoryKey(b) }
+
+// repositoryKey is what SameRepository compares: the reference lowercased,
+// then a ".git" suffix cut — lowercased first, so ".GIT" is cut too.
+func repositoryKey(u string) string { return strings.TrimSuffix(strings.ToLower(u), ".git") }
+
+// RepositoryPath returns the "owner/name" path of a repository URL of the
+// shape a plan may name — how the controller spells the repository a Job
+// works on (PATCHY_REPO) — or "" for anything else. The path is returned as
+// written: compare it with SameRepository.
+func RepositoryPath(u string) string {
+	if len(u) > RepositoryURLMaxBytes || !repositoryURL.MatchString(u) {
+		return ""
+	}
+	_, path, _ := strings.Cut(strings.TrimPrefix(u, "https://"), "/")
+	return path
 }
 
 // checkBacktickRuns refuses a plan holding a run of more than

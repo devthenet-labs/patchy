@@ -12,6 +12,10 @@ as a hard break. */ -}}
 
 **Summary:** {{ . }}
 {{- end }}
+{{- with .Repositories }}
+
+**Repositories:** patchy opens one pull request in each of: {{ . }}.
+{{- end }}
 {{- if or .Invisible .Wide .BlankRun .NewDependencies .Questions }}
 
 ### Before you approve
@@ -29,7 +33,7 @@ The plan has a run of {{ . }} blank lines with more of the plan below it: read t
 {{- end }}
 {{- with .NewDependencies }}
 
-The build runs offline, in the image this repository declares, so it cannot fetch anything new. This plan adds dependencies: add them to that image on the default branch before you approve, or the build will fail.
+{{ if $.Repositories }}Each build runs offline, in the image its own repository declares, so it cannot fetch anything new. This plan adds dependencies: add each one to the image of the repository that needs it, on that repository's default branch, before you approve, or its build will fail.{{ else }}The build runs offline, in the image this repository declares, so it cannot fetch anything new. This plan adds dependencies: add them to that image on the default branch before you approve, or the build will fail.{{ end }}
 {{ range . }}
 - {{ . }}
 {{- end }}

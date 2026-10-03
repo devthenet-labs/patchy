@@ -29,4 +29,14 @@
 // merge or squash commit can carry — has every reference and mention
 // broken apart as well, code spans included, since inline code neutralises
 // nothing there.
+//
+// An intent that changes several repositories renders through the same
+// templates: every multi-repository field (the plan prompt's trees, the
+// build prompt's own repository and siblings, the repositories a plan
+// comment, status comment and pull request body name) is rendered only
+// when it names more than one repository, so a one-repository intent's
+// prompts and comments are byte-identical to what they were before. The
+// pull requests of such an intent are cross-linked by a comment on each
+// (IntentSiblingsComment), never by editing a body, and a mixed ending is
+// told by its own notice (IntentPartialNotice).
 package templates

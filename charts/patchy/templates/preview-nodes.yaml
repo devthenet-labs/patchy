@@ -49,8 +49,9 @@ spec:
     networkPolicyEventLogs: Disabled
 ---
 # On-demand only (a reclaimed spot node would cut a running preview), never
-# consolidated while a preview runs on it, and capped by cpuLimit and
-# nodeLimit, the bound on what previews can spend on nodes.
+# consolidated while a preview runs on it, and capped by cpuLimit, the bound
+# on what previews can spend on nodes. nodeLimit is rendered too, but Auto
+# Mode is not known to enforce limits.nodes.
 apiVersion: karpenter.sh/v1
 kind: NodePool
 metadata:

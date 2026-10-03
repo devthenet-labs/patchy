@@ -121,8 +121,16 @@ Next steps:
 
 COST: the preview ALB bills from the moment the placeholder creates it,
 whether or not any preview runs{{ if $p.placeholder.enabled }} (even with previewController off){{ end }}.
-A preview node bills from launch until it is consolidated, 30s after its
-last preview Pod{{ if $n.create }} ({{ join ", " $n.instanceTypes }}; the pool stops at {{ $n.cpuLimit }} CPUs and {{ $n.nodeLimit }} nodes){{ end }}.
+{{- if $n.create }}
+A preview node ({{ join ", " $n.instanceTypes }}) bills from launch until it
+is consolidated, 30s after its last preview Pod. Budget by CPU: the pool
+stops launching nodes at {{ $n.cpuLimit }} CPUs. Auto Mode is not known to
+enforce a NodePool's node limit, so do not count on its limit of {{ $n.nodeLimit }} nodes.
+{{- else }}
+A preview node bills from launch until NodePool {{ $n.nodePool }}'s own
+disruption policy removes it. This release does not render that NodePool, so
+its consolidation and limits are whatever you set.
+{{- end }}
 {{- end }}
 {{- $egressMode := include "patchy.egressMode" . }}
 {{- if eq $egressMode "none" }}

@@ -92,13 +92,19 @@ preview:
         # to anything until the slot policy is programmed). The NodePool
         # taints its nodes <taintKey>=true:NoExecute, launches on-demand
         # linux nodes of instanceTypes/arch only, consolidates a node only
-        # once it is empty (30s, one node at a time) and stops at cpuLimit
-        # CPUs and nodeLimit nodes. Both are kept on uninstall and rollback:
-        # delete the NodePool first, wait for its nodes to go, then the
-        # NodeClass. A NodePool provisions nothing until a slot Pod needs it;
-        # each node then bills until it is consolidated. Helm cannot adopt a
-        # NodeClass or NodePool you applied by hand: delete it first, or
-        # leave create off.
+        # once it is empty (30s, one node at a time) and stops launching at
+        # cpuLimit CPUs. Both are kept on uninstall and rollback: delete the
+        # NodePool first, wait for its nodes to go, then the NodeClass. A
+        # NodePool provisions nothing until a slot Pod needs it; each node
+        # then bills until it is consolidated.
+        # Helm does not take over a NodeClass or NodePool of the same name
+        # that it did not create: the upgrade fails with an ownership error
+        # and changes nothing. To hand yours to the chart, give it the
+        # release's ownership metadata (label app.kubernetes.io/managed-by=Helm,
+        # annotations meta.helm.sh/release-name and
+        # meta.helm.sh/release-namespace), or upgrade with --take-ownership
+        # (Helm 3.17 or later), after a server-side diff shows the render
+        # matches it. Never delete a NodePool that still has nodes.
         create: false
         # IAM role NAME (not an ARN) the preview nodes run as, with an EKS
         # access entry of type EC2 and ECR pull on the preview images only
@@ -113,6 +119,9 @@ preview:
         instanceTypes:
             - t3a.medium
         arch: amd64 # amd64 or arm64; must match instanceTypes.
+        # The NodePool's limits. cpuLimit is the bound to budget by; nodeLimit
+        # is rendered as limits.nodes too, but Auto Mode is not known to
+        # enforce a node limit.
         cpuLimit: "4"
         nodeLimit: "2"
         ephemeralStorage:
@@ -285,7 +294,11 @@ webhook:
 # alb.ingress.kubernetes.io/certificate-arn, or for a cert-manager tls Secret
 # on another ingress controller (this class is ACM-only). Kept on uninstall
 # and rollback, so the controller can still remove the ALB behind the
-# Ingresses. Helm cannot adopt a class you applied by hand.
+# Ingresses. Helm does not take over a class of the same name that it did not
+# create: the upgrade fails with an ownership error. Leave a class you applied
+# by hand where it is, and never delete one live Ingresses use: keep the
+# distinct default name, move each Ingress to it (an empty className), then
+# point DNS at the new ALB.
 edgeIngressClass:
     create: false
     # The IngressClass and IngressClassParams name; empty means

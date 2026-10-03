@@ -94,9 +94,23 @@ A provider has one webhook URL, so exposure is chart-level: `webhook.host` plus 
 On an EKS Auto Mode cluster the chart can render the prerequisites that would otherwise be applied by hand. Each toggle
 defaults off and renders nothing until it is set, so an install that never sets one is unchanged. Two cluster-side
 settings stay yours: NetworkPolicy enforcement (`kube-system/amazon-vpc-cni` with
-`enable-network-policy-controller: "true"`) and the node IAM role. Helm cannot adopt a NodeClass, NodePool or
-IngressClass that was applied by hand, so on a cluster that already has them, either leave the toggle off and keep
-naming yours, or delete yours before turning it on.
+`enable-network-policy-controller: "true"`) and the node IAM role.
+
+On a cluster that already has a hand-applied NodeClass, NodePool or IngressClass, the simplest course is to leave the
+toggle off and keep naming yours. Helm does not silently take over an object it did not create: if the chart renders one
+under the same name, the install or upgrade fails with an ownership error and changes nothing. To hand an existing
+object to the chart, first check with a server-side diff (`helm template … | kubectl diff --server-side -f -`) that the
+render matches it, then give it the release's ownership metadata (the label `app.kubernetes.io/managed-by=Helm` and the
+annotations `meta.helm.sh/release-name=<release>` and `meta.helm.sh/release-namespace=<namespace>`), or run
+`helm upgrade --take-ownership` (Helm 3.17 or later). Do not delete yours to make room:
+
+- **IngressClass.** Never delete a class that live Ingresses use: the load balancer behind it is torn down or orphaned,
+  and the one created in its place has a new DNS name, so webhook deliveries fail until DNS follows. Do not adopt a
+  class other teams share either, since the chart's admits the release namespace only. Keep the distinct default name
+  (`<fullname>-edge`), move the webhook and status Ingresses to it (an empty `className`), and point their DNS at its
+  load balancer.
+- **NodePool.** Deleting one removes its nodes and evicts the previews on them. Delete a NodePool only once its nodes
+  are drained, and its NodeClass after that.
 
 | Key                                                   | Default                      | Purpose                                                                                                                                                                                                                                         |
 | ----------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -114,7 +128,7 @@ naming yours, or delete yours before turning it on.
 | `preview.nodeIsolation.subnetIDs`                     | `[]`                         | Private subnets for the nodes, never public ones. **Required** with `create`                                                                                                                                                                    |
 | `preview.nodeIsolation.securityGroupIDs`              | `[]`                         | Security groups for the nodes. **Required** with `create`                                                                                                                                                                                       |
 | `preview.nodeIsolation.instanceTypes` / `arch`        | `[t3a.medium]` / `amd64`     | What the NodePool launches; `arch` is `amd64` or `arm64` and must match the instance types                                                                                                                                                      |
-| `preview.nodeIsolation.cpuLimit` / `nodeLimit`        | `"4"` / `"2"`                | The NodePool's `limits`: the bound on what previews spend on nodes                                                                                                                                                                              |
+| `preview.nodeIsolation.cpuLimit` / `nodeLimit`        | `"4"` / `"2"`                | The NodePool's `limits`. Budget by `cpuLimit`: `nodeLimit` is rendered too, but Auto Mode is not known to enforce a node limit                                                                                                                  |
 | `preview.nodeIsolation.ephemeralStorage`              | `20Gi`, 3000 IOPS, 125 MiB/s | Each node's ephemeral storage                                                                                                                                                                                                                   |
 
 `previewController.config.targetHealth` defaults to `true`: a Preview turns `Ready` only once the load balancer reports

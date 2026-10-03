@@ -452,9 +452,21 @@ notes_has notes-preview "bash hack/preview-isolation-probe/run.sh" yes
 notes_has notes-preview "--taint-key patchy.devthe.net/preview-only" yes
 notes_has notes-preview "COST: the preview ALB bills from the moment the placeholder creates it" yes
 notes_has notes-preview "(even with previewController off)" yes
+# The NodePool is the operator's, so its disruption policy and limits are
+# theirs: no promise of the chart's 30s consolidation or a cap.
+notes_has notes-preview "A preview node bills from launch until NodePool patchy-preview's own" yes
+notes_has notes-preview "30s after" no
+notes_has notes-preview "CPUs" no
 notes notes-preview-nodes -f "$pf" -f "$am"
 notes_has notes-preview-nodes "this release renders NodeClass patchy-preview" yes
-notes_has notes-preview-nodes "the pool stops at 4 CPUs and 2 nodes" yes
+notes_has notes-preview-nodes "A preview node (t3a.medium) bills from launch until it" yes
+notes_has notes-preview-nodes "is consolidated, 30s after its last preview Pod. Budget by CPU: the pool" yes
+notes_has notes-preview-nodes "stops launching nodes at 4 CPUs." yes
+# CPU is the bound; the node limit is not promised (Auto Mode may not
+# enforce limits.nodes).
+notes_has notes-preview-nodes "so do not count on its limit of 2 nodes." yes
+notes_has notes-preview-nodes "and 2 nodes" no
+notes_has notes-preview-nodes "disruption policy removes it" no
 notes notes-preview-guardrails -f "$pf" --set preview.placeholder.enabled=false
 notes_has notes-preview-guardrails "preview.placeholder.enabled is false" yes
 notes_has notes-preview-guardrails "kubectl get ingress patchy-preview-placeholder" no

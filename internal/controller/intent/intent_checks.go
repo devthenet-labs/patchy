@@ -224,8 +224,11 @@ func (p *pass) checkFixRounds() int32 {
 // checkDiagnostics collects only the failed named checks recorded in a run
 // spec. Output, annotations and Actions log tails are untrusted GitHub data:
 // each goes through visible escaping and a dynamic fence, with a 48-KiB
-// aggregate cap. The signature excludes GitHub IDs and head SHA, so the
-// same failure after a successful patch is recognised across commits.
+// aggregate cap. The signature is the failures' fingerprint
+// (failureSignature over their stable forms), never the diagnostic's own
+// bytes: it leaves out GitHub's ids, commits, times and every other token one
+// run of a check differs from the next by, so the same failure after a
+// pushed fix is recognised across commits and job runs.
 func (p *pass) checkDiagnostics(ctx context.Context, repo, sha string, f failedChecks) (string, string, error) {
 	runs, err := p.r.GitHub.ListCheckRuns(ctx, repo, sha)
 	if err != nil {
@@ -243,16 +246,17 @@ func (p *pass) checkDiagnostics(ctx context.Context, repo, sha string, f failedC
 	for _, id := range f.statusIDs {
 		selectedStatuses[id] = true
 	}
-	var parts []string
+	var parts, prints []string
 	for _, r := range runs {
 		if !selectedChecks[r.ID] || r.HeadSHA != sha || !failedConclusion(r.Conclusion) {
 			continue
 		}
-		part, err := p.checkRunDiagnostic(ctx, repo, sha, r)
+		part, print, err := p.checkRunDiagnostic(ctx, repo, sha, r)
 		if err != nil {
 			return "", "", err
 		}
 		parts = append(parts, part)
+		prints = append(prints, print)
 	}
 	for _, s := range statuses {
 		if !selectedStatuses[s.ID] || (s.State != "failure" && s.State != "error") {
@@ -261,6 +265,7 @@ func (p *pass) checkDiagnostics(ctx context.Context, repo, sha string, f failedC
 		parts = append(parts, capVisible(fmt.Sprintf("Commit status %s: %s\n%s",
 			visibleDiagnostic(s.Context, 2<<10), visibleDiagnostic(s.State, 256),
 			visibleDiagnostic(s.Description, 8<<10)), 48<<10))
+		prints = append(prints, statusPrint(s))
 	}
 	if len(parts) == 0 {
 		return "", "", fmt.Errorf("%w: the failed checks recorded for %s vanished before the round's handoff",
@@ -277,8 +282,7 @@ func (p *pass) checkDiagnostics(ctx context.Context, repo, sha string, f failedC
 		b.WriteString(fence)
 		b.WriteString("\n\n")
 	}
-	visible := capVisible(b.String(), 48<<10)
-	return visible, digest([]byte(visible)), nil
+	return capVisible(b.String(), 48<<10), failureSignature(prints), nil
 }
 
 // A field is cut before visible escaping, and again after it. This keeps a
@@ -287,7 +291,10 @@ func visibleDiagnostic(s string, maxBytes int) string {
 	return capVisible(visibleFeedback(cutBytes(s, maxBytes)), maxBytes)
 }
 
-func (p *pass) checkRunDiagnostic(ctx context.Context, repo, sha string, r ghclient.CheckRun) (string, error) {
+// checkRunDiagnostic is one failed check run's diagnostic, as the agent reads
+// it, and its stable form (checkRunPrint), taken from the same answers.
+func (p *pass) checkRunDiagnostic(ctx context.Context, repo, sha string, r ghclient.CheckRun) (string, string,
+	error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Check %s: %s\nTitle: %s\nSummary: %s\nText: %s\n",
 		visibleDiagnostic(r.Name, 2<<10), visibleDiagnostic(r.Conclusion, 256),
@@ -295,7 +302,7 @@ func (p *pass) checkRunDiagnostic(ctx context.Context, repo, sha string, r ghcli
 		visibleDiagnostic(r.Output.Text, 8<<10))
 	annotations, err := p.r.GitHub.ListCheckAnnotations(ctx, repo, r.ID, 50)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	for _, a := range annotations {
 		if b.Len() >= 40<<10 {
@@ -305,29 +312,31 @@ func (p *pass) checkRunDiagnostic(ctx context.Context, repo, sha string, r ghcli
 			visibleDiagnostic(a.Message, 1<<10))
 	}
 	if !strings.EqualFold(r.AppSlug, "github-actions") {
-		return capVisible(b.String(), 48<<10), nil
+		return capVisible(b.String(), 48<<10), checkRunPrint(r, annotations, "", false), nil
 	}
 	runID := actionRunID(r.DetailsURL)
 	if runID == 0 {
-		return capVisible(b.String(), 48<<10), nil
+		return capVisible(b.String(), 48<<10), checkRunPrint(r, annotations, "", false), nil
 	}
 	jobs, err := p.r.GitHub.ListWorkflowJobs(ctx, repo, runID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
+	const tailBytes = 32 << 10
+	var logTail string
 	for _, job := range jobs {
 		if job.CheckRunID != r.ID || job.HeadSHA != sha || !failedConclusion(job.Conclusion) {
 			continue
 		}
-		logTail, err := p.r.GitHub.GetJobLogTail(ctx, repo, job.ID, 32<<10)
-		if err != nil {
-			return "", err
+		if logTail, err = p.r.GitHub.GetJobLogTail(ctx, repo, job.ID, tailBytes); err != nil {
+			return "", "", err
 		}
 		fmt.Fprintf(&b, "Actions job %s log tail:\n%s\n", visibleDiagnostic(job.Name, 1<<10),
-			visibleDiagnostic(logTail, 32<<10))
+			visibleDiagnostic(logTail, tailBytes))
 		break // one Actions job owns a check run
 	}
-	return capVisible(b.String(), 48<<10), nil
+	// A tail as long as asked for was cut from a longer log.
+	return capVisible(b.String(), 48<<10), checkRunPrint(r, annotations, logTail, len(logTail) >= tailBytes), nil
 }
 
 func actionRunID(raw string) int64 {

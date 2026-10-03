@@ -12,25 +12,57 @@ This page is the tour. For every command, flag and default, generated from the b
 
 ## Install
 
-On macOS and linux, from the Homebrew tap:
+The supported install is the `patchy-cli` archive attached to each release of
+[`devthenet-labs/patchy`](https://github.com/devthenet-labs/patchy/releases), for linux, macOS and windows on amd64 and
+arm64. Install the CLI of the release your cluster runs: `init app` and `check image --run` pin images to the CLI's own
+release, and `init app` the terraform module too.
 
 ```sh
-brew install bitwise-media-group/tap/patchy
+version=X.Y.Z       # the release you deploy
+os=darwin arch=arm64 # linux | darwin | windows, amd64 | arm64
+gh release download "v$version" --repo devthenet-labs/patchy \
+  --pattern "patchy-cli_${version}_${os}_${arch}.tar.gz" \
+  --pattern "patchy_${os}_${arch}.sigstore.json" \
+  --pattern "kubectl-patchy_${os}_${arch}.sigstore.json" \
+  --pattern checksums.txt
+shasum -a 256 --check --ignore-missing checksums.txt # sha256sum on linux
+tar -xzf "patchy-cli_${version}_${os}_${arch}.tar.gz"
 ```
 
-Otherwise, binaries ship with each release, cosign-signed, for linux, macOS and windows:
+The archive holds `patchy`, `kubectl-patchy`, the `LICENSE` and the shell completions under `completions/`. Each binary
+is signed with a keyless cosign signature, made by the release workflow from the release's own commit, and the
+`.sigstore.json` bundles cover the **extracted binaries**, not the archive. `checksums.txt` is not signed, so it only
+catches a damaged download; the signature is what proves where a binary came from. Verify both binaries before you
+install them, with cosign v3 (the bundles are Sigstore's v0.3 bundle format):
 
 ```sh
-# from a release archive
-tar -xzf patchy-cli_<version>_<os>_<arch>.tar.gz
-install -m 0755 patchy /usr/local/bin/patchy
-
-# or from source
-go install github.com/bitwise-media-group/patchy/cmd/patchy@latest
+sha=$(gh api "repos/devthenet-labs/patchy/commits/v$version" --jq .sha)
+for bin in patchy kubectl-patchy; do
+  cosign verify-blob --bundle "${bin}_${os}_${arch}.sigstore.json" \
+    --certificate-identity-regexp '^https://github.com/bitwise-media-group/github-workflows/\.github/workflows/release\.yaml@' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    --certificate-github-workflow-repository devthenet-labs/patchy \
+    --certificate-github-workflow-sha "$sha" \
+    "$bin"
+done
+install -m 0755 patchy kubectl-patchy /usr/local/bin/
+patchy --version
 ```
 
-The cask and the archive both carry `kubectl-patchy` — brew puts it on your `PATH` for you; from an archive, put it
-there yourself. Either way every command below also works as `kubectl patchy …`:
+The identity is the reusable release workflow in `bitwise-media-group/github-workflows`, which signs on behalf of the
+repository it runs for; `--certificate-github-workflow-repository` and `--certificate-github-workflow-sha` pin that to
+`devthenet-labs/patchy` at the release's commit. Each prints `Verified OK`.
+
+!!! warning "Not Homebrew, not `go install`"
+
+    The Homebrew tap `bitwise-media-group/tap/patchy` is the upstream project's, an older release without `setup`,
+    `init` or `check project`. `go install` builds an unstamped development build: it knows no release registry, so
+    `init app` needs `--agent-base` and `check image --run` needs `--runner-image`, and neither can pin anything to a
+    release. To build from source, clone this repository and run `PATCHY_IMAGE_REGISTRY=ghcr.io/devthenet-labs/patchy
+    hack/build.sh` (it writes `bin/patchy`), which stamps the registry; built anywhere but at a release tag, it is
+    still a development build to `init app`.
+
+The archive carries `kubectl-patchy`, so every command below also works as `kubectl patchy …` once it is on your `PATH`:
 
 ```sh
 kubectl patchy get findings
@@ -38,8 +70,8 @@ kubectl patchy get findings
 
 ## Shell completion
 
-Completion covers verbs, nouns, and the enumerated flag values (phases, severities, output formats). The cask installs
-all of it; from an archive, install what your shell reads — the scripts ship pre-generated under `completions/`:
+Completion covers verbs, nouns, and the enumerated flag values (phases, severities, output formats). Install what your
+shell reads — the scripts ship pre-generated in the archive under `completions/`:
 
 ```sh
 install -m 0644 completions/patchy.zsh "${fpath[1]}/_patchy"                     # zsh
@@ -58,7 +90,7 @@ install -m 0755 completions/kubectl_complete-patchy /usr/local/bin/kubectl_compl
 ```
 
 It is a one-line forward to `kubectl-patchy __complete`, so both spellings complete from the same command tree and
-cannot drift. Requires kubectl 1.26 or newer; the cask installs it for you.
+cannot drift. Requires kubectl 1.26 or newer.
 
 ## Grammar
 
@@ -307,6 +339,35 @@ it; on Linux, binfmt_misc with QEMU), and a platform the host cannot emulate is 
 over. Each check prints one line (PASS, FAIL or SKIP, the platform for a `--run` check, then the reason); `-o json`
 prints the report as data, and the exit status is non-zero when any check fails.
 
+`check image` takes an image reference, never a repository. To check what a repository declares before any Project
+points at it, read the reference out of its `.patchy/agent.yaml`, from a checkout or from GitHub (once a Project exists,
+[`check project`](#checking-a-project) does this for you):
+
+```sh
+image=$(awk '$1 == "image:" {print $2}' .patchy/agent.yaml)
+image=$(gh api -H 'Accept: application/vnd.github.raw' repos/acme/Shop.Web/contents/.patchy/agent.yaml \
+  | awk '$1 == "image:" {print $2}')
+patchy check image "$image" --allow 123456789012.dkr.ecr.us-west-2.amazonaws.com/patchy/app-envs/ --run
+```
+
+For ECR, your docker credentials means one of two things. Either the ECR credential helper,
+`docker-credential-ecr-login` (from `amazon-ecr-credential-helper`), named for the registry in `~/.docker/config.json`;
+it reads the AWS SDK's default chain, so `AWS_PROFILE` selects the account:
+
+```json
+{ "credHelpers": { "123456789012.dkr.ecr.us-west-2.amazonaws.com": "ecr-login" } }
+```
+
+Or a login, which lasts twelve hours:
+
+```sh
+aws ecr get-login-password --region us-west-2 \
+  | docker login --username AWS --password-stdin 123456789012.dkr.ecr.us-west-2.amazonaws.com
+```
+
+`--run` pulls the image with your local docker, so it needs the same. (`check project`, by contrast, reads ECR through
+the AWS SDK directly.)
+
 ## Creating the GitHub App
 
 `patchy setup github-app` is the fourth cluster-free command. It creates the GitHub App patchy authenticates as through
@@ -419,10 +480,24 @@ patchy init app --existing --registry 123456789012.dkr.ecr.us-east-1.amazonaws.c
 No generated workflow or script names an account, region, role or repository ID: the publishers read them from
 repository variables, and AWS role trust (the repository's numeric IDs, the default branch and the publisher's own
 `job_workflow_ref`) is the boundary. Only `.patchy/agent.yaml` names the registry, because source-controller reads the
-image from it. The variables, which `init app` prints as `gh variable set` commands, are `PUBLISH_REPOSITORY_ID`,
-`PUBLISH_OWNER_ID`, `AWS_REGION`, `ECR_REGISTRY`, `AGENT_IMAGE_REPOSITORY`, `AGENT_ROLE_ARN`, `RUNTIME_IMAGE_REPOSITORY`
-and `RUNTIME_ROLE_ARN`, then the two gates: `AGENT_PUBLISH_ENABLED` publishes the agent image (a repository without
-previews still needs it), and `PREVIEW_PUBLISH_ENABLED`, set last, publishes runtime images.
+image from it. The variables are `PUBLISH_REPOSITORY_ID`, `PUBLISH_OWNER_ID`, `AWS_REGION`, `ECR_REGISTRY`,
+`AGENT_IMAGE_REPOSITORY`, `AGENT_ROLE_ARN`, `RUNTIME_IMAGE_REPOSITORY` and `RUNTIME_ROLE_ARN`, then the two gates:
+`AGENT_PUBLISH_ENABLED` publishes the agent image (a repository without previews still needs it), and
+`PREVIEW_PUBLISH_ENABLED`, set last, publishes runtime images.
+
+The next steps `init app` prints on stderr start with the block for patchy's reference terraform module,
+`deploy/terraform/aws/modules/app`, pinned to the CLI's own release (`?ref=vX.Y.Z`; a development build says to pin it):
+it creates both ECR repositories and both publisher roles, and its `github_variables_dotenv` output holds the
+configuration variables, which one command sets:
+
+```sh
+terraform output -raw patchy_app_hello_web_variables | gh variable set -f - --repo acme/Hello.Web
+gh variable set AGENT_PUBLISH_ENABLED --repo acme/Hello.Web --body true
+```
+
+Set them on the repository, never on the organization: an organization variable reaches every repository that has these
+workflows, a template repository and each copy of it included. [Onboarding an application](intents/onboarding-app.md) is
+the whole procedure, the gates' order included.
 
 The repository defaults to the checkout's `origin` remote and the default branch to the one `origin`'s HEAD names, both
 read from `.git` with no git binary. `--image-name`, the leaf of both registry repositories, defaults to the repository
@@ -438,6 +513,19 @@ publishers keeps both as they are rather than rolling the declaration back to `t
 nothing is written; remove both files to generate them again. `--existing` writes only `.patchy/` and the CI publishers,
 builds the runtime image in a workflow of its own (`runtime-image.yml`, named `runtime image`) so the application's CI
 is untouched, and ends its next steps with what the application must be adapted to.
+
+`--existing` is for an application `init app` did not scaffold. Over a full scaffold it leaves that scaffold's `ci.yml`
+building a runtime image nothing publishes any more (the dispatcher now follows `runtime image`), and that `ci.yml`'s
+actionlint list leaves out `runtime-image.yml`; `init app` says so when it finds one. To retarget a copy of a template
+repository, which still names the template's image, remove the two toolchain files that `--force` keeps and scaffold it
+in full:
+
+```sh
+rm .patchy/agent.yaml .patchy/Dockerfile
+patchy init app --force --repo acme/Shop.Web --registry 123456789012.dkr.ecr.us-west-2.amazonaws.com
+```
+
+`--force` then rewrites the application's files too, which in a fresh copy are the template's.
 
 Published tags are immutable. To change the agent toolchain, edit `.patchy/Dockerfile` (or the dependencies) and bump
 the tag in `.patchy/agent.yaml` to `toolchain-v2`, `toolchain-v3` and so on, in the same commit: the agent publisher

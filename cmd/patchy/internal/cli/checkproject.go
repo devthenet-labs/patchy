@@ -49,10 +49,12 @@ func newCheckProjectCmd(opts *Options) *cobra.Command {
 			"sha-<default-branch head> published, <project>-0.<host suffix> resolves to\n" +
 			"the preview load balancer, and it serves a certificate trusted for that name.\n\n" +
 			"GitHub is read with GH_TOKEN, else GITHUB_TOKEN, else anonymously (public\n" +
-			"repositories only); a repository on another host (GitHub Enterprise Server)\n" +
-			"with GH_ENTERPRISE_TOKEN, else GITHUB_ENTERPRISE_TOKEN, so a github.com token\n" +
-			"never leaves github.com. Registries are read with your cloud and docker\n" +
-			"credentials: an ECR repository through the AWS SDK's default chain\n" +
+			"repositories only). A repository on another host (GitHub Enterprise Server)\n" +
+			"is read with GH_ENTERPRISE_TOKEN, else GITHUB_ENTERPRISE_TOKEN, only when\n" +
+			"GH_HOST names that host, and anonymously otherwise: the Project, not you,\n" +
+			"names the hosts, so a github.com token never leaves github.com and an\n" +
+			"enterprise token never leaves GH_HOST. Registries are read with your cloud\n" +
+			"and docker credentials: an ECR repository through the AWS SDK's default chain\n" +
 			"(AWS_PROFILE), Artifact Registry through Application Default Credentials,\n" +
 			"any other through your docker config. What this cannot prove is that the\n" +
 			"cluster's own credentials work; a Repository's status.runnerImage and a\n" +
@@ -64,6 +66,8 @@ func newCheckProjectCmd(opts *Options) *cobra.Command {
 			"read it.",
 		Example: "  patchy check project shop -n patchy\n" +
 			"  GH_TOKEN=$(gh auth token) AWS_PROFILE=prod patchy check project shop -n patchy\n" +
+			"  GH_HOST=ghe.example.com GH_ENTERPRISE_TOKEN=$(gh auth token -h ghe.example.com) \\\n" +
+			"    patchy check project shop -n patchy\n" +
 			"  patchy check project shop -o json | jq '.checks[] | select(.status == \"FAIL\")'",
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: noFileCompletion,
@@ -72,7 +76,8 @@ func newCheckProjectCmd(opts *Options) *cobra.Command {
 			enterprise, enterpriseSource := envToken("GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
 			return runCheckProject(cmd.Context(), opts, args[0], checkProjectDeps{
 				github: &projectcheck.HTTPGitHub{Token: token, TokenSource: source,
-					EnterpriseToken: enterprise, EnterpriseTokenSource: enterpriseSource},
+					EnterpriseToken: enterprise, EnterpriseTokenSource: enterpriseSource,
+					EnterpriseHost: os.Getenv("GH_HOST")},
 				keychain: resolve.NewKeychain(),
 				resolver: net.DefaultResolver,
 				dialTLS:  projectcheck.DialTLS,
@@ -84,8 +89,9 @@ func newCheckProjectCmd(opts *Options) *cobra.Command {
 
 // envToken is the caller's GitHub token from the first of the environment
 // variables set, in the gh CLI's order (GH_TOKEN before GITHUB_TOKEN for
-// github.com, GH_ENTERPRISE_TOKEN before GITHUB_ENTERPRISE_TOKEN for any
-// other host), with the variable it came from; empty when none is set.
+// github.com, GH_ENTERPRISE_TOKEN before GITHUB_ENTERPRISE_TOKEN for the
+// host GH_HOST names), with the variable it came from; empty when none is
+// set.
 func envToken(vars ...string) (token, source string) {
 	for _, env := range vars {
 		if v := os.Getenv(env); v != "" {

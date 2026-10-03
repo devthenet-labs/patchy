@@ -153,6 +153,11 @@ type imagePolicy struct {
 	key *ecdsa.PublicKey
 	// signature says how the signature is judged, for the reason.
 	signature string
+	// unverified is why a signature source-controller requires cannot be
+	// verified here (its key was not found); empty when it can be, or when
+	// none is required. An image that passes every other check is then a
+	// SKIP, never a PASS.
+	unverified string
 }
 
 // policy parses source-controller's settings. An error is a configuration
@@ -187,8 +192,9 @@ func (s settings) policy() (imagePolicy, error) {
 	case strings.TrimSpace(c.data[keyImageCosignKeyFile]) == "":
 		return p, fmt.Errorf("%s: neither %s nor %s is set", c.from, keyImageAllowUnsigned, keyImageCosignKeyFile)
 	case s.cosignKey == "":
-		p.signature = "signature not checked: source-controller requires one, but its cosign key ConfigMap " +
-			"was not found"
+		p.unverified = fmt.Sprintf("source-controller requires a signature (%s is set), but no ConfigMap "+
+			"labelled %s=%s holds its key as %s, so it cannot be verified here", keyImageCosignKeyFile, labelName,
+			sourceController, cosignKeyData)
 	default:
 		key, err := resolve.ParsePublicKey([]byte(s.cosignKey))
 		if err != nil {

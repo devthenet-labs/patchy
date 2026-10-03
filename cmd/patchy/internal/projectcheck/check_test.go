@@ -96,6 +96,20 @@ func (r fakeResolver) LookupHost(_ context.Context, host string) ([]string, erro
 	return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 }
 
+// failingResolver fails the lookups of the hosts in errs with their error,
+// and answers the rest from the table.
+type failingResolver struct {
+	fakeResolver
+	errs map[string]error
+}
+
+func (r failingResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	if err, ok := r.errs[host]; ok {
+		return nil, err
+	}
+	return r.fakeResolver.LookupHost(ctx, host)
+}
+
 // timeoutErr is a dial that got no answer.
 type timeoutErr struct{}
 
@@ -122,7 +136,9 @@ type world struct {
 	objs     []client.Object
 	github   *fakeGitHub
 	resolver fakeResolver
-	dialTLS  TLSDialer
+	// lookupErrs fails these hosts' lookups with their error.
+	lookupErrs map[string]error
+	dialTLS    TLSDialer
 }
 
 // agentImage and previewRepo are where repository key's images live.
@@ -293,9 +309,13 @@ func (w *world) run() Report {
 	}
 	c := fake.NewClientBuilder().WithScheme(kube.Scheme()).WithObjects(objs...).
 		WithInterceptorFuncs(noSecrets(w.t)).Build()
+	var resolver Resolver = w.resolver
+	if len(w.lookupErrs) > 0 {
+		resolver = failingResolver{fakeResolver: w.resolver, errs: w.lookupErrs}
+	}
 	report, err := Run(context.Background(), Config{
 		Reader: c, Namespace: testNamespace, Project: w.project.Name, GitHub: w.github,
-		Resolver: w.resolver, DialTLS: w.dialTLS,
+		Resolver: resolver, DialTLS: w.dialTLS,
 	})
 	if err != nil {
 		w.t.Fatalf("Run: %v", err)
@@ -415,6 +435,40 @@ func TestRunShorthandPreview(t *testing.T) {
 	}
 }
 
+// TestRunSingleComponentBaseTag: with one previewed repository a Preview
+// runs only the pull request's head, never sha-<default-branch head>, so
+// that tag missing is a SKIP, not a FAIL. With two, an unchanged component
+// runs it, and it fails (TestRunPreviews' "head not published").
+func TestRunSingleComponentBaseTag(t *testing.T) {
+	shorthand := func(w *world) {
+		web := *w.repo("web")
+		w.project.Spec.Preview = &web.Preview.ProjectPreview
+		web.Preview = nil
+		w.project.Spec.Repositories = []v1alpha1.ProjectRepository{web}
+	}
+	onlyWeb := func(w *world) { w.repo("api").Preview = nil }
+	for form, previewOne := range map[string]func(*world){"spec.preview": shorthand,
+		"one repositories[].preview": onlyWeb} {
+		t.Run(form, func(t *testing.T) {
+			w := newWorld(t)
+			previewOne(w)
+			w.github.heads[w.repo("web").URL] = Head{Branch: "main", SHA: sha("a")}
+			r := w.run()
+			expect(t, r, CheckPreviewImage, "web", checkreport.Skip, w.previewRepo("web")+":sha-"+sha("a"),
+				"is not published (it holds 1 other sha-<commit> tag)", "only the pull request's head")
+			if n := r.Failed(); n != 0 {
+				t.Errorf("Failed = %d:\n%s", n, dump(r))
+			}
+		})
+	}
+	t.Run("the image repository missing still fails", func(t *testing.T) {
+		w := newWorld(t)
+		onlyWeb(w)
+		w.repo("web").Preview.ImageRepository = w.previewRepo("nothing")
+		expect(t, w.run(), CheckPreviewImage, "web", checkreport.Fail, "does not exist")
+	})
+}
+
 func TestRunVerdict(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -508,7 +562,8 @@ func TestRunAgentImage(t *testing.T) {
 		want   []string
 	}{
 		{"none declared, one required", func(w *world) { delete(w.github.files[w.repo("api").URL], ".patchy/agent.yaml") },
-			"api", checkreport.Fail, []string{"declares no agent image", "requireRepositoryImage", "ImageRequired"}},
+			"api", checkreport.Fail, []string{"declares no agent image", "exists as a regular file",
+				"requireRepositoryImage", "ImageRequired"}},
 		{"none declared, none required", func(w *world) {
 			delete(w.github.files[w.repo("api").URL], ".patchy/agent.yaml")
 			w.project.Spec.RequireRepositoryImage = &no
@@ -556,19 +611,35 @@ func TestRunAgentImage(t *testing.T) {
 }
 
 // TestRunAgentImageSignature: with a cosign key required, an unsigned image
-// fails and the reason says the key came from source-controller.
+// fails and the reason says the key came from source-controller. When the
+// key is not where the chart puts it (a kustomize or hand-mounted install),
+// the signature source-controller will judge is unverified, so an image
+// that passes every other check is a SKIP, never a PASS; one that fails
+// another check still fails.
 func TestRunAgentImageSignature(t *testing.T) {
+	requireKey := func(w *world) {
+		w.setting(sourceController, keyImageAllowUnsigned, "")
+		w.setting(sourceController, keyImageCosignKeyFile, "/etc/patchy/repository-image/cosign.pub")
+	}
 	w := newWorld(t)
-	w.setting(sourceController, keyImageAllowUnsigned, "")
-	w.setting(sourceController, keyImageCosignKeyFile, "/etc/patchy/repository-image/cosign.pub")
+	requireKey(w)
 	w.objs = append(w.objs, w.configMap("patchy-repository-image-key", sourceController,
 		map[string]string{cosignKeyData: cosignKey(t)}))
 	expect(t, w.run(), CheckAgentImage, "web", checkreport.Fail, "fails source-controller's policy", "signature")
 
 	w = newWorld(t)
-	w.setting(sourceController, keyImageAllowUnsigned, "")
-	w.setting(sourceController, keyImageCosignKeyFile, "/etc/patchy/repository-image/cosign.pub")
-	expect(t, w.run(), CheckAgentImage, "web", checkreport.Pass, "its cosign key ConfigMap was not found")
+	requireKey(w)
+	r := w.run()
+	expect(t, r, CheckAgentImage, "web", checkreport.Skip, "@sha256:", "but not its signature check",
+		keyImageCosignKeyFile+" is set", "patchy check image "+w.agentImage("web")+" --cosign-key <file>")
+	if n := r.Failed(); n != 0 {
+		t.Errorf("Failed = %d:\n%s", n, dump(r))
+	}
+
+	w = newWorld(t)
+	requireKey(w)
+	w.setting(sourceController, keyImageRegistries, "ghcr.io/acme/")
+	expect(t, w.run(), CheckAgentImage, "web", checkreport.Fail, "fails source-controller's policy", "allowlist")
 }
 
 // cosignKey is a fresh P-256 public key's PEM, as cosign generate-key-pair
@@ -630,17 +701,37 @@ func TestRunPreviews(t *testing.T) {
 			CheckPreviewDNS, "", checkreport.Fail, []string{"does not resolve", "*." + suffix}},
 		{"DNS elsewhere", func(w *world) { w.resolver["shop-0."+suffix] = []string{"203.0.113.9"} },
 			CheckPreviewDNS, "", checkreport.Fail, []string{"resolves to 203.0.113.9, but the preview load balancer"}},
+		{"DNS lookup timed out", func(w *world) {
+			w.lookupErrs = map[string]error{"shop-0." + suffix: &net.DNSError{Err: "i/o timeout",
+				Name: "shop-0." + suffix, IsTimeout: true}}
+		}, CheckPreviewDNS, "", checkreport.Skip, []string{"cannot look shop-0." + suffix + " up", "i/o timeout",
+			"does not say whether the record exists"}},
+		{"DNS server failure", func(w *world) {
+			w.lookupErrs = map[string]error{"shop-0." + suffix: &net.DNSError{Err: "server misbehaving",
+				Name: "shop-0." + suffix, IsTemporary: true}}
+		}, CheckPreviewDNS, "", checkreport.Skip, []string{"server misbehaving"}},
+		{"run deadline spent before the lookup", func(w *world) {
+			w.lookupErrs = map[string]error{"shop-0." + suffix: context.DeadlineExceeded}
+		}, CheckPreviewDNS, "", checkreport.Skip, []string{"context deadline exceeded"}},
+		{"DNS lookup failed, so no handshake", func(w *world) {
+			w.lookupErrs = map[string]error{"shop-0." + suffix: context.DeadlineExceeded}
+		}, CheckPreviewTLS, "", checkreport.Skip, []string{"could not be looked up"}},
 		{"placeholder missing", func(w *world) {
 			w.drop(func(o client.Object) bool { return o.GetName() == placeholderName })
-		}, CheckPreviewDNS, "", checkreport.Pass, []string{"not compared with the preview load balancer",
+		}, CheckPreviewDNS, "", checkreport.Skip, []string{"cannot be compared with the preview load balancer",
 			"cannot read the placeholder Ingress"}},
+		{"load balancer address does not resolve", func(w *world) {
+			w.lookupErrs = map[string]error{lbHost: &net.DNSError{Err: "i/o timeout", Name: lbHost, IsTimeout: true}}
+		}, CheckPreviewDNS, "", checkreport.Skip, []string{"cannot be compared with the preview load balancer",
+			"its address " + lbHost + " does not resolve"}},
 		{"placeholder without an address", func(w *world) {
 			for _, o := range w.objs {
 				if ing, ok := o.(*networkingv1.Ingress); ok {
 					ing.Status = networkingv1.IngressStatus{}
 				}
 			}
-		}, CheckPreviewDNS, "", checkreport.Pass, []string{"has no load balancer address yet"}},
+		}, CheckPreviewDNS, "", checkreport.Fail, []string{"no preview load balancer for it to point at",
+			"has no load balancer address", "not provisioned"}},
 		{"TLS timeout", func(w *world) {
 			w.dialTLS = func(context.Context, string) (tls.ConnectionState, error) { return tls.ConnectionState{}, timeoutErr{} }
 		}, CheckPreviewTLS, "", checkreport.Skip, []string{"preview.inboundCIDRs"}},

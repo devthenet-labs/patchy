@@ -26,10 +26,12 @@ sha-<default-branch head> published, <project>-0.<host suffix> resolves to
 the preview load balancer, and it serves a certificate trusted for that name.
 
 GitHub is read with GH_TOKEN, else GITHUB_TOKEN, else anonymously (public
-repositories only); a repository on another host (GitHub Enterprise Server)
-with GH_ENTERPRISE_TOKEN, else GITHUB_ENTERPRISE_TOKEN, so a github.com token
-never leaves github.com. Registries are read with your cloud and docker
-credentials: an ECR repository through the AWS SDK's default chain
+repositories only). A repository on another host (GitHub Enterprise Server)
+is read with GH_ENTERPRISE_TOKEN, else GITHUB_ENTERPRISE_TOKEN, only when
+GH_HOST names that host, and anonymously otherwise: the Project, not you,
+names the hosts, so a github.com token never leaves github.com and an
+enterprise token never leaves GH_HOST. Registries are read with your cloud
+and docker credentials: an ECR repository through the AWS SDK's default chain
 (AWS_PROFILE), Artifact Registry through Application Default Credentials,
 any other through your docker config. What this cannot prove is that the
 cluster's own credentials work; a Repository's status.runnerImage and a
@@ -50,6 +52,8 @@ patchy check project <name> [flags]
 ```
   patchy check project shop -n patchy
   GH_TOKEN=$(gh auth token) AWS_PROFILE=prod patchy check project shop -n patchy
+  GH_HOST=ghe.example.com GH_ENTERPRISE_TOKEN=$(gh auth token -h ghe.example.com) \
+    patchy check project shop -n patchy
   patchy check project shop -o json | jq '.checks[] | select(.status == "FAIL")'
 ```
 

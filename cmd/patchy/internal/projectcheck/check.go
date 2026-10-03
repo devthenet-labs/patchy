@@ -282,8 +282,8 @@ func (r *run) agentImage(ctx context.Context, repo v1alpha1.ProjectRepository, r
 		return
 	}
 	if decl.Outcome != runnerimage.OutcomeDeclared {
-		why := fmt.Sprintf("%s declares no agent image: neither %s nor %s exists", at, runnerimage.AgentYAMLPath,
-			runnerimage.DevcontainerPath)
+		why := fmt.Sprintf("%s declares no agent image: neither %s nor %s exists as a regular file "+
+			"(source-controller ignores a symlink)", at, runnerimage.AgentYAMLPath, runnerimage.DevcontainerPath)
 		if decl.Outcome == runnerimage.OutcomeNotApplicable {
 			why = fmt.Sprintf("%s declares no agent image: %s is not for patchy (%s)", at, decl.Manifest, decl.Reason)
 		}
@@ -359,6 +359,14 @@ func (r *run) judgeAgentImage(ctx context.Context, key, image, declared string, 
 			"`patchy check image %s` lists every check", declared, pol.from, strings.Join(failed, "; "), image)
 		return
 	}
+	if pol.unverified != "" {
+		// Every other check passed, but the one source-controller may
+		// still refuse it on was not run: that is not a PASS.
+		r.add(CheckAgentImage, key, checkreport.Skip, "%s pins to %s and passes source-controller's other checks "+
+			"from %s, but not its signature check: %s; `patchy check image %s --cosign-key <file>` verifies it "+
+			"with the key source-controller mounts", declared, rep.Image, pol.from, pol.unverified, image)
+		return
+	}
 	r.add(CheckAgentImage, key, checkreport.Pass, "%s pins to %s and passes source-controller's policy from %s "+
 		"(%s); read with your registry credentials, not source-controller's", declared, rep.Image, pol.from,
 		pol.signature)
@@ -420,15 +428,21 @@ func (r *run) previews(ctx context.Context, s settings) {
 		r.add(CheckPreviews, "", checkreport.Pass, "intent-controller writes Previews, and preview-controller serves "+
 			"each intent at <intent>.%s from images under %s", suffix, prefix)
 	}
+	// A Preview exists only for an intent with a pull request, and every
+	// component with one runs its head. The default-branch head runs only
+	// in a component the intent leaves unchanged, so only with more than
+	// one (v1alpha1.DesiredPreviewComponents).
+	baseRuns := len(previews) > 1
 	for _, rp := range previews {
-		r.previewImage(ctx, rp, prefix)
+		r.previewImage(ctx, rp, prefix, baseRuns)
 	}
 	r.previewHost(ctx, suffix)
 }
 
 // previewImage checks one previewed repository's image repository: under
-// the prefix, one leaf segment, and sha-<default-branch head> published.
-func (r *run) previewImage(ctx context.Context, rp v1alpha1.RepositoryPreview, prefix string) {
+// the prefix, one leaf segment, and sha-<default-branch head> published,
+// which only fails the check when baseRuns says a preview runs that tag.
+func (r *run) previewImage(ctx context.Context, rp v1alpha1.RepositoryPreview, prefix string, baseRuns bool) {
 	key, img := rp.Name, rp.Preview.ImageRepository
 	if prefix != "" {
 		leaf, under := strings.CutPrefix(img, prefix)
@@ -476,6 +490,13 @@ func (r *run) previewImage(ctx context.Context, rp v1alpha1.RepositoryPreview, p
 		others := ""
 		if n, err := r.shaTags(ctx, repo); err == nil {
 			others = fmt.Sprintf(" (it holds %d other sha-<commit> tag%s)", n, plural(n))
+		}
+		if !baseRuns {
+			r.add(CheckPreviewImage, key, checkreport.Skip, "%s:%s, the head of %s, is not published%s, but no "+
+				"preview runs it: with one previewed repository, a preview runs only the pull request's head, so "+
+				"whether the runtime publisher pushes that is known only once an intent opens one (is the "+
+				"PREVIEW_PUBLISH_ENABLED repository variable 'true'?)", img, tag, head.Branch, others)
+			return
 		}
 		r.add(CheckPreviewImage, key, checkreport.Fail, "%s:%s, the head of %s, is not published%s: a preview "+
 			"runs sha-<commit> images, the pull request's head and, for a component the intent leaves unchanged, "+
@@ -570,24 +591,36 @@ func (r *run) previewHost(ctx context.Context, suffix string) {
 	}
 	host := r.p.Name + "-0." + suffix
 	addrs, err := r.cfg.Resolver.LookupHost(ctx, host)
-	if err != nil {
+	var dnsErr *net.DNSError
+	switch {
+	case err != nil && errors.As(err, &dnsErr) && dnsErr.IsNotFound:
 		r.add(CheckPreviewDNS, "", checkreport.Fail, "%s does not resolve (%v): a wildcard record *.%s must point "+
 			"at the preview load balancer", host, err, suffix)
 		r.add(CheckPreviewTLS, "", checkreport.Skip, "%s does not resolve", host)
 		return
+	case err != nil:
+		// A timeout, a SERVFAIL or the run's own deadline says nothing
+		// about the record: only NXDOMAIN is evidence that it is missing.
+		r.add(CheckPreviewDNS, "", checkreport.Skip, "cannot look %s up (%v), which does not say whether the "+
+			"record exists; run this again", host, err)
+		r.add(CheckPreviewTLS, "", checkreport.Skip, "%s could not be looked up", host)
+		return
 	}
 	slices.Sort(addrs)
-	switch lb, lbAddrs, why := r.loadBalancer(ctx); {
-	case why != "":
-		r.add(CheckPreviewDNS, "", checkreport.Pass, "%s resolves to %s; not compared with the preview load "+
-			"balancer: %s", host, strings.Join(addrs, ", "), why)
-	case slices.ContainsFunc(addrs, func(a string) bool { return slices.Contains(lbAddrs, a) }):
-		r.add(CheckPreviewDNS, "", checkreport.Pass, "%s resolves to the preview load balancer %s (%s)", host, lb,
-			strings.Join(addrs, ", "))
+	switch lb := r.loadBalancer(ctx); {
+	case lb.why != "" && lb.status == checkreport.Fail:
+		r.add(CheckPreviewDNS, "", checkreport.Fail, "%s resolves to %s, but there is no preview load balancer for "+
+			"it to point at: %s", host, strings.Join(addrs, ", "), lb.why)
+	case lb.why != "":
+		r.add(CheckPreviewDNS, "", checkreport.Skip, "%s resolves to %s, but it cannot be compared with the preview "+
+			"load balancer: %s", host, strings.Join(addrs, ", "), lb.why)
+	case slices.ContainsFunc(addrs, func(a string) bool { return slices.Contains(lb.addrs, a) }):
+		r.add(CheckPreviewDNS, "", checkreport.Pass, "%s resolves to the preview load balancer %s (%s)", host,
+			lb.name, strings.Join(addrs, ", "))
 	default:
 		r.add(CheckPreviewDNS, "", checkreport.Fail, "%s resolves to %s, but the preview load balancer %s is at %s: "+
-			"the wildcard record *.%s must point at it", host, strings.Join(addrs, ", "), lb,
-			strings.Join(lbAddrs, ", "), suffix)
+			"the wildcard record *.%s must point at it", host, strings.Join(addrs, ", "), lb.name,
+			strings.Join(lb.addrs, ", "), suffix)
 	}
 
 	dctx, cancel := context.WithTimeout(ctx, tlsTimeout)
@@ -615,27 +648,42 @@ func (r *run) previewHost(ctx context.Context, suffix string) {
 	}
 }
 
-// loadBalancer is the placeholder Ingress's load balancer and its
-// addresses, or why it cannot be compared against.
-func (r *run) loadBalancer(ctx context.Context) (string, []string, string) {
+// previewLB is the preview load balancer as the placeholder Ingress reports
+// it: its name and addresses, or why it cannot be compared against.
+type previewLB struct {
+	name  string
+	addrs []string
+	// why is set when it cannot be compared against, and status then says
+	// what that makes the DNS check: Skip when it could not be found out,
+	// Fail when the Ingress shows there is no load balancer.
+	why    string
+	status checkreport.Status
+}
+
+// loadBalancer reads the placeholder Ingress's load balancer.
+func (r *run) loadBalancer(ctx context.Context) previewLB {
 	var ing networkingv1.Ingress
 	key := types.NamespacedName{Namespace: placeholderNamespace, Name: placeholderName}
 	if err := r.cfg.Reader.Get(ctx, key, &ing); err != nil {
-		return "", nil, fmt.Sprintf("cannot read the placeholder Ingress %s: %v", key, err)
+		return previewLB{status: checkreport.Skip, why: fmt.Sprintf("cannot read the placeholder Ingress %s: %v",
+			key, err)}
 	}
 	for _, in := range ing.Status.LoadBalancer.Ingress {
 		switch {
 		case in.Hostname != "":
 			addrs, err := r.cfg.Resolver.LookupHost(ctx, in.Hostname)
 			if err != nil {
-				return "", nil, fmt.Sprintf("its address %s does not resolve: %v", in.Hostname, err)
+				return previewLB{status: checkreport.Skip, why: fmt.Sprintf("its address %s does not resolve: %v",
+					in.Hostname, err)}
 			}
-			return in.Hostname, addrs, ""
+			return previewLB{name: in.Hostname, addrs: addrs}
 		case in.IP != "":
-			return in.IP, []string{in.IP}, ""
+			return previewLB{name: in.IP, addrs: []string{in.IP}}
 		}
 	}
-	return "", nil, fmt.Sprintf("the placeholder Ingress %s has no load balancer address yet", key)
+	return previewLB{status: checkreport.Fail, why: fmt.Sprintf("the placeholder Ingress %s has no load balancer "+
+		"address, so the preview load balancer is not provisioned (the Ingress's events say why; one created "+
+		"minutes ago may still be provisioning)", key)}
 }
 
 // orNone names the ConfigMaps a setting was read from, or says there were

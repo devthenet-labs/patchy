@@ -21,21 +21,27 @@
 //     function the controllers call, for the intent repository and every
 //     app repository;
 //   - agent-image: each repository's declaration at its default-branch head
-//     (read from GitHub with GH_TOKEN, else GITHUB_TOKEN, else anonymously),
-//     with runnerimage.Declare's precedence, then imagecheck.Static under
-//     source-controller's live policy, read from its ConfigMap (found by the
-//     app.kubernetes.io labels, over kustomize's shared patchy-config);
-//     registry reads use resolve.NewKeychain, so an ECR image is read with
-//     the caller's AWS credentials;
+//     (read from GitHub with GH_TOKEN, else GITHUB_TOKEN, else anonymously;
+//     an enterprise token goes only to the host GH_HOST names, since the
+//     Project, not the caller, names the hosts), regular files only, as
+//     source-controller's archive read; with runnerimage.Declare's
+//     precedence, then imagecheck.Static under source-controller's live
+//     policy, read from its ConfigMap (found by the app.kubernetes.io labels,
+//     over kustomize's shared patchy-config); registry reads use
+//     resolve.NewKeychain, so an ECR image is read with the caller's AWS
+//     credentials. A signature source-controller requires but whose key is
+//     not found here makes an otherwise passing image a SKIP;
 //   - previews: that intent-controller writes Previews and preview-controller
 //     is configured, then, per previewed repository, that its image
 //     repository sits under preview-controller's prefix and that
-//     sha-<default-branch head> is published there;
+//     sha-<default-branch head> is published there (a FAIL only with more
+//     than one previewed repository, since only then does a preview run it);
 //   - preview-dns and preview-tls: that <project>-0.<host suffix> resolves to
 //     the preview load balancer (the placeholder Ingress's address) and
 //     serves a certificate trusted for it. An Intent is <project>-<issue> and
 //     no issue is numbered 0, so the probe host is one the wildcard record
-//     and certificate cover and no Preview owns. The load balancer admits
+//     and certificate cover and no Preview owns. Only NXDOMAIN fails the DNS
+//     check; a lookup that times out is a SKIP. The load balancer admits
 //     only the chart's inbound CIDRs, so a TLS timeout is a SKIP, not a FAIL.
 //
 // What it cannot prove: that source-controller's or the preview nodes' own

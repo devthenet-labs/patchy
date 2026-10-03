@@ -844,6 +844,8 @@ func holdExpiredDetail(run *v1alpha1.IntentRun) string {
 			why = "intent-controller ran without --intent-multi-repo, and its Job expired before the flag was on again"
 		case ReasonIntentBlocked:
 			why = "its intent was blocked, and its Job expired before the block lifted"
+		case ReasonProjectGone:
+			why = "its project was gone, and its Job expired before the project was created again"
 		}
 	}
 	return "the build finished while " + why + ", taking the unpushed changeset with it; the attempt does not count"
@@ -881,6 +883,19 @@ var errRoundBlocked = fmt.Errorf("%w: the intent is blocked mid-round", errHeld)
 // is Blocked from Revising (errRoundBlocked).
 const ReasonIntentBlocked = "IntentBlocked"
 
+// errProjectGone: the run's Project is gone (deleted, or renamed away from
+// the Intent's spec.project). Deleting the Project withdraws everything its
+// Ready proved the App may do, so its absence holds the push like a
+// suspension and never lets it through: nothing is written to GitHub while
+// it is gone (a build held for another reason stays held), and a Project
+// created again under the name resumes the push, checked against what that
+// Project lists.
+var errProjectGone = fmt.Errorf("%w: the intent's project is gone", errHeld)
+
+// ReasonProjectGone is the PushHeld reason of a run whose Project is gone
+// (errProjectGone).
+const ReasonProjectGone = "ProjectGone"
+
 // errIntentEnded: the run's Intent, read uncached, is gone, is another
 // Intent under its name, is being deleted, or has ended (a cancel, a human
 // close). Nothing more of the build reaches GitHub.
@@ -903,11 +918,11 @@ var errRepositoryLeft = fmt.Errorf("%w: the run's repository left the project", 
 // errIntentEnded when the Intent no longer wants the build (errRepositoryLeft
 // when the Project no longer lists the run's repository), errHeld while it is
 // suspended (errMultiRepoOff, an errHeld, while its Project is one this
-// controller runs no intent of), and nil to push. A revise round pushes only
-// while its Intent is Revising (one Blocked from Revising holds it,
-// errRoundBlocked, until it resumes), and only to the pull request of its own
-// repository, read live, while it is open: one merged or closed beside open
-// siblings is errPullRequestEnded.
+// controller runs no intent of; errProjectGone while its Project is gone),
+// and nil to push. A revise round pushes only while its Intent is Revising
+// (one Blocked from Revising holds it, errRoundBlocked, until it resumes),
+// and only to the pull request of its own repository, read live, while it is
+// open: one merged or closed beside open siblings is errPullRequestEnded.
 func (r *RunReconciler) pushGate(ctx context.Context, run *v1alpha1.IntentRun) error {
 	var in v1alpha1.Intent
 	err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name}, &in)
@@ -930,16 +945,16 @@ func (r *RunReconciler) pushGate(ctx context.Context, run *v1alpha1.IntentRun) e
 	return nil
 }
 
-// projectGate is pushGate's read of the run's Project, uncached: nil when it
-// is gone (nothing holds the push, as before), errRepositoryLeft when it no
-// longer lists the run's repository, errMultiRepoOff when it is one this
-// controller runs no intent of.
+// projectGate is pushGate's read of the run's Project, uncached: it fails
+// closed, errProjectGone when it is gone; errRepositoryLeft when it no longer
+// lists the run's repository; errMultiRepoOff when it is one this controller
+// runs no intent of.
 func (r *RunReconciler) projectGate(ctx context.Context, run *v1alpha1.IntentRun, in *v1alpha1.Intent) error {
 	var proj v1alpha1.Project
 	switch err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: in.Spec.Project},
 		&proj); {
 	case kerrors.IsNotFound(err):
-		return nil
+		return errProjectGone
 	case err != nil:
 		return err
 	case repositoryLeft(&proj, run):
@@ -1014,7 +1029,7 @@ func (r *RunReconciler) endedBeforePush(ctx context.Context, run *v1alpha1.Inten
 // suspension is lifted; the run stays Running. A suspension that outlasts the
 // Job's TTL loses the Job, and with it the unpushed changeset: the run then
 // ends hold_expired, which does not count as an attempt. why is the gate's
-// errHeld: a suspension, errMultiRepoOff, or errRoundBlocked.
+// errHeld: a suspension, errMultiRepoOff, errRoundBlocked or errProjectGone.
 func (r *RunReconciler) hold(ctx context.Context, run *v1alpha1.IntentRun, res *result, why error) error {
 	if pushHeld(run) {
 		return errHeld
@@ -1028,6 +1043,9 @@ func (r *RunReconciler) hold(ctx context.Context, run *v1alpha1.IntentRun, res *
 	case errors.Is(why, errRoundBlocked):
 		reason, msg = ReasonIntentBlocked, "the round finished while its intent is blocked; its push waits for "+
 			"the block to lift"
+	case errors.Is(why, errProjectGone):
+		reason, msg = ReasonProjectGone, "the run finished while its project is gone; its push waits for the "+
+			"project to be created again"
 	}
 	if err := r.updateRun(ctx, run, func(cur *v1alpha1.IntentRun) {
 		meta.SetStatusCondition(&cur.Status.Conditions, metav1.Condition{

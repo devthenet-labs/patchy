@@ -262,6 +262,12 @@ func AppsURL(webURL string, owner Owner) string {
 	return ownerSettings(webURL, owner) + "/apps"
 }
 
+// SettingsURL is the settings page of owner's App slug: its webhook,
+// permissions and private keys.
+func SettingsURL(webURL string, owner Owner, slug string) string {
+	return AppsURL(webURL, owner) + "/" + url.PathEscape(slug)
+}
+
 // InstallURL is where an App is installed on an account's repositories.
 func InstallURL(webURL, slug string) string {
 	return strings.TrimSuffix(webURL, "/") + "/apps/" + url.PathEscape(slug) + "/installations/new"

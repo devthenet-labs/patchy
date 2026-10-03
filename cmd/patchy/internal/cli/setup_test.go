@@ -63,6 +63,9 @@ type fakeAppGitHub struct {
 	converts int
 	// refuse answers every conversion with this status instead of an App.
 	refuse int
+	// noWebhookSecret leaves the webhook secret out of a conversion, as if
+	// the person creating the App had turned its webhook off.
+	noWebhookSecret bool
 }
 
 func newFakeAppGitHub(t *testing.T) *fakeAppGitHub {
@@ -139,7 +142,7 @@ func (g *fakeAppGitHub) convert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var webhookSecret any
-	if g.manifest.HookAttributes != nil {
+	if g.manifest.HookAttributes != nil && !g.noWebhookSecret {
 		webhookSecret = setupWebhookSecret
 	}
 	events := g.manifest.DefaultEvents
@@ -404,6 +407,26 @@ func TestSetupGitHubAppBrowserFlow(t *testing.T) {
 				t.Error("the callback server still answers after it took its code")
 			}
 		})
+	}
+}
+
+// TestSetupGitHubAppWarnsWithoutWebhookSecret: a --security App GitHub
+// issued no webhook secret still gets its Secret, without the key, and the
+// person is told the Integration will refuse it and where to set one.
+func TestSetupGitHubAppWarnsWithoutWebhookSecret(t *testing.T) {
+	g := newFakeAppGitHub(t)
+	g.noWebhookSecret = true
+	var started string
+	out := filepath.Join(t.TempDir(), "patchy-github.secret.yaml")
+	_, stderr, err := execSetup(t, g.deps(g.browser(false, &started), nil), "setup", "github-app", "--org", "acme",
+		"--security", "--webhook-url", setupWebhook, "-o", out, "--timeout", "20s")
+	if err != nil {
+		t.Fatalf("setup: %v\n%s", err, stderr)
+	}
+	checkSecretFile(t, g, out, "patchy", []string{ghapp.KeyAppID, ghapp.KeyPrivateKey})
+	if !strings.Contains(stderr, "GitHub issued no webhook secret") ||
+		!strings.Contains(stderr, g.srv.URL+"/organizations/acme/settings/apps/patchy-acme") {
+		t.Errorf("stderr does not warn about the missing webhook secret:\n%s", stderr)
 	}
 }
 

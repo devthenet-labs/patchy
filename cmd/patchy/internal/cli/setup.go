@@ -406,6 +406,11 @@ func writeSecret(opts *Options, plan setupPlan, deps setupDeps, app *ghapp.App, 
 	for _, d := range ghapp.Drift(m, app) {
 		notef(opts.ErrOut, "patchy: warning: %s\n", d)
 	}
+	if m.HookAttributes != nil && !app.Credentials.HasWebhookSecret() {
+		notef(opts.ErrOut, "patchy: warning: GitHub issued no webhook secret, and an Integration refuses a Secret "+
+			"without %s: set one on the App's webhook at %s and add it to the Secret.\n", ghapp.KeyWebhookSecret,
+			ghapp.SettingsURL(deps.webURL, plan.owner, app.Slug))
+	}
 	data, err := ghapp.SecretManifest(app, plan.secretName, plan.namespace)
 	if err != nil {
 		return err

@@ -207,6 +207,9 @@ func TestURLs(t *testing.T) {
 		{AppsURL(DefaultWebURL, org), "https://github.com/organizations/acme/settings/apps"},
 		{AppsURL(DefaultWebURL, user), "https://github.com/settings/apps"},
 		{InstallURL(DefaultWebURL, "patchy-acme"), "https://github.com/apps/patchy-acme/installations/new"},
+		{SettingsURL(DefaultWebURL, org, "patchy-acme"),
+			"https://github.com/organizations/acme/settings/apps/patchy-acme"},
+		{SettingsURL(DefaultWebURL, user, "patchy"), "https://github.com/settings/apps/patchy"},
 	} {
 		if tt.got != tt.want {
 			t.Errorf("got %s, want %s", tt.got, tt.want)

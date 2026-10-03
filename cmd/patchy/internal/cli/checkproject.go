@@ -66,9 +66,11 @@ func newCheckProjectCmd(opts *Options) *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: noFileCompletion,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			token, source := githubToken()
+			token, source := envToken("GH_TOKEN", "GITHUB_TOKEN")
+			enterprise, enterpriseSource := envToken("GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
 			return runCheckProject(cmd.Context(), opts, args[0], checkProjectDeps{
-				github:   &projectcheck.HTTPGitHub{Token: token, TokenSource: source},
+				github: &projectcheck.HTTPGitHub{Token: token, TokenSource: source,
+					EnterpriseToken: enterprise, EnterpriseTokenSource: enterpriseSource},
 				keychain: resolve.NewKeychain(),
 				resolver: net.DefaultResolver,
 				dialTLS:  projectcheck.DialTLS,
@@ -78,11 +80,12 @@ func newCheckProjectCmd(opts *Options) *cobra.Command {
 	return cmd
 }
 
-// githubToken is the caller's GitHub token from the environment, as the gh
-// CLI reads it (GH_TOKEN before GITHUB_TOKEN), with the variable it came
-// from; empty when neither is set.
-func githubToken() (token, source string) {
-	for _, env := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+// envToken is the caller's GitHub token from the first of the environment
+// variables set, in the gh CLI's order (GH_TOKEN before GITHUB_TOKEN for
+// github.com, GH_ENTERPRISE_TOKEN before GITHUB_ENTERPRISE_TOKEN for any
+// other host), with the variable it came from; empty when none is set.
+func envToken(vars ...string) (token, source string) {
+	for _, env := range vars {
 		if v := os.Getenv(env); v != "" {
 			return v, env
 		}

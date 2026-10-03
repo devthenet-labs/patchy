@@ -51,6 +51,9 @@ const tlsTimeout = 10 * time.Second
 // image prefix (controller/preview's namePattern).
 var leafPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
+// shaTagPattern is the immutable tag a preview runs: sha-<40 hex>.
+var shaTagPattern = regexp.MustCompile(`^sha-[0-9a-f]{40}$`)
+
 // Config is what a run reads with.
 type Config struct {
 	// Reader reads the cluster with the caller's own kubeconfig.
@@ -63,9 +66,9 @@ type Config struct {
 	// Keychain authenticates registry reads; the CLI passes
 	// resolve.NewKeychain, the caller's own cloud and docker credentials.
 	Keychain authn.Keychain
-	// Resolver looks the preview host up.
+	// Resolver looks the preview host up; nil is net.DefaultResolver.
 	Resolver Resolver
-	// DialTLS completes the preview TLS handshake.
+	// DialTLS completes the preview TLS handshake; nil is DialTLS.
 	DialTLS TLSDialer
 }
 
@@ -89,6 +92,12 @@ type headResult struct {
 // readable, as the API server reported it (not found, forbidden); every
 // other failure to find something out is a SKIP line with its reason.
 func Run(ctx context.Context, cfg Config) (Report, error) {
+	if cfg.Resolver == nil {
+		cfg.Resolver = net.DefaultResolver
+	}
+	if cfg.DialTLS == nil {
+		cfg.DialTLS = DialTLS
+	}
 	var p v1alpha1.Project
 	if err := cfg.Reader.Get(ctx, types.NamespacedName{Namespace: cfg.Namespace, Name: cfg.Project}, &p); err != nil {
 		return Report{}, err
@@ -193,6 +202,12 @@ func (r *run) repositories() []target {
 	return out
 }
 
+// labelRefusal opens the Ready message intent-controller writes when the
+// App cannot create a label (AppNotInstalled, "the label %q cannot be
+// created on %s: ..."), which is how a label failure is told from the
+// App's other refusals.
+const labelRefusal = "the label "
+
 // labels reports the trigger and approve labels from the Ready condition:
 // intent-controller ensures them last, so they exist exactly when it is
 // True.
@@ -210,7 +225,8 @@ func (r *run) labels() {
 	case r.isReady():
 		r.add(CheckLabels, "", checkreport.Pass, "%q (trigger) and %q (approve) exist on %s",
 			v1alpha1.ProjectTriggerLabel(p), approve, where)
-	case r.ready != nil && strings.Contains(r.ready.Message, "label"):
+	case r.ready != nil && r.ready.Reason == v1alpha1.ReasonAppNotInstalled &&
+		strings.HasPrefix(r.ready.Message, labelRefusal):
 		r.add(CheckLabels, "", checkreport.Fail, "%s", r.ready.Message)
 	default:
 		r.add(CheckLabels, "", checkreport.Skip, "not proven: intent-controller ensures %q and %q on %s only once "+
@@ -253,7 +269,7 @@ func (r *run) agentImage(ctx context.Context, repo v1alpha1.ProjectRepository, r
 		r.add(CheckAgentImage, key, checkreport.Skip, "cannot read the default branch: %v", err)
 		return
 	}
-	at := head.Branch + "@" + head.SHA[:12]
+	at := head.Branch + "@" + shortSHA(head.SHA)
 	files, err := r.declarations(ctx, repo.URL, head.SHA)
 	if err != nil {
 		r.add(CheckAgentImage, key, checkreport.Skip, "cannot read the declaration at %s: %v", at, err)
@@ -321,9 +337,8 @@ func (r *run) agentImage(ctx context.Context, repo v1alpha1.ProjectRepository, r
 		switch code := registryCode(err); {
 		case err == nil:
 		case code == transport.NameUnknownErrorCode || code == transport.ManifestUnknownErrorCode || code == "404":
-			r.add(CheckAgentImage, key, checkreport.Fail, "%s is not published: %v; the agent image publisher "+
-				"must push it (is the AGENT_PUBLISH_ENABLED repository variable 'true', and the last agent image "+
-				"publish run green?)", declared, err)
+			r.add(CheckAgentImage, key, checkreport.Fail, "%s is not published: %v; the repository's agent image "+
+				"publisher must push it before an intent builds there (is its last run green?)", declared, err)
 			return
 		default:
 			r.add(CheckAgentImage, key, checkreport.Skip, "%s passes source-controller's allowlist from %s, but "+
@@ -420,16 +435,28 @@ func (r *run) previewImage(ctx context.Context, rp v1alpha1.RepositoryPreview, p
 			return
 		}
 	}
-	head, err := r.head(ctx, rp.URL)
+	repo, err := name.NewRepository(img)
 	if err != nil {
-		r.add(CheckPreviewImage, key, checkreport.Skip, "cannot read the default branch: %v", err)
-		return
-	}
-	tag := "sha-" + head.SHA
-	if _, err := name.NewTag(img + ":" + tag); err != nil {
 		r.add(CheckPreviewImage, key, checkreport.Fail, "%s is not an image repository: %v", img, err)
 		return
 	}
+	head, headErr := r.head(ctx, rp.URL)
+	if headErr != nil {
+		// The head names the tag to look for; without it, the most that
+		// can be said is whether the repository is there and holds
+		// commit tags at all.
+		shaTags, err := r.shaTags(ctx, repo)
+		switch {
+		case err != nil:
+			r.add(CheckPreviewImage, key, checkreport.Skip, "cannot read the default branch (%v), and %s",
+				headErr, r.unreadable(img, err))
+		default:
+			r.add(CheckPreviewImage, key, checkreport.Skip, "%s is reachable and holds %d sha-<commit> tag%s, but "+
+				"which commit heads the default branch is unknown: %v", img, shaTags, plural(shaTags), headErr)
+		}
+		return
+	}
+	tag := "sha-" + head.SHA
 	desc, err := r.fetch(ctx, img+":"+tag)
 	switch code := registryCode(err); {
 	case err == nil:
@@ -438,13 +465,40 @@ func (r *run) previewImage(ctx context.Context, rp v1alpha1.RepositoryPreview, p
 	case code == transport.NameUnknownErrorCode:
 		r.add(CheckPreviewImage, key, checkreport.Fail, "the image repository %s does not exist: %v", img, err)
 	case code == transport.ManifestUnknownErrorCode || code == "404":
-		r.add(CheckPreviewImage, key, checkreport.Fail, "%s:%s, the head of %s, is not published: previews run "+
-			"sha-<commit> images, so the runtime publisher must push every pull-request head and every %s commit "+
-			"(is the PREVIEW_PUBLISH_ENABLED repository variable 'true', and the last publish run green? a push "+
-			"minutes old may still be publishing)", img, tag, head.Branch, head.Branch)
+		others := ""
+		if n, err := r.shaTags(ctx, repo); err == nil {
+			others = fmt.Sprintf(" (it holds %d other sha-<commit> tag%s)", n, plural(n))
+		}
+		r.add(CheckPreviewImage, key, checkreport.Fail, "%s:%s, the head of %s, is not published%s: a preview "+
+			"runs sha-<commit> images, the pull request's head and, for a component the intent leaves unchanged, "+
+			"the %s head, so the runtime publisher must push both (is the PREVIEW_PUBLISH_ENABLED repository "+
+			"variable 'true', and the last publish run green? a push minutes old may still be publishing)",
+			img, tag, head.Branch, others, head.Branch)
 	default:
-		r.add(CheckPreviewImage, key, checkreport.Skip, "your registry credentials cannot read %s: %v", img, err)
+		r.add(CheckPreviewImage, key, checkreport.Skip, "%s", r.unreadable(img, err))
 	}
+}
+
+// unreadable says a registry read was refused or failed with the caller's
+// credentials, which is not the same as the preview nodes' being refused.
+func (r *run) unreadable(img string, err error) string {
+	return fmt.Sprintf("your registry credentials cannot read %s: %v", img, err)
+}
+
+// shaTags counts the sha-<40 hex> tags a repository holds, read with the
+// caller's registry credentials.
+func (r *run) shaTags(ctx context.Context, repo name.Repository) (int, error) {
+	tags, err := remote.List(repo, remote.WithContext(ctx), remote.WithAuthFromKeychain(r.keychain()))
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, t := range tags {
+		if shaTagPattern.MatchString(t) {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // fetch reads one manifest with the caller's registry credentials.
@@ -453,11 +507,32 @@ func (r *run) fetch(ctx context.Context, reference string) (*remote.Descriptor, 
 	if err != nil {
 		return nil, err
 	}
-	kc := r.cfg.Keychain
-	if kc == nil {
-		kc = authn.NewMultiKeychain()
+	return remote.Get(ref, remote.WithContext(ctx), remote.WithAuthFromKeychain(r.keychain()))
+}
+
+// keychain is the caller's registry credentials; with none configured,
+// registries are read anonymously.
+func (r *run) keychain() authn.Keychain {
+	if r.cfg.Keychain == nil {
+		return authn.NewMultiKeychain()
 	}
-	return remote.Get(ref, remote.WithContext(ctx), remote.WithAuthFromKeychain(kc))
+	return r.cfg.Keychain
+}
+
+// shortSHA is a commit's abbreviation for a reason.
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+// plural is "s" unless n is one.
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // registryCode classifies a registry error: its first error code, "404"
@@ -564,5 +639,3 @@ func orNone(from, namespace string) string {
 	return from
 }
 
-// ensure the net package's resolver satisfies Resolver.
-var _ Resolver = (*net.Resolver)(nil)

@@ -44,16 +44,28 @@ const githubTimeout = 30 * time.Second
 
 // HTTPGitHub reads the GitHub REST API over plain net/http: two requests
 // for a repository's head and one per file, with no client library.
+//
+// A token is sent only to the host it is for, as the gh CLI scopes its
+// own: Token to github.com, EnterpriseToken to any other host (GitHub
+// Enterprise Server). A repository URL comes from cluster configuration
+// the caller may not have written, so a github.com token must never follow
+// it to another host.
 type HTTPGitHub struct {
-	// Token authenticates every request; empty reads anonymously, which
-	// sees public repositories only.
+	// Token authenticates requests about github.com repositories; empty
+	// reads them anonymously, which sees public repositories only.
 	Token string
 	// TokenSource names where Token came from (an environment variable),
 	// for the errors; empty with no token.
 	TokenSource string
+	// EnterpriseToken authenticates requests about repositories on any
+	// other host; empty reads them anonymously.
+	EnterpriseToken string
+	// EnterpriseTokenSource names where EnterpriseToken came from.
+	EnterpriseTokenSource string
 	// APIURL overrides the API root for every host (tests); empty derives
 	// it from the repository's host: api.github.com for github.com, and
-	// https://<host>/api/v3 for GitHub Enterprise Server.
+	// https://<host>/api/v3 for GitHub Enterprise Server. The token is
+	// still chosen by the repository's host.
 	APIURL string
 	// Client sends the requests; nil is a client with githubTimeout.
 	Client *http.Client
@@ -61,21 +73,22 @@ type HTTPGitHub struct {
 
 // Head implements GitHub.
 func (g *HTTPGitHub) Head(ctx context.Context, repoURL string) (Head, error) {
-	base, err := g.repoAPI(repoURL)
+	base, auth, err := g.repoAPI(repoURL)
 	if err != nil {
 		return Head{}, err
 	}
 	var repo struct {
 		DefaultBranch string `json:"default_branch"`
 	}
-	body, _, err := g.get(ctx, base, "application/vnd.github+json", 1<<20)
+	body, _, err := g.get(ctx, auth, base, "application/vnd.github+json", 1<<20)
 	if err != nil {
 		return Head{}, err
 	}
 	if err := json.Unmarshal(body, &repo); err != nil || repo.DefaultBranch == "" {
 		return Head{}, fmt.Errorf("GitHub answered %s without a default branch", base)
 	}
-	body, _, err = g.get(ctx, base+"/commits/"+url.PathEscape(repo.DefaultBranch), "application/vnd.github.sha", 1<<10)
+	body, _, err = g.get(ctx, auth, base+"/commits/"+url.PathEscape(repo.DefaultBranch), "application/vnd.github.sha",
+		1<<10)
 	if err != nil {
 		return Head{}, err
 	}
@@ -88,12 +101,12 @@ func (g *HTTPGitHub) Head(ctx context.Context, repoURL string) (Head, error) {
 
 // File implements GitHub.
 func (g *HTTPGitHub) File(ctx context.Context, repoURL, ref, path string, limit int64) ([]byte, int64, bool, error) {
-	base, err := g.repoAPI(repoURL)
+	base, auth, err := g.repoAPI(repoURL)
 	if err != nil {
 		return nil, 0, false, err
 	}
 	u := base + "/contents/" + path + "?ref=" + url.QueryEscape(ref)
-	body, size, err := g.get(ctx, u, "application/vnd.github.raw", limit)
+	body, size, err := g.get(ctx, auth, u, "application/vnd.github.raw", limit)
 	var he *httpError
 	switch {
 	case errors.As(err, &he) && he.status == http.StatusNotFound:
@@ -106,61 +119,75 @@ func (g *HTTPGitHub) File(ctx context.Context, repoURL, ref, path string, limit 
 	return body, size, true, nil
 }
 
-// repoAPI is the API URL of the repository a URL names.
-func (g *HTTPGitHub) repoAPI(repoURL string) (string, error) {
+// credential is the token a request carries, and where it came from.
+type credential struct {
+	token, source string
+	// enterprise marks a host other than github.com, for the hint.
+	enterprise bool
+}
+
+// repoAPI is the API URL of the repository a URL names, and the credential
+// for its host.
+func (g *HTTPGitHub) repoAPI(repoURL string) (string, credential, error) {
 	host, repo, err := forge.ParseRepoURL(repoURL)
 	if err != nil {
-		return "", err
+		return "", credential{}, err
 	}
-	root := g.APIURL
-	switch {
-	case root != "":
-	case host == "github.com":
-		root = "https://api.github.com"
-	default:
+	auth := credential{token: g.Token, source: g.TokenSource}
+	root := "https://api.github.com"
+	if !strings.EqualFold(host, "github.com") {
+		auth = credential{token: g.EnterpriseToken, source: g.EnterpriseTokenSource, enterprise: true}
 		root = "https://" + host + "/api/v3"
 	}
-	return strings.TrimRight(root, "/") + "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name), nil
+	if g.APIURL != "" {
+		root = g.APIURL
+	}
+	return strings.TrimRight(root, "/") + "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name),
+		auth, nil
+}
+
+// who says whose identity a request carried.
+func (c credential) who() string {
+	switch {
+	case c.token == "":
+		return "anonymously"
+	case c.source == "":
+		return "with your token"
+	}
+	return "with " + c.source
 }
 
 // httpError is a GitHub answer other than 200.
 type httpError struct {
 	status int
 	url    string
-	who    string
+	auth   credential
 }
 
 func (e *httpError) Error() string {
-	msg := fmt.Sprintf("GitHub answered %d %s for %s (%s)", e.status, http.StatusText(e.status), e.url, e.who)
+	msg := fmt.Sprintf("GitHub answered %d %s for %s (%s)", e.status, http.StatusText(e.status), e.url, e.auth.who())
 	if e.status == http.StatusNotFound || e.status == http.StatusUnauthorized || e.status == http.StatusForbidden {
-		msg += "; a private repository needs GH_TOKEN or GITHUB_TOKEN set to a token that can read it"
+		vars := "GH_TOKEN or GITHUB_TOKEN"
+		if e.auth.enterprise {
+			vars = "GH_ENTERPRISE_TOKEN or GITHUB_ENTERPRISE_TOKEN"
+		}
+		msg += "; a private repository needs " + vars + " set to a token that can read it"
 	}
 	return msg
-}
-
-// who says whose identity a request carried.
-func (g *HTTPGitHub) who() string {
-	if g.Token == "" {
-		return "anonymously"
-	}
-	if g.TokenSource == "" {
-		return "with your token"
-	}
-	return "with " + g.TokenSource
 }
 
 // get fetches u and returns at most limit+1 bytes of its body (so a caller
 // can tell a body over limit), with the body's size: Content-Length when
 // GitHub sent one, else what was read.
-func (g *HTTPGitHub) get(ctx context.Context, u, accept string, limit int64) ([]byte, int64, error) {
+func (g *HTTPGitHub) get(ctx context.Context, auth credential, u, accept string, limit int64) ([]byte, int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, 0, err
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	if g.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+g.Token)
+	if auth.token != "" {
+		req.Header.Set("Authorization", "Bearer "+auth.token)
 	}
 	c := g.Client
 	if c == nil {
@@ -173,7 +200,7 @@ func (g *HTTPGitHub) get(ctx context.Context, u, accept string, limit int64) ([]
 	defer resp.Body.Close() //nolint:errcheck // read-only response; nothing to flush
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-		return nil, 0, &httpError{status: resp.StatusCode, url: u, who: g.who()}
+		return nil, 0, &httpError{status: resp.StatusCode, url: u, auth: auth}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {

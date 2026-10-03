@@ -848,6 +848,401 @@ whatever tree it pins (runner_image.go:162-170), and a revise round pins the PR 
 
 Slice 1 enforces one repository per Project.
 
+## Slice 3: multi-repo intents
+
+**Status:** Proposed, 2026-10-03. Line references are to `main` at 5052706. This section replaces "Multi-repo: types
+now, behaviour in slice 3" and narrows the roadmap's slice 3: the sibling-wide `/patchy revise` and the webhook nudge
+are deferred. Estimate: about 7-9 dev days plus 1 infra day.
+
+One intent can now change several app repositories of a Project and preview them together:
+
+- one read-only plan over every repository's tree;
+- one build per repository the approved plan names, each in that repository's own image, run in parallel up to the run
+  pool's slots;
+- one PR per built repository on `patchy-intent/<intent>`, cross-linked;
+- `Merged` only when every PR has merged, with a stated partial-failure policy;
+- revise and check-fix rounds per PR repository;
+- one preview host that routes paths to one component per previewed repository, with unchanged repositories running
+  their main-branch image.
+
+It also removes the last naming assumptions. App repositories can be named anything, and the operator configures the
+preview image path prefix.
+
+**Not in slice 3:**
+
+- one `/patchy revise` that revises every sibling PR;
+- concurrent revise rounds within one intent;
+- server-side calls between preview components;
+- the webhook nudge;
+- moving the existing patchy-target and preview-demo infrastructure into the new per-app map.
+
+### At a glance
+
+| Concern | One repository (unchanged) | Several repositories                                                        |
+| ------- | -------------------------- | --------------------------------------------------------------------------- |
+| Plan    | one Job, one tree          | one Job, every Project tree read-only                                       |
+| Build   | one run                    | one run per repository the approved plan names, each in its own image       |
+| PRs     | one                        | one per built repository, opened once every build has pushed; cross-linked  |
+| Ending  | merged or closed           | `Merged` only when all merged; otherwise `Closed` once every PR has settled |
+| Rounds  | on the PR                  | per PR repository, at most one round in flight per intent                   |
+| Preview | one component at `/`       | one host, one path-routed component per previewed repository (at most 4)    |
+
+### Plan: one Job over every tree
+
+- **Trees.** The plan run covers every Project repository (at most 8):
+  - `IntentRun.spec.repository` stays the planning repository, `repositories[0]`.
+  - A new `spec.trees[]{name, url, repositoryRef}` (at most 7, plan runs only, immutable with the rest of the spec)
+    lists the other repositories.
+  - Each tree gets its own Repository, `<run>-src-<key>`, owned by the run and pinned by source-controller like any
+    other.
+  - The launch waits for every tree's artifact and checks that the run is each Repository's controller owner.
+  - All of them are deleted when the run is collected.
+- **Job.** `jobs.Spec` gains `Trees []Tree{Key, URL, ArtifactURL, ArtifactDigest, BaseSHA}`.
+  - _Empty:_ the Job is byte-identical to today's, and every golden stays as it is.
+  - _Set:_ the per-Job Secret gains two files:
+    - `trees`, one `<key> <sha256> <artifact URL>` line per tree;
+    - `repositories`, a `<key> <path> <url>` manifest that includes the primary tree.
+  - _Script:_ a trees script is appended to the prepare init after `prepareScript`, the way `injectScript` is. It
+    extracts each tree, digest-verified, to `/workspace/repos/<key>`, with no git init. The primary tree stays at
+    `/workspace/repo`, the cwd.
+  - _No new `PATCHY_*` key._ Every key agent-runner reads is blanked on repository-image Jobs, so a new key would change
+    the injected golden and every build Job.
+- **Refusals.** `jobs.Create` refuses `Trees` together with any of:
+  - a phase other than `plan`;
+  - an honoured repository image;
+  - a key outside the Project key pattern, or a duplicate key;
+  - a digest that is not 64 hex characters;
+  - whitespace in a URL;
+  - more than 8 trees.
+
+  N trees therefore only ever meet the default image, read-only.
+
+- **agent-runner.**
+  - When the manifest exists, it checks every listed directory before any agent runs; a missing one is fatal.
+  - It renders the plan prompt's trees section.
+  - After `ParsePlan`, a plan naming a repository outside the manifest is `report_invalid`, and the retry is told why.
+    The controller's `outsideProject` check stays.
+- **Prompt.** `PlanPrompt.Trees` is rendered under `{{with}}`, so one-repository prompts are byte-identical. It says:
+  - each repository is built separately, by its own agent, in its own image, and that agent sees only its own tree and
+    the whole plan;
+  - group the steps under each repository's URL;
+  - state each cross-repository contract (API paths, JSON shapes) once;
+  - name only the repositories that must change;
+  - give each repository its own test command.
+
+  `estimated_max_turns` and `estimated_token_budget` mean the largest single repository's build, so the schema does not
+  change.
+
+- **The plan's shape is asked for, not parsed.** `ParsePlan` does not require headings for each repository. The approver
+  reads the plan verbatim and can ask for a replan.
+- **Unchanged.** The snapshot format (it already lists every repository URL) and the plan digest.
+- **Plan comment.** When the plan names more than one repository, the header gains one line outside the verbatim block,
+  built from the validated frontmatter: "patchy opens one pull request in each of: owner/a, owner/b".
+
+### Build: one Job per repository
+
+- **The approved set.** `status.plan.repositories` intersected with the Project, in plan order. An approved repository
+  that has left the Project fails the Intent, as `errRepositoryGone` does today.
+- **Before any agent is spent,** every approved repository's intent branch is read:
+  - Only runs of the current build round count as the branch's own.
+  - A branch at a commit an earlier round pushed is foreign, for example a sibling left behind by a failed round. It
+    blocks with `BranchConflict`, naming the repository, rather than letting a build spend its grant and then fail with
+    `branch_exists`.
+  - Nothing is forced or deleted.
+- **Fan-out.**
+  - There is one build run per approved repository, `<intent>-bld-r<rev>-<key>-a<n>`.
+  - All of them are created in one pass. Each create is its own lease, so a crash in the middle is adopted on the next
+    pass.
+  - The run pool launches them FIFO as slots free. devthenet raises `maxConcurrentRuns` to 2.
+  - The cost ceiling is checked once before the fan-out. It stays advisory for builds, so a fan-out can pass it by up to
+    N-1 builds.
+- **Rounds by repository.** Build runs are grouped by (stage, round, repository). Attempts, `next()` and `counted()` are
+  per repository, and each build runs on its own R0 pin and accepted image.
+- **Each build's contract does not change.**
+  - `investigation.md` is the approved plan, byte-identical and re-hashed at launch, and `issue.md` stays empty.
+  - The build's repository comes from the controller-set `PATCHY_REPO`, which is already
+    `repoSlug(run.spec.repository.url)`, matched against the plan's `repositories`.
+  - With more than one repository, agent-runner requires exactly one match and renders
+    `BuildPrompt.ThisRepository/Siblings`: build only this repository's steps; the siblings are built by their own runs;
+    do not stub them.
+  - One-repository plans render byte-identically.
+- **`activeRun` keeps its shape and becomes sticky.** In `Building` it names one in-flight build and is rewritten only
+  when that run settles, so siblings never make status writes flip-flop.
+- **Partial failure.**
+  - _Attempts spent:_ a repository whose attempts are spent fails the whole Intent at once. The finalizer deletes the
+    sibling Jobs still in flight. Branches already pushed stay, and they have no PR (see below).
+  - _Blocks:_ an image block (`ImageRequired`) or a branch block names its repository and blocks the whole Intent.
+    Siblings already running finish and push while the Intent is `Blocked`.
+  - _Resume:_ only repositories whose latest build is not Complete get a new attempt. The block re-checks each blocked
+    repository's own pin and branch.
+
+### Pull requests and endings
+
+- **PRs open only once every approved repository's build is Complete.** A Failed intent therefore never leaves a PR
+  behind.
+  - The records are upserted by repository (the list key), one per pass, while the Intent stays `Building`.
+  - A block while opening a PR (a foreign PR, a branch that moved) names its repository; on resume patchy carries on
+    with the rest.
+- **Cross-links.**
+  - Once every PR is recorded, and before the status write that enters `InReview`, patchy posts one sibling comment on
+    each PR, marked `<!-- patchy:intent-siblings <intent> -->`. It lists every sibling PR by URL.
+  - A repeated pass adopts the bot-authored marker rather than posting again.
+  - No PR body is ever edited, and the GitHub seam gains nothing. The body gains only a footer with no references: one
+    of N pull requests, in owner/a and owner/b, and the intent completes when every one has merged. The plain-text
+    property (the only reference is the intent issue's) still holds.
+- **Endings.**
+  - `Merged` only when every PR has merged.
+  - When every PR has settled and at least one closed unmerged, the Intent is `Closed`. The issue is closed
+    `not_planned`, with a notice naming what merged (already on its default branch) and what did not.
+  - patchy never closes a sibling because another one closed.
+  - One-PR intents end exactly as they do today.
+
+### Revise and check-fix rounds
+
+- **Per PR repository, at most one round in flight per Intent.**
+  - `Revising` stays a phase of the whole Intent, and each round has exactly one repository, `run.spec.repository.url`.
+  - `rounds`, `revisions` and `checkFixes` stay per-intent counters, held against per-intent limits.
+  - A review on PR A revises repository A, `/patchy revise` on PR B revises B, and a failed named check on C's patchy
+    head starts a check-fix round for C.
+- **Every one-PR assumption becomes a lookup by the round's repository:**
+  - the round notice (its marker is unchanged, since round numbers never repeat);
+  - the command acknowledgement;
+  - `failedRevise`'s branch-deleted check;
+  - `reviseInput`;
+  - `retryReviseAttempt`;
+  - the revise `pushGate`.
+- **Everything derived from "the build" is per repository:**
+  - the revise run's `imageFrom`: its own repository's completed build-round R0, never a sibling's;
+  - the compare base;
+  - review cutoffs and quiet windows;
+  - `latestPushedRun`;
+  - the repeated-failure signature.
+- **Check observation moves onto each PR record:** `checksObservedHeadSHA` and `checksObservedProjectGeneration` on
+  `IntentPullRequest`. The Intent-level pair is read only as a fallback for a one-PR intent, and never written.
+- **Nothing is dropped by waiting.** A pending round lease that belongs to another PR's repository is never adopted;
+  that PR waits. Reviews keep arriving while they wait, and they are consumed by id, so serialising rounds delays them
+  and drops nothing.
+
+### Previews: one host, one component per repository
+
+- **Configuration is the operator's alone.**
+  - `repositories[].preview{imageRepository, port, readinessPath, path}`. `path` defaults to `/` and matches
+    `^/([a-z0-9-]+(/[a-z0-9-]+)*)?$`.
+  - Paths are unique across the Project, and at most 4 repositories are previewed. A repository with no runtime (a
+    library) leaves `preview` unset.
+  - `spec.preview` stays as the one-repository shorthand: `repositories[0]` at `/`. The schema refuses it beside a
+    per-repository preview, or with more than one repository.
+- **One derivation, two readers.** A pure `DesiredPreviewComponents(project, intent)` in `api/v1alpha1` is used both by
+  the preview-source reconciler (the writer) and by the preview-controller (the re-check), so the two cannot drift.
+  - There is one component per previewed repository, in Project order, named by its key.
+  - _Revision:_ the recorded PR head when the Intent has a PR in that repository, in any state. Otherwise it is the
+    commit recorded in `status.previewBases`.
+  - _No Preview yet_ until every component has a revision and at least one revision comes from a PR.
+  - _When a Preview exists:_ only in `InReview` or `Revising`, or `Blocked` from one of them, and only while at least
+    one PR is open.
+- **Unchanged repositories run main.**
+  - _Recording:_ the intent reconciler reads each previewed repository that has no PR at its default-branch head, and
+    records that head once per intent in `status.previewBases[]{repository, sha}`. This happens on the first review
+    pass, and only with the preview projection on. The record is never rewritten.
+  - _Image:_ the preview runs that commit's `sha-<40 hex>` image, which the app's trusted publisher pushed from main CI.
+  - _The app repository's contract:_ main CI never cancels a main build and publishes every main commit. The runtime
+    repository keeps main images: they are also tagged `main-<sha>`, which a higher-priority lifecycle rule keeps.
+  - _An image still being published_ is covered by the rollout timeout: the pull keeps retrying.
+- **Rendering.**
+  - _Per component:_ a Deployment and a Service named `preview-<preview>-<component>` (at most 58 characters). Their
+    selectors carry a new label, `patchy.bitwisemedia.uk/preview-component`, so no Service selects a sibling's pods.
+  - _One Ingress,_ `preview-<preview>`, with one host and one `Prefix` path per component, longest first.
+  - _Health checks:_ each Service carries its own `alb.ingress.kubernetes.io/healthcheck-path`, and the Ingress-level
+    annotation is the `/` component's.
+  - _Readiness:_ the Ingress is created only once every component is Ready.
+  - _Redeploy:_ any spec change still withdraws the host for the redeploy, but Deployments whose spec did not change are
+    not rolled.
+- **Teardown and sweep.**
+  - Cleanup lists every kind by the preview-uid label rather than getting one fixed name, and prunes the objects of
+    components no longer desired. Old `preview-<p>` objects are pruned the same way.
+  - The orphan sweep accepts both `preview-<p>` and `preview-<p>-<c>`.
+  - A retry deletes every component's Deployment.
+  - Status records each component's revision and image ID.
+- **Isolation is unchanged, and now load-bearing inside a slot.**
+  - The slot NetworkPolicy admits only the ALB subnets and DNS, so components cannot reach each other server-side. Apps
+    call a sibling from the browser, same-origin (`/api/...`), and the API serves under its prefix: the ALB does not
+    rewrite paths.
+  - Admission tightens: one container per pod; an Ingress has a single rule, `Prefix` paths in the path grammar, and
+    `preview-*` backends on port 80; a Service may carry only the health-check annotation.
+  - The slot quota grows to 5 Services and 8 pods; slot 0 keeps its placeholder Service.
+  - The isolation probe gains two forbidden targets: a sibling in the same slot and a pod in another slot.
+
+### Naming and the preview image prefix
+
+- **patchy has no rule about repository names.**
+  - URLs accept any owner and name.
+  - Object names use the Project name and the repository key (a DNS label of at most 16 characters, chosen by the
+    operator).
+  - The image leaf is chosen by the operator too.
+  - A long, mixed-case or punctuated repository name needs only a short key and a lowercase image leaf. Tests use a
+    repository named `Acme.Web_App`.
+- **The prefix is the operator's.**
+  - The chart's `preview.imageRepositoryPrefix` is the full `<registry>/<path>/`. Empty falls back to
+    `<imageRegistry>/patchy/previews/`, and that render is byte-identical to today's.
+  - One helper feeds both the preview-controller ConfigMap and the slot VAP.
+  - The render fails when the prefix lacks a trailing slash or a path segment. It also fails when the prefix and any
+    `agent.repositoryImages.registries` entry are prefixes of one another: a PR-built runtime image must never be
+    admissible as an agent sandbox, and the reverse.
+  - The CRD patterns relax to `<host>(/<segment>)+/<leaf>`. The prefix is enforced where it is configured: by the
+    preview-controller (`Settings.Validate` checks its shape, not a literal path) and by the VAP. The schema envtest's
+    app-envs rejection moves to those two layers and is not deleted. The leaf grammar does not change.
+- **Infrastructure.** terraform-devthenet gains a per-app map.
+  - _Key:_ an ECR- and IAM-safe slug.
+  - _Each entry:_ the exact GitHub name and the repository ID.
+  - _Trust:_ pinned to `repository_id`, `repository_owner_id`, the `main` ref and the publisher workflow's ref.
+  - _A rename_ means updating `github_repo` alone.
+  - _Existing resources:_ the patchy-target and preview-demo resources are untouched; the plan shows no change to them.
+
+### API changes
+
+All are additive or relaxing. `mise run codegen` regenerates both CRD copies and the patchy-config schema.
+
+- **Project.**
+  - `repositories[].preview` (optional).
+  - CEL rules: at most 4 previewed repositories; unique paths; `spec.preview` only with exactly one repository and no
+    per-repository preview.
+  - The `imageRepository` pattern relaxes to `^[a-z0-9][a-z0-9.:-]*(/[a-z0-9]+([._-][a-z0-9]+)*)+/[a-z0-9-]+$`.
+- **Preview.**
+  - `components` goes from at most 1 to at most 4, with `listType=map` keyed by `name` and a CEL rule for unique paths.
+  - `components[].path` (optional, default `/`).
+  - The same relaxed `imageRepository` pattern.
+  - `status.components` goes to at most 4, and each entry gains `revision`.
+  - `status.observedRevision` is kept, documented as the first component's revision.
+- **Intent status.**
+  - `previewBases[]{repository, sha}` (at most 8, keyed by repository).
+  - `pullRequests[]` gains `checksObservedHeadSHA` and `checksObservedProjectGeneration`. The Intent-level pair is
+    deprecated.
+  - `activeRun` is unchanged in shape.
+- **IntentRun spec.** `trees[]{name, url, repositoryRef}` (at most 7; CEL: plan runs only).
+- **Doc comments.** The ones saying "slice 1 builds in exactly one" and "slice 2 is single-repository" are rewritten.
+
+### Security invariants, re-checked
+
+- **The approver sees the plan verbatim.** There is one plan: one report, one digest, one code block. The only addition
+  is a header line outside the block, listing the repositories from the validated frontmatter.
+- **Builds get only the approved plan.** Every build's `investigation.md` is the approved plan, re-hashed at launch, and
+  `issue.md` stays empty. No new input reaches a build:
+  - which repository a build is in comes from the controller's `PATCHY_REPO`;
+  - the sibling list comes from the approved plan's own frontmatter.
+- **Per-repository accepted images.**
+  - Each build runs on its own repository's R0 pin and accepted image, under the existing `requireRepositoryImage` rule.
+  - A revise run's `imageFrom` is its own repository's build-round R0, never a sibling's.
+  - Trees are refused beside a repository image.
+- **Changeset deny-lists** apply per run, against that run's base, unchanged.
+- **Branches.** Each repository's branch is created once and then only fast-forwarded. A branch that an earlier round
+  left blocks before any build is spent. Nothing is forced or deleted.
+- **Scoped tokens.** Every write (push, PR, sibling comment, notice) uses a token scoped to its one repository.
+- **One writer per field.**
+  - Intent status, `previewBases` included: the intent reconciler.
+  - Preview spec: the preview-source reconciler.
+  - Preview status: the preview-controller.
+  - IntentRun status: the run reconciler.
+- **Preview isolation.**
+  - The slot NetworkPolicy, node isolation and the IP-restricted edge are unchanged.
+  - Admission tightens.
+  - The isolation probe adds sibling targets.
+  - Images stay `sha-<40 hex>` tags under the operator's prefix, which can never overlap the agent-image allowlist.
+
+### Backward compatibility and rollout
+
+- **The flag.** `--intent-multi-repo` (chart `intentController.config.multiRepo`, default `false`) gates the
+  one-repository guard. Off, a Project with several repositories stays `UnsupportedRepositories`.
+- **One-repository Projects take the same paths as today:**
+  - no trees;
+  - byte-identical Jobs, prompts and templates;
+  - every by-repository lookup resolves to the only repository;
+  - `spec.preview` keeps working.
+- **Preview object names change** to `preview-<p>-<c>`. Old names are pruned by label, so a live preview re-renders
+  across the upgrade.
+- **Waves.** Two waves, each released and gated with a fresh Finding:
+  - _A:_ the API, the image prefix and the multi-component preview-controller.
+  - _B:_ the templates, jobs and agent-runner, the intent-controller, and e2e.
+
+  Then one values change turns the flag on, raises `maxConcurrentRuns` to 2, sets the prefix explicitly (to the same
+  value) and adds the demo Project.
+
+- **Rollback.** Either turn the flag off (multi-repo Projects go not Ready and their intents wait), or roll back the
+  Helm revisions. The CRD changes only relax.
+
+### Demo apps
+
+Two benign Go repositories, named freely: `devthenet-labs/marigold-web` and `devthenet-labs/marigold-api`.
+
+| Repository   | Project key | Serves                                                              | Preview path |
+| ------------ | ----------- | ------------------------------------------------------------------- | ------------ |
+| marigold-web | `web`       | a static page whose script calls `/api/...` same-origin; `/healthz` | `/`          |
+| marigold-api | `api`       | JSON under `/api/...`; `/healthz`                                   | `/api`       |
+
+Both serve `/healthz`, so the health check works even if Auto Mode ignores per-Service annotations. Each repository has:
+
+- its own `.patchy/agent.yaml` toolchain image under `patchy/app-envs/<slug>`;
+- an uncredentialed CI job named `test`;
+- a trusted `workflow_run` publisher, copied from patchy-preview-demo with its constants moved to repository variables.
+
+### Decisions (slice 3)
+
+- **S1. Planning.** One plan Job reads every tree read-only on the default image. The primary tree is the cwd, and the
+  others sit under `/workspace/repos/<key>`. Per-repository plans would break the one-plan, one-digest approval.
+- **S2. Builds.** One build per approved repository. Each is handed the whole approved plan byte-identical, and learns
+  which repository it is in from `PATCHY_REPO`.
+- **S3. Plan shape.** The plan's shape is asked for in the prompt, not parsed.
+- **S4. Building failures.** Attempts exhausted in any repository fail the Intent. Blocks name their repository. PRs
+  open only after every build has pushed. A stale branch from an earlier round blocks before any spend.
+- **S5. Cross-links.** By a marker comment, never by editing the PR body.
+- **S6. Endings.** `Merged` when every PR has merged. A mixed end is `Closed`, with a notice.
+- **S7. Rounds.** Per PR repository, serialised per Intent. The sibling-wide fan-out is deferred.
+- **S8. Preview configuration.** Per repository, with the legacy shorthand kept. One host and path routing. Unchanged
+  repositories run main as of review start, recorded once.
+- **S9. Prefix and naming.** The prefix is configurable, enforced by the controller and the VAP, and must be disjoint
+  from the agent allowlist. A per-app terraform map is keyed by slug, separate from the GitHub name.
+- **S10. Opt-in.** Multi-repo is opt-in behind `--intent-multi-repo` until the live demo passes.
+
+### Risks (slice 3)
+
+- **Unverified Auto Mode behaviour.** Two things are unchecked: whether Auto Mode keeps Ingress path order or sorts it,
+  and whether it honours per-Service health-check annotations. Longest-first ordering and a shared `/healthz` make the
+  demo safe either way. Verify both with `aws elbv2 describe-rules`.
+- **Missing main images.** A main image can be missing: a cancelled or skipped publish, or one past its retention. The
+  affected component then fails after the rollout retries. A publish-status check is a follow-up.
+- **Stale branches after a partial failure.** These block a revival until a human deletes them.
+- **Host-wide redeploys.** Every component change takes the whole preview host down for the redeploy (about 160 s
+  today).
+- **Plan pod storage.** A planner pod holds up to 8 trees under one ephemeral-storage limit.
+- **Serialised rounds.** They add latency when several PRs are under review at once.
+
+### Adjustments after critique (2026-10-03, decided by the orchestrator while the owner slept)
+
+The section above was critiqued adversarially; these decisions supersede it where they conflict:
+
+- **The multi-repo flag gates execution, not just discovery.** With `--intent-multi-repo` off, the intent reconciler
+  blocks any Intent of a multi-repository Project (`UnsupportedRepositories`) instead of planning, building or revising
+  it, so turning the flag off is a real rollback.
+- **Single-component previews keep their exact current object names** (`preview-<p>`); only additional components get
+  `preview-<p>-<c>`. A rollback of the preview-controller can therefore still clean up every single-repository preview,
+  and existing previews do not re-render.
+- **No round deadlock:** before starting a new review or check-fix round, the reconciler adopts and finishes whichever
+  round is already in flight for the Intent, whatever repository it belongs to.
+- **Every tree is a first-class input:** run launch waits for and stall-checks every tree Repository, and the resolved
+  SHA and artifact digest of each tree are recorded on the run's status at launch, so the run record keeps what the
+  planner saw after the Repositories are deleted.
+- **Cosmetic writes never gate a phase:** the sibling cross-link comment is posted after the InReview transition, best
+  effort with retry and a condition on failure.
+- **The configurable preview image prefix moves to "Deployable by others"**, together with an enforced rule that the
+  preview and agent-image prefixes are disjoint. Slice 3 keeps `<registry>/patchy/previews/<leaf>`; the leaf is any
+  operator-chosen slug, so app repositories are freely named.
+- **Terraform guards use variable validation, not `check` blocks** (which only warn), and per-app OIDC trust uses the
+  org's immutable subject form (`repo:<org>@<org_id>/<repo>@<repo_id>:ref:refs/heads/main`).
+- **Live checks after the preview-controller wave include a real single-repository preview**, not only the fresh-Finding
+  gate.
+- Also folded in (found in the live CI-fix demo): fingerprint CI-job logs with timestamps stripped so the repeated-
+  failure stop works; label check-fix rounds as CI-fix rounds in PR comments and the summary; mark a preview Ready only
+  once the ALB target is healthy (slot pod readiness gates).
+
 ## Multi-project model (D3)
 
 - **Intent repos.** One private intent repo for the org, `devthenet-labs/intents`, with one issue form per project that

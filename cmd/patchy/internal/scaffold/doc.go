@@ -30,7 +30,11 @@
 // source-controller reads the image from the tree.
 //
 // Plan renders without touching the disk, Write checks every path before
-// writing any, and NextSteps is the guidance printed afterwards. Sanitize
+// writing any, and NextSteps is the guidance printed afterwards.
+// KeepToolchain takes an existing agent toolchain (.patchy/agent.yaml and
+// .patchy/Dockerfile) out of a forced write: once written it is the
+// repository's own, its tag bumped with every change, so rendering it again
+// would roll it back to an older published image. Sanitize
 // derives the image name from a repository name, which GitHub lets carry
 // characters an image leaf cannot.
 package scaffold

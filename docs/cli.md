@@ -431,9 +431,13 @@ digest its tag names in the registry now; `--agent-base` overrides it (a digest-
 a development build, which has no agent base of its own, needs it.
 
 An existing file is never overwritten without `--force`, and a symbolic link never is: every path is checked before any
-is written. `--existing` writes only `.patchy/` and the CI publishers, builds the runtime image in a workflow of its own
-(`runtime-image.yml`, named `runtime image`) so the application's CI is untouched, and ends its next steps with what the
-application must be adapted to.
+is written. Nor does `--force` rewrite the agent toolchain: an existing `.patchy/agent.yaml` or `.patchy/Dockerfile` is
+the repository's own once written, its tag bumped with every toolchain change, so a re-run that picks up newer
+publishers keeps both as they are rather than rolling the declaration back to `toolchain-v1`. A kept
+`.patchy/agent.yaml` must still declare a `toolchain-v<N>` tag of the agent repository the options publish to, or
+nothing is written; remove both files to generate them again. `--existing` writes only `.patchy/` and the CI publishers,
+builds the runtime image in a workflow of its own (`runtime-image.yml`, named `runtime image`) so the application's CI
+is untouched, and ends its next steps with what the application must be adapted to.
 
 Published tags are immutable. To change the agent toolchain, edit `.patchy/Dockerfile` (or the dependencies) and bump
 the tag in `.patchy/agent.yaml` to `toolchain-v2`, `toolchain-v3` and so on, in the same commit: the agent publisher

@@ -57,6 +57,32 @@ func TestNextStepsSetsEveryVariableInOrder(t *testing.T) {
 	}
 }
 
+// TestNextStepsNameTheDeclaredTag: the agent image is published as the tag
+// .patchy/agent.yaml declares, the first one for a new declaration and the
+// kept one when a forced scaffold kept the repository's own.
+func TestNextStepsNameTheDeclaredTag(t *testing.T) {
+	for _, tc := range []struct {
+		present Present
+		tag     string
+	}{
+		{Present{}, ToolchainTag},
+		{Present{Toolchain: "toolchain-v3"}, "toolchain-v3"},
+	} {
+		steps := NextSteps(testOptions(false), tc.present)
+		for _, want := range []string{
+			tc.tag + ", the tag .patchy/agent.yaml declares",
+			"--repository-name patchy/app-envs/hello-web --image-ids imageTag=" + tc.tag + "\n",
+		} {
+			if !strings.Contains(steps, want) {
+				t.Errorf("next steps for %+v lack %q:\n%s", tc.present, want, steps)
+			}
+		}
+		if tc.tag != ToolchainTag && strings.Contains(steps, ToolchainTag+",") {
+			t.Errorf("next steps for a kept %s still name %s:\n%s", tc.tag, ToolchainTag, steps)
+		}
+	}
+}
+
 // TestNextStepsAdaptExisting: --existing ends with what the application
 // must be adapted to, which depends on what it already has.
 func TestNextStepsAdaptExisting(t *testing.T) {

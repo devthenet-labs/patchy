@@ -8,13 +8,17 @@ import (
 	"strings"
 )
 
-// Present is what an existing application already has that the guidance
-// for Options.Existing depends on.
+// Present is what the repository already has that the guidance depends
+// on.
 type Present struct {
 	// Dockerfile is a runtime Dockerfile at the repository root.
 	Dockerfile bool
 	// GoMod is a go.mod at the repository root.
 	GoMod bool
+	// Toolchain is the toolchain-v<N> tag the repository's own
+	// .patchy/agent.yaml declares, kept by a forced scaffold
+	// (KeepToolchain); empty when the scaffold writes ToolchainTag.
+	Toolchain string
 }
 
 // NextSteps is what the repository owner does after the files are written:
@@ -38,6 +42,10 @@ func NextSteps(o Options, present Present) string {
 		w("       gh variable set %s --repo %s --body %s", v.Name, repo, value)
 	}
 	gates := map[string]Variable{}
+	tag := ToolchainTag
+	if present.Toolchain != "" {
+		tag = present.Toolchain
+	}
 
 	w("Next steps for %s (image name %s):", repo, o.ImageName)
 	w("")
@@ -57,11 +65,11 @@ func NextSteps(o Options, present Present) string {
 	}
 	set(gates[AgentPublishEnabled])
 	w("  3. Commit and push to %s. The push builds the agent image and publishes it as", o.Branch)
-	w("     %s, the tag .patchy/agent.yaml declares. If it was pushed before step 2, run", ToolchainTag)
+	w("     %s, the tag .patchy/agent.yaml declares. If it was pushed before step 2, run", tag)
 	w(`       gh workflow run "agent image" --repo %s`, repo)
 	w("     and confirm the tag exists before creating the Project:")
 	w("       aws ecr describe-images --region %s --repository-name %s --image-ids imageTag=%s",
-		o.Region(), o.AgentRepository(), ToolchainTag)
+		o.Region(), o.AgentRepository(), tag)
 	w("  4. When the Project previews this repository, publish its runtime images:")
 	set(gates[PreviewPublishEnabled])
 	w("     The Project's preview fields for it:")

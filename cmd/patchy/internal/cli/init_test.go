@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -165,6 +166,130 @@ func TestInitAppWritesAndRefusesToOverwrite(t *testing.T) {
 	}
 	if mine, _ := os.ReadFile(filepath.Join(dir, "main.go")); string(mine) == "package main // mine\n" {
 		t.Error("--force left main.go alone")
+	}
+}
+
+// bumpedToolchain is a scaffold whose owner has since moved its agent
+// toolchain on to toolchain-v3 with a recipe of their own, beside a
+// publisher guard that a newer CLI would rewrite.
+type bumpedToolchain struct {
+	dir, agentYAML, dockerfile, guard string
+	flags                             *initAppFlags
+}
+
+const (
+	// bumpedDeclaration is bumpedToolchain's .patchy/agent.yaml.
+	bumpedDeclaration = "image: " + testRegistryHost + "/patchy/app-envs/shop:toolchain-v3\n"
+	// bumpedRecipe is bumpedToolchain's .patchy/Dockerfile.
+	bumpedRecipe = "FROM mine\n"
+	// staleGuard is bumpedToolchain's guard.cjs.
+	staleGuard = "// stale\n"
+)
+
+// newBumpedToolchain scaffolds an existing application, then bumps its
+// toolchain and leaves its guard stale.
+func newBumpedToolchain(t *testing.T) bumpedToolchain {
+	t.Helper()
+	dir := t.TempDir()
+	b := bumpedToolchain{
+		dir:        dir,
+		agentYAML:  filepath.Join(dir, ".patchy", "agent.yaml"),
+		dockerfile: filepath.Join(dir, ".patchy", "Dockerfile"),
+		guard:      filepath.Join(dir, ".github", "actions", "publish", "guard.cjs"),
+		flags:      &initAppFlags{repo: "acme/shop", registry: testRegistryHost, existing: true},
+	}
+	if _, errOut, err := initApp(t, b.flags, dir, releaseDeps()); err != nil {
+		t.Fatalf("init app: %v\n%s", err, errOut)
+	}
+	for p, data := range map[string]string{
+		b.agentYAML: bumpedDeclaration, b.dockerfile: bumpedRecipe, b.guard: staleGuard,
+	} {
+		if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return b
+}
+
+// readString is the content of p, "" when it cannot be read.
+func readString(p string) string {
+	data, _ := os.ReadFile(p)
+	return string(data)
+}
+
+// TestInitAppForceKeepsTheToolchain: re-running init app --force to pick up
+// newer publishers overwrites them, but never rolls the repository's own
+// agent toolchain back to toolchain-v1, and says so.
+func TestInitAppForceKeepsTheToolchain(t *testing.T) {
+	b := newBumpedToolchain(t)
+	b.flags.force = true
+	out, errOut, err := initApp(t, b.flags, b.dir, releaseDeps())
+	if err != nil {
+		t.Fatalf("init app --force: %v\n%s", err, errOut)
+	}
+	if readString(b.agentYAML) != bumpedDeclaration || readString(b.dockerfile) != bumpedRecipe {
+		t.Errorf("--force rewrote the toolchain:\n%s\n%s", readString(b.agentYAML), readString(b.dockerfile))
+	}
+	if readString(b.guard) == staleGuard {
+		t.Error("--force left the publishers' guard alone")
+	}
+	listed := strings.Fields(out)
+	if slices.Contains(listed, ".patchy/agent.yaml") || slices.Contains(listed, ".patchy/Dockerfile") ||
+		!slices.Contains(listed, ".github/actions/publish/guard.cjs") {
+		t.Errorf("stdout lists %v; want the publishers and not the kept toolchain", listed)
+	}
+	for _, want := range []string{
+		"kept .patchy/agent.yaml and .patchy/Dockerfile as they are: --force never rewrites the agent toolchain, " +
+			"and .patchy/agent.yaml still declares toolchain-v3",
+		"toolchain-v3, the tag .patchy/agent.yaml declares",
+		"--image-ids imageTag=toolchain-v3\n",
+	} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, errOut)
+		}
+	}
+	if strings.Contains(errOut, "toolchain-v1") {
+		t.Errorf("stderr still names toolchain-v1:\n%s", errOut)
+	}
+}
+
+// TestInitAppForceRefusesAMovedToolchain: with options naming another
+// agent repository, the kept declaration would no longer publish, so a
+// forced scaffold writes nothing.
+func TestInitAppForceRefusesAMovedToolchain(t *testing.T) {
+	b := newBumpedToolchain(t)
+	b.flags.force, b.flags.imageName = true, "shop-v2"
+	out, _, err := initApp(t, b.flags, b.dir, releaseDeps())
+	if err == nil || out != "" || !strings.Contains(err.Error(), "declares "+testRegistryHost+
+		"/patchy/app-envs/shop:toolchain-v3, not a toolchain-v<N> tag of "+testRegistryHost+"/patchy/app-envs/shop-v2") {
+		t.Errorf("init app --force --image-name shop-v2 = %v, stdout %q; want a refusal", err, out)
+	}
+	if readString(b.guard) != staleGuard {
+		t.Error("a refused --force still wrote the publishers")
+	}
+}
+
+// TestInitAppToolchainIsGeneratedOnlyWhenAbsent: without --force the
+// refusal says the toolchain would be kept, and removing it is how it is
+// generated again.
+func TestInitAppToolchainIsGeneratedOnlyWhenAbsent(t *testing.T) {
+	b := newBumpedToolchain(t)
+	_, _, err := initApp(t, b.flags, b.dir, releaseDeps())
+	if err == nil || !strings.Contains(err.Error(),
+		"; --force keeps .patchy/agent.yaml and .patchy/Dockerfile as they are") {
+		t.Errorf("init app over a scaffold = %v; want a refusal saying --force keeps the toolchain", err)
+	}
+	for _, p := range []string{b.agentYAML, b.dockerfile} {
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b.flags.force = true
+	if _, errOut, err := initApp(t, b.flags, b.dir, releaseDeps()); err != nil {
+		t.Fatalf("init app --force without a toolchain: %v\n%s", err, errOut)
+	}
+	if got := readString(b.agentYAML); !strings.Contains(got, "/patchy/app-envs/shop:toolchain-v1\n") {
+		t.Errorf("a removed toolchain was not generated again:\n%s", got)
 	}
 }
 

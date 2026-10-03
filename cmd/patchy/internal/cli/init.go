@@ -103,6 +103,11 @@ func newInitAppCmd(opts *Options) *cobra.Command {
 			"Nothing else is fetched: no GitHub call is made.\n\n" +
 			"An existing file is never overwritten without --force, and a symbolic link or\n" +
 			"other non-regular file never is: every path is checked before any is written.\n" +
+			"Nor does --force rewrite the agent toolchain: an existing .patchy/agent.yaml or\n" +
+			".patchy/Dockerfile is the repository's own, bumped with every toolchain change,\n" +
+			"so it is kept as it is, and a kept .patchy/agent.yaml must declare a\n" +
+			"toolchain-v<N> tag of the agent repository the options publish to. Remove both\n" +
+			"to generate them again.\n" +
 			"The written paths are printed on stdout, the next steps on stderr.",
 		Example: "  patchy init app --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com\n" +
 			"  patchy init app hello-web --repo acme/Hello.Web --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com\n" +
@@ -134,7 +139,8 @@ func newInitAppCmd(opts *Options) *cobra.Command {
 		"the repository's default branch (default: the one origin's HEAD names, else main)")
 	fl.BoolVar(&f.existing, "existing", false,
 		"write only .patchy/ and the CI publishers, for an application that already has its source")
-	fl.BoolVar(&f.force, "force", false, "overwrite files that already exist")
+	fl.BoolVar(&f.force, "force", false,
+		"overwrite files that already exist, but keep an existing .patchy/agent.yaml and .patchy/Dockerfile")
 	_ = cmd.MarkFlagRequired("registry")
 	_ = cmd.RegisterFlagCompletionFunc("lang", fixedCompletion(scaffold.Langs()))
 	for _, name := range []string{"repo", "image-name", "registry", "agent-prefix", "agent-base", "default-branch"} {
@@ -181,6 +187,14 @@ func runInitApp(ctx context.Context, opts *Options, f *initAppFlags, dir string,
 	if err != nil {
 		return errUsage(err)
 	}
+	// The agent toolchain is the repository's own once written: --force
+	// overwrites the rest, never it.
+	var kept scaffold.Kept
+	if f.force {
+		if files, kept, err = scaffold.KeepToolchain(dir, files, o); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -196,13 +210,36 @@ func runInitApp(ctx context.Context, opts *Options, f *initAppFlags, dir string,
 			return err
 		}
 	}
-	notef(opts.ErrOut, "\npatchy: wrote %d files for %s into %s (agent base %s).\n\n", len(files), o.Repo, dir,
+	notef(opts.ErrOut, "\npatchy: wrote %d files for %s into %s (agent base %s).\n", len(files), o.Repo, dir,
 		o.Images.AgentBase)
-	notef(opts.ErrOut, "%s", scaffold.NextSteps(o, scaffold.Present{
+	if len(kept.Paths) > 0 {
+		notef(opts.ErrOut, "patchy: kept %s as %s: --force never rewrites the agent toolchain%s. Remove both "+
+			"to generate them again.\n", strings.Join(kept.Paths, " and "), keptAs(len(kept.Paths)),
+			keptDeclares(kept.Tag))
+	}
+	notef(opts.ErrOut, "\n%s", scaffold.NextSteps(o, scaffold.Present{
 		Dockerfile: fileExists(filepath.Join(dir, "Dockerfile")),
 		GoMod:      fileExists(filepath.Join(dir, "go.mod")),
+		Toolchain:  kept.Tag,
 	}))
 	return nil
+}
+
+// keptAs is "it is" or "they are", for n kept files.
+func keptAs(n int) string {
+	if n == 1 {
+		return "it is"
+	}
+	return "they are"
+}
+
+// keptDeclares names the tag a kept .patchy/agent.yaml declares, when one
+// was kept.
+func keptDeclares(tag string) string {
+	if tag == "" {
+		return ""
+	}
+	return ", and .patchy/agent.yaml still declares " + tag
 }
 
 // initAppOptions resolves the flags into scaffold options, reading the
@@ -280,8 +317,8 @@ func resolveAgentBase(ctx context.Context, reg imagecheck.Registry, cliVersion, 
 }
 
 // conflictHint explains a refusal to overwrite: --force for files that may
-// be replaced, and --existing when what is in the way is the application's
-// own source.
+// be replaced, --existing when what is in the way is the application's own
+// source, and that --force keeps the agent toolchain when it is in the way.
 func conflictHint(c *scaffold.ConflictError, f *initAppFlags) error {
 	hint := "nothing was written"
 	if len(c.Paths) > 0 {
@@ -290,6 +327,15 @@ func conflictHint(c *scaffold.ConflictError, f *initAppFlags) error {
 			return !strings.HasPrefix(p, ".patchy/") && !strings.HasPrefix(p, ".github/")
 		}) {
 			hint += ", or --existing to leave the application's own files alone"
+		}
+		var toolchain []string
+		for _, p := range scaffold.ToolchainPaths {
+			if slices.Contains(c.Paths, p) {
+				toolchain = append(toolchain, p)
+			}
+		}
+		if len(toolchain) > 0 {
+			hint += "; --force keeps " + strings.Join(toolchain, " and ") + " as " + keptAs(len(toolchain))
 		}
 	}
 	return fmt.Errorf("%w; %s", c, hint)

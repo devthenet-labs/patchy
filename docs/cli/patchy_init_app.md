@@ -45,6 +45,11 @@ Nothing else is fetched: no GitHub call is made.
 
 An existing file is never overwritten without --force, and a symbolic link or
 other non-regular file never is: every path is checked before any is written.
+Nor does --force rewrite the agent toolchain: an existing .patchy/agent.yaml or
+.patchy/Dockerfile is the repository's own, bumped with every toolchain change,
+so it is kept as it is, and a kept .patchy/agent.yaml must declare a
+toolchain-v<N> tag of the agent repository the options publish to. Remove both
+to generate them again.
 The written paths are printed on stdout, the next steps on stderr.
 
 ```
@@ -66,7 +71,7 @@ patchy init app [dir] [flags]
       --agent-prefix string     registry path the agent image sits under, as the operator's --repository-image-registries allows (default "patchy/app-envs")
       --default-branch string   the repository's default branch (default: the one origin's HEAD names, else main)
       --existing                write only .patchy/ and the CI publishers, for an application that already has its source
-      --force                   overwrite files that already exist
+      --force                   overwrite files that already exist, but keep an existing .patchy/agent.yaml and .patchy/Dockerfile
   -h, --help                    help for app
       --image-name string       image name both registry repositories end in (default: the repository name made image-safe)
       --lang string             application language: go (default "go")

@@ -18,10 +18,13 @@ import (
 // before attempting delivery, so a failing projection cannot strand the work.
 // Each round's notice goes on the pull request of the round's own repository
 // (finishPRRound); round numbers never repeat across repositories, so one
-// cursor covers every pull request.
+// cursor covers every pull request. The current round is never delivered
+// while it is in flight, whatever activeRun says: a Revising intent (or one
+// Blocked from Revising, which block leaves without an activeRun) posts its
+// round's notice when the round ends.
 func (p *pass) syncPRRoundNotices(ctx context.Context) (bool, error) {
 	upto := p.in.Status.Rounds
-	if p.in.Status.ActiveRun != nil && !terminal(p.in.Status.Phase) {
+	if p.in.Status.ActiveRun != nil && !terminal(p.in.Status.Phase) || p.roundInFlight() {
 		upto-- // the current round can still retry; do not report an attempt
 	}
 	next := p.in.Status.RoundNoticesThrough + 1

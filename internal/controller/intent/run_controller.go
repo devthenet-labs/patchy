@@ -781,9 +781,7 @@ func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (c
 // qualifies; all other missing Jobs retain their normal failure outcome.
 func (r *RunReconciler) settleMissingJob(ctx context.Context, run *v1alpha1.IntentRun) error {
 	if pushHeld(run) {
-		return r.settle(ctx, run, result{outcome: OutcomeHoldExpired, keep: true,
-			detail: "the build finished while its intent was suspended, and its Job expired before the " +
-				"suspension was lifted, taking the unpushed changeset with it; the attempt does not count"})
+		return r.settle(ctx, run, result{outcome: OutcomeHoldExpired, keep: true, detail: holdExpiredDetail(run)})
 	}
 	if run.Spec.Stage == v1alpha1.IntentStageRevise && run.Spec.Trigger == v1alpha1.IntentRunTriggerReview {
 		empty, err := r.legacyEmptyReviseFeedback(ctx, run)
@@ -798,6 +796,21 @@ func (r *RunReconciler) settleMissingJob(ctx context.Context, run *v1alpha1.Inte
 	}
 	return r.settle(ctx, run, result{outcome: OutcomeAborted,
 		detail: "agent job vanished before reporting"})
+}
+
+// holdExpiredDetail says why a held run's changeset was lost: its Job
+// expired (--job-ttl) while the hold lasted, whichever hold it was.
+func holdExpiredDetail(run *v1alpha1.IntentRun) string {
+	why := "its intent was suspended, and its Job expired before the suspension was lifted"
+	if c := meta.FindStatusCondition(run.Status.Conditions, v1alpha1.ConditionPushHeld); c != nil {
+		switch c.Reason {
+		case ReasonMultiRepositoryOff:
+			why = "intent-controller ran without --intent-multi-repo, and its Job expired before the flag was on again"
+		case ReasonIntentBlocked:
+			why = "its intent was blocked, and its Job expired before the block lifted"
+		}
+	}
+	return "the build finished while " + why + ", taking the unpushed changeset with it; the attempt does not count"
 }
 
 // heldOr is the result of a collect that ended with err: a build held for a
@@ -821,6 +834,17 @@ var errHeld = errors.New("the intent is suspended; its push waits")
 // flag is on again.
 var errMultiRepoOff = fmt.Errorf("%w: multi-repository intents are off", errHeld)
 
+// errRoundBlocked: a revise round's Intent is Blocked from Revising while
+// the round is still in flight (turning --intent-multi-repo off blocks a
+// Revising intent where it stands). The round has not ended: like a
+// suspension, its finished push waits, not made, until the block lifts and
+// the Intent is Revising again, and is never mistaken for an ended intent.
+var errRoundBlocked = fmt.Errorf("%w: the intent is blocked mid-round", errHeld)
+
+// ReasonIntentBlocked is the PushHeld reason of a revise round whose Intent
+// is Blocked from Revising (errRoundBlocked).
+const ReasonIntentBlocked = "IntentBlocked"
+
 // errIntentEnded: the run's Intent, read uncached, is gone, is another
 // Intent under its name, is being deleted, or has ended (a cancel, a human
 // close). Nothing more of the build reaches GitHub.
@@ -837,9 +861,10 @@ var errPullRequestEnded = fmt.Errorf("%w: the round's pull request was merged or
 // a suspension written a moment ago. It is errIntentEnded when the Intent no
 // longer wants the build, errHeld while it is suspended (errMultiRepoOff, an
 // errHeld, while its Project is one this controller runs no intent of), and
-// nil to push. A revise round pushes only to the pull request of its own
-// repository, read live, while it is open: one merged or closed beside open
-// siblings is errPullRequestEnded.
+// nil to push. A revise round pushes only while its Intent is Revising (one
+// Blocked from Revising holds it, errRoundBlocked, until it resumes), and
+// only to the pull request of its own repository, read live, while it is
+// open: one merged or closed beside open siblings is errPullRequestEnded.
 func (r *RunReconciler) pushGate(ctx context.Context, run *v1alpha1.IntentRun) error {
 	var in v1alpha1.Intent
 	err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name}, &in)
@@ -859,6 +884,9 @@ func (r *RunReconciler) pushGate(ctx context.Context, run *v1alpha1.IntentRun) e
 		return errMultiRepoOff
 	}
 	if run.Spec.Stage == v1alpha1.IntentStageRevise {
+		if in.Status.Phase == v1alpha1.IntentBlocked && v1alpha1.IntentBlockedFrom(&in) == v1alpha1.IntentRevising {
+			return errRoundBlocked
+		}
 		pr := recordedPullRequest(&in, run.Spec.Repository.URL)
 		if in.Status.Phase != v1alpha1.IntentRevising || pr == nil {
 			return errIntentEnded
@@ -913,16 +941,20 @@ func (r *RunReconciler) endedBeforePush(ctx context.Context, run *v1alpha1.Inten
 // suspension is lifted; the run stays Running. A suspension that outlasts the
 // Job's TTL loses the Job, and with it the unpushed changeset: the run then
 // ends hold_expired, which does not count as an attempt. why is the gate's
-// errHeld: a suspension, or errMultiRepoOff.
+// errHeld: a suspension, errMultiRepoOff, or errRoundBlocked.
 func (r *RunReconciler) hold(ctx context.Context, run *v1alpha1.IntentRun, res *result, why error) error {
 	if pushHeld(run) {
 		return errHeld
 	}
 	reason, msg := "IntentSuspended", "the build finished while its intent is suspended; "+
 		"its push waits for the suspension to be lifted"
-	if errors.Is(why, errMultiRepoOff) {
+	switch {
+	case errors.Is(why, errMultiRepoOff):
 		reason, msg = ReasonMultiRepositoryOff, "the build finished while its project lists more than one "+
 			"repository and intent-controller runs without --intent-multi-repo; its push waits for the flag"
+	case errors.Is(why, errRoundBlocked):
+		reason, msg = ReasonIntentBlocked, "the round finished while its intent is blocked; its push waits for "+
+			"the block to lift"
 	}
 	if err := r.updateRun(ctx, run, func(cur *v1alpha1.IntentRun) {
 		meta.SetStatusCondition(&cur.Status.Conditions, metav1.Condition{

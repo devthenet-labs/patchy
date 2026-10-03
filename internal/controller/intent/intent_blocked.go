@@ -117,7 +117,11 @@ func (p *pass) fail(ctx context.Context) error {
 // that failed otherwise (or never launched) is launched by the resumed phase,
 // which checks its branch and the spend first. When no attempt is left to
 // launch it resumes all the same, and the resumed phase fails the Intent
-// (Blocked has no edge to Failed). A suspended Project launches nothing, so
+// (Blocked has no edge to Failed). A revise round resumes with its unfinished
+// run active again (block clears activeRun), so the resumed phase never takes
+// the round for settled and posts its notice before it ends; a run whose
+// push was held meanwhile (errRoundBlocked) pushes once the Intent is
+// Revising. A suspended Project launches nothing, so
 // its blocked intents wait for it to resume, and so does an Intent of a
 // Project this controller runs no intent of (UnsupportedRepositories).
 func (p *pass) blocked(ctx context.Context) (bool, error) {
@@ -154,6 +158,8 @@ func (p *pass) blocked(ctx context.Context) (bool, error) {
 		if active, err = p.resumeBuilds(ctx); err != nil {
 			return false, err
 		}
+	case from == v1alpha1.IntentRevising:
+		active = p.unfinishedRound()
 	}
 	if from == "" {
 		from = v1alpha1.IntentPending
@@ -170,6 +176,29 @@ func (p *pass) blocked(ctx context.Context) (bool, error) {
 			cur.Status.ActiveRun = &v1alpha1.ObjectReference{Name: active.Name, UID: active.UID}
 		}
 	})
+}
+
+// unfinishedRound is the current revise round's latest run while it has not
+// settled (Complete or Failed), else nil: the run a Revising intent follows.
+func (p *pass) unfinishedRound() *v1alpha1.IntentRun {
+	latest := p.round(v1alpha1.IntentStageRevise, p.in.Status.Rounds, anyRepository).latest()
+	if latest == nil || latest.Status.Phase == v1alpha1.RunComplete || latest.Status.Phase == v1alpha1.RunFailed {
+		return nil
+	}
+	return latest
+}
+
+// roundInFlight reports that the current revise round has not ended: the
+// Intent is Revising, or Blocked from Revising (the round resumes with it).
+// Its notice is the round's own end to post, never a settled round's.
+func (p *pass) roundInFlight() bool {
+	switch p.in.Status.Phase {
+	case v1alpha1.IntentRevising:
+		return true
+	case v1alpha1.IntentBlocked:
+		return v1alpha1.IntentBlockedFrom(p.in) == v1alpha1.IntentRevising
+	}
+	return false
 }
 
 // resumePlan launches the plan round's next attempt for a resume, unless its

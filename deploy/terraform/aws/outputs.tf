@@ -27,9 +27,10 @@ locals {
     }],
     [for previews in(local.previews_enabled ? [var.previews] : []) : {
       preview = {
-        imageRegistry  = local.registry
-        dnsCIDR        = local.preview_dns_cidr
-        albSubnetCIDRs = [for id in previews.alb_subnet_ids : data.aws_subnet.preview_alb[id].cidr_block]
+        imageRegistry   = local.registry
+        imagePathPrefix = var.preview_path_prefix
+        dnsCIDR         = local.preview_dns_cidr
+        albSubnetCIDRs  = [for id in previews.alb_subnet_ids : data.aws_subnet.preview_alb[id].cidr_block]
         # Pins the ALB to the subnets whose CIDRs the line above admits.
         albSubnetIDs   = [for id in previews.alb_subnet_ids : data.aws_subnet.preview_alb[id].id]
         inboundCIDRs   = previews.inbound_cidrs

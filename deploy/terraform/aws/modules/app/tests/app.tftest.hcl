@@ -91,7 +91,7 @@ run "publisher_trust_pins_every_claim" {
 
   assert {
     condition     = aws_ecr_repository.this["agent"].name == "patchy/app-envs/hello-web" && aws_ecr_repository.this["runtime"].name == "patchy/previews/hello-web"
-    error_message = "Repositories are <agent_path_prefix>/<slug> and patchy/previews/<slug>."
+    error_message = "Repositories are <agent_path_prefix>/<slug> and <preview_path_prefix>/<slug>, by default patchy/previews/<slug>."
   }
 
   assert {
@@ -344,6 +344,87 @@ run "sibling_prefix_sharing_a_stem_is_disjoint" {
     condition     = aws_ecr_repository.this["agent"].name == "patchy/previews-agents/hello-web"
     error_message = "A sibling path is disjoint from patchy/previews and accepted."
   }
+}
+
+# The preview prefix is the operator's: the runtime repository and its
+# publisher's policy follow it, and it must stay disjoint from the agent
+# prefix, in either direction and on segment boundaries.
+run "custom_preview_prefix" {
+  command = plan
+
+  variables {
+    agent_path_prefix   = "acme/agents"
+    preview_path_prefix = "acme/runtime"
+  }
+
+  assert {
+    condition     = aws_ecr_repository.this["runtime"].name == "acme/runtime/hello-web" && aws_ecr_repository.this["agent"].name == "acme/agents/hello-web"
+    error_message = "The runtime repository is <preview_path_prefix>/<slug>, the agent repository <agent_path_prefix>/<slug>."
+  }
+
+  assert {
+    condition     = output.github_variables.RUNTIME_IMAGE_REPOSITORY == "acme/runtime/hello-web"
+    error_message = "RUNTIME_IMAGE_REPOSITORY names the runtime repository under the configured prefix."
+  }
+}
+
+run "custom_preview_prefix_must_not_contain_agent_prefix" {
+  command = plan
+
+  variables {
+    agent_path_prefix   = "apps/previews/agents"
+    preview_path_prefix = "apps/previews"
+  }
+
+  expect_failures = [var.agent_path_prefix]
+}
+
+run "custom_preview_prefix_must_not_sit_under_agent_prefix" {
+  command = plan
+
+  variables {
+    agent_path_prefix   = "apps"
+    preview_path_prefix = "apps/previews"
+  }
+
+  expect_failures = [var.agent_path_prefix]
+}
+
+run "custom_preview_prefix_must_not_equal_agent_prefix" {
+  command = plan
+
+  variables {
+    agent_path_prefix   = "apps/images"
+    preview_path_prefix = "apps/images"
+  }
+
+  expect_failures = [var.agent_path_prefix]
+}
+
+run "custom_preview_prefix_sibling_is_disjoint" {
+  command = plan
+
+  # apps/previews-agents shares a string prefix with apps/previews but no
+  # path segment.
+  variables {
+    agent_path_prefix   = "apps/previews-agents"
+    preview_path_prefix = "apps/previews"
+  }
+
+  assert {
+    condition     = aws_ecr_repository.this["runtime"].name == "apps/previews/hello-web"
+    error_message = "A sibling agent path is disjoint from the preview path and accepted."
+  }
+}
+
+run "preview_prefix_must_be_a_path" {
+  command = plan
+
+  variables {
+    preview_path_prefix = "/acme/runtime"
+  }
+
+  expect_failures = [var.preview_path_prefix]
 }
 
 run "oidc_provider_for_another_issuer_is_refused" {

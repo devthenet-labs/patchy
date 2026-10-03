@@ -61,7 +61,7 @@ variable "github_oidc_provider_arn" {
 }
 
 variable "agent_path_prefix" {
-  description = "ECR path the agent toolchain images live under, with no leading or trailing slash. source-controller may read every repository under it, and helm_values admits declared images only there. It must be disjoint from patchy/previews."
+  description = "ECR path the agent toolchain images live under, with no leading or trailing slash. source-controller may read every repository under it, and helm_values admits declared images only there. It must be disjoint from preview_path_prefix."
   type        = string
   default     = "patchy/app-envs"
 
@@ -73,9 +73,21 @@ variable "agent_path_prefix" {
     # A runtime image is built from an unreviewed same-repository PR head. It
     # must never be admissible as an agent sandbox image, and the preview
     # nodes' pull grant must never cover a toolchain image, so neither prefix
-    # may equal or contain the other.
-    condition     = !startswith("${var.agent_path_prefix}/", "patchy/previews/") && !startswith("patchy/previews/", "${var.agent_path_prefix}/")
-    error_message = "agent_path_prefix must not be patchy/previews, contain it or sit under it: agent images and preview images must have disjoint prefixes."
+    # may equal or contain the other. Compared on segment boundaries:
+    # patchy/previews-agents is a sibling of patchy/previews, not under it.
+    condition     = !startswith("${var.agent_path_prefix}/", "${var.preview_path_prefix}/") && !startswith("${var.preview_path_prefix}/", "${var.agent_path_prefix}/")
+    error_message = "agent_path_prefix must not equal preview_path_prefix, contain it or sit under it: agent images and preview images must have disjoint prefixes."
+  }
+}
+
+variable "preview_path_prefix" {
+  description = "ECR path the preview runtime images live under, with no leading or trailing slash: each app's runtime repository is <preview_path_prefix>/<slug>, the preview nodes may pull only under it, and helm_values sets the chart's preview.imagePathPrefix to it. It must be disjoint from agent_path_prefix."
+  type        = string
+  default     = "patchy/previews"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$", var.preview_path_prefix))
+    error_message = "preview_path_prefix must be one or more ECR path segments separated by '/', with no leading or trailing slash (for example \"patchy/previews\")."
   }
 }
 

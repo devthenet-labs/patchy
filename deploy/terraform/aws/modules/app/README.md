@@ -8,7 +8,8 @@ SPDX-License-Identifier: MIT
 Creates, for one application repository:
 
 - an agent toolchain ECR repository, `<agent_path_prefix>/<slug>`;
-- with `preview = true` (the default), a runtime ECR repository, `patchy/previews/<slug>`;
+- with `preview = true` (the default), a runtime ECR repository, `<preview_path_prefix>/<slug>` (by default
+  `patchy/previews/<slug>`);
 - one trusted publisher role per repository, `<role_name_prefix><slug>-<agent|runtime>-push`, with no IAM path. The
   agent role trusts only `.github/workflows/publish-agent.yml` and the runtime role only
   `.github/workflows/publish-runtime.yml`, each on the repository's default branch.
@@ -91,8 +92,9 @@ immutable subject claims.
 | github | The app's GitHub repository. Take every value from the API, exactly as it is returned (IAM compares them<br/>case-sensitively):<br/>- owner, name, repository\_id, owner\_id, default\_branch: `gh api repos/<owner>/<name> --jq '{owner: .owner.login,<br/>  name: .name, repository_id: .id, owner_id: .owner.id, default_branch: .default_branch}'`<br/>- sub\_claim\_prefix: `gh api repos/<owner>/<name>/actions/oidc/customization/sub --jq .sub_claim_prefix` | <pre>object({<br/>    owner            = string<br/>    name             = string<br/>    repository_id    = string<br/>    owner_id         = string<br/>    default_branch   = optional(string, "main")<br/>    sub_claim_prefix = string<br/>  })</pre> | n/a | yes |
 | github\_oidc\_provider\_arn | ARN of the account's IAM OIDC provider for token.actions.githubusercontent.com. The platform module creates one, or passes on the existing one it was given. | `string` | n/a | yes |
 | slug | Short name for the app. It is the leaf of both ECR repository names and part of both IAM role names, and it is independent of the GitHub repository name (Hello.Web -> hello-web). A rename on GitHub never changes it. | `string` | n/a | yes |
-| agent\_path\_prefix | ECR path the agent image repository goes under (no leading or trailing slash). Must match the platform module's agent\_path\_prefix, and must never overlap patchy/previews. | `string` | `"patchy/app-envs"` | no |
-| preview | Whether the app has previews: a runtime ECR repository under patchy/previews/ and its own runtime publisher role. The agent repository and role are always created. | `bool` | `true` | no |
+| agent\_path\_prefix | ECR path the agent image repository goes under (no leading or trailing slash). Must match the platform module's agent\_path\_prefix, and must never overlap preview\_path\_prefix. | `string` | `"patchy/app-envs"` | no |
+| preview | Whether the app has previews: a runtime ECR repository under preview\_path\_prefix and its own runtime publisher role. The agent repository and role are always created. | `bool` | `true` | no |
+| preview\_path\_prefix | ECR path the runtime image repository goes under (no leading or trailing slash). Must match the platform module's preview\_path\_prefix and the chart's preview.imagePathPrefix, and must never overlap agent\_path\_prefix. | `string` | `"patchy/previews"` | no |
 | role\_name\_prefix | Prefix of both IAM role and policy names: <role\_name\_prefix><slug>-<agent\|runtime>-push. IAM names are account-wide, so the prefix keeps two installs in one account apart. | `string` | `"patchy-app-"` | no |
 | tags | Tags added to every taggable resource. | `map(string)` | `{}` | no |
 

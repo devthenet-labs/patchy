@@ -267,14 +267,15 @@ run "full_install" {
       sourceController = { serviceAccount = { name = "patchy-source-controller" } }
       agent            = { repositoryImages = { registries = ["111122223333.dkr.ecr.eu-west-2.amazonaws.com/patchy/app-envs/"] } }
       preview = {
-        imageRegistry  = "111122223333.dkr.ecr.eu-west-2.amazonaws.com"
-        dnsCIDR        = "172.20.0.10/32"
-        albSubnetCIDRs = ["10.40.128.0/24", "10.40.129.0/24"]
-        albSubnetIDs   = ["subnet-alb-a", "subnet-alb-b"]
-        inboundCIDRs   = ["203.0.113.7/32"]
-        certificateARN = "arn:aws:acm:eu-west-2:111122223333:certificate/11111111-1111-1111-1111-111111111111"
-        hostSuffix     = "preview.acme-apps.dev"
-        albName        = "acme-prod-preview"
+        imageRegistry   = "111122223333.dkr.ecr.eu-west-2.amazonaws.com"
+        imagePathPrefix = "patchy/previews"
+        dnsCIDR         = "172.20.0.10/32"
+        albSubnetCIDRs  = ["10.40.128.0/24", "10.40.129.0/24"]
+        albSubnetIDs    = ["subnet-alb-a", "subnet-alb-b"]
+        inboundCIDRs    = ["203.0.113.7/32"]
+        certificateARN  = "arn:aws:acm:eu-west-2:111122223333:certificate/11111111-1111-1111-1111-111111111111"
+        hostSuffix      = "preview.acme-apps.dev"
+        albName         = "acme-prod-preview"
       }
       previewController = { config = { apiServerCIDR = "172.20.0.1/32" } }
       webhook = {
@@ -766,6 +767,110 @@ run "agent_prefix_must_be_disjoint_from_previews" {
   }
 
   expect_failures = [var.agent_path_prefix]
+}
+
+# The preview prefix is the operator's. It reaches the preview nodes' pull
+# grant, each app's runtime repository and the chart (helm_values
+# preview.imagePathPrefix), and stays disjoint from the agent prefix.
+run "custom_preview_prefix" {
+  command = apply
+
+  variables {
+    agent_path_prefix   = "acme/agents"
+    preview_path_prefix = "acme/runtime"
+    apps = {
+      hello-web = {
+        github = {
+          owner            = "Acme-Org"
+          name             = "Hello.Web"
+          repository_id    = 123456789
+          owner_id         = 987654
+          sub_claim_prefix = "repo:Acme-Org@987654/Hello.Web@123456789"
+        }
+      }
+    }
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-a", "subnet-node-b"]
+      inbound_cidrs   = ["203.0.113.7/32"]
+    }
+  }
+
+  assert {
+    condition = (
+      yamldecode(output.helm_values).preview.imagePathPrefix == "acme/runtime" &&
+      yamldecode(output.helm_values).agent.repositoryImages.registries == ["111122223333.dkr.ecr.eu-west-2.amazonaws.com/acme/agents/"]
+    )
+    error_message = "helm_values carries the preview prefix for the chart's preview.imagePathPrefix beside the agent registry prefix."
+  }
+
+  assert {
+    condition     = jsondecode(aws_iam_policy.preview_node[0].policy).Statement[2].Resource == "arn:aws:ecr:eu-west-2:111122223333:repository/acme/runtime/*"
+    error_message = "Preview nodes pull under the configured preview prefix only."
+  }
+
+  assert {
+    condition = (
+      output.github_variables["hello-web"].RUNTIME_IMAGE_REPOSITORY == "acme/runtime/hello-web" &&
+      output.github_variables["hello-web"].AGENT_IMAGE_REPOSITORY == "acme/agents/hello-web"
+    )
+    error_message = "Each app's runtime repository sits under the preview prefix, its agent repository under the agent prefix."
+  }
+}
+
+run "preview_prefix_must_not_contain_agent_prefix" {
+  command = plan
+
+  variables {
+    agent_path_prefix   = "apps/previews/agents"
+    preview_path_prefix = "apps/previews"
+  }
+
+  expect_failures = [var.agent_path_prefix]
+}
+
+run "preview_prefix_must_not_sit_under_agent_prefix" {
+  command = plan
+
+  variables {
+    agent_path_prefix   = "apps"
+    preview_path_prefix = "apps/previews"
+  }
+
+  expect_failures = [var.agent_path_prefix]
+}
+
+run "preview_prefix_must_not_equal_agent_prefix" {
+  command = plan
+
+  variables {
+    agent_path_prefix   = "apps/images"
+    preview_path_prefix = "apps/images"
+  }
+
+  expect_failures = [var.agent_path_prefix]
+}
+
+run "preview_prefix_must_be_a_path" {
+  command = plan
+
+  variables {
+    preview_path_prefix = "patchy/previews/"
+  }
+
+  expect_failures = [var.preview_path_prefix]
+}
+
+run "empty_preview_prefix_is_refused" {
+  command = plan
+
+  variables {
+    preview_path_prefix = ""
+  }
+
+  expect_failures = [var.preview_path_prefix]
 }
 
 # A 51-character slug fits IAM's 64 only with no prefix at all

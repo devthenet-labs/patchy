@@ -76,13 +76,13 @@ variable "github_oidc_provider_arn" {
 }
 
 variable "preview" {
-  description = "Whether the app has previews: a runtime ECR repository under patchy/previews/ and its own runtime publisher role. The agent repository and role are always created."
+  description = "Whether the app has previews: a runtime ECR repository under preview_path_prefix and its own runtime publisher role. The agent repository and role are always created."
   type        = bool
   default     = true
 }
 
 variable "agent_path_prefix" {
-  description = "ECR path the agent image repository goes under (no leading or trailing slash). Must match the platform module's agent_path_prefix, and must never overlap patchy/previews."
+  description = "ECR path the agent image repository goes under (no leading or trailing slash). Must match the platform module's agent_path_prefix, and must never overlap preview_path_prefix."
   type        = string
   default     = "patchy/app-envs"
 
@@ -94,9 +94,20 @@ variable "agent_path_prefix" {
     # A runtime image is built from an unreviewed same-repository PR head. It
     # must never be admissible as an agent sandbox image, and preview nodes
     # must never be able to pull agent toolchain images, so neither prefix may
-    # contain the other.
-    condition     = !startswith("${var.agent_path_prefix}/", "patchy/previews/") && !startswith("patchy/previews/", "${var.agent_path_prefix}/")
-    error_message = "agent_path_prefix must not be patchy/previews, contain it or sit under it: agent images and preview images must have disjoint prefixes."
+    # equal or contain the other, compared on segment boundaries.
+    condition     = !startswith("${var.agent_path_prefix}/", "${var.preview_path_prefix}/") && !startswith("${var.preview_path_prefix}/", "${var.agent_path_prefix}/")
+    error_message = "agent_path_prefix must not equal preview_path_prefix, contain it or sit under it: agent images and preview images must have disjoint prefixes."
+  }
+}
+
+variable "preview_path_prefix" {
+  description = "ECR path the runtime image repository goes under (no leading or trailing slash). Must match the platform module's preview_path_prefix and the chart's preview.imagePathPrefix, and must never overlap agent_path_prefix."
+  type        = string
+  default     = "patchy/previews"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$", var.preview_path_prefix))
+    error_message = "preview_path_prefix must be one or more ECR path segments separated by '/', with no leading or trailing slash (for example \"patchy/previews\")."
   }
 }
 

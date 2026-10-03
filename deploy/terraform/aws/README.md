@@ -14,7 +14,7 @@ emits those values. Kubernetes objects stay the chart's.
 | The GitHub Actions OIDC provider                                                                                                                           | `github_oidc_provider_arn` is null (default) |
 | source-controller's Pod Identity role (ECR read on `<agent_path_prefix>/*`), pinned to this cluster, namespace and ServiceAccount, and its association     | always                                       |
 | Per app ([`modules/app`](modules/app/README.md)): an agent toolchain repository and, with previews, a runtime repository, each with its own publisher role | one per `apps` entry                         |
-| The preview node role (joins this cluster, pulls `patchy/previews/*` only), its EKS access entry and the Auto Mode node policy                             | `previews` is set                            |
+| The preview node role (joins this cluster, pulls `<preview_path_prefix>/*` only), its EKS access entry and the Auto Mode node policy                       | `previews` is set                            |
 | The `*.<host_suffix>` ACM certificate and its DNS validation record                                                                                        | `previews` is set                            |
 | The webhook and status edge ACM certificate and its DNS validation records                                                                                 | `edge` is set                                |
 | Alias records for the edge hosts to the edge ALB                                                                                                           | `create_edge_alias_records = true`           |
@@ -126,7 +126,7 @@ decides who can publish.
 | `PUBLISH_OWNER_ID`         | The numeric owner ID, which the publisher's guard compares              | the module, always          |
 | `AGENT_IMAGE_REPOSITORY`   | `<agent_path_prefix>/<slug>`                                            | the module, always          |
 | `AGENT_ROLE_ARN`           | `arn:aws:iam::<account>:role/<app_role_name_prefix><slug>-agent-push`   | the module, always          |
-| `RUNTIME_IMAGE_REPOSITORY` | `patchy/previews/<slug>`                                                | the module, with `preview`  |
+| `RUNTIME_IMAGE_REPOSITORY` | `<preview_path_prefix>/<slug>`                                          | the module, with `preview`  |
 | `RUNTIME_ROLE_ARN`         | `arn:aws:iam::<account>:role/<app_role_name_prefix><slug>-runtime-push` | the module, with `preview`  |
 | `AGENT_PUBLISH_ENABLED`    | `true` to let the agent image publish                                   | the operator, never emitted |
 | `PREVIEW_PUBLISH_ENABLED`  | `true` to let runtime (preview) images publish                          | the operator, never emitted |
@@ -144,10 +144,10 @@ Two outputs carry them, keyed by app slug:
 Each app gets one publisher role per image kind. A role trusts exactly one workflow file in exactly one repository, on
 its default branch:
 
-| Role                                        | Trusted workflow (`job_workflow_ref`)                                      | Pushes to                    |
-| ------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------- |
-| `<app_role_name_prefix><slug>-agent-push`   | `<owner>/<name>/.github/workflows/publish-agent.yml@refs/heads/<branch>`   | `<agent_path_prefix>/<slug>` |
-| `<app_role_name_prefix><slug>-runtime-push` | `<owner>/<name>/.github/workflows/publish-runtime.yml@refs/heads/<branch>` | `patchy/previews/<slug>`     |
+| Role                                        | Trusted workflow (`job_workflow_ref`)                                      | Pushes to                      |
+| ------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------ |
+| `<app_role_name_prefix><slug>-agent-push`   | `<owner>/<name>/.github/workflows/publish-agent.yml@refs/heads/<branch>`   | `<agent_path_prefix>/<slug>`   |
+| `<app_role_name_prefix><slug>-runtime-push` | `<owner>/<name>/.github/workflows/publish-runtime.yml@refs/heads/<branch>` | `<preview_path_prefix>/<slug>` |
 
 `publish-agent.yml` and `publish-runtime.yml` are `workflow_call` callees of the `.github/workflows/publish-images.yml`
 dispatcher, which runs on `workflow_run`. GitHub sets `job_workflow_ref` to the callee and `workflow_ref` to the
@@ -183,8 +183,10 @@ immutable, a toolchain change publishes under a new tag.
 
 - **Disjoint prefixes.** The agent and preview image prefixes must be disjoint, and variable validation enforces it. A
   runtime image is built from an unreviewed pull request head, so it must never be admissible as an agent sandbox image,
-  and preview nodes must never be able to pull a toolchain image. The preview prefix is fixed at `patchy/previews` in
-  this release, because the chart's preview admission policy pins it.
+  and preview nodes must never be able to pull a toolchain image. The two are compared on path segment boundaries
+  (`patchy/previews-agents` is beside `patchy/previews`, not under it). `preview_path_prefix` (default
+  `patchy/previews`) reaches the chart as `preview.imagePathPrefix` through `helm_values`, and the chart refuses to
+  render an agent allowlist that overlaps it, so the module, the slot admission policy and source-controller agree.
 - **Preview subnets.** A node subnet that assigns public IPs fails the plan, and no subnet may serve as both a node
   subnet and an ALB subnet. List 2 to 4 ALB subnets, one per Availability Zone, each in the cluster's VPC and tagged
   `kubernetes.io/role/elb` (Auto Mode requires the tag of an internet-facing load balancer's subnets). `helm_values`
@@ -275,7 +277,7 @@ domain (`aws_route53_record.preview_validation["*.preview.acme-apps.dev"]`).
 | Name | Description | Type | Default | Required |
 | ---- | ----------- | ---- | ------- | :------: |
 | cluster\_name | The EKS Auto Mode cluster patchy runs on. Its ARN, VPC, primary security group and service CIDR are read from it. | `string` | n/a | yes |
-| agent\_path\_prefix | ECR path the agent toolchain images live under, with no leading or trailing slash. source-controller may read every repository under it, and helm\_values admits declared images only there. It must be disjoint from patchy/previews. | `string` | `"patchy/app-envs"` | no |
+| agent\_path\_prefix | ECR path the agent toolchain images live under, with no leading or trailing slash. source-controller may read every repository under it, and helm\_values admits declared images only there. It must be disjoint from preview\_path\_prefix. | `string` | `"patchy/app-envs"` | no |
 | app\_role\_name\_prefix | Prefix of every app's publisher role and policy names: <app\_role\_name\_prefix><slug>-<agent\|runtime>-push. Null means "<name\_prefix>-app-". | `string` | `null` | no |
 | apps | The application repositories patchy works on, keyed by slug: the image name, lowercase letters, digits and<br/>inner hyphens, independent of the GitHub name (Hello.Web -> hello-web). Each app gets an agent toolchain<br/>repository and its publisher role; with preview (default true) also a runtime repository and its publisher.<br/>- github: the repository exactly as the API reports it (IAM compares case-sensitively). owner, name,<br/>  repository\_id, owner\_id and default\_branch come from `gh api repos/<owner>/<name>`; sub\_claim\_prefix,<br/>  which is required, from `gh api repos/<owner>/<name>/actions/oidc/customization/sub --jq .sub_claim_prefix`.<br/>  It must be GitHub's immutable form, repo:<owner>@<owner\_id>/<name>@<repository\_id>. | <pre>map(object({<br/>    github = object({<br/>      owner            = string<br/>      name             = string<br/>      repository_id    = string<br/>      owner_id         = string<br/>      default_branch   = optional(string, "main")<br/>      sub_claim_prefix = string<br/>    })<br/>    preview = optional(bool, true)<br/>  }))</pre> | `{}` | no |
 | create\_edge\_alias\_records | Create the Route53 alias records for edge.webhook\_host and edge.status\_host, pointing at the edge ALB looked up by edge.alb\_name. Set it once Helm stage 1 has created the edge Ingresses and so the ALB: the lookup fails the plan while the ALB is missing. It is independent of the preview alias, so the webhook resolves before previews are turned on. | `bool` | `false` | no |
@@ -284,6 +286,7 @@ domain (`aws_route53_record.preview_validation["*.preview.acme-apps.dev"]`).
 | github\_oidc\_provider\_arn | ARN of the account's existing IAM OIDC provider for token.actions.githubusercontent.com. Null creates one. An account holds at most one provider per issuer, so pass the ARN when it already exists. | `string` | `null` | no |
 | name\_prefix | Prefix of the platform IAM names: <name\_prefix>-patchy-source-controller and <name\_prefix>-patchy-preview-node. Null means cluster\_name. IAM names are account-wide, so the prefix keeps two installs in one account apart. | `string` | `null` | no |
 | namespace | The patchy Helm release namespace, where source-controller runs. | `string` | `"patchy"` | no |
+| preview\_path\_prefix | ECR path the preview runtime images live under, with no leading or trailing slash: each app's runtime repository is <preview\_path\_prefix>/<slug>, the preview nodes may pull only under it, and helm\_values sets the chart's preview.imagePathPrefix to it. It must be disjoint from agent\_path\_prefix. | `string` | `"patchy/previews"` | no |
 | previews | Preview infrastructure; null (the default) creates none. Set, the module creates the preview node role and its<br/>EKS access entry, and a wildcard certificate for *.<host\_suffix> validated in zone\_id.<br/>- host\_suffix: preview hosts are <project>-<issue>.<host\_suffix>. A separate registrable domain is recommended.<br/>- zone\_id: the Route53 hosted zone that holds host\_suffix.<br/>- alb\_name: the preview ALB, at most 32 characters. Null means "<cluster\_name>-preview". It must differ from<br/>  edge.alb\_name: previews get an ALB of their own.<br/>- alb\_subnet\_ids: the public subnets the preview ALB is placed in: 2 to 4, one per Availability Zone, each in the<br/>  cluster's VPC and tagged kubernetes.io/role/elb. helm\_values pins the ALB to exactly these subnets<br/>  (preview.albSubnetIDs), and their CIDRs become preview.albSubnetCIDRs, the only sources preview pods admit.<br/>- node\_subnet\_ids: the private subnets preview nodes run in (the NodeClass subnetSelectorTerms). Untrusted<br/>  preview workloads must never get public IPs, so a subnet that assigns them fails the plan.<br/>- inbound\_cidrs: who may reach previews: 1 to 8 IPv4 /32s.<br/>- dns\_cidr, api\_server\_cidr: the cluster DNS and Kubernetes API Service /32s. Null derives .10 and .1 of the<br/>  cluster's service CIDR, which is what EKS assigns. | <pre>object({<br/>    host_suffix     = string<br/>    zone_id         = string<br/>    alb_name        = optional(string)<br/>    alb_subnet_ids  = list(string)<br/>    node_subnet_ids = list(string)<br/>    inbound_cidrs   = list(string)<br/>    dns_cidr        = optional(string)<br/>    api_server_cidr = optional(string)<br/>  })</pre> | `null` | no |
 | source\_controller\_service\_account | The source-controller ServiceAccount the Pod Identity association binds. helm\_values sets sourceController.serviceAccount.name to it, so the chart creates exactly this name whatever the release is called. | `string` | `"patchy-source-controller"` | no |
 | tags | Tags added to every taggable resource the module creates. | `map(string)` | `{}` | no |

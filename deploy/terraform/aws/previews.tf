@@ -3,7 +3,7 @@
 #
 # Preview infrastructure, all of it behind var.previews:
 #   - a dedicated Auto Mode node identity for the isolated preview NodeClass,
-#     which can join only this cluster and pull only patchy/previews/*;
+#     which can join only this cluster and pull only <preview_path_prefix>/*;
 #   - the subnets the preview NodeClass and the preview ALB use, checked;
 #   - the *.<host_suffix> certificate the preview ALB terminates TLS with;
 #   - after Helm stage 2: the wildcard alias to the preview ALB, which Auto

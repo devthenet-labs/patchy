@@ -15,11 +15,12 @@ This page is the tour. For every command, flag and default, generated from the b
 The supported install is the `patchy-cli` archive attached to each release of
 [`devthenet-labs/patchy`](https://github.com/devthenet-labs/patchy/releases), for linux, macOS and windows on amd64 and
 arm64. Install the CLI of the release your cluster runs: `init app` and `check image --run` pin images to the CLI's own
-release, and `init app` the terraform module too.
+release, and `init app` the terraform module too. [Deploying intents and previews](intents/deploying.md) needs 0.12.16
+or later; the newest release is `gh release view --repo devthenet-labs/patchy --json tagName --jq .tagName`.
 
 ```sh
-version=X.Y.Z       # the release you deploy
-os=darwin arch=arm64 # linux | darwin | windows, amd64 | arm64
+version=X.Y.Z        # the release you deploy, without the v: 0.12.16 or later
+os=darwin arch=arm64 # linux | darwin, amd64 | arm64 (windows: see below)
 gh release download "v$version" --repo devthenet-labs/patchy \
   --pattern "patchy-cli_${version}_${os}_${arch}.tar.gz" \
   --pattern "patchy_${os}_${arch}.sigstore.json" \
@@ -51,16 +52,23 @@ patchy --version
 
 The identity is the reusable release workflow in `bitwise-media-group/github-workflows`, which signs on behalf of the
 repository it runs for; `--certificate-github-workflow-repository` and `--certificate-github-workflow-sha` pin that to
-`devthenet-labs/patchy` at the release's commit. Each prints `Verified OK`.
+`devthenet-labs/patchy` at the release's commit. Each prints `Verified OK`, and `patchy --version` then names the
+release (`patchy version 0.12.16 (...)`).
+
+On Windows (`os=windows`, in a POSIX shell such as Git Bash) the archive is the same `.tar.gz`, but the binaries in it
+are `patchy.exe` and `kubectl-patchy.exe`: the bundles keep their names (`patchy_windows_amd64.sigstore.json`), so pass
+`"$bin.exe"` as the last argument of `cosign verify-blob`, and put the two `.exe` files on your `PATH` instead of the
+`install` line.
 
 !!! warning "Not Homebrew, not `go install`"
 
     The Homebrew tap `bitwise-media-group/tap/patchy` is the upstream project's, an older release without `setup`,
     `init` or `check project`. `go install` builds an unstamped development build: it knows no release registry, so
     `init app` needs `--agent-base` and `check image --run` needs `--runner-image`, and neither can pin anything to a
-    release. To build from source, clone this repository and run `PATCHY_IMAGE_REGISTRY=ghcr.io/devthenet-labs/patchy
-    hack/build.sh` (it writes `bin/patchy`), which stamps the registry; built anywhere but at a release tag, it is
-    still a development build to `init app`.
+    release. To build from source, clone this repository and run `BUILD_TAGS= PATCHY_IMAGE_REGISTRY=ghcr.io/devthenet-labs/patchy
+    hack/build.sh` (it writes `bin/patchy` beside the other binaries), which stamps the registry; the empty
+    `BUILD_TAGS` leaves out the status page's web UI, which a fresh clone has not built. Built anywhere but at a
+    release tag, it is still a development build to `init app`.
 
 The archive carries `kubectl-patchy`, so every command below also works as `kubectl patchy …` once it is on your `PATH`:
 
@@ -345,6 +353,7 @@ points at it, read the reference out of its `.patchy/agent.yaml`, from a checkou
 
 ```sh
 image=$(awk '$1 == "image:" {print $2}' .patchy/agent.yaml)
+# or, without a checkout:
 image=$(gh api -H 'Accept: application/vnd.github.raw' repos/acme/Shop.Web/contents/.patchy/agent.yaml \
   | awk '$1 == "image:" {print $2}')
 patchy check image "$image" --allow 123456789012.dkr.ecr.us-west-2.amazonaws.com/patchy/app-envs/ --run
@@ -492,8 +501,12 @@ configuration variables, which one command sets:
 
 ```sh
 terraform output -raw patchy_app_hello_web_variables | gh variable set -f - --repo acme/Hello.Web
+# or, with the platform module, from a root output that re-exports its github_variables_dotenv:
+terraform output -json github_variables_dotenv | jq -r '."hello-web"' | gh variable set -f - --repo acme/Hello.Web
 gh variable set AGENT_PUBLISH_ENABLED --repo acme/Hello.Web --body true
 ```
+
+(0.12.16's `init app` prints no module block, and a `gh variable set` command per variable instead.)
 
 Set them on the repository, never on the organization: an organization variable reaches every repository that has these
 workflows, a template repository and each copy of it included. [Onboarding an application](intents/onboarding-app.md) is

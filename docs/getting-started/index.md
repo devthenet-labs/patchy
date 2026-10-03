@@ -7,7 +7,7 @@ handed to the repository owner, and high-confidence remediations are queued in p
 and opened as pull requests for human review. The CRs carry all of the state; the Kubernetes API is the only state
 store.
 
-Deploying the stack takes three steps, each with its own page:
+Deploying the stack takes three steps, each with its own page, and an optional fourth:
 
 1. **[Create the GitHub App](github-app.md)** — register the App, grant four repository permissions, subscribe four
    webhook events, and collect the App ID, private key and webhook secret.

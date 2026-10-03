@@ -9,18 +9,32 @@ This guide takes an operator from an empty AWS account and GitHub organization t
 preview. It is written against one fictional site throughout, so every command and value file is complete; substitute
 your own values:
 
-| What                   | Example                                                            |
-| ---------------------- | ------------------------------------------------------------------ |
-| GitHub organization    | `acme`                                                             |
-| Intent repository      | `acme/intents`                                                     |
-| Application repository | `acme/Shop.Web`, image slug `shop-web`, Project `shop-web`         |
-| AWS account and region | `123456789012`, `us-west-2`                                        |
-| ECR registry           | `123456789012.dkr.ecr.us-west-2.amazonaws.com`                     |
-| EKS Auto Mode cluster  | `acme-prod`, service CIDR `172.20.0.0/16`                          |
-| patchy's own edge      | `patchy.acme.dev` (GitHub webhook) and `status.patchy.acme.dev`    |
-| Preview hosts          | `*.preview.acme-apps.dev`, in a registrable domain of their own    |
-| Who may open previews  | `203.0.113.10/32`                                                  |
-| patchy release         | `X.Y.Z`: the chart, the CLI and the terraform module, all the same |
+| What                   | Example                                                          |
+| ---------------------- | ---------------------------------------------------------------- |
+| GitHub organization    | `acme`                                                           |
+| Intent repository      | `acme/intents`                                                   |
+| Application repository | `acme/Shop.Web`, image slug `shop-web`, Project `shop-web`       |
+| AWS account and region | `123456789012`, `us-west-2`                                      |
+| ECR registry           | `123456789012.dkr.ecr.us-west-2.amazonaws.com`                   |
+| EKS Auto Mode cluster  | `acme-prod`, service CIDR `172.20.0.0/16`                        |
+| patchy's own edge      | `patchy.acme.dev` (GitHub webhook) and `status.patchy.acme.dev`  |
+| Preview hosts          | `*.preview.acme-apps.dev`, in a registrable domain of their own  |
+| Who may open previews  | `203.0.113.10/32`                                                |
+| patchy release         | `X.Y.Z`, **0.12.16 or later**: the chart, the CLI and the module |
+
+`X.Y.Z` stands for one release of `devthenet-labs/patchy` throughout: the chart, the CLI and the terraform module all
+come from it. Use the newest, and at least 0.12.16, the first release whose chart has the values this guide sets
+(`clusterDNSCIDR`, `edgeIngressClass`, `preview.nodeIsolation.create`); an older chart's values schema refuses them, so
+this guide does not apply to it. Find the newest release, and once the CLI is installed (step 1), check it:
+
+```sh
+gh release view --repo devthenet-labs/patchy --json tagName --jq .tagName   # v0.12.16, say: X.Y.Z is 0.12.16
+patchy --version                                                            # patchy version 0.12.16 (...)
+```
+
+0.12.16's `patchy init app` prints an older form of its next steps, a `gh variable set` command per variable instead of
+the terraform module block and its one-command dotenv, and its READMEs say the same; the workflows, scripts and
+toolchain files it writes are those these pages describe. Follow these pages rather than that output.
 
 The patchy chart and the reference terraform module are the supported path, and this guide follows it. Onboarding each
 application repository has a page of its own, [Onboarding an application](onboarding-app.md), and the module's inputs
@@ -39,7 +53,8 @@ halfway through.
 | **NetworkPolicy enforced** by the VPC CNI      | Auto Mode programs NetworkPolicies only once the cluster's network policy controller is on: the `kube-system/amazon-vpc-cni` ConfigMap with `enable-network-policy-controller: "true"`. Without it every patchy policy, the agent sandbox's and the preview slots' included, is silently inert. The ConfigMap is yours, not the chart's.            |
 | **ECR** in the cluster's account               | Agent and preview images live in ECR. source-controller resolves agent images through its own Pod Identity role, and nodes pull with their node roles, so the images belong in the cluster's account.                                                                                                                                               |
 | **ACM** certificates and **Route53** zones     | Both load balancers terminate TLS with ACM certificates, which the module requests and validates by DNS in your Route53 zones. Delegate the zones before the first apply. See [TLS: ACM only, for previews](#tls-acm-only-for-previews).                                                                                                            |
-| Subnets                                        | Public subnets tagged `kubernetes.io/role/elb` for the preview load balancer (2 to 4, one per Availability Zone), and private subnets for the preview nodes, which must never get public IPs.                                                                                                                                                       |
+| Subnets                                        | Public subnets tagged `kubernetes.io/role/elb` for the preview load balancer: 2 to 4, one per Availability Zone, each `/20` or narrower. Private subnets for the preview nodes, which must never get public IPs, each in one of those zones and with a way out to EKS, ECR and S3. [Why, and how to find them](#find-the-sites-values).             |
+| **Public** charts and images                   | Nothing to log in to: the charts (`oci://ghcr.io/devthenet-labs/patchy/charts/*`), the controller and agent runner images and the agent base image `init app` pins are public on `ghcr.io/devthenet-labs/patchy`. No `helm registry login` and no `image.pullSecrets`.                                                                              |
 | **Helm**, not kustomize, for previews          | Previews exist only in the Helm chart; the kustomize tree has an intent-controller component and no preview one.                                                                                                                                                                                                                                    |
 | **One preview-enabled release per cluster**    | The preview admission policies, the `alb-preview` class and the slot namespaces (`patchy-preview-0`, `-1`, ...) have fixed, cluster-wide names. A second release with `preview.enabled` would fight the first over them.                                                                                                                            |
 | A **separate registrable domain** for previews | Recommended. A preview runs code from an unreviewed pull request; under its own eTLD+1 (`acme-apps.dev` beside `acme.dev`) it is cross-site to patchy's status page and everything else you run, so no cookie or same-site request crosses over. Keep that zone out of any external-dns `--domain-filter` too.                                      |
@@ -52,19 +67,77 @@ Check the cluster before anything else:
 
 ```sh
 aws eks update-kubeconfig --name acme-prod --region us-west-2
-aws eks describe-cluster --name acme-prod --region us-west-2 \
-  --query '{autoMode: cluster.computeConfig.enabled, serviceCIDR: cluster.kubernetesNetworkConfig.serviceIpv4Cidr}'
-kubectl -n kube-system get configmap amazon-vpc-cni -o jsonpath='{.data.enable-network-policy-controller}'; echo
+aws eks describe-cluster --name acme-prod --region us-west-2 --query '{version: cluster.version,
+  autoMode: cluster.computeConfig.enabled, serviceCIDR: cluster.kubernetesNetworkConfig.serviceIpv4Cidr,
+  vpc: cluster.resourcesVpcConfig.vpcId}'
+kubectl -n kube-system get configmap amazon-vpc-cni -o jsonpath='{.data}'; echo
 ```
 
-The first should print `autoMode: true` and the service CIDR; the second `true`. If the ConfigMap is missing, create it
-(`kubectl -n kube-system create configmap amazon-vpc-cni --from-literal=enable-network-policy-controller=true`) before
-installing patchy, and set `clusterDNSCIDR` as below in the same change: once policies are enforced, every patchy pod
-needs the DNS rule that value adds.
+The first should print a `version` of 1.34 or later, `autoMode: true`, the service CIDR and the VPC. The second should
+include `"enable-network-policy-controller":"true"`; set it before installing patchy, and `clusterDNSCIDR` as below in
+the same change (once policies are enforced, every patchy pod needs the DNS rule that value adds):
+
+```sh
+# The ConfigMap does not exist (NotFound):
+kubectl -n kube-system create configmap amazon-vpc-cni --from-literal=enable-network-policy-controller=true
+# It exists without the key, or with another value:
+kubectl -n kube-system patch configmap amazon-vpc-cni --type merge \
+  -p '{"data":{"enable-network-policy-controller":"true"}}'
+```
 
 The cluster DNS address is the tenth address of the service CIDR: `172.20.0.10/32` for `172.20.0.0/16`. Auto Mode runs
 CoreDNS on every node at that address rather than as pods in `kube-system`, so the chart's usual "DNS to kube-system"
 rule matches nothing there, and `clusterDNSCIDR` adds the one that does.
+
+Agent Jobs carry no node selector, and the generated publishers publish agent images for `linux/amd64` only, so no
+NodePool without a taint may launch arm64 nodes. List each pool's architectures and taints: every pool with no taints
+should print `["amd64"]`, as Auto Mode's built-in `general-purpose` pool does.
+
+```sh
+kubectl get nodepools -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.template.spec.requirements[?(@.key=="kubernetes.io/arch")].values}{"\t"}{.spec.template.spec.taints}{"\n"}{end}'
+```
+
+### Find the site's values
+
+The terraform root in step 4 names zones, subnets and an OIDC provider by ID. The subnets have rules the module checks
+at plan time:
+
+- **Load balancer subnets**: public and tagged `kubernetes.io/role/elb`, 2 to 4 in distinct zones, each `/20` or
+  narrower, since the chart admits `/20` to `/32` source ranges for them.
+- **Node subnets**: private, and each in one of the load balancer subnets' zones. The load balancer sends nothing to a
+  target in a zone it has not enabled (target health `Target.NotInUse`), so a preview on a node elsewhere would never
+  become Ready. Best are the private subnets the cluster's Auto Mode nodes already use: preview nodes join the cluster
+  and pull from ECR out of them, so they need a NAT gateway or VPC endpoints for EKS, ECR (`api` and `dkr`) and S3, and
+  a wrong choice shows only at the isolation probe (step 12) or the first preview (step 14).
+
+Read each value from the account:
+
+```sh
+# The hosted zones (public, delegated): the zone ID is the part after /hostedzone/.
+aws route53 list-hosted-zones-by-name --dns-name acme.dev --max-items 1 \
+  --query 'HostedZones[].[Name, Id, Config.PrivateZone]' --output text
+aws route53 list-hosted-zones-by-name --dns-name acme-apps.dev --max-items 1 \
+  --query 'HostedZones[].[Name, Id, Config.PrivateZone]' --output text
+
+# The account's GitHub Actions OIDC provider. An account holds one per issuer: if this prints an
+# ARN, pass it as github_oidc_provider_arn; if it prints nothing, leave that null and the module creates it.
+aws iam list-open-id-connect-providers --output text \
+  --query "OpenIDConnectProviderList[?ends_with(Arn, 'token.actions.githubusercontent.com')].Arn"
+
+vpc=$(aws eks describe-cluster --name acme-prod --region us-west-2 --query cluster.resourcesVpcConfig.vpcId --output text)
+# The preview load balancer's subnets: public, tagged kubernetes.io/role/elb, one per zone, /20 or narrower.
+aws ec2 describe-subnets --region us-west-2 \
+  --filters "Name=vpc-id,Values=$vpc" Name=tag-key,Values=kubernetes.io/role/elb \
+  --query 'Subnets[].[SubnetId, AvailabilityZone, CidrBlock, MapPublicIpOnLaunch]' --output table
+# The preview nodes' subnets: the cluster's private subnets, in the zones chosen above.
+aws ec2 describe-subnets --region us-west-2 \
+  --subnet-ids $(aws eks describe-cluster --name acme-prod --region us-west-2 \
+    --query cluster.resourcesVpcConfig.subnetIds --output text) \
+  --query 'Subnets[?MapPublicIpOnLaunch==`false`].[SubnetId, AvailabilityZone, CidrBlock]' --output table
+
+# Your own address, for previews.inbound_cidrs: the curls in steps 11 and 14 come from it.
+echo "$(curl -s https://checkip.amazonaws.com)/32"
+```
 
 ## The path
 
@@ -145,6 +218,10 @@ Follow [Onboarding an application](onboarding-app.md) up to its terraform step: 
 repository, or empty), run `patchy init app` in it, and push. Its CI runs, and both publishers skip, since no variable
 is set yet. The page also covers an application that already exists.
 
+A repository created now did not exist when you installed the App in step 2: add `acme/Shop.Web` to the installation
+(the organization's **Settings > GitHub Apps > Configure > Repository access**), or its Project fails `ready` with
+`AppNotInstalled` in step 9.
+
 ## 4. Terraform, phase 1
 
 The reference module lives in this repository at `deploy/terraform/aws`, versioned with the chart: use the same release
@@ -158,7 +235,7 @@ terraform {
   required_providers {
     aws = { source = "hashicorp/aws", version = ">= 6.0" }
   }
-  # backend "s3" { ... }   # your state backend
+  # backend "s3" { ... }   # any state backend works: use the one the rest of your infrastructure uses
 }
 
 provider "aws" {
@@ -172,7 +249,7 @@ module "patchy" {
   namespace    = "patchy"    # the Helm release namespace
 
   # Null creates the GitHub Actions OIDC provider. An account holds one per issuer:
-  # pass its ARN when it already exists.
+  # pass its ARN when it already exists (step 0 prints it).
   github_oidc_provider_arn = null
 
   apps = {
@@ -202,8 +279,8 @@ module "patchy" {
     host_suffix     = "preview.acme-apps.dev"
     zone_id         = "Z0123456789PREVIEW"                                     # the acme-apps.dev hosted zone
     alb_subnet_ids  = ["subnet-0a1b2c3d4e5f60001", "subnet-0a1b2c3d4e5f60002"] # public, tagged kubernetes.io/role/elb
-    node_subnet_ids = ["subnet-0a1b2c3d4e5f60011", "subnet-0a1b2c3d4e5f60012"] # private
-    inbound_cidrs   = ["203.0.113.10/32"]
+    node_subnet_ids = ["subnet-0a1b2c3d4e5f60011", "subnet-0a1b2c3d4e5f60012"] # private, in the same zones
+    inbound_cidrs   = ["203.0.113.10/32"]                                     # your own address, and each reviewer's
   }
 
   create_edge_alias_records   = false # step 7
@@ -230,12 +307,38 @@ terraform -chdir=infra plan -out=phase1.tfplan
 terraform -chdir=infra apply phase1.tfplan
 ```
 
-The apply waits until ACM has issued both certificates, so the zones must already resolve. `edge` is optional: leave it
-out and no edge certificate or alias is made, and the edge works with any ingress and certificate source, cert-manager
-included. Intents need no edge at all (they poll GitHub); the edge serves the security pipeline's webhook and the status
-page. The `sub_claim_prefix` must be GitHub's immutable form, `repo:<owner>@<owner_id>/<name>@<repository_id>`; a
-repository still on the classic `repo:<owner>/<name>` subject fails the plan until it is switched to immutable subject
-claims. The module reference lists [every input and output](terraform-module.md#reference) and what each resource is.
+The apply waits until ACM has issued both certificates, so the zones must already resolve. The plan checks the subnets:
+load balancer subnets tagged, in distinct zones and `/20` or narrower, node subnets private and each in one of the load
+balancer subnets' zones, all in the cluster's VPC. `edge` is optional: leave it out and no edge certificate or alias is
+made, and the edge works with any ingress and certificate source, cert-manager included. Intents need no edge at all
+(they poll GitHub); the edge serves the security pipeline's webhook and the status page. The `sub_claim_prefix` must be
+GitHub's immutable form, `repo:<owner>@<owner_id>/<name>@<repository_id>`; a repository still on the classic
+`repo:<owner>/<name>` subject fails the plan until it is switched to immutable subject claims, as below. The module
+reference lists [every input and output](terraform-module.md#reference) and what each resource is.
+
+!!! note "Immutable subject claims"
+
+    GitHub gives a repository created on or after 15 July 2026 the immutable subject; an older repository keeps the
+    classic one until it opts in. Read the setting first:
+
+    ```sh
+    gh api repos/acme/Shop.Web/actions/oidc/customization/sub
+    ```
+
+    `"use_immutable_subject": true` and a `sub_claim_prefix` of the form above mean nothing is to do. Otherwise opt the
+    repository in, which takes a repository admin (or the repository's OIDC settings page; an organization owner can
+    opt in every repository at once with `PUT orgs/acme/actions/oidc/customization/sub`, see
+    [GitHub's OIDC reference](https://docs.github.com/en/actions/reference/security/oidc#immutable-subject-claims)):
+
+    ```sh
+    gh api -X PUT repos/acme/Shop.Web/actions/oidc/customization/sub \
+      -F use_default=true -F use_immutable_subject=true
+    ```
+
+    `use_default=true` also drops a custom `include_claim_keys` template, which the module refuses too. **The switch
+    changes the `sub` claim of every workflow in the repository**: a cloud trust policy that matches the classic
+    `repo:acme/Shop.Web:*` stops matching. Let each such policy accept both forms before you switch, and drop the
+    classic one after.
 
 ## 5. Namespace and Secrets
 
@@ -291,6 +394,9 @@ statusServer:
 egressBroker:
   anthropicSecret: patchy-anthropic
   anthropicAuth: key
+  # The enforced bound on what an agent pod spends once repositoryImages is on. Every limit
+  # is off here: an explicit opt-out until they are sized (see below).
+  limits: {}
 
 agent:
   # Builds run in the application's own toolchain image, which .patchy/agent.yaml declares.
@@ -298,7 +404,9 @@ agent:
   repositoryImages:
     enabled: true
     # The generated publishers do not sign, so this is an explicit opt-out of signature
-    # checks: registry write access (the publisher roles) alone decides what an agent runs.
+    # checks: registry write access alone decides what an agent runs, that is the publisher
+    # roles and any other principal with ECR push on patchy/app-envs/*. Set cosignPublicKey
+    # instead to require signatures.
     allowUnsigned: true
     onReject: default
     ephemeralStorage: 8Gi
@@ -316,6 +424,21 @@ intentController:
 helm upgrade --install patchy oci://ghcr.io/devthenet-labs/patchy/charts/patchy --version X.Y.Z \
   --namespace patchy -f patchy-values.yaml -f <(terraform -chdir=infra output -raw helm_values)
 ```
+
+**Spend limits.** A build or revise run executes in the application's own image, so its in-pod token budget, and the
+cost a Project's `limits.maxCostMicroUSD` checks, are reported from inside that image and only advisory.
+[`egressBroker.limits`](../deployment/helm.md#egress-broker-limits) is the enforced bound, checked by the broker before
+any model call; every limit is off by default, and this file leaves them off as an explicit opt-out. Off, what bounds a
+build pod is time: its Job deadline (`intentController.config.jobDeadline`, 90 minutes) at whatever rate the model
+provider allows the key, so set a spend limit on the key at the provider too. To size the broker's limits, read the
+per-pod totals on its audit line after the first intents (`kubectl -n patchy logs deploy/patchy-egress-broker`); note
+that `tokensPerPod` counts input, cache and output tokens, while a stage's `tokenBudget` counts output tokens only, so
+it must sit far above the build stage's 800000.
+
+**The Ingresses.** Intents need neither: an App created with only `--intents --checks` has no webhook, the webhook
+Ingress serves only the security pipeline (`--security`), and the status Ingress the status page. Keeping both, as here,
+is harmless and leaves the webhook ready for `--security` later. Without them, set both `ingress.enabled: false`, leave
+`edgeIngressClass` and the module's `edge` out, and skip step 7.
 
 Then the `patchy-config` release, with the Forge that lets the controllers reach `acme`'s repositories (and, for the
 security pipeline, an Integration as in
@@ -344,11 +467,6 @@ Every Deployment should be available and the Forge `Ready`. The status page star
 statistics, no findings, no sign-in), the one posture safe to expose without an identity provider; see
 [the status page](../status-ui.md#access-model) before you configure sign-in. **Rollback point:** none before the first
 install (`helm uninstall` removes it, keeping the CRDs); record the revisions now.
-
-`clusterDNSCIDR`, `edgeIngressClass` and `preview.nodeIsolation.create` arrived after 0.12.15, whose values schema
-refuses them: use a later release. On 0.12.15, leave them out and apply what they render by hand: a NetworkPolicy
-allowing DNS to the cluster DNS address in both patchy namespaces, the edge IngressClass and IngressClassParams, and the
-preview NodeClass and NodePool.
 
 ## 7. Edge DNS
 
@@ -395,7 +513,9 @@ projects:
     spec:
       intentRepository: https://github.com/acme/intents
       approvers:
-        logins: [octocat] # the only accounts whose labels and commands count
+        # The only accounts whose labels and commands count. Include your own login to open
+        # the first intents yourself.
+        logins: [octocat]
       repositories:
         - name: shop-web # the key: a DNS label of at most 16 characters
           url: https://github.com/acme/Shop.Web
@@ -403,17 +523,40 @@ projects:
         fix: [test] # a failing `test` check on patchy's PR starts a fix round
 ```
 
+`checks.fix` names check runs: `test` is the job of the CI `init app` generates for a new application. A repository
+scaffolded with `--existing` has no `test` check from patchy (its `runtime image` workflow's job is `build`), so name
+your own CI's check runs instead, as GitHub lists them for the default branch's head:
+
+```sh
+gh api repos/acme/Shop.Web/commits/main/check-runs --jq '.check_runs[].name'
+```
+
+Each approver also needs **write** access to the intent repository (Write, not Triage): a label or command from an
+approver without it is refused. Grant it to each, or to a team:
+
+```sh
+gh api -X PUT repos/acme/intents/collaborators/octocat -f permission=push
+gh api -X PUT orgs/acme/teams/intent-approvers/repos/acme/intents -f permission=push   # or a team
+```
+
 ```sh
 helm upgrade patchy-config oci://ghcr.io/devthenet-labs/patchy/charts/patchy-config --version X.Y.Z \
   --namespace patchy -f patchy-config-values.yaml
-patchy check project shop-web -n patchy
+GH_TOKEN=$(gh auth token) patchy check project shop-web -n patchy
 ```
 
-Every line should be PASS; the preview checks are SKIP until step 14. Then open an issue in `acme/intents` with the
-label `patchy:shop-web` (the trigger label; intent-controller creates it). patchy posts a plan on the issue; an approver
-adds `patchy:approved` or comments `/patchy approve`, and the pull request follows. An issue form per Project in the
-intent repository (`.github/ISSUE_TEMPLATE/shop-web.yml` with `labels: ["patchy:shop-web"]`) saves typing the label.
-What happens on the issue is in [intent-controller](../configuration/intent-controller.md#on-the-issue).
+The repositories are private, so the check reads them with your GitHub token; without `GH_TOKEN` it reads anonymously
+and `agent-image` is a SKIP. It reads ECR with the AWS SDK's default chain: add `AWS_PROFILE=<profile>` when that is not
+the cluster's account. Every line should be PASS; the preview checks are SKIP until step 14.
+
+Then open an issue in `acme/intents` with the label `patchy:shop-web` (the trigger label; intent-controller creates it).
+patchy posts a plan on the issue; an approver adds `patchy:approved` or comments `/patchy approve`, and the pull request
+follows. An issue form per Project in the intent repository (`.github/ISSUE_TEMPLATE/shop-web.yml` with
+`labels: ["patchy:shop-web"]`) saves typing the label. A label applied as the issue is created, by a form or by
+`gh issue create --label patchy:shop-web`, is the issue author's label event, so it starts an intent only when the
+author is an approver with write access; anyone else's closes the intent with one notice before it plans. Give people
+who are not approvers a form without `labels:`, and let an approver add the label. What happens on the issue is in
+[intent-controller](../configuration/intent-controller.md#on-the-issue).
 
 ## 10. Helm stage 2: the preview foundation
 
@@ -491,22 +634,56 @@ would. Turn on the runtime publisher first, so the pull request's image is publi
 gh variable set PREVIEW_PUBLISH_ENABLED --repo acme/Shop.Web --body true
 ```
 
-Then follow
-[the probe's README](https://github.com/devthenet-labs/patchy/blob/main/hack/preview-isolation-probe/README.md): open a
-disposable same-repository pull request on a `test/preview-*` branch that swaps in the probe's `cmd/netprobe` and
-Dockerfile, wait for its image to be published, and run from a patchy checkout:
+The probe and its script come from a checkout of the release you deploy, never `main`: its flags and assumptions change
+between releases. Its README, `hack/preview-isolation-probe/README.md` in that checkout (on GitHub at
+`https://github.com/devthenet-labs/patchy/blob/vX.Y.Z/hack/preview-isolation-probe/README.md`), explains every check.
+Open a disposable same-repository pull request whose image is the probe instead of the application: on a
+`test/preview-*` branch from the current default branch, the probe's `cmd/netprobe/`, and its `Dockerfile` and
+`.dockerignore` in place of the application's, and nothing else.
 
 ```sh
+git clone --depth 1 --branch vX.Y.Z https://github.com/devthenet-labs/patchy.git patchy-vX.Y.Z
+probe=$PWD/patchy-vX.Y.Z/hack/preview-isolation-probe
+gh repo clone acme/Shop.Web shop-web-probe && cd shop-web-probe
+git switch -c test/preview-isolation origin/main
+mkdir -p cmd && cp -R "$probe/cmd/netprobe" cmd/
+cp "$probe/Dockerfile" "$probe/.dockerignore" .
+git add -A && git commit -m "test: preview isolation probe, never merged"
+git push -u origin test/preview-isolation
+gh pr create --repo acme/Shop.Web --base main --draft \
+  --title "Preview isolation probe (do not merge)" --body "Disposable: closed without merging."
+gh pr diff --name-only   # cmd/netprobe/*, Dockerfile and .dockerignore only
+```
+
+The probe's Dockerfile builds with Go 1.26.6 and `GOTOOLCHAIN=local` from the repository's root `go.mod`, so that file
+must exist and ask for Go 1.26.6 or older (the generated service's does). Wait until the pull request's `test` run (or
+`runtime image`, under `--existing`) and then `publish images` have succeeded, and its image is in ECR:
+
+```sh
+aws ecr describe-images --region us-west-2 --repository-name patchy/previews/shop-web \
+  --image-ids imageTag=sha-$(gh pr view test/preview-isolation --repo acme/Shop.Web --json headRefOid --jq .headRefOid)
+```
+
+Then run the probe from the release checkout. It needs `gh` signed in with read access to the repository, `kubectl`'s
+current context on the cluster, and AWS credentials (`AWS_PROFILE` works) allowed `ecr:DescribeImages` on the image's
+repository. `--dry-run` checks the values and prints the site it would probe, without calling `gh`, `aws` or `kubectl`:
+
+```sh
+cd ../patchy-vX.Y.Z
+pr=$(gh pr view test/preview-isolation --repo acme/Shop.Web --json number --jq .number)
 bash hack/preview-isolation-probe/run.sh --dry-run \
   --repository acme/Shop.Web \
   --image 123456789012.dkr.ecr.us-west-2.amazonaws.com/patchy/previews/shop-web \
   --taint-key patchy.acme.dev/preview-only \
-  <disposable-PR-number>
+  "$pr"
 # the same without --dry-run
 ```
 
-All 128 cold-start connections and the 176 of the sibling run must be blocked. Close the pull request without merging
-it. The script assumes the release is named `patchy` in the namespace `patchy`, and at least two slots.
+`--node-pool` and `--node-class` name the preview NodePool and NodeClass when they are not the default `patchy-preview`.
+The script assumes the release is named `patchy` in the namespace `patchy`, and the slots `patchy-preview-0` and
+`patchy-preview-1`, so at least two. All 128 cold-start connections and the 176 of the sibling run must be blocked; any
+other result stops the run, and previews stay unused until it is explained. Then close the pull request without merging
+it (`gh pr close test/preview-isolation --repo acme/Shop.Web --delete-branch`).
 
 ## 13. Helm stage 3: the preview controller
 
@@ -546,13 +723,27 @@ projects:
 ```sh
 helm upgrade patchy-config oci://ghcr.io/devthenet-labs/patchy/charts/patchy-config --version X.Y.Z \
   --namespace patchy -f patchy-config-values.yaml
-patchy check project shop-web -n patchy
+GH_TOKEN=$(gh auth token) patchy check project shop-web -n patchy
 ```
 
-The next intent's pull request gets a preview at `https://shop-web-<issue>.preview.acme-apps.dev` once its runtime image
-is published and the load balancer reports the target healthy; `kubectl -n patchy get previews` shows its phase and URL.
-A cold preview node takes about three minutes the first time. A new push to the pull request redeploys it, and merging
-or closing the pull request deletes it; the node goes soon after.
+Every line should now be PASS, with two expected SKIPs. `preview-tls` is a SKIP from an address the preview load
+balancer does not admit. `preview-image` is a SKIP until a default-branch commit is published after
+`PREVIEW_PUBLISH_ENABLED` was set; with one previewed repository it is never a FAIL, since a preview runs only the pull
+request's head. To publish one, push a commit, or re-run the default branch's latest `test` run (`runtime image` under
+`--existing`):
+
+```sh
+gh run rerun --repo acme/Shop.Web \
+  "$(gh run list --repo acme/Shop.Web --workflow test --branch main --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+Every intent pull request gets a preview at `https://shop-web-<issue>.preview.acme-apps.dev` once its runtime image is
+published and the load balancer reports the target healthy; `kubectl -n patchy get previews` shows its phase and URL.
+That includes one already open, such as step 9's: its Preview appears within about a minute of the Project gaining
+`preview`, so no new intent is needed. Its head was pushed before `PREVIEW_PUBLISH_ENABLED` was set, though, so publish
+its image the same way, re-running the pull request's latest `test` run (`--branch patchy-intent/shop-web-<issue>`
+above). A cold preview node takes about three minutes the first time. A new push to the pull request redeploys it, and
+merging or closing the pull request deletes it; the node goes soon after.
 
 ## TLS: ACM only, for previews
 
@@ -594,7 +785,7 @@ check:
 | `labels`        | The trigger and approve labels exist                                                                             |
 | `agent-image`   | The declared agent image passes source-controller's checks under its live allowlist                              |
 | `previews`      | intent-controller writes Previews and preview-controller is configured                                           |
-| `preview-image` | The preview image repository is under the preview prefix and reachable                                           |
+| `preview-image` | The preview image repository is under the preview prefix, with `sha-<default-branch head>` published             |
 | `preview-dns`   | `shop-web-0.preview.acme-apps.dev` resolves to the preview load balancer                                         |
 | `preview-tls`   | The name serves a trusted certificate; a SKIP from outside the inbound CIDRs, where the handshake times out      |
 
@@ -634,8 +825,10 @@ What it **cannot** prove, and where to look instead:
 
 In this order; each step depends on the one before it.
 
-1. **Stop new intents and previews.** Suspend or remove the Projects (`spec.suspend: true`, or delete the `projects`
-   entries) and wait until `kubectl get previews -A` lists nothing: each Preview's finalizer empties its slot.
+1. **Stop new intents and previews.** Remove each Project's `preview` block, or delete its `projects` entry, upgrade
+   `patchy-config`, and wait until `kubectl get previews -A` lists nothing: each Preview's finalizer empties its slot.
+   `spec.suspend: true` is not enough on its own: it stops new intents and runs, but leaves the Previews of open pull
+   requests in place.
 2. **Turn the publishers off**: `gh variable set PREVIEW_PUBLISH_ENABLED --repo acme/Shop.Web --body false`, and the
    same for `AGENT_PUBLISH_ENABLED`.
 3. **Preview DNS**: `create_preview_alias_record = false`, apply.
@@ -666,8 +859,8 @@ In this order; each step depends on the one before it.
 - **A fixed slot quota and fixed container limits.** `preview.slotCount` (1 to 4) slots, one Preview each; more wait in
   a queue. A slot holds at most 5 Services and 8 Pods. Every preview container runs with 25m CPU and 32 MiB requested,
   limited to 250m CPU and 256 MiB of memory; none of it is configurable yet.
-- **One container per Pod**, one port, `emptyDir` volumes only, and the runtime contract in
-  [Onboarding an application](onboarding-app.md#the-runtime-contract).
+- **One container per Pod**, one port, no volumes (a read-only root filesystem and no writable `/tmp`), and the runtime
+  contract in [Onboarding an application](onboarding-app.md#the-runtime-contract).
 - **amd64 by default.** The generated publishers build and accept `linux/amd64` images only, the preview NodePool is
   `amd64` by default, and agent Jobs carry no node selector, so the nodes they land on must run amd64 images (Auto
   Mode's built-in general-purpose pool launches amd64 nodes).

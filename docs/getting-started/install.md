@@ -174,7 +174,7 @@ helm install patchy-config oci://ghcr.io/devthenet-labs/patchy/charts/patchy-con
 
 Each entry's `spec` is validated client-side by the chart's values schema (generated from the CRDs, so a typo'd field
 fails the install before anything is applied) and again server-side by the CRD —
-[`deploy/kustomize/base/crs.example.yaml`](https://github.com/bitwise-media-group/patchy/blob/main/deploy/kustomize/base/crs.example.yaml)
+[`deploy/kustomize/base/crs.example.yaml`](https://github.com/devthenet-labs/patchy/blob/main/deploy/kustomize/base/crs.example.yaml)
 is the full field walkthrough (GHES base URLs, org allowlists, repository regexes). Prefer applying the CRs yourself?
 Skip this chart and `kubectl apply` the same objects after the install.
 

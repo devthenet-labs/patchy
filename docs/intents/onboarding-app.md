@@ -65,13 +65,28 @@ block for this application.
 ### An application that already exists
 
 `--existing` writes only `.patchy/` and the CI publishers, builds the runtime image in a workflow of its own
-(`runtime-image.yml`, named `runtime image`) so your CI is untouched, and ends with what to adapt: your `Dockerfile` to
-the runtime contract above, and `.patchy/Dockerfile` to where your Go module lives. Rename any workflow of yours named
-`runtime image` or `agent image`: the dispatcher follows the builds by name.
+(`runtime-image.yml`, named `runtime image`) so your CI is untouched, and ends its next steps with what to adapt:
 
 ```sh
 patchy init app --existing --registry 123456789012.dkr.ecr.us-west-2.amazonaws.com
 ```
+
+- **`./Dockerfile`**, at the repository root, is the runtime image `runtime-image.yml` builds, with the repository root
+  as its context, for `linux/amd64` only, with a `BUILD_SHA` build argument. It must meet the runtime contract above
+  (`USER 65532:65532`, nothing written to disk, one `EXPOSE`d port, the readiness path) and stay under 128 MiB as an OCI
+  archive. Add one if the repository has none.
+- **`.patchy/Dockerfile`** builds the agent's Go module cache from the root `go.mod` and `go.sum`: keep both out of
+  `.dockerignore`'s exclusions. It pins Go 1.26.6 with `GOTOOLCHAIN=local`, so a `go.mod` that asks for a newer Go fails
+  the agent image's build until you change its toolchain stage. Without a root `go.mod`, adapt it to where the module
+  lives.
+- **Workflow names.** The dispatcher, `publish-images.yml`, follows the builds by the names `runtime image` and
+  `agent image`: rename any workflow of yours that already has one.
+- **Your CI** keeps testing the application; `runtime-image.yml` only builds the runtime image (its job is `build`), and
+  the publishers' own tests write `__pycache__` under `.github/actions/publish` when run locally: add `__pycache__/` to
+  `.gitignore`.
+
+There is then no `test` check from patchy: a Project's `checks.fix` names your own CI's check runs
+([The Project](#the-project)).
 
 `--existing` is for an application `init app` did not scaffold. Over a full scaffold (a copy of a template repository,
 say) it leaves that scaffold's `ci.yml` building a runtime image nothing publishes any more, and that `ci.yml`'s
@@ -112,12 +127,16 @@ release; regenerate it with `init app --force` when you upgrade patchy.
 Each application gets two ECR repositories with immutable tags, `patchy/app-envs/<slug>` (the agent image) and
 `patchy/previews/<slug>` (the runtime images), and one publisher role for each. A role trusts only this repository (by
 its numeric IDs and GitHub's immutable OIDC subject), only its default branch, and only its own publisher workflow,
-`.github/workflows/publish-agent.yml` or `publish-runtime.yml`. Nothing else can push, and neither role can write the
-other's repository.
+`.github/workflows/publish-agent.yml` or `publish-runtime.yml`. No other workflow can assume these roles, and neither
+role can write the other's repository. Any other IAM principal with ECR write on these repositories can still push to
+them, though: account administrators, broad CI roles, anything holding `ecr:*`. Under `allowUnsigned`, that write access
+decides which image an agent runs, so keep it narrow, with an ECR repository policy that denies `ecr:PutImage` to all
+but the publisher role, or an SCP.
 
 With the platform module ([Deploying, step 4](deploying.md#4-terraform-phase-1)), add an `apps` entry keyed by the slug.
 Where the platform half is managed elsewhere, use the app module on its own. `init app` prints this block, pinned to its
-release, with the values only GitHub knows left as placeholders beside the `gh` command that reads each:
+release, with the values only GitHub knows left as placeholders beside the `gh` command that reads each (0.12.16's
+`init app` prints no block, and a `gh variable set` command per variable):
 
 ```hcl
 module "patchy_app_shop_web" {
@@ -141,7 +160,9 @@ output "patchy_app_shop_web_variables" {
 ```
 
 IAM compares the repository's values case-sensitively, so take each one from the API exactly as returned (`Shop.Web`,
-not `shop.web`). If the first publish fails with `Not authorized to perform sts:AssumeRoleWithWebIdentity`, compare the
+not `shop.web`). A repository still on GitHub's classic OIDC subject fails the plan: Deploying's step 4 shows how to
+[switch it to immutable subject claims](deploying.md#4-terraform-phase-1), and what that changes for its other
+workflows. If the first publish fails with `Not authorized to perform sts:AssumeRoleWithWebIdentity`, compare the
 module's `oidc_subject` output with the subject GitHub reports. See [the module reference](terraform-module.md) for
 every input.
 
@@ -268,8 +289,10 @@ projects:
 ```
 
 `checks.fix` names check runs or commit statuses (`test` is the generated CI's job); the App then needs checks, statuses
-and actions read on the repository. The App must be installed on the repository before the Project is `Ready`. Upgrade
-`patchy-config`, then run the preflight:
+and actions read on the repository. Under `--existing` there is no `test` check from patchy (`runtime-image.yml`'s job
+is `build`): name your own CI's check runs, as GitHub lists them for the default branch's head
+(`gh api repos/acme/Shop.Web/commits/main/check-runs --jq '.check_runs[].name'`). The App must be installed on the
+repository before the Project is `Ready`. Upgrade `patchy-config`, then run the preflight:
 
 ```sh
 helm upgrade patchy-config oci://ghcr.io/devthenet-labs/patchy/charts/patchy-config --version X.Y.Z \
@@ -277,6 +300,9 @@ helm upgrade patchy-config oci://ghcr.io/devthenet-labs/patchy/charts/patchy-con
 GH_TOKEN=$(gh auth token) patchy check project shop-web -n patchy
 ```
 
-Every line should be PASS, except `preview-tls` from an address the preview load balancer does not admit, which is a
-SKIP. [Deploying, verification](deploying.md#verification) lists what each check proves and what none of them can. An
-issue in the intent repository with the label `patchy:shop-web` is then the first intent.
+Every line should be PASS, except two expected SKIPs: `preview-tls` from an address the preview load balancer does not
+admit, and `preview-image` until a default-branch commit is published after `PREVIEW_PUBLISH_ENABLED` was set (push one,
+or re-run the default branch's latest `test` run; with one previewed repository it is never a FAIL).
+[Deploying, verification](deploying.md#verification) lists what each check proves and what none of them can. An issue in
+the intent repository with the label `patchy:shop-web`, opened or labelled by an approver with write access to it, is
+then the first intent.

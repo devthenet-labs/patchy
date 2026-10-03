@@ -269,14 +269,57 @@ func (cl *cluster) githubCredentials(t *testing.T, ghURL string) {
 
 // ---- controllers -----------------------------------------------------------
 
+// freePort returns a loopback port nothing is listening on, and never one it
+// has returned before in this process. A probed port is free again the moment
+// its probe closes, so the kernel may hand the next probe the same one: a
+// controller given it as both --listen-addr and --health-addr binds its
+// health probe there first, and the webhooks meant for it get a 404.
 func freePort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	port, err := ports.next()
 	if err != nil {
 		t.Fatal(err)
 	}
+	return port
+}
+
+// ports is the process's one pool, so no two callers share a port.
+var ports = &portPool{probe: probePort}
+
+// portPool hands out each port its probe finds at most once.
+type portPool struct {
+	mu    sync.Mutex
+	probe func() (int, error)
+	used  map[int]bool
+}
+
+func (p *portPool) next() (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.used == nil {
+		p.used = map[int]bool{}
+	}
+	for range 100 {
+		port, err := p.probe()
+		if err != nil {
+			return 0, err
+		}
+		if !p.used[port] {
+			p.used[port] = true
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("no port not already handed out after 100 probes")
+}
+
+// probePort asks the kernel for a free loopback port.
+func probePort() (int, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
 	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port
+	return ln.Addr().(*net.TCPAddr).Port, nil
 }
 
 // controller starts a real controller binary against the envtest cluster and

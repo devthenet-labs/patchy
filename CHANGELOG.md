@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.12.15](https://github.com/devthenet-labs/patchy/compare/v0.12.14...v0.12.15) (2026-10-03)
+
+
+### Features
+
+* **cli:** patchy check project — a read-only Project preflight ([#99](https://github.com/devthenet-labs/patchy/issues/99)) ([cd751de](https://github.com/devthenet-labs/patchy/commit/cd751deae47bafbe04b83ac1b31e0434f3538bf3))
+* **cli:** patchy init app scaffolds an application repository (W8) ([#102](https://github.com/devthenet-labs/patchy/issues/102)) ([0d94f26](https://github.com/devthenet-labs/patchy/commit/0d94f26048edf609a051abb96afd0c9d8a96c163))
+* **cli:** patchy setup github-app creates the App from a manifest (W6) ([#101](https://github.com/devthenet-labs/patchy/issues/101)) ([a7f4877](https://github.com/devthenet-labs/patchy/commit/a7f4877d8c23addb19f1387b18bafdf2ae38cb5b))
+* **terraform:** reference AWS module for intents and previews (W7) ([#98](https://github.com/devthenet-labs/patchy/issues/98)) ([9dd8fc8](https://github.com/devthenet-labs/patchy/commit/9dd8fc81c3363690f45b611d272a74c46ef63e53))
+
+
+### Bug Fixes
+
+* **intent:** prove the check-fix read permissions before a Project is Ready (W5) ([#97](https://github.com/devthenet-labs/patchy/issues/97)) ([cf5b964](https://github.com/devthenet-labs/patchy/commit/cf5b9640adf90651b996fbefc6118f88ee7d30cb))
+
 ## [0.12.14](https://github.com/devthenet-labs/patchy/compare/v0.12.13...v0.12.14) (2026-10-03)
 
 

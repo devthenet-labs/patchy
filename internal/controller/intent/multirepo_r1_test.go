@@ -4,12 +4,14 @@
 package intent
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
@@ -137,5 +139,74 @@ func TestMultiRepoOffMidRoundResumesTheRound(t *testing.T) {
 					in.Status.RoundNoticesThrough)
 			}
 		})
+	}
+}
+
+// TestSwappedKeysNeverAdoptAnotherRepositorysBuild: build runs are named by
+// the Project's repository key and read by URL, so once the keys of app and
+// web are swapped mid-build, web's next attempt takes the name of app's
+// second attempt. That run is app's, and is never adopted as web's build
+// (which then never ran, the intent building forever with nothing said): the
+// intent blocks, naming the run and both repositories, and builds web once
+// the keys are restored.
+func TestSwappedKeysNeverAdoptAnotherRepositorysBuild(t *testing.T) {
+	e := newMultiEnv(t)
+	e.runs.MaxConcurrent = 2
+	appA2 := v1alpha1.IntentRunName("target-1", v1alpha1.IntentStageBuild, 1, "app", 2)
+	failing := map[string]bool{
+		v1alpha1.IntentRunName("target-1", v1alpha1.IntentStageBuild, 1, "app", 1): true,
+		v1alpha1.IntentRunName("target-1", v1alpha1.IntentStageBuild, 1, "web", 1): true,
+	}
+	e.jobs.output = func(spec jobs.Spec) jobs.RunOutput {
+		if spec.Phase == "build" && failing[spec.Finding] {
+			return failingBuild(spec)
+		}
+		return multiOutput(spec)
+	}
+	e.jobs.status[buildJob("web")] = jobs.Status{}
+	e.jobs.status[jobs.NameFor(appA2, KindIntent, 2)] = jobs.Status{}
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	e.driveUntil(name, func(*v1alpha1.Intent) bool { return len(e.buildsIn(name, appRepoURL)) == 2 })
+
+	swap := func() {
+		p := e.getProject()
+		p.Spec.Repositories[0].Name, p.Spec.Repositories[1].Name = p.Spec.Repositories[1].Name,
+			p.Spec.Repositories[0].Name
+		p.Generation++
+		if err := e.c.Update(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	swap()
+	e.releaseJob(buildJob("web"))
+	in := e.drive(name, v1alpha1.IntentBlocked, repoImage)
+	c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionUnsupportedRepositories)
+	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != ReasonRepositoryKeyChanged ||
+		!strings.Contains(c.Message, appA2) || !strings.Contains(c.Message, webSlug) ||
+		!strings.Contains(c.Message, "acme/app ") {
+		t.Fatalf("UnsupportedRepositories = %+v, want the run %s and both repositories named", c, appA2)
+	}
+	if web := e.buildsIn(name, webRepoURL); len(web) != 1 {
+		t.Fatalf("web builds = %d, want only its failed first attempt", len(web))
+	}
+	for range 3 {
+		e.mustIntent(name)
+		e.clock.Advance(time.Minute)
+	}
+	if in := e.get(name); in.Status.Phase != v1alpha1.IntentBlocked {
+		t.Fatalf("phase %s while the keys stay swapped, want Blocked", in.Status.Phase)
+	}
+
+	swap()
+	e.releaseJob(jobs.NameFor(appA2, KindIntent, 2))
+	in = e.drive(name, v1alpha1.IntentInReview, repoImage)
+	web := e.buildsIn(name, webRepoURL)
+	if len(web) != 2 || web[1].Name != v1alpha1.IntentRunName(name, v1alpha1.IntentStageBuild, 1, "web", 2) ||
+		web[1].Status.Phase != v1alpha1.RunComplete {
+		t.Fatalf("web builds = %+v, want its second attempt built under its own key", web)
+	}
+	if len(in.Status.PullRequests) != 2 {
+		t.Errorf("pull requests = %+v, want both", in.Status.PullRequests)
 	}
 }

@@ -123,6 +123,9 @@ func (p *pass) building(ctx context.Context) (bool, error) {
 	}
 	if len(launches) > 0 {
 		runs, stop, err := p.launchBuilds(ctx, ap.PlanRevision, launches)
+		if errors.Is(err, errRunNameTaken) {
+			return true, p.blockKeyChanged(ctx, err)
+		}
 		if stop || err != nil {
 			return stop, err
 		}

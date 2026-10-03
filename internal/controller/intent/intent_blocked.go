@@ -5,6 +5,7 @@ package intent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -50,6 +51,30 @@ const (
 // runs without --intent-multi-repo.
 const ReasonMultiRepositoryOff = "MultiRepositoryOff"
 
+// ReasonRepositoryKeyChanged is the UnsupportedRepositories reason of an
+// Intent whose build cannot be created because its name is another
+// repository's run (errRunNameTaken): the Project's repository keys changed
+// while the intent was building. It lifts once the Project changes again.
+const ReasonRepositoryKeyChanged = "RepositoryKeyChanged"
+
+// blockKeyChanged blocks the Intent on err, an errRunNameTaken, naming the
+// run, the repository it builds and the one whose build would take its name.
+func (p *pass) blockKeyChanged(ctx context.Context, err error) error {
+	p.r.log().LogAttrs(ctx, slog.LevelWarn, "a run's name is another repository's run; the intent is held",
+		slog.String("intent", p.in.Name), slog.Any("error", err))
+	return p.block(ctx, v1alpha1.ConditionUnsupportedRepositories, ReasonRepositoryKeyChanged,
+		fmt.Sprintf("%v. patchy never takes one repository's run for another's, so that build cannot be created. "+
+			"Restore the Project's repository keys, or give the repository a key none of this intent's runs use, "+
+			"to resume", err))
+}
+
+// unsupportedFor reports the UnsupportedRepositories condition True with
+// reason.
+func (p *pass) unsupportedFor(reason string) bool {
+	c := meta.FindStatusCondition(p.in.Status.Conditions, v1alpha1.ConditionUnsupportedRepositories)
+	return c != nil && c.Status == metav1.ConditionTrue && c.Reason == reason
+}
+
 // multiRepoOffMessage says why an Intent of a multi-repository Project is
 // held, and what lifts it.
 func multiRepoOffMessage(p *v1alpha1.Project) string {
@@ -72,7 +97,7 @@ func (p *pass) holdMultiRepo(ctx context.Context) (stop bool, err error) {
 		return true, p.block(ctx, v1alpha1.ConditionUnsupportedRepositories, ReasonMultiRepositoryOff,
 			multiRepoOffMessage(p.proj))
 	}
-	if meta.IsStatusConditionTrue(p.in.Status.Conditions, v1alpha1.ConditionUnsupportedRepositories) {
+	if p.unsupportedFor(ReasonMultiRepositoryOff) {
 		return false, nil
 	}
 	return true, p.update(ctx, func(cur *v1alpha1.Intent) error {
@@ -138,7 +163,7 @@ func (p *pass) blocked(ctx context.Context) (bool, error) {
 	if holds {
 		// The flag is on again (or the Project lists one repository) while
 		// another block still holds: only that one is left to explain it.
-		if !meta.IsStatusConditionTrue(p.in.Status.Conditions, v1alpha1.ConditionUnsupportedRepositories) {
+		if !p.unsupportedFor(ReasonMultiRepositoryOff) {
 			return false, nil
 		}
 		return true, p.update(ctx, func(cur *v1alpha1.Intent) error {
@@ -155,7 +180,11 @@ func (p *pass) blocked(ctx context.Context) (bool, error) {
 			return false, err
 		}
 	case from == v1alpha1.IntentBuilding && p.in.Status.Approval != nil:
-		if active, err = p.resumeBuilds(ctx); err != nil {
+		active, err = p.resumeBuilds(ctx)
+		if errors.Is(err, errRunNameTaken) {
+			return true, p.blockKeyChanged(ctx, err)
+		}
+		if err != nil {
 			return false, err
 		}
 	case from == v1alpha1.IntentRevising:
@@ -269,6 +298,16 @@ func (p *pass) blockHolds(ctx context.Context) (bool, error) {
 	if meta.IsStatusConditionTrue(p.in.Status.Conditions, v1alpha1.ConditionRevisionLimitReached) &&
 		p.revisionRounds() >= maxRevisions(p.proj) {
 		return true, nil
+	}
+	if p.unsupportedFor(ReasonRepositoryKeyChanged) {
+		// Until the Project changes (this process saw the block made under
+		// its generation): then the resumed phase tries the name again.
+		var gen int64
+		var known bool
+		p.r.memo(func() { gen, known = p.r.blockedAt[p.in.Name] })
+		if known && gen == p.proj.Generation {
+			return true, nil
+		}
 	}
 	if c := meta.FindStatusCondition(p.in.Status.Conditions, v1alpha1.ConditionChecksFailing); c != nil &&
 		c.Status == metav1.ConditionTrue {

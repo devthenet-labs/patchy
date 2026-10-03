@@ -323,8 +323,25 @@ func (p *pass) createRun(ctx context.Context, stage v1alpha1.IntentStage, repo v
 	if existing.Spec.IntentRef.UID != p.in.UID {
 		return nil, fmt.Errorf("run %s: %w", name, errNotOwned)
 	}
+	// The name is the lease of one stage, round and attempt, and a build's
+	// of one repository; a run under it for anything else is not this one.
+	// Rounds are read by URL and names are made from the Project's keys, so
+	// a key moved from one repository to another (the Project changed under
+	// the intent) can name another repository's run.
+	if existing.Spec.Stage != stage || existing.Spec.Round != round || existing.Spec.Attempt != attempt ||
+		stage == v1alpha1.IntentStageBuild && !sameRepo(existing.Spec.Repository.URL, repo.URL) {
+		return nil, fmt.Errorf("%w: run %s, the name the build of %s takes under the key %q, is the %s run of %s "+
+			"(round %d, attempt %d)", errRunNameTaken, name, repoSlug(repo.URL), repo.Name, existing.Spec.Stage,
+			repoSlug(existing.Spec.Repository.URL), existing.Spec.Round, existing.Spec.Attempt)
+	}
 	return &existing, nil
 }
+
+// errRunNameTaken: the deterministic name of a run to create is held by
+// another of this Intent's runs: the Project's repository keys changed while
+// the intent was building, one key now naming another repository than the
+// one its runs were created for. The run is never adopted as this one.
+var errRunNameTaken = errors.New("the Project's repository keys changed under the intent")
 
 // errRepositoryGone: the approved plan names a repository the Project no
 // longer holds. Nothing is built anywhere else than what was approved.

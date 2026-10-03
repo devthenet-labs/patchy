@@ -93,11 +93,16 @@ const (
 	// once the branch, or that pull request, is gone. On a multi-repository
 	// intent the message names the repository.
 	ConditionBranchConflict = "BranchConflict"
-	// ConditionUnsupportedRepositories marks a Blocked Intent whose Project
+	// ConditionUnsupportedRepositories marks a Blocked Intent whose Project's
+	// repositories it cannot run over. Reason MultiRepositoryOff: the Project
 	// lists more than one repository while intent-controller runs without
-	// --intent-multi-repo: nothing is planned, built, pushed or revised for
-	// it. The block lifts once the flag is on again or the Project lists one
-	// repository.
+	// --intent-multi-repo; no run is launched and nothing is pushed for it
+	// (a Job already running finishes, and its push waits), and the block
+	// lifts once the flag is on again or the Project lists one repository.
+	// Reason RepositoryKeyChanged: a repository key now names another
+	// repository than the one the intent's runs under it were created for,
+	// so a build cannot take its name; the block lifts once the Project
+	// changes.
 	ConditionUnsupportedRepositories = "UnsupportedRepositories"
 	// ConditionSiblingsLinked reports, on an Intent that opened more than
 	// one pull request, whether the comment cross-linking them was posted on

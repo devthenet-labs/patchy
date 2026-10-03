@@ -921,11 +921,25 @@ func (r *RunReconciler) pushGate(ctx context.Context, run *v1alpha1.IntentRun) e
 	case in.Spec.Suspend:
 		return errHeld
 	}
+	if err := r.projectGate(ctx, run, &in); err != nil {
+		return err
+	}
+	if run.Spec.Stage == v1alpha1.IntentStageRevise {
+		return r.roundGate(ctx, run, &in)
+	}
+	return nil
+}
+
+// projectGate is pushGate's read of the run's Project, uncached: nil when it
+// is gone (nothing holds the push, as before), errRepositoryLeft when it no
+// longer lists the run's repository, errMultiRepoOff when it is one this
+// controller runs no intent of.
+func (r *RunReconciler) projectGate(ctx context.Context, run *v1alpha1.IntentRun, in *v1alpha1.Intent) error {
 	var proj v1alpha1.Project
 	switch err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: in.Spec.Project},
 		&proj); {
 	case kerrors.IsNotFound(err):
-		// No Project to hold the push to, as before.
+		return nil
 	case err != nil:
 		return err
 	case repositoryLeft(&proj, run):
@@ -933,24 +947,30 @@ func (r *RunReconciler) pushGate(ctx context.Context, run *v1alpha1.IntentRun) e
 	case r.Settings.multiRepoOff(&proj):
 		return errMultiRepoOff
 	}
-	if run.Spec.Stage == v1alpha1.IntentStageRevise {
-		if in.Status.Phase == v1alpha1.IntentBlocked && v1alpha1.IntentBlockedFrom(&in) == v1alpha1.IntentRevising {
-			return errRoundBlocked
+	return nil
+}
+
+// roundGate is pushGate's check of a revise round: its Intent Revising (one
+// Blocked from Revising holds it, errRoundBlocked), and the pull request of
+// its own repository, read live, still open (errPullRequestEnded beside open
+// siblings).
+func (r *RunReconciler) roundGate(ctx context.Context, run *v1alpha1.IntentRun, in *v1alpha1.Intent) error {
+	if in.Status.Phase == v1alpha1.IntentBlocked && v1alpha1.IntentBlockedFrom(in) == v1alpha1.IntentRevising {
+		return errRoundBlocked
+	}
+	pr := recordedPullRequest(in, run.Spec.Repository.URL)
+	if in.Status.Phase != v1alpha1.IntentRevising || pr == nil {
+		return errIntentEnded
+	}
+	live, err := r.GitHub.GetPullRequest(ctx, pr.Repository, pr.Number)
+	if err != nil {
+		return fmt.Errorf("verify revise PR before push: %w", err)
+	}
+	if live.State != prOpen || live.Merged || pr.NodeID != "" && live.NodeID != pr.NodeID {
+		if len(in.Status.PullRequests) > 1 {
+			return errPullRequestEnded
 		}
-		pr := recordedPullRequest(&in, run.Spec.Repository.URL)
-		if in.Status.Phase != v1alpha1.IntentRevising || pr == nil {
-			return errIntentEnded
-		}
-		live, err := r.GitHub.GetPullRequest(ctx, pr.Repository, pr.Number)
-		if err != nil {
-			return fmt.Errorf("verify revise PR before push: %w", err)
-		}
-		if live.State != prOpen || live.Merged || pr.NodeID != "" && live.NodeID != pr.NodeID {
-			if len(in.Status.PullRequests) > 1 {
-				return errPullRequestEnded
-			}
-			return errIntentEnded
-		}
+		return errIntentEnded
 	}
 	return nil
 }

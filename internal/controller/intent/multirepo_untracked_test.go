@@ -19,12 +19,13 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/templates"
 )
 
-// untrackedNotices are patchy's untracked notices on pull request n.
-func (e *env) untrackedNotices(n int64) []string {
+// appUntrackedNotices are patchy's untracked notices on app's pull request
+// (1), the one these intents open before they end.
+func (e *env) appUntrackedNotices() []string {
 	e.gh.mu.Lock()
 	defer e.gh.mu.Unlock()
 	var out []string
-	for _, c := range e.gh.prComments[n] {
+	for _, c := range e.gh.prComments[1] {
 		if strings.Contains(markerOf(c.Body), " "+templates.UntrackedKey+" ") {
 			out = append(out, c.Body)
 		}
@@ -66,7 +67,7 @@ func TestCancelWhileOpeningNoticesTheOpenedPullRequest(t *testing.T) {
 	e.passUntil(name, func() bool { return e.get(name).Status.Phase == v1alpha1.IntentClosed })
 	e.settleActions(name)
 	e.settleActions(name)
-	notices := e.untrackedNotices(1)
+	notices := e.appUntrackedNotices()
 	if len(notices) != 1 || !strings.Contains(notices[0], "was closed before patchy had opened") ||
 		!strings.Contains(notices[0], "`"+webSlug+"`") || !strings.Contains(notices[0], "no longer reviews") {
 		t.Fatalf("untracked notices on app's pull request = %q, want one naming web as never opened", notices)
@@ -98,7 +99,7 @@ func TestFailWhileOpeningNoticesAndRevivalForgets(t *testing.T) {
 	}
 	e.passUntil(name, func() bool { return e.get(name).Status.Phase == v1alpha1.IntentFailed })
 	e.settleActions(name)
-	if notices := e.untrackedNotices(1); len(notices) != 1 || !strings.Contains(notices[0], "failed before patchy") {
+	if notices := e.appUntrackedNotices(); len(notices) != 1 || !strings.Contains(notices[0], "failed before patchy") {
 		t.Fatalf("untracked notices on app's pull request = %q, want one saying the intent failed", notices)
 	}
 
@@ -125,7 +126,7 @@ func TestOneRepositoryEndingPostsNoUntrackedNotice(t *testing.T) {
 	e.gh.comment(approver, "/patchy cancel")
 	e.passUntil(name, func() bool { return e.get(name).Status.Phase == v1alpha1.IntentClosed })
 	e.settleActions(name)
-	if n := len(e.untrackedNotices(1)); n != 0 {
+	if n := len(e.appUntrackedNotices()); n != 0 {
 		t.Errorf("%d untracked notices on a one-repository intent's pull request, want none", n)
 	}
 	if c := meta.FindStatusCondition(e.get(name).Status.Conditions,
@@ -222,7 +223,7 @@ func TestUnreachableUntrackedNoticeNeverHoldsARevival(t *testing.T) {
 					t.Errorf("UntrackedPullRequests message %q lacks %q", c.Message, want)
 				}
 			}
-			if n := len(e.untrackedNotices(1)); n != 0 {
+			if n := len(e.appUntrackedNotices()); n != 0 {
 				t.Errorf("%d untracked notices on app's pull request, want none", n)
 			}
 			if body := e.statusBody(); !strings.Contains(body, "`Failed`") {
@@ -269,7 +270,7 @@ func TestTransientUntrackedNoticeFailureHoldsOnlyTheHandOff(t *testing.T) {
 	delete(e.gh.repoErrs, "RateRemaining acme/app")
 	e.gh.mu.Unlock()
 	e.passUntil(name, func() bool { return e.get(name).Status.Phase == v1alpha1.IntentPlanning })
-	if notices := e.untrackedNotices(1); len(notices) != 1 {
+	if notices := e.appUntrackedNotices(); len(notices) != 1 {
 		t.Errorf("untracked notices on app's pull request = %d, want one", len(notices))
 	}
 }

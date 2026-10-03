@@ -11,10 +11,11 @@ kubectl -n patchy get integrations,forges     # both should show Ready
 kubectl -n patchy logs deploy/patchy-integration-controller
 ```
 
-The five controller pods should be `Running` and logging to stderr; each serves `GET /healthz` and `GET /readyz` on
-port 8081. `Ready: False` on the Integration or Forge means the referenced `patchy-github` Secret is missing or its
-credential failed validation — fix that before anything else. In the GitHub App's **Advanced → Recent Deliveries**, the
-`ping` delivery should show `204` — a `401` means the webhook secret in the App and in `patchy-github` disagree.
+The five pipeline controllers, the egress broker and the status server (and any optional controller you enabled) should
+be `Running` and logging to stderr; each serves `GET /healthz` and `GET /readyz` on port 8081. `Ready: False` on the
+Integration or Forge means the referenced `patchy-github` Secret is missing or its credential failed validation — fix
+that before anything else. In the GitHub App's **Advanced → Recent Deliveries**, the `ping` delivery should show `204` —
+a `401` means the webhook secret in the App and in `patchy-github` disagree.
 
 ## 2. Produce a finding
 

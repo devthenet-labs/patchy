@@ -15,7 +15,7 @@ variable "cluster_name" {
 }
 
 variable "name_prefix" {
-  description = "Prefix of the platform IAM names: <name_prefix>-patchy-source-controller and <name_prefix>-patchy-preview-node. Null means cluster_name. IAM names are account-wide, so the prefix keeps two installs in one account apart."
+  description = "Prefix of the platform IAM names: `<name_prefix>-patchy-source-controller` and `<name_prefix>-patchy-preview-node`. Null means cluster_name. IAM names are account-wide, so the prefix keeps two installs in one account apart."
   type        = string
   default     = null
 
@@ -81,7 +81,7 @@ variable "agent_path_prefix" {
 }
 
 variable "preview_path_prefix" {
-  description = "ECR path the preview runtime images live under, with no leading or trailing slash: each app's runtime repository is <preview_path_prefix>/<slug>, the preview nodes may pull only under it, and helm_values sets the chart's preview.imagePathPrefix to it. It must be disjoint from agent_path_prefix."
+  description = "ECR path the preview runtime images live under, with no leading or trailing slash: each app's runtime repository is `<preview_path_prefix>/<slug>`, the preview nodes may pull only under it, and helm_values sets the chart's preview.imagePathPrefix to it. It must be disjoint from agent_path_prefix."
   type        = string
   default     = "patchy/previews"
 
@@ -92,7 +92,7 @@ variable "preview_path_prefix" {
 }
 
 variable "app_role_name_prefix" {
-  description = "Prefix of every app's publisher role and policy names: <app_role_name_prefix><slug>-<agent|runtime>-push. Null means \"<name_prefix>-app-\"."
+  description = "Prefix of every app's publisher role and policy names: `<app_role_name_prefix><slug>-agent-push` and `<app_role_name_prefix><slug>-runtime-push`. Null means `<name_prefix>-app-`."
   type        = string
   default     = null
 
@@ -110,7 +110,7 @@ variable "apps" {
     - github: the repository exactly as the API reports it (IAM compares case-sensitively). owner, name,
       repository_id, owner_id and default_branch come from `gh api repos/<owner>/<name>`; sub_claim_prefix,
       which is required, from `gh api repos/<owner>/<name>/actions/oidc/customization/sub --jq .sub_claim_prefix`.
-      It must be GitHub's immutable form, repo:<owner>@<owner_id>/<name>@<repository_id>.
+      It must be GitHub's immutable form, `repo:<owner>@<owner_id>/<name>@<repository_id>`.
   EOT
   type = map(object({
     github = object({
@@ -162,16 +162,19 @@ variable "apps" {
 variable "previews" {
   description = <<-EOT
     Preview infrastructure; null (the default) creates none. Set, the module creates the preview node role and its
-    EKS access entry, and a wildcard certificate for *.<host_suffix> validated in zone_id.
-    - host_suffix: preview hosts are <project>-<issue>.<host_suffix>. A separate registrable domain is recommended.
+    EKS access entry, and a wildcard certificate for `*.<host_suffix>` validated in zone_id.
+    - host_suffix: preview hosts are `<project>-<issue>.<host_suffix>`. A separate registrable domain is recommended.
     - zone_id: the Route53 hosted zone that holds host_suffix.
-    - alb_name: the preview ALB, at most 32 characters. Null means "<cluster_name>-preview". It must differ from
+    - alb_name: the preview ALB, at most 32 characters. Null means `<cluster_name>-preview`. It must differ from
       edge.alb_name: previews get an ALB of their own.
     - alb_subnet_ids: the public subnets the preview ALB is placed in: 2 to 4, one per Availability Zone, each in the
-      cluster's VPC and tagged kubernetes.io/role/elb. helm_values pins the ALB to exactly these subnets
-      (preview.albSubnetIDs), and their CIDRs become preview.albSubnetCIDRs, the only sources preview pods admit.
-    - node_subnet_ids: the private subnets preview nodes run in (the NodeClass subnetSelectorTerms). Untrusted
-      preview workloads must never get public IPs, so a subnet that assigns them fails the plan.
+      cluster's VPC, tagged kubernetes.io/role/elb and /20 or narrower. helm_values pins the ALB to exactly these
+      subnets (preview.albSubnetIDs), and their CIDRs become preview.albSubnetCIDRs, the only sources preview pods
+      admit.
+    - node_subnet_ids: the private subnets preview nodes run in (the NodeClass subnetSelectorTerms), each in a zone
+      of one of the alb_subnet_ids: the ALB sends no traffic to a target in a zone it has not enabled. Untrusted
+      preview workloads must never get public IPs, so a subnet that assigns them fails the plan. The nodes join the
+      cluster and pull from ECR out of these subnets, so they need a NAT gateway or EKS, ECR and S3 endpoints.
     - inbound_cidrs: who may reach previews: 1 to 8 IPv4 /32s.
     - dns_cidr, api_server_cidr: the cluster DNS and Kubernetes API Service /32s. Null derives .10 and .1 of the
       cluster's service CIDR, which is what EKS assigns.
@@ -249,7 +252,8 @@ variable "edge" {
     - zone_id: the Route53 hosted zone that holds the hosts.
     - webhook_host, status_host: the two hostnames; status_host is optional.
     - certificate_domains: the names the certificate covers, which must cover both hosts. Null means the hosts.
-    - alb_name: the ALB the edge Ingresses share, looked up by name only for the alias records.
+    - alb_name: the ALB the edge Ingresses share, looked up by name only for the alias records: the chart's
+      edgeIngressClass.loadBalancerName, when the chart creates the edge class.
   EOT
   type = object({
     zone_id             = string
@@ -296,7 +300,7 @@ variable "create_edge_alias_records" {
 }
 
 variable "create_preview_alias_record" {
-  description = "Create the *.<previews.host_suffix> Route53 alias record, pointing at the preview ALB looked up by its name. Set it once Helm stage 2 (previews on, with the placeholder Ingress) has created the preview ALB: the lookup fails the plan while the ALB is missing."
+  description = "Create the `*.<previews.host_suffix>` Route53 alias record, pointing at the preview ALB looked up by its name. Set it once Helm stage 2 (previews on, with the placeholder Ingress) has created the preview ALB: the lookup fails the plan while the ALB is missing."
   type        = bool
   default     = false
 }

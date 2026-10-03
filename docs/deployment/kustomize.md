@@ -8,7 +8,7 @@ overlay-style patching; `deploy/README.md` in the repository is the full operato
 deploy/
 ├── kustomize/
 │   ├── base/                  # CRDs (rendered first), namespaces, serviceaccounts,
-│   │                          #   RBAC, the shared ConfigMap, five Deployments,
+│   │                          #   RBAC, the shared ConfigMap, eight Deployments,
 │   │                          #   Services, network policies
 │   ├── components/cilium/     # optional FQDN egress (CiliumNetworkPolicy)
 │   ├── components/gke-fqdn/   # optional FQDN egress (GKE Dataplane V2 FQDNNetworkPolicy)
@@ -37,7 +37,7 @@ GitHub App's webhook at the integration-controller.
 ## Configuration
 
 Everything is `PATCHY_*` environment in one ConfigMap (`base/configmap.yaml`), consumed with `envFrom`. A key a binary
-does not bind is inert, which is why one ConfigMap serves all five controllers — the
+does not bind is inert, which is why one ConfigMap serves all eight Deployments — the
 [configuration reference](../configuration/index.md) maps every key to its flag.
 
 !!! warning "The agent image is pinned in two places"

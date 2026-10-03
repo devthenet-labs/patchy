@@ -70,7 +70,7 @@ locals {
 }
 
 output "helm_values" {
-  description = "YAML values for the patchy chart, derived from the infrastructure: pass it last, after the operator's own values file (helm install ... -f operator-values.yaml -f <(terraform output -raw helm_values)). It carries no enable flag and no security opt-out."
+  description = "YAML values for the patchy chart, derived from the infrastructure: pass it last, after the operator's own values file (`helm install ... -f operator-values.yaml -f <(terraform output -raw helm_values)`). It carries no enable flag and no security opt-out."
   value       = yamlencode(local.helm_values)
 }
 
@@ -80,7 +80,7 @@ output "github_variables" {
 }
 
 output "github_variables_dotenv" {
-  description = "Per app slug, the same variables as a sorted dotenv string: terraform output -json github_variables_dotenv | jq -r '.\"<slug>\"' | gh variable set --repo <owner>/<name> -f -"
+  description = "Per app slug, the same variables as a sorted dotenv string: `terraform output -json github_variables_dotenv`, piped through `jq -r '.\"<slug>\"'` to `gh variable set --repo <owner>/<name> -f -`"
   value       = { for slug, app in module.app : slug => app.github_variables_dotenv }
 }
 
@@ -99,7 +99,7 @@ output "apps" {
 }
 
 output "registry" {
-  description = "The account's ECR registry host (<account>.dkr.ecr.<region>.amazonaws.com)"
+  description = "The account's ECR registry host (`<account>.dkr.ecr.<region>.amazonaws.com`)"
   value       = local.registry
 }
 
@@ -109,7 +109,7 @@ output "github_oidc_provider_arn" {
 }
 
 output "source_controller_role_arn" {
-  description = "IAM role source-controller assumes through EKS Pod Identity (read-only on <agent_path_prefix>/*)"
+  description = "IAM role source-controller assumes through EKS Pod Identity (read-only on `<agent_path_prefix>/*`)"
   value       = aws_iam_role.source_controller.arn
 }
 
@@ -124,7 +124,7 @@ output "preview_node_class" {
 }
 
 output "preview_certificate_arn" {
-  description = "ACM certificate for *.<previews.host_suffix> (helm_values preview.certificateARN); null without previews"
+  description = "ACM certificate for `*.<previews.host_suffix>` (helm_values preview.certificateARN); null without previews"
   value       = local.preview_certificate_arn
 }
 

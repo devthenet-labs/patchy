@@ -172,8 +172,11 @@ command.
 An action counts only when GitHub's API shows who took it: the actor of a label event, or a comment's author. That
 account must be in the Project's `approvers.logins`, have write access to the intent repository, and not be a bot.
 Anything else gets one refusal and changes nothing; a refused approve label is removed, and a trigger from anyone else
-closes the intent before it plans. A command comment gets a 👀 reaction, and every answered action gets exactly one
-reply, never a second, even if patchy's reply is deleted.
+closes the intent before it plans. A label applied as the issue is created, by an issue form's `labels:` or by
+`gh issue create --label`, is a label event whose actor is the issue's author: such an issue starts an intent only when
+its author is an approver, so give everyone else a form without the trigger label, for an approver to add. A command
+comment gets a 👀 reaction, and every answered action gets exactly one reply, never a second, even if patchy's reply is
+deleted.
 
 A comment edited after it was posted is never taken as a command: GitHub lets anyone with write access edit anyone's
 comment and still shows the original author. patchy answers it once, saying so, and the author can post the command

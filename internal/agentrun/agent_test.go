@@ -168,6 +168,11 @@ func newWorkspace(t *testing.T) string {
 	// test repos must not inherit that.
 	run("config", "commit.gpgsign", "false")
 	run("config", "tag.gpgsign", "false")
+	// No detached auto-gc or maintenance: one left running after a commit
+	// (the build's commit.sh makes one) writes into .git while t.TempDir
+	// removes it, and the cleanup fails with "directory not empty".
+	run("config", "gc.auto", "0")
+	run("config", "maintenance.auto", "false")
 	if err := os.WriteFile(filepath.Join(repo, "app.js"), []byte("vulnerable();\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

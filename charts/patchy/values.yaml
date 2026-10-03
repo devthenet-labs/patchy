@@ -182,7 +182,7 @@ previewController:
         # false is that ungated Ready (Pod Ready, then the Ingress): set it
         # if Auto Mode ever stops injecting the gate, since without the gate
         # every rollout times out.
-        # Upgrading from 0.12.14 or earlier, whose default was false: an
+        # Upgrading from 0.12.15 or earlier, whose default was false: an
         # install that never set this turns it on. A Preview already Ready
         # is not regated, but one deploying during the upgrade has Pods
         # created before the label, so they carry no gate; that attempt

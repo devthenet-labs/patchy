@@ -197,6 +197,10 @@ runs.
 
 ### To Amazon ECR from GitHub Actions
 
+`patchy init app` generates all of this for you, split into an uncredentialed build and a trusted publisher that only
+the default branch can run, and the reference terraform module creates the repository and the role: see
+[Onboarding an application](../intents/onboarding-app.md). What follows is the shape to build by hand.
+
 Push with GitHub's OIDC token, so the workflow holds no long-lived AWS key. You need an IAM role that trusts GitHub's
 OIDC provider for your repository and may push to the ECR repository, and the workflow needs `id-token: write`. The
 workflow builds `.patchy/Dockerfile`, so copy the [example](#examples) you chose there (or point `file:` at wherever
@@ -249,13 +253,13 @@ scope its trust policy's `token.actions.githubusercontent.com:sub` condition to 
 `repo:your-org/your-repo:ref:refs/heads/main`). With a KMS signing key, also `kms:Sign` and `kms:GetPublicKey` on that
 key.
 
-On the devthenet deployment, for example, the values are account `377946145366`, region `us-east-1` and a repository
-under the allowlisted `patchy/` prefix, one per application (`patchy/app-envs/<app>`):
+For example, with account `123456789012`, region `us-west-2` and one repository per application under the allowlisted
+`patchy/app-envs/` prefix:
 
 ```yaml
-role-to-assume: arn:aws:iam::377946145366:role/<push-role>
-aws-region: us-east-1
-# IMAGE: 377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/app-envs/patchy-target
+role-to-assume: arn:aws:iam::123456789012:role/<push-role>
+aws-region: us-west-2
+# IMAGE: 123456789012.dkr.ecr.us-west-2.amazonaws.com/patchy/app-envs/shop-web
 ```
 
 In the same account source-controller resolves the image through its own AWS identity and the nodes pull it with theirs,

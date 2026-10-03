@@ -30,12 +30,12 @@ output "slug" {
 }
 
 output "registry" {
-  description = "ECR registry host (<account>.dkr.ecr.<region>.amazonaws.com)"
+  description = "ECR registry host (`<account>.dkr.ecr.<region>.amazonaws.com`)"
   value       = local.registry
 }
 
 output "agent_repository_url" {
-  description = "Agent image repository URL. .patchy/agent.yaml names <this>:toolchain-v<N>; tags are immutable, so a toolchain change bumps N"
+  description = "Agent image repository URL. .patchy/agent.yaml names `<this>:toolchain-v<N>`; tags are immutable, so a toolchain change bumps N"
   value       = aws_ecr_repository.this["agent"].repository_url
 }
 
@@ -65,6 +65,6 @@ output "github_variables" {
 }
 
 output "github_variables_dotenv" {
-  description = "The same variables as a sorted dotenv string, for: gh variable set --repo <owner>/<name> -f <file>"
+  description = "The same variables as a sorted dotenv string, for: `gh variable set --repo <owner>/<name> -f <file>`"
   value       = join("", [for name in sort(keys(local.github_variables)) : "${name}=${local.github_variables[name]}\n"])
 }

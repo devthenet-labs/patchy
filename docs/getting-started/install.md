@@ -1,9 +1,10 @@
 # Install with Helm
 
 Two charts are published to GHCR as OCI artifacts on every release: `patchy` installs the whole stack — the
-`patchy.bitwisemedia.uk` CRDs, five controller Deployments with their RBAC and ConfigMaps, the two Services, the agent
-namespace, and the baseline network policies — and `patchy-config` installs the `Integration`/`Forge` custom resources
-that switch the pipeline on, as a second release once the CRDs exist.
+`patchy.bitwisemedia.uk` CRDs, the five pipeline controllers, the egress broker and the status page as Deployments with
+their RBAC and ConfigMaps (plus the optional intent, preview and evaluation controllers when enabled), their Services,
+the agent namespace, and the baseline network policies — and `patchy-config` installs the `Integration`/`Forge` custom
+resources that switch the pipeline on, as a second release once the CRDs exist.
 
 ## Create the namespaces
 
@@ -173,7 +174,7 @@ helm install patchy-config oci://ghcr.io/devthenet-labs/patchy/charts/patchy-con
 
 Each entry's `spec` is validated client-side by the chart's values schema (generated from the CRDs, so a typo'd field
 fails the install before anything is applied) and again server-side by the CRD —
-[`deploy/kustomize/base/crs.example.yaml`](https://github.com/bitwise-media-group/patchy/blob/main/deploy/kustomize/base/crs.example.yaml)
+[`deploy/kustomize/base/crs.example.yaml`](https://github.com/devthenet-labs/patchy/blob/main/deploy/kustomize/base/crs.example.yaml)
 is the full field walkthrough (GHES base URLs, org allowlists, repository regexes). Prefer applying the CRs yourself?
 Skip this chart and `kubectl apply` the same objects after the install.
 

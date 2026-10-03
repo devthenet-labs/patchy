@@ -1616,15 +1616,15 @@ Make intents and previews installable without reproducing devthenet's manual set
 
 ## Risks
 
-- **Approval rests on GitHub details, three of four now verified** (2026-09-24, live, with the App's installation
-  token):
+- **Approval rests on GitHub details, all but one now verified** (2026-09-24 and 2026-10-03, live, with the App's
+  installation token):
   - the events API returns `id`, `node_id`, `event`, `created_at`, `actor{login, id, type}` and `label{name}`. Label
     events carry `performed_via_github_app: null`, so patchy recognises its own events by `actor.login == "<slug>[bot]"`
     with `actor.type == "Bot"`; comments do carry `performed_via_github_app.slug`;
   - `UpdateRef force=false` semantics (open question 3);
   - 304 responses are free for installation tokens (open question 2);
-  - still unverified: whether the actor on a label applied by an issue form is the issue author (open question 1).
-    Verify it before wave 3 goes live.
+  - the actor on a label applied by an issue form at creation is the issue author (open question 1, observed
+    2026-10-03);
   - still unverified: that GraphQL answers an issue comment's `lastEditedAt` (and `includesCreatedEdit`) to an
     `issues: read` installation token. The edit check before a command is acted on depends on it; a refusal there leaves
     the command unanswered and retried, never accepted.
@@ -1695,7 +1695,12 @@ Made on 2026-09-23.
 
 ## Open questions
 
-1. Is the actor of a label applied by an issue form the issue author?
+1. ~~Is the actor of a label applied by an issue form the issue author?~~ **Answered (observed live 2026-10-03):** yes.
+   `devthenet-labs/intents#4`, opened through a form whose `labels:` applies the trigger, carried that label as its
+   author's `labeled` event, and patchy took it as the author's trigger. A label applied as the issue is created, by a
+   form or by `gh issue create --label`, therefore starts an intent only when the author is an approver; anyone else's
+   issue gets one notice and its intent closes before it plans. A form meant for people who are not approvers leaves the
+   trigger label out, for an approver to add.
 2. ~~Do ETag 304 responses count against an App installation's rate limit?~~ **Answered (verified 2026-09-24):** no. A
    request with `If-None-Match` set to the ETag returns 304 and does not consume the installation's rate limit;
    responses carry `cache-control: max-age=60`. The `x-ratelimit-*` headers are not consistent across responses, so no

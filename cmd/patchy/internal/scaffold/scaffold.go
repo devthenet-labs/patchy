@@ -51,6 +51,11 @@ const (
 	Port = 8080
 	// ReadinessPath is the generated service's readiness check.
 	ReadinessPath = "/healthz"
+	// ModuleSource is patchy's reference terraform module for one
+	// application's image repositories and publisher roles, in the patchy
+	// repository the generated READMEs link to. The next steps pin it to
+	// the CLI's release.
+	ModuleSource = "git::https://github.com/devthenet-labs/patchy.git//deploy/terraform/aws/modules/app"
 
 	// GoVersion is the Go toolchain the generated CI, agent image and
 	// runtime build use, GoImage that toolchain's image pinned by digest,
@@ -106,6 +111,10 @@ type Options struct {
 	// Existing generates only .patchy/ and the CI publishers, for an
 	// application that already has its source and runtime Dockerfile.
 	Existing bool
+	// Release is the patchy release the CLI was built from (X.Y.Z), which
+	// the next steps pin the reference terraform module to; empty for a
+	// development build. No generated file depends on it.
+	Release string
 }
 
 // Validate checks every option, so a bad one fails before anything is
@@ -195,6 +204,14 @@ func (o Options) AgentImage() string {
 	return o.Registry + "/" + o.AgentRepository() + ":" + ToolchainTag
 }
 
+// Account is the registry's AWS account ID.
+func (o Options) Account() string {
+	if m := registryPattern.FindStringSubmatch(o.Registry); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
 // Region is the registry's AWS region.
 func (o Options) Region() string {
 	if m := registryPattern.FindStringSubmatch(o.Registry); m != nil {
@@ -265,6 +282,7 @@ type data struct {
 	RuntimeWorkflowGroup string
 	RuntimeWorkflowJob   string
 	Workflows            []string
+	VariablesHowTo       string
 	VariablesTable       string
 	PublishersTable      string
 	App                  bool
@@ -292,6 +310,7 @@ func (o Options) data() data {
 		RuntimeWorkflowGroup: wf.group,
 		RuntimeWorkflowJob:   wf.job,
 		Workflows:            o.Workflows(),
+		VariablesHowTo:       variablesHowTo(o),
 		VariablesTable:       variablesTable(o),
 		PublishersTable:      publishersTable(o),
 		App:                  !o.Existing,

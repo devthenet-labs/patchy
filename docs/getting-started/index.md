@@ -7,7 +7,7 @@ handed to the repository owner, and high-confidence remediations are queued in p
 and opened as pull requests for human review. The CRs carry all of the state; the Kubernetes API is the only state
 store.
 
-Deploying the stack takes three steps, each with its own page:
+Deploying the stack takes three steps, each with its own page, and an optional fourth:
 
 1. **[Create the GitHub App](github-app.md)** — register the App, grant four repository permissions, subscribe four
    webhook events, and collect the App ID, private key and webhook secret.
@@ -15,6 +15,8 @@ Deploying the stack takes three steps, each with its own page:
    switch the pipeline on with an `Integration` and a `Forge`. (A [kustomize tree](../deployment/kustomize.md) renders
    the same stack if you prefer.)
 3. **[Verify the pipeline](verify.md)** — follow one finding from alert to pull request.
+4. **[Enable intents](intents.md)** (optional) — turn issues into planned, approved pull requests, with a live preview
+   of each on EKS Auto Mode.
 
 ## What you need
 
@@ -47,6 +49,11 @@ Deploying the stack takes three steps, each with its own page:
 | `investigation-controller` | Deployment (1 replica)    | Gate eligible findings, run analysis agent Jobs, route the verdicts                            |
 | `remediation-controller`   | Deployment (1 replica)    | Priority-ordered remediation Jobs, branch push + pull requests, rollup stats and the TTL       |
 | `agent-runner`             | Ephemeral Job per attempt | In-pod coding-agent runtime: investigate or remediate via `claude -p`                          |
+| `egress-broker`            | Deployment (1 replica)    | The claude agents' model traffic: authenticates the pod, injects the model credential          |
+| `status-server`            | Deployment (1 replica)    | The status page: public rollup statistics, and the findings to signed-in users                 |
 
-All five controllers are singletons by construction — `replicas: 1` with `strategy: Recreate`; the leader-election Lease
+Three more controllers are optional and off by default: `intent-controller` and `preview-controller` for
+[intents](intents.md), and `evaluation-controller` for remote skill evaluations.
+
+Every controller is a singleton by construction — `replicas: 1` with `strategy: Recreate`; the leader-election Lease
 each one takes is insurance against a botched rollout, not a scaling mechanism. Do not scale the Deployments.

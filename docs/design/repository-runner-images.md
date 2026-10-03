@@ -654,7 +654,7 @@ observable change.
 
 The first live target is decided (see Decisions): the `devthenet-labs/patchy-target` Go repository on the EKS cluster
 `devthenet-dev` (us-east-1), running a golang-derived image hosted in ECR under
-`377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/` (for example `.../patchy/go-agent-env`), with that prefix as the
+`111122223333.dkr.ecr.us-east-1.amazonaws.com/patchy/` (for example `.../patchy/go-agent-env`), with that prefix as the
 only allowlist entry, resolution through the ECR keychain and pulls through node credentials, and the image signed with
 the key whose public half is `cosignPublicKey`.
 
@@ -783,7 +783,7 @@ behalf, with the reasoning stated. The fourth is an amendment recorded the same 
    Reason: a NOTES warning is invisible in CI, a render failure is not. The cost, accepted: under `mode: none` a fleet
    using repository images is brokered-only.
 3. **First live verification target**: `devthenet-labs/patchy-target` on `devthenet-dev` with a golang-derived image in
-   `377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/`, after NetworkPolicy enforcement is enabled on that cluster
+   `111122223333.dkr.ecr.us-east-1.amazonaws.com/patchy/`, after NetworkPolicy enforcement is enabled on that cluster
    (in progress); see Verification and rollout.
 4. **A devcontainer.json patchy cannot honour is no declaration** (2026-09-22, amendment decided by the orchestrator
    after the document was written and applied in the phase 1 pull request). A `.devcontainer/devcontainer.json` that

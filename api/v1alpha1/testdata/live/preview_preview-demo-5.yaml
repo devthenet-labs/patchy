@@ -17,7 +17,7 @@ spec:
   hostLabel: preview-demo-5
   components:
     - name: preview-demo
-      imageRepository: 377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/patchy-preview-demo
+      imageRepository: 111122223333.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/patchy-preview-demo
       revision: ff75476100fc6ca8f0a2f64723cebf713fa58022
       port: 8080
       readinessPath: /healthz
@@ -32,4 +32,4 @@ status:
   lastDeployedAt: "2026-10-03T07:06:38Z"
   components:
     - name: preview-demo
-      imageID: 377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/patchy-preview-demo@sha256:1111111111111111111111111111111111111111111111111111111111111111
+      imageID: 111122223333.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/patchy-preview-demo@sha256:1111111111111111111111111111111111111111111111111111111111111111

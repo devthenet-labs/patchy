@@ -1,5 +1,9 @@
 # Handoff: intent-driven development in patchy
 
+> **Site values:** this file is public, so the AWS account ID and the owner's preview IP are written as the
+> documentation values `111122223333` and `203.0.113.10/32`. The real ones are in terraform-devthenet's `k8s/` values
+> (private).
+
 ## Current checkpoint — 2026-10-03 (source of truth; Claude resumed from Codex)
 
 **Previews are set up and ready for the first live demo; no preview has run yet.** Done today, each owner-approved
@@ -8,7 +12,7 @@ separately, with rollback points recorded before each Helm revision:
 - **Stage 2 (preview ALB):** terraform-devthenet #26 set `preview.placeholder.enabled: true`; patchy Helm **rev 43**.
   Auto Mode created `devthenet-dev-preview` (ARN `…/app/devthenet-dev-preview/4b96adc30c66b9f7`, DNS
   `devthenet-dev-preview-1425308117.us-east-1.elb.amazonaws.com`, created 2026-10-02T17:11:49Z): HTTPS 443 only,
-  `ELBSecurityPolicy-TLS13-1-2-2021-06`, the wildcard cert, SG inbound only `75.70.97.14/32` on 443, one empty target
+  `ELBSecurityPolicy-TLS13-1-2-2021-06`, the wildcard cert, SG inbound only `203.0.113.10/32` on 443, one empty target
   group. Shared ALB unchanged (same ARN/DNS/creation time); a fresh App delivery returned 202; status page 200.
 - **Wildcard DNS:** terraform-devthenet #27 (`patchy-preview-dns.tf`): `*.preview.patchy.devthe.net` A alias to the
   preview ALB, looked up by name like the shared ALB. Applied 1 add; fresh plan no changes. Names resolve to the preview
@@ -249,7 +253,7 @@ steps" and "Preview update" sections below are historical; this checkpoint super
   Ingress in the slot, and denied `alb-preview` on an Ingress in `patchy`. This verifies the kept-policy staging fix
   without creating the placeholder. AWS still returns `LoadBalancerNotFound` for `devthenet-dev-preview`; no preview ALB
   or wildcard DNS exists. The existing webhook/status ALB kept ARN
-  `arn:aws:elasticloadbalancing:us-east-1:377946145366:loadbalancer/app/devthenet-dev/35727d407a91ad54`, DNS
+  `arn:aws:elasticloadbalancing:us-east-1:111122223333:loadbalancer/app/devthenet-dev/35727d407a91ad54`, DNS
   `devthenet-dev-806232275.us-east-1.elb.amazonaws.com`, and creation time `2026-09-22T17:41:15.593Z`;
   `https://status.patchy.devthe.net/` returned HTTP 200. No new App-delivery probe was run for stage 1; verify webhook
   deliveries after the later ALB step as agreed.
@@ -269,7 +273,7 @@ steps" and "Preview update" sections below are historical; this checkpoint super
    using 0.12.12. It renders the kept, selectorless placeholder Service and `alb-preview` Ingress in slot 0; this starts
    the agreed estimated ~$25–35/month incremental ALB cost even without workloads. Re-record rollback revisions first.
    Keep `previewController.enabled: false`. Verify the new ALB name/DNS, certificate, HTTPS listener, exact
-   `75.70.97.14/32` inbound CIDR, empty target group, zero preview nodes/workloads, unchanged shared ALB ARN/DNS/
+   `203.0.113.10/32` inbound CIDR, empty target group, zero preview nodes/workloads, unchanged shared ALB ARN/DNS/
    creation time, 2xx GitHub App Recent Deliveries to `patchy.devthe.net`, and the status page. On failure, inspect
    empty slots, explicitly delete the **named** kept placeholder Ingress/Service to remove the ALB, then roll back to
    the guardrails-only revision; Helm rollback alone will not delete kept resources. Check in before this apply.
@@ -347,7 +351,7 @@ re-analysis fixed the alert without a duplicate Finding. No manual correction wa
 **Slice 2 is approved, starting with prerequisite PRs, cookies first.** The owner approved the new benign repository
 `devthenet-labs/patchy-preview-demo`, Project `preview-demo`, and the light-use incremental budget of ~$25–35/month
 (including the two-AZ ALB's public IPv4 charges, assuming existing node capacity). Preview inbound CIDRs must be exactly
-`75.70.97.14/32`. Never preview patchy-target.
+`203.0.113.10/32`. Never preview patchy-target.
 
 - Check in with the owner **before each infrastructure apply**, including Helm upgrades; the general approval does not
   authorise unattended applies. Record current rollback revisions again before every upgrade.

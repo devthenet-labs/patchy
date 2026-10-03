@@ -111,7 +111,7 @@ status:
       has cgo available, it should be able to run `-race` successfully since the code itself has no
       concurrency changes.
   runnerImage:
-    image: 377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/app-envs/patchy-preview-demo@sha256:02b294e715053ab37c68165438c680fbc729500d8fcacb0dfacb7e5a28dcfd18
+    image: 111122223333.dkr.ecr.us-east-1.amazonaws.com/patchy/app-envs/patchy-preview-demo@sha256:02b294e715053ab37c68165438c680fbc729500d8fcacb0dfacb7e5a28dcfd18
     manifest: .patchy/agent.yaml
     source: repository
   startedAt: "2026-10-03T07:01:26Z"

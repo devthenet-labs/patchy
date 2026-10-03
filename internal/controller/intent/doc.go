@@ -68,8 +68,15 @@
 // closed under it ends unpushed and is not retried. Nothing more is written
 // to a repository that leaves the Project (repositoryLeft): a build or round
 // there is not launched, is aborted, or has its push refused (pushGate reads
-// the Project uncached), a failed one is not retried, and no round or
-// untracked notice is posted there. The Intent is Merged only
+// the Project uncached), a failed one is not retried, and no round notice,
+// untracked notice or sibling cross-link is posted there. Nor does it hold
+// the others: a pass asks the rate floor only of the repositories it calls,
+// its pull request is read only where it can be (readDepartedPullRequest)
+// and otherwise counts as it was last read, so an unreachable one never stops
+// another pull request's round, an issue close, an ending, or an ended
+// Intent's notices and hand-off. A deleted Project withdraws everything:
+// pushGate holds every push (errProjectGone, PushHeld ProjectGone) until a
+// Project of that name exists again. The Intent is Merged only
 // when every pull request has merged; once every one has settled with any
 // closed unmerged it is Closed, the issue closed as not planned after a
 // notice naming what merged and what did not. patchy never closes one pull

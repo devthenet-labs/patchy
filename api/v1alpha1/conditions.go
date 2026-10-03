@@ -106,9 +106,11 @@ const (
 	ConditionUnsupportedRepositories = "UnsupportedRepositories"
 	// ConditionSiblingsLinked reports, on an Intent that opened more than
 	// one pull request, whether the comment cross-linking them was posted on
-	// every one: True once it was, False with GitHub's refusal while it could
-	// not be. The comment is cosmetic: it is posted after the Intent entered
-	// InReview, and never holds a phase back.
+	// every one whose repository the Project still holds: True once it was
+	// (naming any whose repository left the Project, which gets none), False
+	// with GitHub's refusal, or the repository patchy can no longer reach,
+	// while it could not be. The comment is cosmetic: it is posted after the
+	// Intent entered InReview, and never holds a phase back.
 	ConditionSiblingsLinked = "SiblingsLinked"
 	// ConditionUntrackedPullRequests marks an Intent that ended (Closed or
 	// Failed) while its pull requests were still being opened, leaving the
@@ -123,8 +125,9 @@ const (
 	// ConditionPushHeld marks a Running build IntentRun whose Job has
 	// finished while its Intent is suspended (or, reason
 	// MultiRepositoryOff, while its Project lists more than one repository
-	// and intent-controller runs without --intent-multi-repo): the push
-	// waits for that to be lifted. Its agent no longer runs, so it holds no
+	// and intent-controller runs without --intent-multi-repo; reason
+	// ProjectGone, while its Project is gone): the push waits for that to be
+	// lifted. Its agent no longer runs, so it holds no
 	// slot of the run pool, and while it waits its Job is not read again. Set
 	// by intent-controller's run reconciler, and False once the run settles.
 	ConditionPushHeld = "PushHeld"

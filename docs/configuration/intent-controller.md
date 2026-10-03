@@ -36,6 +36,10 @@ the run pool to other intents meanwhile. The finished Job is kept only for `--jo
 that outlasts it loses the unpushed changeset, and the run ends `hold_expired`. That costs the agent's spend but not one
 of the build's attempts, and clearing the suspension starts the next one.
 
+Deleting a Project (a `patchy-config` uninstall, or a rename) holds its intents the same way: they wait, nothing is
+written to GitHub for them, and a Job that finishes meanwhile has its push held (`PushHeld`, reason `ProjectGone`) until
+a Project of that name exists again. The push is then checked against what that Project lists.
+
 ## Flags
 
 The [shared flags](index.md#shared-flags-every-controller), plus the settings below. They carry an `intent-` prefix no
@@ -245,7 +249,7 @@ spec:
 - **Pull requests open only once every build has pushed**, so a build that fails leaves no pull request behind. Each one
   says it is one of several, and patchy then comments on each with links to the others (best effort: a refused comment
   is reported as `SiblingsLinked` False, retried only once the Project or a pull request's head changes, and holds
-  nothing back).
+  nothing back; a pull request whose repository has left the Project gets no comment, and the condition names it).
 - **The pull requests open one per pass**, so an intent can end while they are being opened: a `/patchy cancel` or the
   issue closed, or an approved repository removed from the Project (which fails it), perhaps while a block on a later
   one holds it. The ones already opened are left open, and patchy comments on each, once, that the intent ended, that
@@ -263,7 +267,11 @@ spec:
   limits are per intent.
 - **A repository removed from the Project is left alone.** patchy writes nothing more to it: a build or round there is
   not launched, or is aborted with nothing pushed (`the repository ... left the project`), a failed round there is not
-  retried, and its pull request gets no further round or notice. The other pull requests' rounds go on.
+  retried, and its pull request gets no further round, notice or comment. The other pull requests' rounds go on, even
+  once patchy can no longer reach the removed repository at all (no Forge covers it, the App was uninstalled from it):
+  patchy still reads its pull request where it can, so its merge counts, and one it cannot read keeps the state it was
+  last read in. While that state is open, the intent waits on it as on any open pull request; closing the issue ends the
+  intent.
 - **Endings.** The intent is `Merged` once every pull request has merged. If one is closed without merging, the intent
   stays in review while any other is open, then ends `Closed`: patchy posts a notice of what merged (already on its
   default branch; patchy reverts nothing) and what did not, and closes the issue as not planned. patchy never closes a

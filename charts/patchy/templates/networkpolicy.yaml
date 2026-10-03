@@ -109,6 +109,9 @@ spec:
                 port: 53
               - protocol: TCP
                 port: 53
+        {{- with include "patchy.clusterDNSEgress" $ }}
+        {{- . | nindent 8 }}
+        {{- end }}
         # The Kubernetes API server, the forge, an OTLP collector.
         - ports:
               - protocol: TCP
@@ -232,6 +235,9 @@ spec:
                 port: 53
               - protocol: TCP
                 port: 53
+        {{- with include "patchy.clusterDNSEgress" . }}
+        {{- . | nindent 8 }}
+        {{- end }}
         # The artifact server.
         - to:
               - namespaceSelector:

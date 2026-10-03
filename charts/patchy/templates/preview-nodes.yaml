@@ -1,0 +1,101 @@
+{{/*
+Copyright 2026 Bitwise Media Group Ltd.
+SPDX-License-Identifier: MIT
+
+The preview nodes (preview.nodeIsolation.create): an EKS Auto Mode NodeClass
+and the NodePool that launches from it, named by preview.nodeIsolation's
+nodeClass and nodePool, the names the slot admission policies and the
+preview-controller already require every slot Pod to select. Untrusted
+preview code runs only on these nodes, and nothing else may: the taint keeps
+every Pod off them that does not tolerate it, and the outside-slot admission
+policy refuses that toleration everywhere but the slots. A template comment,
+not YAML, so the file renders nothing at all while create is off.
+*/}}
+{{- $p := .Values.preview }}
+{{- $nodes := $p.nodeIsolation }}
+{{- if $nodes.create }}
+{{- if not $p.enabled }}{{ fail "preview.nodeIsolation.create requires preview.enabled: the nodes are for the preview slots, whose admission policies keep every other Pod off them" }}{{ end }}
+{{- if not $nodes.role }}{{ fail "preview.nodeIsolation.create requires preview.nodeIsolation.role: the IAM role name (not an ARN) the preview nodes run as, with an EKS access entry of type EC2" }}{{ end }}
+{{- if not $nodes.subnetIDs }}{{ fail "preview.nodeIsolation.create requires preview.nodeIsolation.subnetIDs: the private subnets the preview nodes launch in" }}{{ end }}
+{{- if not $nodes.securityGroupIDs }}{{ fail "preview.nodeIsolation.create requires preview.nodeIsolation.securityGroupIDs: the security groups the preview nodes carry" }}{{ end }}
+---
+# networkPolicy is DefaultDeny on purpose and is not a value: under
+# DefaultAllow a new node runs its first Pods with unrestricted egress until
+# the slot NetworkPolicy is programmed, so preview code could reach anything
+# in that window.
+apiVersion: eks.amazonaws.com/v1
+kind: NodeClass
+metadata:
+    name: {{ $nodes.nodeClass }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" "preview") | nindent 8 }}
+    annotations:
+        {{- include "patchy.annotations" (dict "root" . "extra" (dict "helm.sh/resource-policy" "keep")) | nindent 8 }}
+spec:
+    role: {{ $nodes.role }}
+    subnetSelectorTerms:
+        {{- range $nodes.subnetIDs }}
+        - id: {{ . }}
+        {{- end }}
+    securityGroupSelectorTerms:
+        {{- range $nodes.securityGroupIDs }}
+        - id: {{ . }}
+        {{- end }}
+    ephemeralStorage:
+        size: {{ $nodes.ephemeralStorage.size }}
+        iops: {{ $nodes.ephemeralStorage.iops }}
+        throughput: {{ $nodes.ephemeralStorage.throughput }}
+    networkPolicy: DefaultDeny
+    networkPolicyEventLogs: Disabled
+---
+# On-demand only (a reclaimed spot node would cut a running preview), never
+# consolidated while a preview runs on it, and capped by cpuLimit, the bound
+# on what previews can spend on nodes. nodeLimit is rendered too, but Auto
+# Mode is not known to enforce limits.nodes.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+    name: {{ $nodes.nodePool }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" "preview") | nindent 8 }}
+    annotations:
+        {{- include "patchy.annotations" (dict "root" . "extra" (dict "helm.sh/resource-policy" "keep")) | nindent 8 }}
+spec:
+    template:
+        spec:
+            nodeClassRef:
+                group: eks.amazonaws.com
+                kind: NodeClass
+                name: {{ $nodes.nodeClass }}
+            taints:
+                - key: {{ $nodes.taintKey }}
+                  value: "true"
+                  effect: NoExecute
+            requirements:
+                - key: node.kubernetes.io/instance-type
+                  operator: In
+                  values:
+                      {{- range $nodes.instanceTypes }}
+                      - {{ . }}
+                      {{- end }}
+                - key: kubernetes.io/arch
+                  operator: In
+                  values:
+                      - {{ $nodes.arch }}
+                - key: kubernetes.io/os
+                  operator: In
+                  values:
+                      - linux
+                - key: karpenter.sh/capacity-type
+                  operator: In
+                  values:
+                      - on-demand
+    disruption:
+        consolidationPolicy: WhenEmpty
+        consolidateAfter: 30s
+        budgets:
+            - nodes: "1"
+    limits:
+        cpu: {{ $nodes.cpuLimit | quote }}
+        nodes: {{ $nodes.nodeLimit | quote }}
+{{- end }}

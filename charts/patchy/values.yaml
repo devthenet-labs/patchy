@@ -55,6 +55,18 @@ admissionPolicy:
     # ServiceAccount names.
     extraExemptSubjects: []
 
+# The cluster DNS address as a /32, for clusters whose resolver is not a pod in
+# kube-system. EKS Auto Mode runs CoreDNS on every node at the cluster DNS
+# Service address (the tenth address of the service CIDR: 172.20.0.10/32 for
+# 172.20.0.0/16), so once NetworkPolicy is enforced the policies' "DNS to
+# kube-system" rule matches nothing there and every patchy pod loses DNS.
+# When set, every chart NetworkPolicy that allows DNS to kube-system (the
+# controllers in the release namespace, the agent egress in agent.namespace)
+# also allows UDP and TCP 53 to this address, and nothing else; no pod is
+# newly selected. preview.dnsCIDR defaults to it. Empty (the default) renders
+# nothing.
+clusterDNSCIDR: ""
+
 # Preview security foundation. Off until the operator explicitly supplies the
 # cluster-specific edge, registry and DNS settings and approves a rollout.
 # When enabled, the default placeholder Ingress creates a separate ALB even if
@@ -67,13 +79,57 @@ preview:
         enabled: true
     # A dedicated, tainted EKS Auto Mode NodePool backed by a DefaultDeny
     # NodeClass is required before any slot workload runs. These names must
-    # match the node resources; the chart does not create cloud nodes.
+    # match the node resources, which exist before the first slot workload:
+    # yours, or the chart's with create below.
     nodeIsolation:
         nodePool: ""
         nodeClass: ""
         taintKey: "" # Exact NoExecute taint; value must be "true".
+        # Render that NodeClass and NodePool, named nodeClass and nodePool,
+        # instead of expecting them to exist. Off by default; requires
+        # preview.enabled. The NodeClass always carries networkPolicy:
+        # DefaultDeny (not a value: DefaultAllow lets a new node's pods talk
+        # to anything until the slot policy is programmed). The NodePool
+        # taints its nodes <taintKey>=true:NoExecute, launches on-demand
+        # linux nodes of instanceTypes/arch only, consolidates a node only
+        # once it is empty (30s, one node at a time) and stops launching at
+        # cpuLimit CPUs. Both are kept on uninstall and rollback: delete the
+        # NodePool first, wait for its nodes to go, then the NodeClass. A
+        # NodePool provisions nothing until a slot Pod needs it; each node
+        # then bills until it is consolidated.
+        # Helm does not take over a NodeClass or NodePool of the same name
+        # that it did not create: the upgrade fails with an ownership error
+        # and changes nothing. To hand yours to the chart, give it the
+        # release's ownership metadata (label app.kubernetes.io/managed-by=Helm,
+        # annotations meta.helm.sh/release-name and
+        # meta.helm.sh/release-namespace), or upgrade with --take-ownership
+        # (Helm 3.17 or later), after a server-side diff shows the render
+        # matches it. Never delete a NodePool that still has nodes.
+        create: false
+        # IAM role NAME (not an ARN) the preview nodes run as, with an EKS
+        # access entry of type EC2 and ECR pull on the preview images only
+        # (<imageRegistry>/patchy/previews/*). Required with create.
+        role: ""
+        # Private subnets for the nodes, never public ones. Required with
+        # create.
+        subnetIDs: []
+        # Security groups for the nodes (the cluster security group, say).
+        # Required with create.
+        securityGroupIDs: []
+        instanceTypes:
+            - t3a.medium
+        arch: amd64 # amd64 or arm64; must match instanceTypes.
+        # The NodePool's limits. cpuLimit is the bound to budget by; nodeLimit
+        # is rendered as limits.nodes too, but Auto Mode is not known to
+        # enforce a node limit.
+        cpuLimit: "4"
+        nodeLimit: "2"
+        ephemeralStorage:
+            size: 20Gi
+            iops: 3000
+            throughput: 125
     imageRegistry: "" # ECR registry host only; images must be patchy/previews/<app>:sha-<full SHA>
-    dnsCIDR: "" # Node-local CoreDNS service /32, not a broad service CIDR.
+    dnsCIDR: "" # Node-local CoreDNS service /32, not a broad service CIDR; empty means clusterDNSCIDR.
     albSubnetCIDRs: [] # Public ALB source subnets, not 0.0.0.0/0.
     # The subnet IDs of albSubnetCIDRs, one per CIDR: pins the preview ALB to
     # exactly those subnets. Empty leaves placement to Auto Mode, which uses a
@@ -101,11 +157,24 @@ previewController:
         # Mode's pod readiness gate injection
         # (eks.amazonaws.com/pod-readiness-gate-inject); the Ingress is
         # created before the Pods so their gates are injected, and stays
-        # across redeploys. Off by default until a live preview has shown
-        # Auto Mode injecting the gate: without it every rollout times out.
-        # false is slice 2's Ready (Pod Ready, then the Ingress), which can
-        # answer 404 briefly after Ready.
-        targetHealth: false
+        # across redeploys. On by default: previews run only on EKS Auto
+        # Mode (the alb-preview class is Auto Mode's), and a preview whose
+        # URL still answers 404 or nothing is not ready to review. Auto Mode
+        # was seen injecting the gate on a live preview (patchy 0.12.14),
+        # whose URL then answered 200 to all 60 once-a-second requests from
+        # Ready, where the ungated Ready gave about 15 seconds of 404s and
+        # empty replies.
+        # false is that ungated Ready (Pod Ready, then the Ingress): set it
+        # if Auto Mode ever stops injecting the gate, since without the gate
+        # every rollout times out.
+        # Upgrading from 0.12.14 or earlier, whose default was false: an
+        # install that never set this turns it on. A Preview already Ready
+        # is not regated, but one deploying during the upgrade has Pods
+        # created before the label, so they carry no gate; that attempt
+        # waits out rolloutTimeout and spends one of maxRetries (a Preview on
+        # its last retry fails). Set false explicitly to keep the old
+        # behaviour, or upgrade while no Preview is deploying.
+        targetHealth: true
         extra: {}
     resources:
         requests:
@@ -209,6 +278,37 @@ webhook:
         # - name: my-gateway
         #   namespace: gateway-system
         #   sectionName: https
+
+# An EKS Auto Mode IngressClass and IngressClassParams for the public edge, so
+# the webhook and status-page Ingresses need no hand-applied class. Off by
+# default. With create, webhook.ingress and statusServer.ingress use this class
+# whenever their own className is empty (an explicit className still wins).
+# Auto Mode ships the load balancer controller but no IngressClass. Every
+# Ingress of the class joins one internet-facing ALB named loadBalancerName
+# (its group is that name too), and the class admits Ingresses from the
+# release namespace only. It is never the cluster default. Target type, health
+# checks and listen ports stay per-Ingress annotations (the webhook path
+# answers only signed POSTs, so point health checks at port 8081 /healthz).
+# certificateARNs, when set, terminates TLS on the ALB with those ACM
+# certificates; leave it empty to attach certificates per Ingress with
+# alb.ingress.kubernetes.io/certificate-arn, or for a cert-manager tls Secret
+# on another ingress controller (this class is ACM-only). Kept on uninstall
+# and rollback, so the controller can still remove the ALB behind the
+# Ingresses. Helm does not take over a class of the same name that it did not
+# create: the upgrade fails with an ownership error. Leave a class you applied
+# by hand where it is, and never delete one live Ingresses use: keep the
+# distinct default name, move each Ingress to it (an empty className), then
+# point DNS at the new ALB.
+edgeIngressClass:
+    create: false
+    # The IngressClass and IngressClassParams name; empty means
+    # <fullname>-edge. Not `alb`, which many EKS clusters already have.
+    name: ""
+    # The ALB's name and its group's, so lowercase, at most 32 characters
+    # and distinct from preview.albName. Required with create.
+    loadBalancerName: ""
+    scheme: internet-facing # or internal
+    certificateARNs: []
 
 # ---- integration-controller -------------------------------------------------
 # The single internet-facing entry point: the provider webhook receivers on

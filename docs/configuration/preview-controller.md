@@ -73,10 +73,10 @@ only one-repository Projects get Previews today.
 `Pending` takes a free slot, or `Queued` waits in creation order behind other Previews. `Deploying` first prunes the
 objects of components no longer rendered, so a renamed component's Service fits the slot quota, then creates a fixed
 ClusterIP Service and a single-replica, restricted Deployment per component on the dedicated `DefaultDeny` preview pool;
-a component whose spec did not change is not rolled. With `targetHealth` off (the default), only after every component
-has a Ready Pod with the requested image and an image ID does it create the fixed `alb-preview` Ingress and mark the
-Preview `Ready` with its URL and each component's revision and image ID, and a PR-head change removes the old Ingress
-before updating the runtime images. With `targetHealth` on, the Ingress comes first and stays (below). Cleanup and
+a component whose spec did not change is not rolled. With `targetHealth` off, only after every component has a Ready Pod
+with the requested image and an image ID does it create the fixed `alb-preview` Ingress and mark the Preview `Ready`
+with its URL and each component's revision and image ID, and a PR-head change removes the old Ingress before updating
+the runtime images. With `targetHealth` on (the chart's default), the Ingress comes first and stays (below). Cleanup and
 pruning find a Preview's objects by its UID label, so a component the Project stops previewing is removed. Timed-out
 rollouts are retried at most `previewController.config.maxRetries` times (default three) with a 10-minute per-attempt
 deadline; `Failed` frees the slot after cleanup. `Expired` is reached 72 hours after the last successful deployment (or
@@ -86,9 +86,9 @@ sweep deletes owned orphans left by a lost CR, while the queue refuses to reuse 
 resources. Reducing `slotCount` while a Preview owns a removed slot deliberately blocks finalizer removal: restore the
 count and drain first.
 
-With `previewController.config.targetHealth: true` (`--preview-target-health` on the binary; off by default), `Ready`
-also means the load balancer's target is healthy, so the host does not answer 404 or nothing for the seconds after
-`Ready` while a new target registers. The chart then labels the slot namespaces
+With `previewController.config.targetHealth: true` (the chart's default; `--preview-target-health` on the binary, whose
+own default is still off), `Ready` also means the load balancer's target is healthy, so the host does not answer 404 or
+nothing for the seconds after `Ready` while a new target registers. The chart then labels the slot namespaces
 `eks.amazonaws.com/pod-readiness-gate-inject: enabled`, EKS Auto Mode's opt-in to inject a target-health readiness gate
 into the slot's Pods (the upstream AWS Load Balancer Controller's label is `elbv2.k8s.aws/pod-readiness-gate-inject`,
 but the `alb-preview` class is Auto Mode's). The gate is injected only into a Pod created after its target group binding
@@ -100,13 +100,17 @@ nothing to a target until it is healthy. A spec that adds a component (or rename
 withdrawing the host until `Ready`: the load balancer keeps an Ingress's address once published, so only a new Ingress's
 address shows that the new component's binding exists. A Preview already `Ready` when the mode is switched on keeps
 serving on its Pods rather than being restarted to grow a gate. The Auto Mode label comes from AWS (an EKS Auto Mode
-blog post and a maintainer's answer on aws/containers-roadmap#2511), not from the EKS user guide, and has not yet been
-checked on a live preview, which is why the mode is off by default: if Auto Mode injects no gate, every rollout times
-out and retries, the retry's message naming the missing gate, and `targetHealth: false` restores the ungated behaviour.
-A Pod that has the gate but whose target never turns healthy (a readiness path the component does not serve, or a
-security group or network policy keeping the load balancer's health checks out) is retried with a message naming the
-unhealthy target instead. Turn the mode on for a live single-repository preview check, and keep it on once a Preview
-reaches `Ready` on a gated Pod.
+blog post and a maintainer's answer on aws/containers-roadmap#2511), not from the EKS user guide. It has been checked on
+a live preview (patchy 0.12.14): Auto Mode injected the gate, and the host answered 200 to all 60 requests made once a
+second from the moment the Preview was `Ready`, where the ungated `Ready` gave about 15 seconds of 404s and empty
+replies. Previews require EKS Auto Mode, and a preview whose host does not answer yet is not ready to review, so the
+chart turns the mode on by default. That default was off up to 0.12.14, so an upgrade from there that never set the
+value turns it on, and a Preview deploying during that upgrade may spend one retry: its Pods predate the label and carry
+no gate (see [the upgrade note](../deployment/helm.md#eks-auto-mode-and-previews)). If Auto Mode ever injects no gate,
+every rollout times out and retries, the retry's message naming the missing gate, and `targetHealth: false` restores the
+ungated behaviour. A Pod that has the gate but whose target never turns healthy (a readiness path the component does not
+serve, or a security group or network policy keeping the load balancer's health checks out) is retried with a message
+naming the unhealthy target instead.
 
 Before enabling any Project preview, complete the separate ALB, placeholder Ingress and wildcard DNS check-in, then run
 the cold-start isolation gate in `hack/preview-isolation-probe/README.md` with a disposable PR image. Repeat that gate

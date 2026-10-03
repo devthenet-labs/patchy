@@ -89,6 +89,66 @@ A provider has one webhook URL, so exposure is chart-level: `webhook.host` plus 
 | `webhook.ingress.{enabled,className,annotations,tls}` | `false`, … | Plain-Ingress flavour                                             |
 | `webhook.httpRoute.{enabled,annotations,parentRefs}`  | `false`, … | Gateway API flavour; TLS is the Gateway's concern                 |
 
+### EKS Auto Mode and previews
+
+On an EKS Auto Mode cluster the chart can render the prerequisites that would otherwise be applied by hand. Each toggle
+defaults off and renders nothing until it is set, so an install that never sets one is unchanged. Two cluster-side
+settings stay yours: NetworkPolicy enforcement (`kube-system/amazon-vpc-cni` with
+`enable-network-policy-controller: "true"`) and the node IAM role.
+
+On a cluster that already has a hand-applied NodeClass, NodePool or IngressClass, the simplest course is to leave the
+toggle off and keep naming yours. Helm does not silently take over an object it did not create: if the chart renders one
+under the same name, the install or upgrade fails with an ownership error and changes nothing. To hand an existing
+object to the chart, first check with a server-side diff (`helm template … | kubectl diff --server-side -f -`) that the
+render matches it, then give it the release's ownership metadata (the label `app.kubernetes.io/managed-by=Helm` and the
+annotations `meta.helm.sh/release-name=<release>` and `meta.helm.sh/release-namespace=<namespace>`), or run
+`helm upgrade --take-ownership` (Helm 3.17 or later). Do not delete yours to make room:
+
+- **IngressClass.** Never delete a class that live Ingresses use: the load balancer behind it is torn down or orphaned,
+  and the one created in its place has a new DNS name, so webhook deliveries fail until DNS follows. Do not adopt a
+  class other teams share either, since the chart's admits the release namespace only. Keep the distinct default name
+  (`<fullname>-edge`), move the webhook and status Ingresses to it (an empty `className`), and point their DNS at its
+  load balancer.
+- **NodePool.** Deleting one removes its nodes and evicts the previews on them. Delete a NodePool only once its nodes
+  are drained, and its NodeClass after that.
+
+| Key                                                   | Default                      | Purpose                                                                                                                                                                                                                                         |
+| ----------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `clusterDNSCIDR`                                      | `""`                         | The cluster DNS address as a `/32` (Auto Mode: the DNS Service IP, e.g. `172.20.0.10/32`). Every chart NetworkPolicy that allows DNS to kube-system also allows UDP/TCP 53 to it, in the release and agent namespaces; no pod is newly selected |
+| `edgeIngressClass.create`                             | `false`                      | Render an Auto Mode IngressClass + IngressClassParams; `webhook.ingress` and `statusServer.ingress` use it when their `className` is empty. Never the default class; admits the release namespace only; kept on uninstall                       |
+| `edgeIngressClass.name`                               | `""` (`<fullname>-edge`)     | The class name. Not `alb`, which many EKS clusters already have                                                                                                                                                                                 |
+| `edgeIngressClass.loadBalancerName`                   | `""`                         | The one ALB every edge Ingress joins (also its group name, so lowercase), at most 32 characters and distinct from `preview.albName`. **Required** with `create`                                                                                 |
+| `edgeIngressClass.scheme`                             | `internet-facing`            | Or `internal`                                                                                                                                                                                                                                   |
+| `edgeIngressClass.certificateARNs`                    | `[]`                         | ACM certificates the ALB terminates TLS with. Empty leaves certificates to per-Ingress `alb.ingress.kubernetes.io/certificate-arn` annotations                                                                                                  |
+| `preview.slotCount`                                   | `2`                          | Preview slots, 1 to 4                                                                                                                                                                                                                           |
+| `preview.dnsCIDR`                                     | `""` (`clusterDNSCIDR`)      | The slot NetworkPolicy's only egress: DNS to this `/32`                                                                                                                                                                                         |
+| `preview.nodeIsolation.{nodePool,nodeClass,taintKey}` | `""`                         | The preview NodePool, NodeClass and `NoExecute` taint key every slot Pod must select and tolerate. **Required** with `preview.enabled`                                                                                                          |
+| `preview.nodeIsolation.create`                        | `false`                      | Render that NodeClass (`networkPolicy: DefaultDeny`, fixed) and NodePool (the taint, on-demand, consolidated only when empty), both kept on uninstall. Requires `preview.enabled`                                                               |
+| `preview.nodeIsolation.role`                          | `""`                         | IAM role **name** the preview nodes run as (an EKS access entry of type EC2, ECR pull on the preview images only). **Required** with `create`                                                                                                   |
+| `preview.nodeIsolation.subnetIDs`                     | `[]`                         | Private subnets for the nodes, never public ones. **Required** with `create`                                                                                                                                                                    |
+| `preview.nodeIsolation.securityGroupIDs`              | `[]`                         | Security groups for the nodes. **Required** with `create`                                                                                                                                                                                       |
+| `preview.nodeIsolation.instanceTypes` / `arch`        | `[t3a.medium]` / `amd64`     | What the NodePool launches; `arch` is `amd64` or `arm64` and must match the instance types                                                                                                                                                      |
+| `preview.nodeIsolation.cpuLimit` / `nodeLimit`        | `"4"` / `"2"`                | The NodePool's `limits`. Budget by `cpuLimit`: `nodeLimit` is rendered too, but Auto Mode is not known to enforce a node limit                                                                                                                  |
+| `preview.nodeIsolation.ephemeralStorage`              | `20Gi`, 3000 IOPS, 125 MiB/s | Each node's ephemeral storage                                                                                                                                                                                                                   |
+
+`previewController.config.targetHealth` defaults to `true`: a Preview turns `Ready` only once the load balancer reports
+each component's target healthy, because the slot namespaces opt into Auto Mode's readiness-gate injection. Previews
+require Auto Mode, which was seen injecting the gate on a live preview, and without the gate the host answers 404 or
+nothing for several seconds after an ungated `Ready`. Set it to `false` only if Auto Mode stops injecting the gate
+(every rollout then times out, naming the missing gate).
+
+**Upgrading from 0.12.14 or earlier**, where the default was `false`: an install with previews on that never set
+`targetHealth` turns it on. The slot namespaces gain the gate-injection label and the preview-controller restarts with
+the new setting. A Preview already `Ready` is not regated. A Preview deploying during the upgrade has Pods created
+before the label, so they carry no gate: that attempt waits out `rolloutTimeout` (10 minutes by default) and spends one
+of `maxRetries`, and a Preview on its last retry ends `Failed`. To avoid that, upgrade while no Preview is deploying, or
+set `targetHealth` explicitly (`false` keeps the old behaviour).
+
+The rest of the preview values (`preview.*` and `previewController.*`) and the security model are in the
+[chart README](https://github.com/devthenet-labs/patchy/blob/main/charts/patchy/README.md#preview-security-foundation-opt-in)
+and [Preview controller](../configuration/preview-controller.md). With `preview.enabled` the install NOTES list what is
+left: the placeholder ALB's hostname, the wildcard DNS record, the isolation probe and what previews cost.
+
 ### Shared pipeline config
 
 Each controller renders its own ConfigMap (consumed with `envFrom`): the shared `config.*` keys plus its own `config`

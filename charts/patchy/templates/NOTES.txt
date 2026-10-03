@@ -81,6 +81,57 @@ ImageRequired unless its Project sets requireRepositoryImage: false. Builds
 are meant to run in the application repository's own image.
 {{- end }}
 {{- end }}
+{{- if .Values.preview.enabled }}
+{{- $p := .Values.preview }}
+{{- $n := $p.nodeIsolation }}
+
+Previews: {{ $p.slotCount }} slot(s), each preview served at <project>-<issue>.{{ $p.hostSuffix }}.
+Next steps:
+
+  1. The preview ALB.{{ if $p.placeholder.enabled }} The kept placeholder Ingress creates it ({{ $p.albName }}).
+     Its hostname, once the load balancer is provisioned:
+
+       kubectl get ingress patchy-preview-placeholder -n patchy-preview-0 \
+         -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+{{- else }} preview.placeholder.enabled is false, so it does not exist
+     yet. Enable the placeholder in a separate revision once these
+     guardrails are in place.
+{{- end }}
+
+  2. The wildcard record: point *.{{ $p.hostSuffix }} at that hostname (a
+     Route53 alias A record, or a CNAME).
+
+  3. The preview nodes: {{ if $n.create }}this release renders NodeClass {{ $n.nodeClass }} and
+     NodePool {{ $n.nodePool }}, kept on uninstall (delete the NodePool first).
+{{- else }}NodeClass {{ $n.nodeClass }} and NodePool {{ $n.nodePool }} must
+     exist (DefaultDeny, tainted {{ $n.taintKey }}=true:NoExecute), or set
+     preview.nodeIsolation.create to render them.
+{{- end }}
+
+  4. The isolation probe: before enabling any Project preview, and after
+     every EKS, Auto Mode or VPC CNI upgrade, run the cold-start gate from a
+     patchy checkout (hack/preview-isolation-probe/README.md):
+
+       bash hack/preview-isolation-probe/run.sh \
+         --repository <owner>/<app> \
+         --image {{ $p.imageRegistry }}/patchy/previews/<app> \
+         --taint-key {{ $n.taintKey }} \
+         --node-pool {{ $n.nodePool }} --node-class {{ $n.nodeClass }} \
+         <disposable-PR-number>
+
+COST: the preview ALB bills from the moment the placeholder creates it,
+whether or not any preview runs{{ if $p.placeholder.enabled }} (even with previewController off){{ end }}.
+{{- if $n.create }}
+A preview node ({{ join ", " $n.instanceTypes }}) bills from launch until it
+is consolidated, 30s after its last preview Pod. Budget by CPU: the pool
+stops launching nodes at {{ $n.cpuLimit }} CPUs. Auto Mode is not known to
+enforce a NodePool's node limit, so do not count on its limit of {{ $n.nodeLimit }} nodes.
+{{- else }}
+A preview node bills from launch until NodePool {{ $n.nodePool }}'s own
+disruption policy removes it. This release does not render that NodePool, so
+its consolidation and limits are whatever you set.
+{{- end }}
+{{- end }}
 {{- $egressMode := include "patchy.egressMode" . }}
 {{- if eq $egressMode "none" }}
 

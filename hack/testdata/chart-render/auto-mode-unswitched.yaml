@@ -1,0 +1,30 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Every value under preview.nodeIsolation and edgeIngressClass, each away from
+# its default, with neither create switch: the shape of an install that fills
+# them in (a terraform module's outputs, say) before turning create on. The
+# names, taint key and clusterDNSCIDR are left out, since they render without
+# a switch. Rendering this over a values file must leave its render unchanged.
+preview:
+    nodeIsolation:
+        role: example-preview-node
+        subnetIDs:
+            - subnet-0123456789abcdef0
+        securityGroupIDs:
+            - sg-0123456789abcdef0
+        instanceTypes:
+            - m7g.large
+        arch: arm64
+        cpuLimit: "8"
+        nodeLimit: "4"
+        ephemeralStorage:
+            size: 40Gi
+            iops: 4000
+            throughput: 250
+edgeIngressClass:
+    name: edge
+    loadBalancerName: example-patchy
+    scheme: internal
+    certificateARNs:
+        - arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000

@@ -108,6 +108,44 @@ app.kubernetes.io/managed-by: patchy
 {{- end }}
 
 {{/*
+The edge IngressClass's name while edgeIngressClass.create is on, else empty:
+the className the webhook and status-page Ingresses fall back to when their
+own is empty, so with create off they render exactly as before.
+*/}}
+{{- define "patchy.edgeIngressClassName" -}}
+{{- $e := .Values.edgeIngressClass | default dict -}}
+{{- if $e.create -}}
+{{- $e.name | default (printf "%s-edge" (include "patchy.fullname" .)) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+The node-local DNS egress rule (clusterDNSCIDR): UDP and TCP 53 to that one
+address. Every NetworkPolicy that allows DNS to kube-system includes it right
+after that rule, so it widens exactly the pods the chart already isolates and
+selects no new ones (a separate podSelector-{} policy would egress-isolate any
+pod no other policy selects, such as a controller whose
+networkPolicy.create is false). EKS Auto Mode serves DNS from each node at
+the cluster DNS Service address, not from kube-system pods, so once
+NetworkPolicy is enforced the kube-system rule matches nothing there. Empty
+while clusterDNSCIDR is unset, so the policies render as before. Context: the
+root; include it with nindent 8 inside `with`.
+*/}}
+{{- define "patchy.clusterDNSEgress" -}}
+{{- with .Values.clusterDNSCIDR -}}
+# DNS at the node-local cluster resolver (clusterDNSCIDR).
+- to:
+      - ipBlock:
+            cidr: {{ . }}
+  ports:
+      - protocol: UDP
+        port: 53
+      - protocol: TCP
+        port: 53
+{{- end -}}
+{{- end }}
+
+{{/*
 Whether the egress credential broker deploys: exactly when a claude runner is
 enabled anywhere (findings, evaluations or intents). There is deliberately no
 separate enabled knob — claude runs proxy-only, so claude ⇒ broker, and a

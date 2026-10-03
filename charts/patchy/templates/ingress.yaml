@@ -28,7 +28,7 @@ metadata:
         {{- . | nindent 8 }}
     {{- end }}
 spec:
-    {{- with .Values.webhook.ingress.className }}
+    {{- with .Values.webhook.ingress.className | default (include "patchy.edgeIngressClassName" .) }}
     ingressClassName: {{ . }}
     {{- end }}
     {{- with .Values.webhook.ingress.tls }}

@@ -36,7 +36,10 @@
 // given, otherwise the image released with this CLI's version or, for a
 // development build, the newest vX.Y.Z release in the registry (never
 // latest), each pinned to the digest its tag names there, so a stale local
-// copy of the tag never stands in for it. The registry is reached only
+// copy of the tag never stands in for it. Which repository that is comes
+// from the caller: the CLI passes version.RunnerImageRepository, stamped in
+// from the release registry at build time, and a CLI built without one has
+// no default and says to pass --runner-image. The registry is reached only
 // through Registry, so tests fake it too.
 //
 // Each check is one Check line, PASS, FAIL or SKIP with a reason, and a

@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/bitwise-media-group/patchy/cmd/patchy/internal/imagecheck"
+	"github.com/bitwise-media-group/patchy/internal/version"
 )
 
 // pushCheckImage starts an in-memory registry, pushes a linux/amd64 image
@@ -154,14 +155,20 @@ func (f fakeRunnerRegistry) Digest(context.Context, string) (string, error) {
 	return fakeRunnerDigest, nil
 }
 
+// testRunnerRepository stands in for the runner image repository a build
+// stamps in from its release registry (version.RunnerImageRepository).
+const testRunnerRepository = "registry.example.com/acme/patchy/claude-agent-runner"
+
 // testDeps are check image's dependencies for a development build of the
-// CLI, whose registry has runner image releases up to v0.11.7, with docker
+// CLI, built with testRunnerRepository as its runner image repository,
+// whose registry has runner image releases up to v0.11.7, with docker
 // faked by docker.
 func testDeps(docker imagecheck.Commander) checkImageDeps {
 	return checkImageDeps{
-		docker:   docker,
-		registry: fakeRunnerRegistry{tags: []string{"latest", "v0.11.5", "v0.11.7", "v0.12.0-rc.1"}},
-		version:  "dev",
+		docker:           docker,
+		registry:         fakeRunnerRegistry{tags: []string{"latest", "v0.11.5", "v0.11.7", "v0.12.0-rc.1"}},
+		runnerRepository: testRunnerRepository,
+		version:          "dev",
 	}
 }
 
@@ -357,7 +364,7 @@ func (r *recordingDocker) Run(ctx context.Context, command string, args ...strin
 // own in every output.
 func TestCheckImageReportsRunnerImage(t *testing.T) {
 	good, _ := pushCheckImage(t, []string{"PATH=/usr/bin"}, nil)
-	newest := imagecheck.RunnerImageRepository + ":v0.11.7"
+	newest := testRunnerRepository + ":v0.11.7"
 	for _, output := range []string{"table", "json", "yaml"} {
 		t.Run(output, func(t *testing.T) {
 			var out bytes.Buffer
@@ -390,12 +397,71 @@ func TestCheckImageReportsRunnerImage(t *testing.T) {
 				}
 			}
 			create := []string{"create", "--quiet", "--platform", "linux/amd64",
-				imagecheck.RunnerImageRepository + "@" + fakeRunnerDigest}
+				testRunnerRepository + "@" + fakeRunnerDigest}
 			if !slices.ContainsFunc(docker.calls, func(c []string) bool { return slices.Equal(c, create) }) {
 				t.Errorf("the runner binaries were not copied out of the runner image by digest; docker calls %q",
 					docker.calls)
 			}
 		})
+	}
+}
+
+// TestCheckImageRunWithoutReleaseRegistry: a CLI built without a release
+// registry (a plain go build, no runner image repository stamped in) knows
+// no runner image, so --run fails its runner-image line with a reason that
+// says so and to pass --runner-image, never asks the registry, and never
+// runs docker; --runner-image still works on such a build.
+func TestCheckImageRunWithoutReleaseRegistry(t *testing.T) {
+	good, _ := pushCheckImage(t, []string{"PATH=/usr/bin"}, nil)
+	var out bytes.Buffer
+	opts := &Options{Out: &out, ErrOut: io.Discard, Output: "table"}
+	f := &checkImageFlags{run: true, maxBytes: 1 << 30}
+	docker := &recordingDocker{fakeDockerHost: fakeDockerHost{"git version 2.51.0\n"}}
+	deps := testDeps(docker)
+	deps.runnerRepository = ""
+	deps.registry = fakeRunnerRegistry{err: errors.New("the registry was asked")}
+	err := runCheckImage(context.Background(), opts, f, good, deps)
+	if err == nil || !strings.Contains(err.Error(), "1 check failed") {
+		t.Errorf("runCheckImage = %v, want the runner-image check failed\n%s", err, out.String())
+	}
+	for _, want := range []string{"FAIL  runner-image", "without the release registry", "plain go build",
+		"pass --runner-image", "SKIP  preflight"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "the registry was asked") {
+		t.Errorf("the registry was asked for a runner image with no repository to ask in:\n%s", out.String())
+	}
+	for _, c := range docker.calls {
+		if c[0] == "create" || c[0] == "run" {
+			t.Errorf("docker %s ran with no runner image chosen: %q", c[0], c)
+		}
+	}
+
+	out.Reset()
+	f.runnerImage = "runner:test"
+	if err := runCheckImage(context.Background(), opts, f, good, deps); err != nil {
+		t.Fatalf("runCheckImage --runner-image: %v\n%s", err, out.String())
+	}
+	if want := "PASS  runner-image  runner:test, as given with --runner-image"; !strings.Contains(out.String(), want) {
+		t.Errorf("output lacks %q:\n%s", want, out.String())
+	}
+}
+
+// TestDefaultCheckImageDepsTakeStampedRepository: the real dependencies
+// choose the runner image in the repository the build stamped into
+// version.RunnerImageRepository, whatever it is, and in none when the build
+// stamped none, rather than in a registry written into the code.
+func TestDefaultCheckImageDepsTakeStampedRepository(t *testing.T) {
+	stamped := version.RunnerImageRepository
+	t.Cleanup(func() { version.RunnerImageRepository = stamped })
+	for _, repository := range []string{"", testRunnerRepository, "registry.example.org/fork/patchy/claude-agent-runner"} {
+		version.RunnerImageRepository = repository
+		if got := defaultCheckImageDeps(); got.runnerRepository != repository || got.version != version.Version {
+			t.Errorf("with %q stamped: runnerRepository = %q, version = %q; want %q, %q", repository,
+				got.runnerRepository, got.version, repository, version.Version)
+		}
 	}
 }
 

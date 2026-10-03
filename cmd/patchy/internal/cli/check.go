@@ -77,25 +77,27 @@ func newCheckImageCmd(opts *Options) *cobra.Command {
 			"image released with this CLI or, for a development build, which has none, the\n" +
 			"newest release in the registry (the highest vX.Y.Z tag, never latest), pinned\n" +
 			"to the digest its tag names there now, so no stale local copy of the tag stands\n" +
-			"in for it; --runner-image overrides it and is used as given (a tag as your\n" +
-			"local docker has it). The runner-image line names the image and digest used;\n" +
-			"when none can be chosen (the registry is unreachable, say) it fails, the rest\n" +
-			"of the run is skipped, and --runner-image is the way on. The image runs\n" +
-			"as uid 65532 with a read-only root filesystem, no network, no capabilities, no\n" +
-			"privilege escalation, bounded processes, memory and CPU, sized executable tmpfs\n" +
-			"mounts at /tmp and /workspace, the two binaries read-only at /patchy/bin,\n" +
-			"PATH=/patchy/bin:<the image's PATH> and the rest of the pod's environment; each\n" +
-			"container is removed when its run ends, even an interrupted one. In it,\n" +
-			"agent-runner's own preflight (the check a stage runs before its first model\n" +
-			"call: claude --version, git --version and bash -c true) runs, then bash -c true\n" +
-			"and git --version on their own. A pod may land on a node of any platform the\n" +
-			"image serves, so all of that runs once per platform: the docker host's own\n" +
-			"natively and first, any other under docker's emulation (Docker Desktop has it;\n" +
-			"on Linux, binfmt_misc with QEMU). A platform the docker host cannot emulate is\n" +
-			"reported as SKIP. Without a docker CLI the run is skipped, not failed. An image\n" +
-			"that exists only in your local docker store fails the registry checks but\n" +
-			"still runs; to check both before publishing, push it to a scratch tag or a\n" +
-			"local registry.\n\n" +
+			"in for it. Which registry that is was stamped into this CLI by the build that\n" +
+			"made it: a release names the registry it published its images to, and a plain\n" +
+			"go build names none. --runner-image overrides the choice and is used as given\n" +
+			"(a tag as your local docker has it). The runner-image line names the image and\n" +
+			"digest used; when none can be chosen (the registry is unreachable, or the CLI\n" +
+			"knows none) it fails, the rest of the run is skipped, and --runner-image is the\n" +
+			"way on. The image runs as uid 65532 with a read-only root filesystem, no\n" +
+			"network, no capabilities, no privilege escalation, bounded processes, memory\n" +
+			"and CPU, sized executable tmpfs mounts at /tmp and /workspace, the two binaries\n" +
+			"read-only at /patchy/bin, PATH=/patchy/bin:<the image's PATH> and the rest of\n" +
+			"the pod's environment; each container is removed when its run ends, even an\n" +
+			"interrupted one. In it, agent-runner's own preflight (the check a stage runs\n" +
+			"before its first model call: claude --version, git --version and bash -c true)\n" +
+			"runs, then bash -c true and git --version on their own. A pod may land on a\n" +
+			"node of any platform the image serves, so all of that runs once per platform:\n" +
+			"the docker host's own natively and first, any other under docker's emulation\n" +
+			"(Docker Desktop has it; on Linux, binfmt_misc with QEMU). A platform the docker\n" +
+			"host cannot emulate is reported as SKIP. Without a docker CLI the run is\n" +
+			"skipped, not failed. An image that exists only in your local docker store fails\n" +
+			"the registry checks but still runs; to check both before publishing, push it\n" +
+			"to a scratch tag or a local registry.\n\n" +
 			"Each check prints one line: PASS, FAIL or SKIP, the check, the platform for a\n" +
 			"--run check, and the reason.\n" +
 			"-o json or -o yaml prints the whole report as data instead. The exit status is\n" +
@@ -107,11 +109,7 @@ func newCheckImageCmd(opts *Options) *cobra.Command {
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: noFileCompletion,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCheckImage(cmd.Context(), opts, f, args[0], checkImageDeps{
-				docker:   imagecheck.ExecCommander{},
-				registry: imagecheck.RemoteRegistry{Keychain: authn.DefaultKeychain},
-				version:  version.Version,
-			})
+			return runCheckImage(cmd.Context(), opts, f, args[0], defaultCheckImageDeps())
 		},
 	}
 	fl := cmd.Flags()
@@ -126,19 +124,35 @@ func newCheckImageCmd(opts *Options) *cobra.Command {
 	fl.StringVar(&f.runnerImage, "runner-image", "",
 		"claude runner image to take agent-runner and claude from with --run, used as given "+
 			"(default: the one released with this CLI, or the newest release for a development build, "+
-			"pinned to its digest)")
+			"in the release registry this CLI was built with, pinned to its digest)")
 	_ = cmd.RegisterFlagCompletionFunc("allow", noFileCompletion)
 	_ = cmd.RegisterFlagCompletionFunc("runner-image", noFileCompletion)
 	return cmd
 }
 
 // checkImageDeps is what `check image` reaches beyond its arguments: the
-// docker CLI, the registry the default runner image is chosen from, and the
-// CLI's own version, which decides that choice. Tests fake all three.
+// docker CLI, the registry the default runner image is chosen from, the
+// runner image repository it is chosen in and the CLI's own version, which
+// decides that choice. Tests fake all four.
 type checkImageDeps struct {
 	docker   imagecheck.Commander
 	registry imagecheck.Registry
-	version  string
+	// runnerRepository is the release registry's runner image repository
+	// the CLI was built with; empty for a build without one.
+	runnerRepository string
+	version          string
+}
+
+// defaultCheckImageDeps are the real dependencies: the docker CLI, the
+// registry reached with the local docker credentials, and the runner image
+// repository and version stamped into this build.
+func defaultCheckImageDeps() checkImageDeps {
+	return checkImageDeps{
+		docker:           imagecheck.ExecCommander{},
+		registry:         imagecheck.RemoteRegistry{Keychain: authn.DefaultKeychain},
+		runnerRepository: version.RunnerImageRepository,
+		version:          version.Version,
+	}
 }
 
 // runCheckImage runs the checks and renders the report; any failed check
@@ -212,7 +226,8 @@ func sandbox(ctx context.Context, opts *Options, report *imagecheck.Report, runn
 		image = report.Reference
 	}
 	chooseCtx, cancel := context.WithTimeout(ctx, staticCheckTimeout)
-	runner, chosen := imagecheck.ChooseRunner(chooseCtx, deps.registry, runnerImage, deps.version)
+	runner, chosen := imagecheck.ChooseRunner(chooseCtx, deps.registry, runnerImage, deps.runnerRepository,
+		deps.version)
 	cancel()
 	report.RunnerImage = runner
 	checks := []imagecheck.Check{chosen}

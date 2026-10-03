@@ -4,18 +4,68 @@
 #
 # Re-run the first-instant EKS Auto Mode isolation gate against an immutable
 # disposable PR image. This never reads a metadata response body or a token.
+#
+# The site is the caller's to name, in the environment (see README.md):
+#   PROBE_REPOSITORY  owner/name of the app repository the disposable PR is
+#                     open on
+#   PROBE_IMAGE       the preview image repository its trusted publisher
+#                     pushes to, <account>.dkr.ecr.<region>.amazonaws.com/
+#                     <preview path prefix>/<app>
+#   PROBE_TAINT_KEY   the preview NodePool's NoExecute taint key (the chart's
+#                     preview.nodeIsolation.taintKey)
+#   PROBE_NODE_POOL, PROBE_NODE_CLASS
+#                     the preview NodePool and NodeClass (the chart's
+#                     preview.nodeIsolation.nodePool/nodeClass; default
+#                     patchy-preview)
+# AWS credentials (AWS_PROFILE and the rest) come from the caller's
+# environment as they are; the script sets none.
 set -euo pipefail
 
+usage() {
+    echo "usage: PROBE_REPOSITORY=<owner>/<app> PROBE_IMAGE=<account>.dkr.ecr.<region>.amazonaws.com/<prefix>/<app> \\" >&2
+    echo "       PROBE_TAINT_KEY=<taint key> $0 <open disposable PR number>" >&2
+    exit 2
+}
+
 if [[ $# -ne 1 || ! $1 =~ ^[0-9]+$ ]]; then
-    echo "usage: $0 <open disposable patchy-preview-demo PR number>" >&2
+    usage
+fi
+for name in PROBE_REPOSITORY PROBE_IMAGE PROBE_TAINT_KEY; do
+    if [[ -z ${!name:-} ]]; then
+        echo "$name is not set" >&2
+        usage
+    fi
+done
+# Each value lands in a gh, aws or kubectl argument or in the probe's
+# manifest, so each must be exactly the shape it names.
+if [[ ! $PROBE_REPOSITORY =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    echo "PROBE_REPOSITORY must be <owner>/<name>, not $PROBE_REPOSITORY" >&2
     exit 2
 fi
+if [[ ! $PROBE_IMAGE =~ ^([0-9]{12}\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com)/([a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*)$ ]]; then
+    echo "PROBE_IMAGE must be an ECR repository, <account>.dkr.ecr.<region>.amazonaws.com/<path>, not $PROBE_IMAGE" >&2
+    exit 2
+fi
+registry=${BASH_REMATCH[1]}
+region=${BASH_REMATCH[2]}
+image_repo=${BASH_REMATCH[3]}
+dns_name='[a-z0-9]([-a-z0-9]*[a-z0-9])?'
+if [[ ! $PROBE_TAINT_KEY =~ ^($dns_name(\.$dns_name)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$ ]]; then
+    echo "PROBE_TAINT_KEY must be a taint key, [<dns prefix>/]<name>, not $PROBE_TAINT_KEY" >&2
+    exit 2
+fi
+taint_key=$PROBE_TAINT_KEY
+node_pool=${PROBE_NODE_POOL:-patchy-preview}
+node_class=${PROBE_NODE_CLASS:-patchy-preview}
+for value in "$node_pool" "$node_class"; do
+    if [[ ! $value =~ ^$dns_name(\.$dns_name)*$ ]]; then
+        echo "PROBE_NODE_POOL and PROBE_NODE_CLASS must be Kubernetes object names, not $value" >&2
+        exit 2
+    fi
+done
 
 pr_number=$1
-repo=devthenet-labs/patchy-preview-demo
-region=us-east-1
-registry=377946145366.dkr.ecr.us-east-1.amazonaws.com
-image_repo=patchy/previews/patchy-preview-demo
+repo=$PROBE_REPOSITORY
 deployment=preview-isolation-probe
 probe_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # The sibling stage's targets: another component's Pod and Service in the
@@ -24,7 +74,6 @@ probe_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 sibling=preview-isolation-sibling
 other=preview-isolation-other
 created=0
-export AWS_PROFILE=devthenet
 
 cleanup() {
     if [[ $created -eq 1 ]]; then
@@ -53,7 +102,7 @@ if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
 fi
 echo "Using disposable PR #$pr_number head $sha ($digest)" >&2
 
-if ! kubectl get nodeclass patchy-preview -o json | jq -e '.spec.networkPolicy == "DefaultDeny"' >/dev/null; then
+if ! kubectl get nodeclass "$node_class" -o json | jq -e '.spec.networkPolicy == "DefaultDeny"' >/dev/null; then
     echo "preview NodeClass is not DefaultDeny" >&2
     exit 1
 fi
@@ -87,8 +136,9 @@ wait_zero() {
     local tries=0
     while (( tries < 120 )); do
         local nodes claims
-        nodes=$(kubectl get nodes -l karpenter.sh/nodepool=patchy-preview -o name)
-        claims=$(kubectl get nodeclaims -o json | jq -r '.items[] | select(.metadata.labels["karpenter.sh/nodepool"] == "patchy-preview") | .metadata.name')
+        nodes=$(kubectl get nodes -l "karpenter.sh/nodepool=$node_pool" -o name)
+        claims=$(kubectl get nodeclaims -o json | jq -r --arg pool "$node_pool" \
+            '.items[] | select(.metadata.labels["karpenter.sh/nodepool"] == $pool) | .metadata.name')
         if [[ -z $nodes && -z $claims ]]; then
             return 0
         fi
@@ -125,10 +175,10 @@ spec:
       serviceAccountName: default
       automountServiceAccountToken: false
       nodeSelector:
-        karpenter.sh/nodepool: patchy-preview
-        eks.amazonaws.com/nodeclass: patchy-preview
+        karpenter.sh/nodepool: $node_pool
+        eks.amazonaws.com/nodeclass: $node_class
       tolerations:
-        - key: patchy.devthe.net/preview-only
+        - key: $taint_key
           operator: Equal
           value: "true"
           effect: NoExecute

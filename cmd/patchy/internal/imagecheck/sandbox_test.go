@@ -116,7 +116,7 @@ func sandboxConfig() SandboxConfig {
 		// The docker host's own platform alone; the multi-platform tests
 		// set their own.
 		Platforms:   []string{"linux/arm64"},
-		RunnerImage: RunnerImageRepository + ":v1.2.3",
+		RunnerImage: testRunnerRepository + ":v1.2.3",
 		BinDir:      "/tmp/patchy-bin",
 	}
 }
@@ -142,7 +142,7 @@ func TestSandboxRunsThePodShape(t *testing.T) {
 	// The binaries come out of the runner image for the host's platform,
 	// and the container that held them is removed.
 	wantCalls := [][]string{
-		{"create", "--quiet", "--platform", "linux/arm64", RunnerImageRepository + ":v1.2.3"},
+		{"create", "--quiet", "--platform", "linux/arm64", testRunnerRepository + ":v1.2.3"},
 		{"cp", "c0ffee:/usr/local/bin/agent-runner", "/tmp/patchy-bin/agent-runner"},
 		{"cp", "c0ffee:/usr/local/bin/claude", "/tmp/patchy-bin/claude"},
 		{"rm", "--force", "c0ffee"},

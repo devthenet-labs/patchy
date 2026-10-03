@@ -20,19 +20,38 @@ health-check path, so admission would refuse the sibling's Service. The sibling 
 the chart's preview policy envtest (`charts/patchy/preview_probe_envtest_test.go`) runs the script's own command on it
 against the rendered policies.
 
-The probe is **never merged into `devthenet-labs/patchy-preview-demo` main**. Prepare a disposable same-repo PR on a
-`test/preview-*` branch based on current main. Copy this directory's `cmd/netprobe/` to the demo repo's `cmd/netprobe/`,
-and replace the demo repo's runtime `Dockerfile` and `.dockerignore` with the two files here. Do not alter its
-agent-toolchain image, build/publish workflow, or application source. Verify the PR diff contains only those files; open
-the PR and wait for the uncredentialed build and the trusted publisher to succeed. The publisher must push
-`patchy/previews/patchy-preview-demo:sha-<full PR head SHA>`; the script confirms that tag and its digest exist in ECR.
-Never run the probe from a fork PR or from an image tagged from main.
+The probe runs from an app repository that already publishes preview images through patchy's trusted publisher, and it
+is **never merged into that repository's main**. Prepare a disposable same-repo PR on a `test/preview-*` branch based on
+current main. Copy this directory's `cmd/netprobe/` to the app repository's `cmd/netprobe/`, and replace its runtime
+`Dockerfile` and `.dockerignore` with the two files here. Do not alter its agent-toolchain image, build/publish
+workflow, or application source. Verify the PR diff contains only those files; open the PR and wait for the
+uncredentialed build and the trusted publisher to succeed. The publisher must push
+`<preview path prefix>/<app>:sha-<full PR head SHA>`; the script confirms that tag and its digest exist in ECR. Never
+run the probe from a fork PR or from an image tagged from main.
 
-From this patchy checkout, with `brvtl` active in `gh` and access to `devthenet-dev`, run:
+The script takes the site from its environment and sets nothing else: `gh` must be signed in with read access to the app
+repository, `kubectl`'s current context must be the cluster, and the AWS CLI must reach the registry's account with the
+credentials already in your environment (`AWS_PROFILE` or the rest). From this patchy checkout, run:
 
 ```sh
+PROBE_REPOSITORY=acme/hello-web \
+PROBE_IMAGE=123456789012.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/hello-web \
+PROBE_TAINT_KEY=preview.example.com/preview-only \
 bash hack/preview-isolation-probe/run.sh <disposable-PR-number>
 ```
+
+| Variable           | Required | Meaning                                                                                             |
+| ------------------ | -------- | --------------------------------------------------------------------------------------------------- |
+| `PROBE_REPOSITORY` | yes      | `owner/name` of the app repository the disposable PR is open on                                     |
+| `PROBE_IMAGE`      | yes      | The ECR repository its trusted publisher pushes preview images to; the region is read from its host |
+| `PROBE_TAINT_KEY`  | yes      | The preview NodePool's `NoExecute` taint key, the chart's `preview.nodeIsolation.taintKey`          |
+| `PROBE_NODE_POOL`  | no       | The preview NodePool, the chart's `preview.nodeIsolation.nodePool`; default `patchy-preview`        |
+| `PROBE_NODE_CLASS` | no       | The preview NodeClass, the chart's `preview.nodeIsolation.nodeClass`; default `patchy-preview`      |
+
+Each value is checked for its shape before anything runs, because each lands in a command argument or in the probe's
+manifest. The script still assumes a release named `patchy` in the namespace `patchy` (it reads the Services
+`patchy-egress-broker`, `patchy-integration-controller`, `patchy-source-controller` and `patchy-status-server` there),
+and the chart's slot namespaces `patchy-preview-0` and `patchy-preview-1`.
 
 The script discovers the current Kubernetes and patchy Service ClusterIPs (rather than trusting stale IPs), verifies the
 NodeClass is `DefaultDeny` and both slot NetworkPolicies exist, and refuses to overwrite an existing probe Deployment.

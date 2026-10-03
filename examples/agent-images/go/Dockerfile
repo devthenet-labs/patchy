@@ -21,7 +21,7 @@ FROM ${AGENT_BASE}
 # runs as 65532 whatever the image says).
 USER 0:0
 
-# The toolchain go.mod's go directive asks for (1.24 for patchy-target). Wolfi
+# The toolchain go.mod's go directive asks for (1.24 here; match yours). Wolfi
 # builds it against glibc, puts go on /usr/bin, and pulls in build-base, so
 # cgo works too.
 # hadolint ignore=DL3018

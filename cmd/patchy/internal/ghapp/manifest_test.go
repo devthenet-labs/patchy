@@ -110,6 +110,11 @@ func TestBuildRefuses(t *testing.T) {
 	if _, err := Build(ok); err != nil {
 		t.Errorf("Build(valid) = %v", err)
 	}
+	wide := ok
+	wide.Name = "pätchy-ünïcødé-scanner-for-acme" // 31 characters, more bytes
+	if _, err := Build(wide); err != nil {
+		t.Errorf("Build(a 31-character name of multibyte letters) = %v", err)
+	}
 }
 
 // TestManifestIsTheTable: for every selection of features, the manifest

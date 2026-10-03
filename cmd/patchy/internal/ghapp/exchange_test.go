@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -48,7 +49,8 @@ func conversionBody(keyPEM string, webhookSecret any) map[string]any {
 
 // fakeConversions serves POST /app-manifests/{code}/conversions: code
 // converts once, to body; every other request is recorded as a failure.
-func fakeConversions(t *testing.T, code string, status int, body any) *httptest.Server {
+func fakeConversions(t *testing.T, status int, body any) *httptest.Server {
+	const code = "c0de"
 	t.Helper()
 	used := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +78,7 @@ func fakeConversions(t *testing.T, code string, status int, body any) *httptest.
 
 func TestConvert(t *testing.T) {
 	key := testKeyPEM(t)
-	srv := fakeConversions(t, "c0de", http.StatusCreated, conversionBody(key, "whsec"))
+	srv := fakeConversions(t, http.StatusCreated, conversionBody(key, "whsec"))
 	app, err := Convert(context.Background(), srv.Client(), srv.URL+"/", "c0de")
 	if err != nil {
 		t.Fatalf("Convert: %v", err)
@@ -98,8 +100,6 @@ func TestConvert(t *testing.T) {
 func TestConvertRefuses(t *testing.T) {
 	key := testKeyPEM(t)
 	noKey := conversionBody("not a key", nil)
-	badSlug := conversionBody(key, nil)
-	badSlug["slug"] = "../admin"
 	noID := conversionBody(key, nil)
 	noID["id"] = 0
 	tests := []struct {
@@ -113,7 +113,6 @@ func TestConvertRefuses(t *testing.T) {
 			"single-use"},
 		{"server error", http.StatusBadGateway, map[string]string{"message": "oops"}, "c0de", "HTTP 502"},
 		{"no key", http.StatusCreated, noKey, "c0de", "no PEM private key"},
-		{"bad slug", http.StatusCreated, badSlug, "c0de", "slug"},
 		{"no ID", http.StatusCreated, noID, "c0de", "no App ID"},
 		{"code shaped like a path", http.StatusCreated, conversionBody(key, nil), "../x", "not shaped"},
 		{"oversized", http.StatusCreated, map[string]string{"pem": strings.Repeat("a", maxResponseBytes)}, "c0de",
@@ -121,7 +120,7 @@ func TestConvertRefuses(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := fakeConversions(t, "c0de", tt.status, tt.body)
+			srv := fakeConversions(t, tt.status, tt.body)
 			app, err := Convert(context.Background(), srv.Client(), srv.URL, tt.code)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("Convert() = %+v, %v; want an error containing %q", app, err, tt.want)
@@ -130,17 +129,49 @@ func TestConvertRefuses(t *testing.T) {
 	}
 }
 
+// TestConvertKeepsTheKeyOverAnOddSlug: the code is spent once GitHub
+// answers, so a slug patchy will not build a link from costs the link, not
+// the key.
+func TestConvertKeepsTheKeyOverAnOddSlug(t *testing.T) {
+	key := testKeyPEM(t)
+	for _, tt := range []struct{ slug, want string }{
+		{"patchy_acme", "patchy_acme"},
+		{"../admin", ""},
+		{"", ""},
+	} {
+		body := conversionBody(key, nil)
+		body["slug"] = tt.slug
+		srv := fakeConversions(t, http.StatusCreated, body)
+		app, err := Convert(context.Background(), srv.Client(), srv.URL, "c0de")
+		if err != nil {
+			t.Fatalf("slug %q: Convert: %v", tt.slug, err)
+		}
+		if app.Slug != tt.want || string(app.Credentials.privateKey) != key {
+			t.Errorf("slug %q: Slug = %q (want %q), key kept: %v", tt.slug, app.Slug, tt.want,
+				string(app.Credentials.privateKey) == key)
+		}
+	}
+}
+
 // TestCredentialsNeverFormat: printing an App with any verb shows neither
 // the private key nor the webhook secret.
 func TestCredentialsNeverFormat(t *testing.T) {
 	key := testKeyPEM(t)
-	srv := fakeConversions(t, "c0de", http.StatusCreated, conversionBody(key, "whsec-value"))
+	srv := fakeConversions(t, http.StatusCreated, conversionBody(key, "whsec-value"))
 	app, err := Convert(context.Background(), srv.Client(), srv.URL, "c0de")
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := fmt.Sprintf("%v %+v %#v %s %v %+v %#v", app, app, app, app.Credentials, *app, *app, *app)
-	for _, secret := range []string{"PRIVATE KEY", key[40:80], "whsec-value"} {
+	var out string
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%d", "%x", "%X", "%c", "%o", "%b", "%U", "%t"} {
+		out += fmt.Sprintf(verb+" "+verb+" "+verb+"\n", app, *app, app.Credentials)
+	}
+	pemBytes := make([]string, 0, 12) // the key's first bytes as %d prints a byte slice
+	for _, b := range []byte(key[:12]) {
+		pemBytes = append(pemBytes, strconv.Itoa(int(b)))
+	}
+	for _, secret := range []string{"PRIVATE KEY", key[40:80], "whsec-value", "77 68 73 65 63", "7768736563",
+		strings.Join(pemBytes, " "), "BEGIN"} {
 		if strings.Contains(out, secret) {
 			t.Fatalf("formatting an App leaked %q:\n%s", secret, out)
 		}

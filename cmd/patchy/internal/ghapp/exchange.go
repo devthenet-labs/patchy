@@ -21,12 +21,16 @@ import (
 // few strings.
 const maxResponseBytes = 1 << 20
 
-// slugPattern is an App slug as GitHub forms them.
-var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,99}$`)
+// slugPattern is an App slug patchy builds links from: GitHub's are
+// lowercase words joined by hyphens, and this admits underscores and dots
+// too rather than lose an App over its spelling.
+var slugPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
 
 // App is the App GitHub created from the manifest.
 type App struct {
-	ID          int64
+	ID int64
+	// Slug names the App in GitHub's URLs; empty when GitHub answered with
+	// one patchy will not build a link from.
 	Slug        string
 	Name        string
 	HTMLURL     string
@@ -45,11 +49,16 @@ type Credentials struct {
 	webhookSecret string
 }
 
-// String redacts the credentials.
-func (Credentials) String() string { return "{redacted}" }
+// redacted is all a formatted Credentials ever shows.
+const redacted = "{redacted}"
 
-// GoString redacts the credentials from %#v as well.
-func (Credentials) GoString() string { return "ghapp.Credentials{redacted}" }
+// Format redacts the credentials under every verb: fmt consults a
+// Formatter before Stringer and GoStringer, and a verb neither covers (%d,
+// %x, %c) would otherwise print the key's bytes.
+func (Credentials) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, redacted) }
+
+// String redacts the credentials outside fmt too.
+func (Credentials) String() string { return redacted }
 
 // HasWebhookSecret reports whether GitHub issued a webhook secret: only an
 // App with a webhook has one.
@@ -119,17 +128,21 @@ func Convert(ctx context.Context, client *http.Client, apiURL, code string) (*Ap
 	if err := json.Unmarshal(body, &c); err != nil {
 		return nil, fmt.Errorf("decode the conversion: %w", err)
 	}
-	switch {
-	case c.ID <= 0:
+	// The code is spent: from here on only what makes the Secret useless
+	// (no App ID, no key) is fatal, so a key is never thrown away over a
+	// detail.
+	if c.ID <= 0 {
 		return nil, errors.New("the conversion names no App ID")
-	case !slugPattern.MatchString(c.Slug):
-		return nil, fmt.Errorf("the conversion's App slug %q is not one GitHub forms", c.Slug)
 	}
 	if block, _ := pem.Decode([]byte(c.PEM)); block == nil || !strings.HasSuffix(block.Type, "PRIVATE KEY") {
 		return nil, errors.New("the conversion carries no PEM private key")
 	}
+	slug := c.Slug
+	if !slugPattern.MatchString(slug) {
+		slug = ""
+	}
 	app := &App{
-		ID: c.ID, Slug: c.Slug, Name: c.Name, HTMLURL: c.HTMLURL, Owner: c.Owner.Login,
+		ID: c.ID, Slug: slug, Name: c.Name, HTMLURL: c.HTMLURL, Owner: c.Owner.Login,
 		Permissions: c.Permissions, Events: c.Events,
 		Credentials: Credentials{privateKey: []byte(c.PEM)},
 	}

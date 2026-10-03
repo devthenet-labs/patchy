@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"html"
 	"io"
 	"maps"
@@ -20,12 +21,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -66,6 +69,8 @@ type fakeAppGitHub struct {
 	// noWebhookSecret leaves the webhook secret out of a conversion, as if
 	// the person creating the App had turned its webhook off.
 	noWebhookSecret bool
+	// owner is the converted App's owner login; "" is acme.
+	owner string
 }
 
 func newFakeAppGitHub(t *testing.T) *fakeAppGitHub {
@@ -149,11 +154,15 @@ func (g *fakeAppGitHub) convert(w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []string{}
 	}
+	owner := g.owner
+	if owner == "" {
+		owner = "acme"
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"id": 4242, "slug": "patchy-acme", "name": g.manifest.Name,
-		"html_url": g.srv.URL + "/apps/patchy-acme", "owner": map[string]any{"login": "acme"},
+		"html_url": g.srv.URL + "/apps/patchy-acme", "owner": map[string]any{"login": owner},
 		"permissions": g.manifest.DefaultPermissions, "events": events,
 		"client_id": "Iv1.0123456789", "client_secret": setupClientSecret,
 		"webhook_secret": webhookSecret, "pem": g.key,
@@ -210,8 +219,8 @@ func (g *fakeAppGitHub) browser(forge bool, started *string) func(string) error 
 		page, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if forge {
-			forged, err := http.Get(strings.TrimSuffix(start, "/") + "/callback?code=evil&state=" +
-				strings.Repeat("0", 64))
+			u, _ := url.Parse(start)
+			forged, err := http.Get("http://" + u.Host + "/callback?code=evil&state=" + strings.Repeat("0", 64))
 			if err != nil {
 				g.t.Errorf("a callback under another state: %v", err)
 				return nil
@@ -242,6 +251,10 @@ type pasteReader struct {
 	g   *fakeAppGitHub
 	dir string
 	r   io.Reader
+	// first is pasted before the address, which goes without its scheme
+	// when bare is set.
+	first string
+	bare  bool
 }
 
 func (p *pasteReader) Read(b []byte) (int, error) {
@@ -259,7 +272,11 @@ func (p *pasteReader) Read(b []byte) (int, error) {
 			return 0, err
 		}
 		_ = resp.Body.Close()
-		p.r = strings.NewReader(resp.Header.Get("Location") + "\n")
+		address := resp.Header.Get("Location")
+		if p.bare {
+			address = strings.TrimPrefix(strings.TrimPrefix(address, "http://"), "https://")
+		}
+		p.r = strings.NewReader(p.first + address + "\n")
 	}
 	return p.r.Read(b)
 }
@@ -471,7 +488,7 @@ func TestSetupGitHubAppStdout(t *testing.T) {
 func TestSetupGitHubAppPaste(t *testing.T) {
 	g := newFakeAppGitHub(t)
 	deps := g.deps(neverOpen(t), nil)
-	deps.stdin = &pasteReader{g: g, dir: deps.tempDir}
+	deps.stdin = &pasteReader{g: g, dir: deps.tempDir, first: "\nnot a code!\n", bare: true}
 	out := filepath.Join(t.TempDir(), "patchy-github.secret.yaml")
 	_, stderr, err := execSetup(t, deps, "setup", "github-app", "--user", "--intents", "--no-browser", "-o", out)
 	if err != nil {
@@ -493,17 +510,106 @@ func TestSetupGitHubAppPaste(t *testing.T) {
 	if leaked := g.leaks(stderr); len(leaked) > 0 {
 		t.Errorf("stderr leaks %v:\n%s", leaked, stderr)
 	}
+	if n := strings.Count(stderr, "Paste the address again"); n != 2 {
+		t.Errorf("an empty line and junk were asked again %d times, want 2:\n%s", n, stderr)
+	}
 
-	// An address from another attempt is refused, and nothing is exchanged.
+	// An address from another attempt is refused and asked again; the
+	// terminal closing then ends the run with where to clean up, and
+	// nothing is exchanged.
 	g = newFakeAppGitHub(t)
 	deps = g.deps(neverOpen(t), strings.NewReader(g.srv.URL+"/settings/apps?code="+setupCode+"&state=other\n"))
-	_, _, err = execSetup(t, deps, "setup", "github-app", "--user", "--intents", "--no-browser",
+	_, stderr, err = execSetup(t, deps, "setup", "github-app", "--user", "--intents", "--no-browser",
 		"-o", filepath.Join(t.TempDir(), "x.yaml"))
-	if exitCode(err) != ExitUsage || !strings.Contains(fmtErr(err), "another attempt") {
-		t.Errorf("another attempt's address = %v, want a usage refusal", err)
+	if !errors.Is(err, ghapp.ErrNoCode) || exitCode(err) != ExitError ||
+		!strings.Contains(err.Error(), g.srv.URL+"/settings/apps") || !strings.Contains(stderr, "another attempt") {
+		t.Errorf("another attempt's address, then EOF = %v (exit %d)\n%s", err, exitCode(err), stderr)
 	}
 	if g.conversions() != 0 {
 		t.Error("a code from another attempt was exchanged")
+	}
+}
+
+// TestSetupGitHubAppRefusesAnotherOwner: a code that converts to an App
+// another account owns (a local process that read the state could slip
+// one in) writes nothing and names where the person's own App is.
+func TestSetupGitHubAppRefusesAnotherOwner(t *testing.T) {
+	g := newFakeAppGitHub(t)
+	g.owner = "mallory"
+	var started string
+	out := filepath.Join(t.TempDir(), "patchy-github.secret.yaml")
+	_, stderr, err := execSetup(t, g.deps(g.browser(false, &started), nil), "setup", "github-app", "--org", "Acme",
+		"--intents", "-o", out, "--timeout", "20s")
+	if err == nil || !strings.Contains(err.Error(), `owned by "mallory", not by --org Acme`) ||
+		exitCode(err) != ExitError {
+		t.Fatalf("another owner's App = %v (exit %d)", err, exitCode(err))
+	}
+	if _, statErr := os.Stat(out); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("another owner's credentials were written: %v", statErr)
+	}
+	if leaked := g.leaks(stderr + err.Error()); len(leaked) > 0 {
+		t.Errorf("the refusal leaks %v", leaked)
+	}
+
+	// The owner's login is matched without regard to case.
+	g = newFakeAppGitHub(t)
+	g.owner = "ACME"
+	if _, stderr, err := execSetup(t, g.deps(g.browser(false, &started), nil), "setup", "github-app", "--org",
+		"acme", "--intents", "-o", filepath.Join(t.TempDir(), "s.yaml"), "--timeout", "20s"); err != nil {
+		t.Errorf("an App owned by ACME for --org acme: %v\n%s", err, stderr)
+	}
+}
+
+// failWriter is a stdout whose reader has gone.
+type failWriter struct{}
+
+func (failWriter) Write([]byte) (int, error) { return 0, syscall.EPIPE }
+
+// TestSetupGitHubAppStdoutLost: when the Secret cannot be written to
+// stdout after GitHub created the App, the error says so and links the
+// App's settings page, where a new key is generated.
+func TestSetupGitHubAppStdoutLost(t *testing.T) {
+	g := newFakeAppGitHub(t)
+	var started string
+	errOut := &bytes.Buffer{}
+	opts := &Options{Out: failWriter{}, ErrOut: errOut, Output: "table", NoColor: true,
+		setupDeps: g.deps(g.browser(false, &started), nil)}
+	root := NewRoot(opts)
+	root.SetErr(errOut)
+	root.SetArgs([]string{"setup", "github-app", "--org", "acme", "--intents", "-o", "-", "--timeout", "20s"})
+	err := root.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "private key was not saved") ||
+		!strings.Contains(err.Error(), g.srv.URL+"/organizations/acme/settings/apps/patchy-acme") {
+		t.Errorf("a lost stdout = %v", err)
+	}
+}
+
+// TestWriteStdoutSurvivesABrokenPipe runs a write to a stdout pipe whose
+// reader has closed in a child process: without the SIGPIPE guard the
+// runtime kills it before it can report anything.
+func TestWriteStdoutSurvivesABrokenPipe(t *testing.T) {
+	if os.Getenv("PATCHY_TEST_BROKEN_PIPE") == "1" {
+		err := writeStdout(os.Stdout, []byte("apiVersion: v1\n"))
+		fmt.Fprintf(os.Stderr, "write returned: %v\n", err)
+		os.Exit(0)
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("no SIGPIPE on windows")
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Close()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWriteStdoutSurvivesABrokenPipe$")
+	cmd.Env = append(os.Environ(), "PATCHY_TEST_BROKEN_PIPE=1")
+	cmd.Stdout = w
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	_ = w.Close()
+	if runErr != nil || !strings.Contains(stderr.String(), "write returned: write /dev/stdout: broken pipe") {
+		t.Errorf("the child = %v, stderr %q; want it alive to report EPIPE", runErr, stderr.String())
 	}
 }
 

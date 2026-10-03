@@ -12,15 +12,17 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/bitwise-media-group/patchy/cmd/patchy/internal/browser"
 	"github.com/bitwise-media-group/patchy/cmd/patchy/internal/ghapp"
+	"github.com/bitwise-media-group/patchy/cmd/patchy/internal/printer"
 )
 
 // defaultSetupNamespace is the Secret's namespace when -n is not given: the
@@ -133,7 +135,7 @@ func newSetupGitHubAppCmd(opts *Options) *cobra.Command {
 				open:     browser.Open,
 				stdin:    cmd.InOrStdin(),
 				client:   &http.Client{Timeout: opts.RequestTimeout},
-				terminal: isTerminal,
+				terminal: printer.IsTerminal,
 			}
 			if opts.setupDeps != nil {
 				deps = *opts.setupDeps
@@ -258,9 +260,10 @@ func runSetupGitHubApp(ctx context.Context, opts *Options, f *setupGitHubAppFlag
 	}
 	if errors.Is(err, ghapp.ErrNoCode) {
 		// The App may exist although its code never arrived: a browser on
-		// another machine cannot reach this one's loopback address.
+		// another machine cannot reach this one's loopback address, and a
+		// person can give up after clicking Create.
 		return fmt.Errorf("%w; if GitHub created the App, delete it at %s, or within the hour run again with "+
-			"--no-browser and paste the code= value from the address the browser could not open",
+			"--no-browser and paste the code= value from the address GitHub sent the browser to",
 			err, ghapp.AppsURL(deps.webURL, plan.owner))
 	}
 	if err != nil {
@@ -271,6 +274,15 @@ func runSetupGitHubApp(ctx context.Context, opts *Options, f *setupGitHubAppFlag
 	if err != nil {
 		return fmt.Errorf("%w; if GitHub created the App, delete it or generate a new private key at %s",
 			err, ghapp.AppsURL(deps.webURL, plan.owner))
+	}
+	// The code proves only that it carried this run's state, which a local
+	// process could have read: an App another account owns is someone
+	// else's, and its key must not become this Forge's credential. A user
+	// App has no login to hold it to.
+	if plan.owner.Org != "" && !strings.EqualFold(app.Owner, plan.owner.Org) {
+		return fmt.Errorf("refused: the code converts to App %q owned by %q, not by --org %s, so its "+
+			"credentials were not written; if you created an App on GitHub's form just now, delete it at %s",
+			app.Name, app.Owner, plan.owner.Org, ghapp.AppsURL(deps.webURL, plan.owner))
 	}
 	return writeSecret(opts, plan, deps, app, f.force)
 }
@@ -319,7 +331,9 @@ func browserCode(ctx context.Context, opts *Options, plan setupPlan, deps setupD
 
 // pasteCode runs the flow without a listener: the start page goes to a
 // file, GitHub lands the browser on the owner's App settings, and the
-// person pastes that address back.
+// person pastes that address back. A paste that holds no code for this run
+// asks again; the terminal closing or the run being cancelled is
+// ErrNoCode.
 func pasteCode(ctx context.Context, opts *Options, plan setupPlan, deps setupDeps, createURL,
 	state string) (string, error) {
 	page, err := startPage(plan, ghapp.AppsURL(deps.webURL, plan.owner), createURL)
@@ -330,6 +344,7 @@ func pasteCode(ctx context.Context, opts *Options, plan setupPlan, deps setupDep
 	if err != nil {
 		return "", err
 	}
+	defer func() { _ = os.Remove(file.Name()) }()
 	_, err = file.Write(page)
 	if cerr := file.Close(); err == nil {
 		err = cerr
@@ -337,20 +352,44 @@ func pasteCode(ctx context.Context, opts *Options, plan setupPlan, deps setupDep
 	if err != nil {
 		return "", fmt.Errorf("write the start page: %w", err)
 	}
-	defer func() { _ = os.Remove(file.Name()) }()
 	notef(opts.ErrOut, "patchy: open %s in a browser signed in to GitHub (copy it to that machine if need be).\n"+
 		"patchy: it sends the App manifest to GitHub; check the form and click \"Create GitHub App\".\n"+
 		"patchy: GitHub then opens your GitHub Apps settings. Paste that page's address here (or just its "+
 		"code=... value):\n", file.Name())
-	line, err := readLine(ctx, deps.stdin)
-	if err != nil {
-		return "", err
+	lines := readLines(deps.stdin)
+	for {
+		var line string
+		select {
+		case l, ok := <-lines:
+			if !ok {
+				return "", fmt.Errorf("%w: the terminal closed before a code was pasted", ghapp.ErrNoCode)
+			}
+			line = l
+		case <-ctx.Done():
+			return "", fmt.Errorf("%w: %w", ghapp.ErrNoCode, context.Cause(ctx))
+		}
+		code, err := ghapp.ParseCode(line, state)
+		if err == nil {
+			return code, nil
+		}
+		notef(opts.ErrOut, "patchy: %v. Paste the address again (or just its code=... value):\n", err)
 	}
-	code, err := ghapp.ParseCode(line, state)
-	if err != nil {
-		return "", errUsage(err)
-	}
-	return code, nil
+}
+
+// readLines delivers r's lines, each at most 4 KiB, closing the channel
+// at the end of r or at a line too long. Its reader cannot be cancelled (a
+// read from a terminal cannot), so the caller stops listening instead.
+func readLines(r io.Reader) <-chan string {
+	out := make(chan string)
+	go func() {
+		defer close(out)
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 0, 4096), 4096)
+		for sc.Scan() {
+			out <- sc.Text()
+		}
+	}()
+	return out
 }
 
 // startPage builds the manifest with redirectURL and renders the page that
@@ -369,32 +408,6 @@ func startPage(plan setupPlan, redirectURL, createURL string) ([]byte, error) {
 	return ghapp.StartPage(createURL, raw)
 }
 
-// readLine reads one line from r, or gives up when ctx ends: a read from a
-// terminal cannot itself be cancelled.
-func readLine(ctx context.Context, r io.Reader) (string, error) {
-	type result struct {
-		line string
-		err  error
-	}
-	got := make(chan result, 1)
-	go func() {
-		line, err := bufio.NewReader(io.LimitReader(r, 4096)).ReadString('\n')
-		if errors.Is(err, io.EOF) && line != "" {
-			err = nil
-		}
-		got <- result{line, err}
-	}()
-	select {
-	case res := <-got:
-		if res.err != nil {
-			return "", fmt.Errorf("read the pasted address: %w", res.err)
-		}
-		return res.line, nil
-	case <-ctx.Done():
-		return "", context.Cause(ctx)
-	}
-}
-
 // writeSecret writes the Secret manifest and tells the person what is left.
 func writeSecret(opts *Options, plan setupPlan, deps setupDeps, app *ghapp.App, force bool) error {
 	notef(opts.ErrOut, "patchy: created GitHub App %q (ID %d) owned by %s: %s\n", app.Name, app.ID, app.Owner,
@@ -403,26 +416,31 @@ func writeSecret(opts *Options, plan setupPlan, deps setupDeps, app *ghapp.App, 
 	if err != nil {
 		return err
 	}
+	// The App's own settings page: its webhook, permissions and keys.
+	settings := ghapp.AppsURL(deps.webURL, plan.owner)
+	if app.Slug != "" {
+		settings = ghapp.SettingsURL(deps.webURL, plan.owner, app.Slug)
+	}
 	for _, d := range ghapp.Drift(m, app) {
 		notef(opts.ErrOut, "patchy: warning: %s\n", d)
 	}
 	if m.HookAttributes != nil && !app.Credentials.HasWebhookSecret() {
 		notef(opts.ErrOut, "patchy: warning: GitHub issued no webhook secret, and an Integration refuses a Secret "+
 			"without %s: set one on the App's webhook at %s and add it to the Secret.\n", ghapp.KeyWebhookSecret,
-			ghapp.SettingsURL(deps.webURL, plan.owner, app.Slug))
+			settings)
 	}
 	data, err := ghapp.SecretManifest(app, plan.secretName, plan.namespace)
 	if err != nil {
 		return err
 	}
 	lost := fmt.Sprintf("; the App exists, but its private key was not saved: generate a new one under "+
-		"\"Private keys\" at %s", app.HTMLURL)
+		"\"Private keys\" at %s", settings)
 	keys := "appID, privateKey"
 	if app.Credentials.HasWebhookSecret() {
 		keys += ", webhookSecret"
 	}
 	if plan.output == "-" {
-		if _, err := opts.Out.Write(data); err != nil {
+		if err := writeStdout(opts.Out, data); err != nil {
 			return fmt.Errorf("write the Secret to stdout: %w%s", err, lost)
 		}
 		notef(opts.ErrOut, "patchy: wrote Secret %s/%s (%s) to stdout\n", plan.namespace, plan.secretName, keys)
@@ -433,7 +451,11 @@ func writeSecret(opts *Options, plan setupPlan, deps setupDeps, app *ghapp.App, 
 		notef(opts.ErrOut, "patchy: wrote Secret %s/%s (%s) to %s, mode 0600. It holds the only copy of the "+
 			"private key: apply or encrypt it, then delete it.\n", plan.namespace, plan.secretName, keys, plan.output)
 	}
-	notef(opts.ErrOut, "patchy: install the App: %s\n", ghapp.InstallURL(deps.webURL, app.Slug))
+	if app.Slug != "" {
+		notef(opts.ErrOut, "patchy: install the App: %s\n", ghapp.InstallURL(deps.webURL, app.Slug))
+	} else {
+		notef(opts.ErrOut, "patchy: install the App from its page under %s\n", settings)
+	}
 	if plan.config.Features.Intents {
 		notef(opts.ErrOut, "patchy: for intents, install it on the intent repository and every application "+
 			"repository.\n")
@@ -445,9 +467,14 @@ func writeSecret(opts *Options, plan setupPlan, deps setupDeps, app *ghapp.App, 
 	return nil
 }
 
-// isTerminal reports whether w is a terminal, where a private key would
-// land in the scrollback.
-func isTerminal(w io.Writer) bool {
-	f, ok := w.(*os.File)
-	return ok && term.IsTerminal(int(f.Fd()))
+// writeStdout writes data to w with SIGPIPE caught. A write to a stdout
+// pipe whose reader has gone (a tool downstream that failed to start)
+// would otherwise end the process silently, before it could say that the
+// App exists without a saved key; caught, the write fails with EPIPE.
+func writeStdout(w io.Writer, data []byte) error {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGPIPE)
+	defer signal.Stop(sig)
+	_, err := w.Write(data)
+	return err
 }

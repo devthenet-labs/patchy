@@ -37,42 +37,46 @@ func get(t *testing.T, u string, host string) (int, string) {
 	return resp.StatusCode, string(body)
 }
 
-// TestCallbackTakesOneCode: the start page is served; a request addressed to
-// another host, a callback with the wrong state or without a code are
-// refused and the wait goes on; the first right callback's code is the
-// one Wait returns, a second is told it is too late, and then the server
-// is gone.
+// TestCallbackTakesOneCode: the start page is served at its random path
+// only; a request addressed to another host, a callback with the wrong
+// state or without a code are refused and the wait goes on; the first
+// right callback's code is the one Wait returns, a second is told it is
+// too late, and then the server is gone.
 func TestCallbackTakesOneCode(t *testing.T) {
 	cb, err := Listen()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cb.Close()
-	if !strings.HasPrefix(cb.StartURL(), "http://127.0.0.1:") || cb.RedirectURL() != cb.StartURL()+"callback" {
+	start, err := url.Parse(cb.StartURL())
+	if err != nil || start.Scheme != "http" || !strings.HasPrefix(start.Host, "127.0.0.1:") ||
+		!regexp.MustCompile(`^/[0-9a-f]{32}$`).MatchString(start.Path) ||
+		cb.RedirectURL() != "http://"+start.Host+"/callback" {
 		t.Fatalf("StartURL %s, RedirectURL %s", cb.StartURL(), cb.RedirectURL())
 	}
+	root := "http://" + start.Host + "/"
 	cb.Serve("the-state", []byte("<p>start</p>"))
 
 	if code, body := get(t, cb.StartURL(), ""); code != http.StatusOK || body != "<p>start</p>" {
 		t.Errorf("start page = %d %q", code, body)
 	}
-	if code, _ := get(t, cb.StartURL(), "rebound.attacker.test"); code != http.StatusMisdirectedRequest {
-		t.Errorf("a request for another host = %d, want 421", code)
-	}
-	if code, _ := get(t, cb.RedirectURL()+"?code=evil&state=other", ""); code != http.StatusBadRequest {
-		t.Errorf("wrong state = %d, want 400", code)
-	}
-	if code, _ := get(t, cb.RedirectURL()+"?code=evil", ""); code != http.StatusBadRequest {
-		t.Errorf("no state = %d, want 400", code)
-	}
-	if code, _ := get(t, cb.RedirectURL()+"?state=the-state", ""); code != http.StatusBadRequest {
-		t.Errorf("no code = %d, want 400", code)
-	}
-	if code, _ := get(t, cb.RedirectURL()+"?state=the-state&code=a/b", ""); code != http.StatusBadRequest {
-		t.Errorf("malformed code = %d, want 400", code)
-	}
-	if code, _ := get(t, cb.StartURL()+"other", ""); code != http.StatusNotFound {
-		t.Errorf("other path = %d, want 404", code)
+	for _, refused := range []struct {
+		what, url, host string
+		want            int
+	}{
+		{"a request for another host", cb.StartURL(), "rebound.attacker.test", http.StatusMisdirectedRequest},
+		{"wrong state", cb.RedirectURL() + "?code=evil&state=other", "", http.StatusBadRequest},
+		{"no state", cb.RedirectURL() + "?code=evil", "", http.StatusBadRequest},
+		{"no code", cb.RedirectURL() + "?state=the-state", "", http.StatusBadRequest},
+		{"malformed code", cb.RedirectURL() + "?state=the-state&code=a/b", "", http.StatusBadRequest},
+		{"the root", root, "", http.StatusNotFound},
+		{"another path", root + "other", "", http.StatusNotFound},
+		{"a longer start path", cb.StartURL() + "x", "", http.StatusNotFound},
+	} {
+		if code, body := get(t, refused.url, refused.host); code != refused.want ||
+			strings.Contains(body, "<p>start</p>") {
+			t.Errorf("%s = %d %q, want %d without the start page", refused.what, code, body, refused.want)
+		}
 	}
 	if code, body := get(t, cb.RedirectURL()+"?code=good123&state=the-state", ""); code != http.StatusOK ||
 		!strings.Contains(body, "Return to your terminal") {
@@ -164,6 +168,8 @@ func TestParseCode(t *testing.T) {
 			"another attempt"},
 		{"address without state", landing(url.Values{"code": {"a1b2"}}), "", "another attempt"},
 		{"address without code", landing(url.Values{"state": {state}}), "", "no code"},
+		{"address without its scheme", strings.TrimPrefix(landing(url.Values{"code": {"a1b2"}, "state": {state}}),
+			"https://"), "a1b2", ""},
 		{"junk", "not a code!", "", "neither"},
 		{"empty", "", "", "neither"},
 	}

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/bitwise-media-group/patchy/internal/intentperm"
 )
@@ -219,7 +220,7 @@ func validateName(name string) error {
 	switch {
 	case strings.TrimSpace(name) == "":
 		return errors.New("the App name is empty")
-	case len(name) > MaxNameLength:
+	case utf8.RuneCountInString(name) > MaxNameLength:
 		return fmt.Errorf("the App name %q is longer than GitHub's %d characters", name, MaxNameLength)
 	case strings.ContainsFunc(name, func(r rune) bool { return !unicode.IsPrint(r) }):
 		return fmt.Errorf("the App name %q holds a character that does not print", name)

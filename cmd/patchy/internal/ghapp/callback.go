@@ -78,21 +78,27 @@ const donePage = `<!doctype html>
 `
 
 // ErrNoCode reports a wait that ended without a code: GitHub never sent the
-// browser back before the deadline or the caller gave up.
+// browser back before the deadline, the caller gave up, or the terminal a
+// code was to be pasted into closed.
 var ErrNoCode = errors.New("no code from GitHub")
 
 // Callback is the one-shot loopback server the browser flow runs on. It
-// serves the start page at / and takes the code GitHub sends the browser
-// back with at /callback. It listens on 127.0.0.1 only and answers only
-// requests addressed to that exact host and port, so a web page that
-// rebinds a DNS name to the loopback address cannot reach it. A callback
-// whose state differs from the one it was started with is refused and the
-// wait goes on; the first that matches is the only code it takes, and every
-// later callback is told so.
+// serves the start page at an unguessable path (StartURL) and takes the
+// code GitHub sends the browser back with at /callback. The start page
+// carries the state, so another local process that could fetch it could
+// forge the callback; the random path keeps it from the port alone. It
+// listens on 127.0.0.1 only and answers only requests addressed to that
+// exact host and port, so a web page that rebinds a DNS name to the
+// loopback address cannot reach it. A callback whose state differs from
+// the one it was started with is refused and the wait goes on; the first
+// that matches is the only code it takes, and every later callback is told
+// so.
 type Callback struct {
 	ln   net.Listener
 	srv  *http.Server
 	host string
+	// start is the start page's path: "/" and 32 random hex characters.
+	start string
 
 	state string
 	page  []byte
@@ -106,20 +112,26 @@ type Callback struct {
 // manifest needs RedirectURL before the page can be rendered, so serving
 // starts separately (Serve).
 func Listen() (*Callback, error) {
+	token := make([]byte, 16)
+	if _, err := rand.Read(token); err != nil {
+		return nil, fmt.Errorf("start page path: %w", err)
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("listen on the loopback address: %w", err)
 	}
-	return &Callback{ln: ln, host: ln.Addr().String(), codes: make(chan string, 1)}, nil
+	return &Callback{ln: ln, host: ln.Addr().String(), start: "/" + hex.EncodeToString(token),
+		codes: make(chan string, 1)}, nil
 }
 
 // StartURL is the page the browser opens to begin.
-func (c *Callback) StartURL() string { return "http://" + c.host + "/" }
+func (c *Callback) StartURL() string { return "http://" + c.host + c.start }
 
 // RedirectURL is the manifest's redirect_url.
 func (c *Callback) RedirectURL() string { return "http://" + c.host + "/callback" }
 
-// Serve starts answering: page at /, and codes carrying state at /callback.
+// Serve starts answering: page at the start path, and codes carrying state
+// at /callback.
 func (c *Callback) Serve(state string, page []byte) {
 	c.state, c.page = state, page
 	c.srv = &http.Server{Handler: c, ReadHeaderTimeout: 10 * time.Second}
@@ -164,7 +176,7 @@ func (c *Callback) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
-	case "/":
+	case c.start:
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(c.page)
 	case "/callback":
@@ -206,10 +218,14 @@ func (c *Callback) callback(w http.ResponseWriter, r *http.Request) {
 func ParseCode(input, state string) (string, error) {
 	input = strings.TrimSpace(input)
 	if !strings.HasPrefix(input, "https://") && !strings.HasPrefix(input, "http://") {
-		if !validCode(input) {
+		if validCode(input) {
+			return input, nil
+		}
+		if !strings.Contains(input, "?") {
 			return "", errors.New("that is neither the address GitHub sent you to nor a code")
 		}
-		return input, nil
+		// An address copied without its scheme.
+		input = "https://" + input
 	}
 	u, err := url.Parse(input)
 	if err != nil {

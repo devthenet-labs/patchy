@@ -81,13 +81,29 @@ type intentEnv struct {
 	// registry is the host the application repository's runner image is
 	// published on; empty when the stack resolves no repository images.
 	registry string
+	// stopIntents ends the running intent-controller (restartIntents).
+	stopIntents func()
 }
 
 // startIntents runs the whole intent stack on a fresh cluster: the fake
 // GitHub behind the App credential, an application repository declaring
 // its runner image in .patchy/agent.yaml, source-controller resolving
-// repository images from the e2e registry, then withIntents.
-func startIntents(t *testing.T) *intentEnv {
+// repository images from the e2e registry, then withIntents, its
+// intent-controller run with extra flags beside intentArgs.
+func startIntents(t *testing.T, extra ...string) *intentEnv {
+	t.Helper()
+	cl, gh, registry := startSourceStack(t, appRepo)
+	env := withIntents(t, cl, gh, extra...)
+	env.registry = registry
+	return env
+}
+
+// startSourceStack starts a fresh cluster with the fake GitHub behind the
+// App credential, each of the named application repositories (of
+// intentOwner) declaring the e2e registry's runner image in
+// .patchy/agent.yaml, and source-controller resolving repository images
+// from that registry. It returns the registry's host.
+func startSourceStack(t *testing.T, repos ...string) (*cluster, *fakegithub.Server, string) {
 	t.Helper()
 	cl := startCluster(t)
 	gh := fakegithub.New()
@@ -98,7 +114,9 @@ func startIntents(t *testing.T) *intentEnv {
 	// one keeps the host's credential helpers out of the test.
 	t.Setenv("DOCKER_CONFIG", t.TempDir())
 	registry, imageRef := publishRunnerImage(t)
-	gh.SetRepoFile(intentOwner, appRepo, ".patchy/agent.yaml", "image: "+imageRef+"\n")
+	for _, repo := range repos {
+		gh.SetRepoFile(intentOwner, repo, ".patchy/agent.yaml", "image: "+imageRef+"\n")
+	}
 
 	artifactPort := freePort(t)
 	cl.controller(t, "source-controller",
@@ -108,28 +126,34 @@ func startIntents(t *testing.T) *intentEnv {
 		"--repository-images",
 		"--repository-image-registries", registry+"/"+runnerImageOrg+"/",
 		"--repository-image-allow-unsigned")
-	env := withIntents(t, cl, gh)
-	env.registry = registry
-	return env
+	return cl, gh, registry
 }
 
 // withIntents adds intents to a running cluster: the approvers' and
-// mallory's write access, intent-controller, the fake kubelet for intent
-// Jobs, and the Project, waited on until Ready.
-func withIntents(t *testing.T, cl *cluster, gh *fakegithub.Server) *intentEnv {
+// mallory's write access, intent-controller (intentArgs and extra), the
+// fake kubelet for intent Jobs, and the Project, waited on until Ready.
+func withIntents(t *testing.T, cl *cluster, gh *fakegithub.Server, extra ...string) *intentEnv {
+	t.Helper()
+	return withIntentsFor(t, cl, gh, v1alpha1.ProjectSpec{
+		IntentRepository: intentRepoURL,
+		Approvers:        v1alpha1.ProjectApprovers{Logins: []string{approver.Login, reader.Login}},
+		Repositories:     []v1alpha1.ProjectRepository{{Name: appRepo, URL: appRepoURL}},
+	}, extra...)
+}
+
+// withIntentsFor is withIntents for the Project spec given, still named
+// projectName.
+func withIntentsFor(t *testing.T, cl *cluster, gh *fakegithub.Server, spec v1alpha1.ProjectSpec,
+	extra ...string) *intentEnv {
 	t.Helper()
 	gh.SetRole(approver.Login, "write")
 	gh.SetRole(mallory.Login, "write")
-	cl.controller(t, "intent-controller", intentArgs...)
-	env := &intentEnv{cl: cl, gh: gh, kubelet: startKubelet(t, cl, intentRunKind)}
+	_, stop := cl.stoppableController(t, "intent-controller", append(slices.Clone(intentArgs), extra...)...)
+	env := &intentEnv{cl: cl, gh: gh, kubelet: startKubelet(t, cl, intentRunKind), stopIntents: stop}
 
 	if err := cl.client.Create(context.Background(), &v1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: projectName, Namespace: namespace},
-		Spec: v1alpha1.ProjectSpec{
-			IntentRepository: intentRepoURL,
-			Approvers:        v1alpha1.ProjectApprovers{Logins: []string{approver.Login, reader.Login}},
-			Repositories:     []v1alpha1.ProjectRepository{{Name: appRepo, URL: appRepoURL}},
-		},
+		Spec:       spec,
 	}); err != nil {
 		t.Fatalf("create the project: %v", err)
 	}
@@ -141,6 +165,25 @@ func withIntents(t *testing.T, cl *cluster, gh *fakegithub.Server) *intentEnv {
 		return meta.IsStatusConditionTrue(p.Status.Conditions, v1alpha1.ConditionReady)
 	})
 	return env
+}
+
+// project reads the Project.
+func (e *intentEnv) project(t *testing.T) *v1alpha1.Project {
+	t.Helper()
+	var p v1alpha1.Project
+	if err := e.cl.client.Get(context.Background(), types.NamespacedName{Namespace: namespace, Name: projectName},
+		&p); err != nil {
+		t.Fatalf("read the project: %v", err)
+	}
+	return &p
+}
+
+// restartIntents stops intent-controller and starts it again with
+// intentArgs and extra, as an operator's values change rolls it.
+func (e *intentEnv) restartIntents(t *testing.T, extra ...string) {
+	t.Helper()
+	e.stopIntents()
+	_, e.stopIntents = e.cl.stoppableController(t, "intent-controller", append(slices.Clone(intentArgs), extra...)...)
 }
 
 const (
@@ -341,8 +384,17 @@ func (e *intentEnv) checkPlanJob(t *testing.T, r agentRun, planRun string) {
 
 // checkCredentialless asserts a Job's agent reaches the model only through
 // the broker: a projected caller token, no credential of any kind in its
-// environment, and none in its handoff Secret.
+// environment, and none in its handoff Secret, which holds the handoff
+// alone.
 func (e *intentEnv) checkCredentialless(t *testing.T, r agentRun) {
+	t.Helper()
+	e.checkCredentiallessWith(t, r)
+}
+
+// checkCredentiallessWith is checkCredentialless for a Job whose handoff
+// Secret may also hold the keys named in also (a plan Job's trees file and
+// repositories manifest), each checked by the caller.
+func (e *intentEnv) checkCredentiallessWith(t *testing.T, r agentRun, also ...string) {
 	t.Helper()
 	if r.Env["PATCHY_BROKER_TOKEN_FILE"] == "" {
 		t.Errorf("job %s is not brokered: no PATCHY_BROKER_TOKEN_FILE", r.Job.Name)
@@ -361,7 +413,7 @@ func (e *intentEnv) checkCredentialless(t *testing.T, r agentRun) {
 		t.Fatalf("read the handoff secret of %s: %v", r.Job.Name, err)
 	}
 	for key := range secret.Data {
-		if key != "issue.md" && key != "investigation.md" {
+		if key != "issue.md" && key != "investigation.md" && !slices.Contains(also, key) {
 			t.Errorf("job %s's handoff secret carries %q; it holds the handoff alone", r.Job.Name, key)
 		}
 	}
@@ -375,7 +427,24 @@ func (e *intentEnv) checkCredentialless(t *testing.T, r agentRun) {
 // plan alone, the branch created once and never forced, the pull request
 // with no closing keyword, the merge, and the issue closed as completed.
 func TestIntentLifecycle(t *testing.T) {
-	e := startIntents(t)
+	_ = intentLifecycle(t, startIntents(t))
+}
+
+// TestIntentLifecycleMultiRepoOn runs TestIntentLifecycle's one-repository
+// intent, every assertion unchanged, with multi-repository intents, two
+// runs at once and the preview projection on, as a deployment turning
+// slice 3 on runs its existing one-repository Projects: the same Jobs,
+// comments, ref writes and ending, and nothing a multi-repository intent
+// adds (no trees, no sibling comment, no preview base read).
+func TestIntentLifecycleMultiRepoOn(t *testing.T) {
+	e := startIntents(t, multiRepoArgs...)
+	multiRepoAddsNothing(t, e, intentLifecycle(t, e))
+}
+
+// intentLifecycle is TestIntentLifecycle's flow over the stack e; it
+// returns the Intent's name.
+func intentLifecycle(t *testing.T, e *intentEnv) string {
+	t.Helper()
 	ctx := context.Background()
 
 	// Validation created the trigger and approve labels on the intent
@@ -609,6 +678,12 @@ func TestIntentLifecycle(t *testing.T) {
 	if issue.State != "closed" || issue.StateReason != "completed" {
 		t.Errorf("intent issue = %s (%s), want closed as completed", issue.State, issue.StateReason)
 	}
+	// The summary counts the review revision and the CI-fix round apart.
+	if summary := e.own(number, notice(name, templates.SummaryKey)); len(summary) != 1 ||
+		!strings.Contains(summary[0].Body, "**Revisions:** 1\n") ||
+		!strings.Contains(summary[0].Body, "**CI-fix rounds:** 1\n") {
+		t.Errorf("summary = %+v, want one counting 1 revision and 1 CI-fix round apart", summary)
+	}
 	events = e.gh.Events(number)
 	if last := events[len(events)-1]; last.Event != "closed" || last.Actor != fakegithub.Bot {
 		t.Errorf("last event = %+v, want patchy closing the issue", last)
@@ -630,6 +705,7 @@ func TestIntentLifecycle(t *testing.T) {
 		}
 		return e.intent(t, name).Status.Phase == v1alpha1.IntentMerged
 	})
+	return name
 }
 
 // The first PR revision is requested by a real approver command; the next
@@ -661,8 +737,10 @@ func (e *intentEnv) exerciseReviseAndCheckFix(t *testing.T, name string, number 
 		revise.Status.PushedCommit == "" || in.Status.Revisions != 1 {
 		t.Fatalf("revision result = %+v, revisions %d", revise.Status, in.Status.Revisions)
 	}
-	if got := len(e.own(number, fmt.Sprintf("<!-- patchy:intent-pr-round:%s:1 -->", name))); got != 1 {
-		t.Errorf("revision round comments = %d, want one", got)
+	if got := e.own(number, fmt.Sprintf("<!-- patchy:intent-pr-round:%s:1 -->", name)); len(got) != 1 ||
+		!strings.Contains(got[0].Body, "Revision round pushed commit `"+revise.Status.PushedCommit+"`") {
+		t.Errorf("revision round comments = %+v, want one saying the revision round pushed %s", got,
+			revise.Status.PushedCommit)
 	}
 	writes := e.gh.RefWrites()
 	if last := writes[len(writes)-1]; last.Op != "update" || last.Force || last.SHA != revise.Status.PushedCommit ||
@@ -707,8 +785,13 @@ func (e *intentEnv) exerciseReviseAndCheckFix(t *testing.T, name string, number 
 		t.Errorf("check-fix result = %+v, counters fixes=%d revisions=%d",
 			fix.Status, in.Status.CheckFixes, in.Status.Revisions)
 	}
-	if got := len(e.own(number, fmt.Sprintf("<!-- patchy:intent-pr-round:%s:2 -->", name))); got != 1 {
-		t.Errorf("check-fix round comments = %d, want one", got)
+	// A round failed checks started is called a CI-fix round, naming the
+	// check, never a revision.
+	if got := e.own(number, fmt.Sprintf("<!-- patchy:intent-pr-round:%s:2 -->", name)); len(got) != 1 ||
+		!strings.Contains(got[0].Body, "CI-fix round for `test` pushed commit `"+fix.Status.PushedCommit+"`") ||
+		strings.Contains(got[0].Body, "Revision round") {
+		t.Errorf("check-fix round comments = %+v, want one saying the CI-fix round for test pushed %s", got,
+			fix.Status.PushedCommit)
 	}
 	writes = e.gh.RefWrites()
 	if last := writes[len(writes)-1]; last.Op != "update" || last.Force || last.SHA != fix.Status.PushedCommit {

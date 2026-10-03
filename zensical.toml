@@ -25,6 +25,7 @@ nav = [
     { "Create the GitHub App" = "getting-started/github-app.md" },
     { "Install with Helm" = "getting-started/install.md" },
     { "Verify the pipeline" = "getting-started/verify.md" },
+    { "Enable intents (optional)" = "getting-started/intents.md" },
   ] },
   { "How it works" = "how-it-works.md" },
   { "State machine & labels" = "labels.md" },
@@ -47,6 +48,11 @@ nav = [
       { "GitHub" = "integrations/forges/github.md" },
     ] },
     { "Agent images" = "integrations/agent-images.md" },
+  ] },
+  { "Intents & previews" = [
+    { "Deploying intents and previews" = "intents/deploying.md" },
+    { "Onboarding an application" = "intents/onboarding-app.md" },
+    { "The Terraform module" = "intents/terraform-module.md" },
   ] },
   { "Configuration" = [
     { "Overview" = "configuration/index.md" },
@@ -238,7 +244,11 @@ pygments_lang_class = true
 [project.markdown_extensions.pymdownx.smartsymbols]
 
 [project.markdown_extensions.pymdownx.snippets]
-base_path = ["docs"]
+# deploy/terraform lets docs/intents/terraform-module.md embed the reference
+# tables terraform-docs generates into the modules' READMEs, between their
+# `--8<-- [start:reference]` and `[end:reference]` markers, so the site never
+# carries a stale copy.
+base_path = ["docs", "deploy/terraform"]
 check_paths = true
 
 [project.markdown_extensions.pymdownx.superfences]

@@ -305,4 +305,9 @@ admit, and `preview-image` until a default-branch commit is published after `PRE
 or re-run the default branch's latest `test` run; with one previewed repository it is never a FAIL).
 [Deploying, verification](deploying.md#verification) lists what each check proves and what none of them can. An issue in
 the intent repository with the label `patchy:shop-web`, opened or labelled by an approver with write access to it, is
-then the first intent.
+then the first intent. A label an issue form applies as the issue is created counts as the issue author's, so a form
+with the trigger label starts an intent only for an approver.
+
+An application that spans several repositories, a front end and its API say, is one Project over all of them: onboard
+each repository as on this page, then follow
+[Several repositories in one Project](deploying.md#several-repositories-in-one-project).

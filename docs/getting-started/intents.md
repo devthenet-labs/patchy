@@ -10,7 +10,8 @@ It adds, beside what you have already installed:
 - the **intent-controller** (`intentController.enabled`), which polls GitHub and needs no webhook;
 - **repository-declared agent images** (`agent.repositoryImages`), because a build runs in the application's own
   toolchain image, never the default one;
-- a `Project` per application, in the `patchy-config` chart;
+- a `Project` per application, in the `patchy-config` chart, over one repository or, with multi-repository intents on
+  (`intentController.config.multiRepo`), several;
 - the GitHub App's intent permissions (issues on the intent repository; contents and pull requests on each application
   repository), which `patchy setup github-app --intents` asks for;
 - with previews, the preview foundation and the **preview-controller**, which need **EKS Auto Mode** and **ECR**, and

@@ -24,8 +24,9 @@ your own values:
 
 `X.Y.Z` stands for one release of `devthenet-labs/patchy` throughout: the chart, the CLI and the terraform module all
 come from it. Use the newest, and at least 0.12.16, the first release whose chart has the values this guide sets
-(`clusterDNSCIDR`, `edgeIngressClass`, `preview.nodeIsolation.create`); an older chart's values schema refuses them, so
-this guide does not apply to it. Find the newest release, and once the CLI is installed (step 1), check it:
+(`clusterDNSCIDR`, `edgeIngressClass`, `preview.nodeIsolation.create`) and the first with
+[multi-repository intents](#several-repositories-in-one-project). 0.12.15 and older lack those keys, and their values
+schema refuses them. Find the newest release, and once the CLI is installed (step 1), check it:
 
 ```sh
 gh release view --repo devthenet-labs/patchy --json tagName --jq .tagName   # v0.12.16, say: X.Y.Z is 0.12.16
@@ -745,6 +746,80 @@ its image the same way, re-running the pull request's latest `test` run (`--bran
 above). A cold preview node takes about three minutes the first time. A new push to the pull request redeploys it, and
 merging or closing the pull request deletes it; the node goes soon after.
 
+## Several repositories in one Project
+
+An application whose changes span repositories, a web front end and its API say, can be one Project over all of them.
+One intent is then planned over every repository at once and built in each one the plan changes, in parallel, with a
+pull request in each that links the others; with previews, one URL serves every previewed repository, each under its own
+path. It is off by default.
+
+Onboard each repository as in steps 3, 4 and 8: `patchy init app` in it, an `apps` entry of its own in the module (its
+own ECR repositories, publisher roles and variables), its agent image published, and the App installed on it. Then turn
+multi-repository intents on, in step 6's `intentController` block, and upgrade the `patchy` release as there:
+
+```yaml
+# patchy-values.yaml
+intentController:
+  enabled: true
+  forgeSecrets:
+    - patchy-github
+  config:
+    multiRepo: true
+    maxConcurrentRuns: 2 # at least the repositories one intent usually changes, or its builds run one at a time
+```
+
+List the repositories in the Project. The first is the one the plan runs in; the others are fetched beside it,
+read-only. `spec.preview`, the one-repository shorthand, is refused beside a second repository, so move it onto the
+first repository's entry, and give each other previewed repository a `preview` of its own, under its own `path`:
+
+```yaml
+projects:
+  - name: shop-web
+    spec:
+      # intentRepository, approvers and checks as in step 9
+      repositories:
+        - name: shop-web # the first: the plan's working tree
+          url: https://github.com/acme/Shop.Web
+          preview: # step 14's spec.preview, moved here; path defaults to /
+            imageRepository: 123456789012.dkr.ecr.us-west-2.amazonaws.com/patchy/previews/shop-web
+            port: 8080
+            readinessPath: /healthz
+        - name: shop-api
+          url: https://github.com/acme/Shop.Api
+          preview:
+            imageRepository: 123456789012.dkr.ecr.us-west-2.amazonaws.com/patchy/previews/shop-api
+            port: 8080
+            readinessPath: /api/healthz # the app serves under its path: the load balancer does not rewrite it
+            path: /api
+```
+
+Upgrade `patchy-config` and run `GH_TOKEN=$(gh auth token) patchy check project shop-web -n patchy` again. What changes:
+
+- **Without `multiRepo`**, a Project listing several repositories is not `Ready` (`UnsupportedRepositories`), and its
+  intents are held where they stand. Turning it off is the supported rollback; do not roll the chart back below 0.12.16
+  while such an intent is open (cancel or suspend it first).
+- **One plan, one build per repository.** The approver approves one plan naming the repositories that must change; each
+  gets its own build, in its own agent image, launched together as `maxConcurrentRuns` allows. The Project's
+  `limits.maxCostMicroUSD` is checked once before they launch, so one intent's builds can pass it by up to one fewer
+  than their number.
+- **The pull requests open once every build has pushed**, each commented with links to the others. Revision and
+  check-fix rounds run on each pull request's own repository, one round at a time per intent. The intent ends `Merged`
+  once every pull request has merged; one closed unmerged ends it `Closed` once the others settle, and what merged stays
+  merged.
+- **Previews** serve at most four repositories, each at its own path on the one host. Components reach each other only
+  from the browser, same-origin and by path; the slot's NetworkPolicy blocks every server-side call between them. A
+  previewed repository the intent did not change runs its default branch as it was when review began, so its runtime
+  image must be published for every default-branch commit. The generated publishers do that, and the module keeps the
+  newest 20 `main-<SHA>` images past the PR images' expiry; never cancel or skip a default-branch build. With more than
+  one previewed repository, `preview-image` is therefore a FAIL, not a SKIP, while a default branch's head image is
+  missing.
+
+0.12.16 has run this end to end on a live cluster: a plan over two repositories in about four minutes, both builds at
+once, two cross-linked pull requests and one preview of both; the intent stayed in review after the first merge, ended
+`Merged` after the second, and its preview was torn down. The agents cost $1.51 in all. The full rules are in
+[intent-controller](../configuration/intent-controller.md#several-repositories) and, for previews,
+[preview-controller](../configuration/preview-controller.md).
+
 ## TLS: ACM only, for previews
 
 The preview edge terminates TLS with ACM and nothing else. Every preview host is one label under the wildcard, served by
@@ -810,9 +885,9 @@ What it **cannot** prove, and where to look instead:
   retrying one that failed: an upgrade interrupted by a network drop may have applied part of a revision.
 - **Re-run the isolation probe** after every EKS, Auto Mode or VPC CNI upgrade, and before relying on previews again. An
   upgraded network policy agent is exactly what the probe exists to catch.
-- **`previewController.config.targetHealth` defaults to `true` after 0.12.15**, where it was `false`. An install with
-  previews that never set it turns it on: a Preview already Ready is not regated, but one deploying during the upgrade
-  spends one rollout retry. Upgrade while no Preview is deploying, or set the value explicitly
+- **`previewController.config.targetHealth` defaults to `true` from 0.12.16**; up to 0.12.15 it was `false`. An upgrade
+  of an install with previews that never set it turns it on: a Preview already Ready is not regated, but one deploying
+  during the upgrade spends one rollout retry. Upgrade while no Preview is deploying, or set the value explicitly
   ([the upgrade note](../deployment/helm.md#eks-auto-mode-and-previews)).
 - **Re-enabling previews over retained guardrails.** After a rollback or uninstall kept older slot admission policies,
   first upgrade with `preview.enabled: true` and `preview.placeholder.enabled: false`, which updates the guardrails and
@@ -864,7 +939,9 @@ In this order; each step depends on the one before it.
 - **amd64 by default.** The generated publishers build and accept `linux/amd64` images only, the preview NodePool is
   `amd64` by default, and agent Jobs carry no node selector, so the nodes they land on must run amd64 images (Auto
   Mode's built-in general-purpose pool launches amd64 nodes).
-- **One Project, one application repository**, for intents that build and preview, in this release.
+- **At most eight repositories per Project, four of them previewed**, and more than one only with
+  `intentController.config.multiRepo` ([Several repositories in one Project](#several-repositories-in-one-project)).
+  Previewed components reach each other from the browser only, never server-side.
 - **One preview-enabled release per cluster.**
 - **The isolation probe tests observed connectivity**, not the Auto Mode network policy agent's own logs, which are not
   yet available to inspect directly.

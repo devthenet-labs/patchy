@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.16](https://github.com/devthenet-labs/patchy/compare/v0.12.15...v0.12.16) (2026-10-03)
+
+
+### Features
+
+* **chart:** opt-in Auto Mode rendering for DNS egress, preview nodes and the edge class (W3) ([#105](https://github.com/devthenet-labs/patchy/issues/105)) ([cf473d4](https://github.com/devthenet-labs/patchy/commit/cf473d4f0cd23dae7230bcdf342115af2432a2eb))
+* slice 3 wave B — multi-repo intents ([#95](https://github.com/devthenet-labs/patchy/issues/95)) ([2c1bd4f](https://github.com/devthenet-labs/patchy/commit/2c1bd4fc3531fef4fcdc05408ca8014cd2d89180))
+
 ## [0.12.15](https://github.com/devthenet-labs/patchy/compare/v0.12.14...v0.12.15) (2026-10-03)
 
 

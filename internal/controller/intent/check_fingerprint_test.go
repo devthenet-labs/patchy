@@ -146,12 +146,12 @@ func TestCheckFingerprintIgnoresWhatEachRunDiffersBy(t *testing.T) {
 func TestStableLogTailReadsTheFailingStep(t *testing.T) {
 	got := stableLogTail(changelogLog(liveRun, liveFailure), false)
 	want := []string{
-		"##[error]Process completed with exit code 0.",
-		"##[group]Run ./scripts/check-changelog.sh 0",
+		"##[error]Process completed with exit code 1.",
+		"##[group]Run ./scripts/check-changelog.sh 9",
 		"##[endgroup]",
-		"./scripts/check-changelog.sh 0",
-		"CHANGELOG.md has no entry for #0: add a line under ## Unreleased",
-		"checked CHANGELOG.md in 0.0s",
+		"./scripts/check-changelog.sh 9",
+		"CHANGELOG.md has no entry for #9: add a line under ## Unreleased",
+		"checked CHANGELOG.md in <dur>",
 		"shell: /usr/bin/bash -e {0}",
 	}
 	slices.Sort(want)
@@ -176,8 +176,35 @@ func TestStableLogTailReadsTheFailingStep(t *testing.T) {
 	}
 }
 
-// TestStableLine pins each volatile token's placeholder, and that a word made
-// only of hex letters is kept.
+// TestCheckFingerprintKeepsValues pins which numbers count. A fix that moves
+// only a value (a coverage gate creeping up, a count getting closer) is
+// progress, not the same failure: every number used to be zeroed, so such a
+// round stopped the intent with RepeatedFailure while check-fix rounds were
+// left. The same failure with its line moved, or in another time, is the same.
+func TestCheckFingerprintKeepsValues(t *testing.T) {
+	sig := func(failure string) string {
+		return failureSignature([]string{changelogPrint(changelogLog(liveRun, failure))})
+	}
+	for _, tt := range []struct {
+		name, a, b string
+		same       bool
+	}{
+		{"coverage rose", "coverage: 71.3% of statements, want >= 80%", "coverage: 76.1% of statements, want >= 80%",
+			false},
+		{"closer count", "version_test.go:12: got 3, want 5", "version_test.go:12: got 4, want 5", false},
+		{"the line moved", "version_test.go:12: got 3, want 5", "version_test.go:14: got 3, want 5", true},
+		{"another duration", "--- FAIL: TestVersion (0.01s)", "--- FAIL: TestVersion (1.20s)", true},
+		{"another goroutine", "goroutine 17 [running]:", "goroutine 9 [running]:", true},
+	} {
+		if same := sig(tt.a) == sig(tt.b); same != tt.same {
+			t.Errorf("%s: %q and %q fingerprint the same: %v, want %v", tt.name, tt.a, tt.b, same, tt.same)
+		}
+	}
+}
+
+// TestStableLine pins each volatile token's placeholder, that a word made
+// only of hex letters is kept, and that a number of no volatile shape is
+// kept.
 func TestStableLine(t *testing.T) {
 	for _, tt := range []struct{ in, want string }{
 		{"2026-10-03T07:00:29.1234567Z ok", "ok"},
@@ -186,8 +213,18 @@ func TestStableLine(t *testing.T) {
 		{"tmp /home/runner/work/_temp/1F2E3D4C-5B6A-4798-8A7B-6C5D4E3F2A1B x", "tmp /home/runner/work/_temp/<uuid> x"},
 		{"HEAD is now at 3a4b5c6 Merge", "HEAD is now at <hex> Merge"},
 		{"the patch was acceded to", "the patch was acceded to"},
-		{"--- FAIL: TestA2 (0.123s)", "--- FAIL: TestA0 (0.0s)"},
-		{"build /tmp/go-build1234567890/b001", "build /tmp/go-build0/b0"},
+		{"--- FAIL: TestA2 (0.123s)", "--- FAIL: TestA2 (<dur>)"},
+		{"ok  \tacme/app\t1.52s", "ok acme/app <dur>"},
+		{"took 412ms, then 1m2.5s", "took <dur>, then <dur>"},
+		{"build /tmp/go-build1234567890/b001", "build /tmp/go-build<n>/b001"},
+		{"Runner name: 'GitHub Actions 1000123456'", "Runner name: 'GitHub Actions <n>'"},
+		{"version_test.go:12: got 404, want 200", "version_test.go:<line>: got 404, want 200"},
+		{"src/main.rs:4:7: error", "src/main.rs:<line>: error"},
+		{"goroutine 17 [running]:", "goroutine <n> [running]:"},
+		{"main.f(0xc000123456, 0x1a)", "main.f(<addr>, <addr>)"},
+		{"[12:04:59] lint failed", "[<time>] lint failed"},
+		{"coverage: 71.3% of statements, want >= 80%", "coverage: 71.3% of statements, want >= 80%"},
+		{"got 3, want 5", "got 3, want 5"},
 		{"  spaced \t out  ", "spaced out"},
 		{"crlf\r", "crlf"},
 	} {

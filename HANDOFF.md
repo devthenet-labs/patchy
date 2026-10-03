@@ -27,9 +27,18 @@ separately, with rollback points recorded before each Helm revision:
   must delete the named kept placeholder Ingress/Service (removing the ALB) before `helm rollback patchy 42`, and the
   wildcard record (revert #27 + apply) should go first.
 
-**Known issue (follow-up chart fix):** the preview-controller's Role lacks `events` create, so its Kubernetes Events are
-rejected (`events is forbidden … cannot create resource "events"`). Function is unaffected; add `events` create/patch to
-its Role in the chart and release.
+**0.12.13 released and deployed; gate PASSED (2026-10-03 UTC).** #85 (preview-controller Role gets `events`
+create/patch), #86 (`chart-render-test` runs under `LC_ALL=C`) and #87 (the remediation prompt makes the regression test
+part of the fix) merged; release #88. patchy Helm **rev 47**, patchy-config **rev 27**; rollback points patchy **44** /
+patchy-config **26**. Revs 45 and 46 failed on transient network drops between the workstation and the EKS API (Patch
+calls hung ~13 min, then `connection reset by peer` / `read: operation timed out`; the chart was not at fault). A third
+identical `helm upgrade` succeeded in under 2 min. Nine Deployments Ready on v0.12.13 with zero restarts. The
+preview-controller logs have no `events is forbidden`, and it records its LeaderElection Event. Both Projects Ready,
+preview pool 0 nodes, status page 200, preview ALB unchanged. Gate: weak-key alert #39 → `finding-514becf18f-14` →
+tracking issue #71 → `/patchy expedite` → PR #72 (pushedCommit = PR head `84a62d0c`), checks green, merged `5da5fa39` →
+Remediated, issue closed completed with the remediated label, one comment per marker, main CodeQL marked #39 fixed, no
+duplicate Finding. **The remediation committed its test** (`releasegatekey_test.go`, a ≥2048-bit assertion) beside the
+fix.
 
 **First live preview demo: PASSED (2026-10-03).** The owner opened intent `devthenet-labs/intents#4` ("Hello from
 patchy", teal card) with the preview-demo form. An approve label added before the plan existed was correctly ignored and
@@ -48,8 +57,8 @@ zero), and the old host returns 404. Total agent cost for the intent: $0.81.
 `/patchy expedite` → PR #70 (pushedCommit = PR head `1c553a4c`), checks green, merged `4a3dd6f0` → Remediated, issue
 closed completed with the remediated label, one comment per marker, main CodeQL marked #38 fixed, no duplicate Finding.
 
-**Next (owner's choice):** fix the preview-controller `events` RBAC (chart PR + release + gate); exercise the intent
-CI-fix round live; then the "Deployable by others" roadmap (design doc); follow-ups below.
+**Next (owner's choice):** exercise the intent CI-fix round live; then the "Deployable by others" roadmap (design doc);
+follow-ups below.
 
 ## Previous checkpoint — 2026-10-02 (Codex stage-1 handover; historical)
 
@@ -594,8 +603,8 @@ already-pushed commits (or nothing) and can be removed once #51 is merged.
   manual correction. This is the second such miss after the earlier path-traversal case. A failing CodeQL check on a
   Finding PR should trigger a capped fix round rather than leave an apparently successful remediation in review with an
   unfixed alert.
-- The security remediation prompt should require committing the tests the agent writes (seen: a test written, run, then
-  deleted). The intent build prompt already requires it.
+- Done in 0.12.13 (#87): the security remediation prompt now requires committing the regression test it writes; the
+  0.12.13 gate's PR #72 carried one. Watch that it holds across rule types.
 - `finding-1678e4a376-5` (reflected XSS, suspended) absorbed real alert 15 in `shout.go`; resume it to get it fixed.
 - Findings flow still uses the unscoped installation client for pins and PR creation (intents never do).
 - Command replies cost ~2 GitHub calls per comment from anyone on public repos; a per-actor rate limit may be needed.

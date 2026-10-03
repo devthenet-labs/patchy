@@ -64,6 +64,10 @@ type IntentReconciler struct {
 	// blockedAt is the Project generation each Blocked Intent was blocked
 	// under: a Project changed since may lift an image block.
 	blockedAt map[string]int64
+	// siblings is what linkSiblings knows of each Intent's cross-links; a
+	// restart lists each pull request once more, which costs requests and
+	// nothing else.
+	siblings map[string]*siblingLinks
 }
 
 func (r *IntentReconciler) now() time.Time {
@@ -87,6 +91,9 @@ func (r *IntentReconciler) memo(f func()) {
 	if r.polled == nil {
 		r.polled, r.prPolled, r.blockedAt = map[string]time.Time{}, map[string]time.Time{}, map[string]int64{}
 	}
+	if r.siblings == nil {
+		r.siblings = map[string]*siblingLinks{}
+	}
 	f()
 }
 
@@ -95,6 +102,7 @@ func (r *IntentReconciler) forget(name string) {
 		delete(r.polled, name)
 		delete(r.prPolled, name)
 		delete(r.blockedAt, name)
+		delete(r.siblings, name)
 	})
 }
 
@@ -189,27 +197,7 @@ func (p *pass) run(ctx context.Context) (ctrl.Result, error) {
 		return ctrl.Result{}, err
 	}
 	if terminal(p.in.Status.Phase) {
-		if p.in.Status.RoundNoticesThrough < p.in.Status.Rounds {
-			if ok, err := p.rateOKForPullRequests(ctx); err != nil || !ok {
-				return ctrl.Result{RequeueAfter: p.set.PRPollInterval}, err
-			}
-			if changed, err := p.syncPRRoundNotices(ctx); changed || err != nil {
-				return ctrl.Result{}, err
-			}
-		}
-		if p.r.Nudger.take(p.in.Name) {
-			stop, err := p.handOff(ctx)
-			if err != nil {
-				// Not answered yet: the hand-off stays pending for the
-				// retry, since nothing else would bring it back.
-				p.r.Nudger.restore(p.in.Name)
-				return ctrl.Result{}, err
-			}
-			if stop {
-				return ctrl.Result{}, nil
-			}
-		}
-		return ctrl.Result{}, p.syncStatusComment(ctx)
+		return p.ended(ctx)
 	}
 
 	if wait := p.pollWait(); wait <= 0 {
@@ -228,9 +216,70 @@ func (p *pass) run(ctx context.Context) (ctrl.Result, error) {
 	return ctrl.Result{RequeueAfter: max(time.Second, p.nextWake())}, nil
 }
 
+// ended is the pass of an ended intent: the round notices still owed, the
+// notice on pull requests it left open while opening them, any hand-off
+// discovery made, and the status comment. Each notice asks only the
+// repository it is owed in, so no other pull request's repository, one patchy
+// can no longer reach included, holds an ended intent. A round notice still
+// owed holds back the hand-off, never the status comment.
+func (p *pass) ended(ctx context.Context) (ctrl.Result, error) {
+	if p.in.Status.RoundNoticesThrough < p.in.Status.Rounds {
+		changed, wait, err := p.syncEndedRoundNotices(ctx)
+		if changed || errors.Is(err, errConflict) {
+			return ctrl.Result{}, err
+		}
+		if err != nil || wait {
+			if serr := p.syncStatusComment(ctx); serr != nil {
+				return ctrl.Result{}, errors.Join(err, serr)
+			}
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: p.set.PRPollInterval}, nil
+		}
+	}
+	// Before any hand-off: a revival clears the pull requests recorded. The
+	// notice is advice, so while it waits on a rate floor or a failure that
+	// may pass, it holds back the hand-off alone, never the status comment.
+	changed, wait, noticeErr := p.noticeUntracked(ctx)
+	if changed || errors.Is(noticeErr, errConflict) {
+		return ctrl.Result{}, noticeErr
+	}
+	if noticeErr != nil || wait {
+		if err := p.syncStatusComment(ctx); err != nil {
+			return ctrl.Result{}, errors.Join(noticeErr, err)
+		}
+		if noticeErr != nil {
+			return ctrl.Result{}, noticeErr
+		}
+		return ctrl.Result{RequeueAfter: p.set.PRPollInterval}, nil
+	}
+	if p.r.Nudger.take(p.in.Name) {
+		stop, err := p.handOff(ctx)
+		if err != nil {
+			// Not answered yet: the hand-off stays pending for the retry,
+			// since nothing else would bring it back.
+			p.r.Nudger.restore(p.in.Name)
+			return ctrl.Result{}, err
+		}
+		if stop {
+			return ctrl.Result{}, nil
+		}
+	}
+	return ctrl.Result{}, p.syncStatusComment(ctx)
+}
+
 // step does the phase's own work, the part driven by the resources rather
-// than by a human.
+// than by a human. An Intent of a Project this controller runs no intent of
+// (a multi-repository Project without --intent-multi-repo) takes none: it is
+// held Blocked, whatever phase it is in, so turning the flag off stops every
+// such intent where it stands.
 func (p *pass) step(ctx context.Context) (bool, error) {
+	if p.in.Status.Phase != v1alpha1.IntentBlocked {
+		if stop, err := p.holdMultiRepo(ctx); stop || err != nil {
+			return stop, err
+		}
+	}
 	switch p.in.Status.Phase {
 	case v1alpha1.IntentPending:
 		return p.pending(ctx)

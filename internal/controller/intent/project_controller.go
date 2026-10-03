@@ -229,9 +229,10 @@ func (r *ProjectReconciler) validate(ctx context.Context, p *v1alpha1.Project) (
 		return metav1.Condition{Type: v1alpha1.ConditionReady, Status: metav1.ConditionFalse,
 			Reason: reason, Message: fmt.Sprintf(format, args...)}, nil
 	}
-	if n := len(p.Spec.Repositories); n != 1 {
+	if n := len(p.Spec.Repositories); n != 1 && !r.Settings.MultiRepo {
 		return notReady(ReasonUnsupportedRepositories,
-			"intents build in exactly one repository for now, and this Project lists %d", n)
+			"intents build in exactly one repository unless intent-controller runs with --intent-multi-repo, "+
+				"and this Project lists %d", n)
 	}
 	trigger := v1alpha1.ProjectTriggerLabel(p)
 	var projects v1alpha1.ProjectList
@@ -247,8 +248,15 @@ func (r *ProjectReconciler) validate(ctx context.Context, p *v1alpha1.Project) (
 				o.Name, trigger)
 		}
 	}
-	app := p.Spec.Repositories[0].URL
-	for _, u := range []string{p.Spec.IntentRepository, app} {
+	// Every repository resolves to one Forge, in the Project's order: with
+	// --intent-multi-repo a Project may list several, and an intent builds
+	// in any of them. The grants each needs are intentperm's, proven below.
+	urls := make([]string, 0, 1+len(p.Spec.Repositories))
+	urls = append(urls, p.Spec.IntentRepository)
+	for _, repo := range p.Spec.Repositories {
+		urls = append(urls, repo.URL)
+	}
+	for _, u := range urls {
 		if _, _, err := forge.ParseRepoURL(u); err != nil {
 			return notReady(v1alpha1.ReasonForgeUnresolved, "%v", err)
 		}

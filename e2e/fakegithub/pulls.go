@@ -52,21 +52,32 @@ type PullRequest struct {
 // pull requests the same one.
 func pullNodeID(number int) string { return fmt.Sprintf("PR_fake%d", number) }
 
-// headSHA is where a branch points now: its pushed head, or the fixed base
-// for a branch never pushed. Callers hold s.mu.
-func (s *Server) headSHA(branch string) string {
-	if sha, ok := s.git.refs["heads/"+branch]; ok {
+// headSHA is where a branch points now in the repository repo (a repoKey;
+// "" for whichever repository has it, as for a pull request a test
+// fabricated): its pushed head, or the fixed base for a branch never
+// pushed. Callers hold s.mu.
+func (s *Server) headSHA(repo, branch string) string {
+	ref := "heads/" + branch
+	lookup := s.git.anyRef
+	if repo != "" {
+		lookup = func(ref string) (string, bool) { return s.git.refIn(repo, ref) }
+	}
+	if sha, ok := lookup(ref); ok {
 		return sha
 	}
 	return BaseSHA
 }
+
+// repoOf is the repoKey of the repository p was opened in, "" for one a
+// test fabricated.
+func (p *pull) repoOf() string { return strings.ToLower(p.repository) }
 
 // rendered is p as GitHub renders it now: an open pull request's head
 // follows its branch. Callers hold s.mu.
 func (s *Server) rendered(p *pull) pull {
 	out := *p
 	if out.State == "open" {
-		out.Head.SHA = s.headSHA(out.Head.Ref)
+		out.Head.SHA = s.headSHA(p.repoOf(), out.Head.Ref)
 	}
 	return out
 }
@@ -82,9 +93,24 @@ func (s *Server) MergePull(number int, head, mergeCommitSHA string) {
 		p = &pull{Number: number, NodeID: pullNodeID(number), Head: ref{Ref: head}, Base: ref{Ref: "main"}}
 		s.pulls[number] = p
 	}
-	p.Head.SHA = s.headSHA(p.Head.Ref)
+	p.Head.SHA = s.headSHA(p.repoOf(), p.Head.Ref)
 	at := s.Now().UTC().Truncate(time.Second)
 	p.State, p.Merged, p.MergedAt, p.MergeCommitSHA = "closed", true, &at, mergeCommitSHA
+}
+
+// ClosePull closes pull request number without merging it, as a human
+// closing it on GitHub does: its head stays where its branch points now.
+// It reports false when the fake has no such open pull request.
+func (s *Server) ClosePull(number int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.pulls[number]
+	if !ok || p.State != "open" {
+		return false
+	}
+	p.Head.SHA = s.headSHA(p.repoOf(), p.Head.Ref)
+	p.State = "closed"
+	return true
 }
 
 // OpenPull records pull request number, from branch head, as open — a PR
@@ -241,7 +267,9 @@ func (s *Server) createPull(w http.ResponseWriter, r *http.Request) {
 
 // listPulls answers GET /repos/{o}/{r}/pulls — enough of the list API for
 // FindPRByHead and FindOpenPR (state, head and base filters; head arrives as
-// "owner:branch").
+// "owner:branch"). It lists the repository's own pull requests, so a branch
+// of one name in two repositories finds each its own, beside those a test
+// fabricated, which belong to no repository and are listed in every one.
 func (s *Server) listPulls(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	head := r.URL.Query().Get("head")
@@ -249,11 +277,15 @@ func (s *Server) listPulls(w http.ResponseWriter, r *http.Request) {
 	if _, branch, ok := strings.Cut(head, ":"); ok {
 		head = branch
 	}
+	repo := repoKey(r.PathValue("owner"), r.PathValue("repo"))
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]pull, 0, len(s.pulls))
 	for _, p := range s.pulls {
+		if own := p.repoOf(); own != "" && own != repo {
+			continue
+		}
 		if state != "" && state != "all" && p.State != state {
 			continue
 		}

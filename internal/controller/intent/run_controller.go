@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -168,35 +169,53 @@ func pushHeld(run *v1alpha1.IntentRun) bool {
 	return meta.IsStatusConditionTrue(run.Status.Conditions, v1alpha1.ConditionPushHeld)
 }
 
-// launchable reports a pending run that could launch now: its input and
-// its Repository's artifact ready, its Intent active and not suspended, its
-// Project not suspended. A run waiting on any of them holds no slot.
+// launchable reports a pending run that could launch now: its input and the
+// artifact of its Repository, and of every tree Repository of a plan run,
+// ready; its Intent active and not suspended (and, for a revise round, its
+// pull request still open: roundEnded); its Project not suspended, one this
+// controller runs intents of (Settings.multiRepoOff), and, for a build or a
+// revise round, still listing the run's repository (repositoryLeft). A run
+// waiting on any of them holds no slot.
 func (r *RunReconciler) launchable(ctx context.Context, run *v1alpha1.IntentRun) bool {
 	var in v1alpha1.Intent
 	if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name}, &in); err != nil ||
-		in.UID != run.Spec.IntentRef.UID || in.Spec.Suspend || terminal(in.Status.Phase) {
+		in.UID != run.Spec.IntentRef.UID || in.Spec.Suspend || terminal(in.Status.Phase) || roundEnded(&in, run) {
 		return false
 	}
 	var proj v1alpha1.Project
 	if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: in.Spec.Project}, &proj); err != nil ||
-		proj.Spec.Suspend {
+		proj.Spec.Suspend || r.Settings.multiRepoOff(&proj) || repositoryLeft(&proj, run) {
 		return false
 	}
 	var cm corev1.ConfigMap
 	if err := r.Get(ctx, runInputKey(run), &cm); err != nil {
 		return false
 	}
-	var repo v1alpha1.Repository
-	if err := r.Get(ctx, types.NamespacedName{
-		Namespace: run.Namespace, Name: run.Spec.Repository.RepositoryRef.Name,
-	}, &repo); err != nil {
-		return false
+	for _, name := range runRepositoryNames(run) {
+		var repo v1alpha1.Repository
+		if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: name}, &repo); err != nil {
+			return false
+		}
+		if repo.Status.Artifact == nil {
+			return false
+		}
+		if !meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionReady) &&
+			!imageStallIgnored(run, &repo, requireRepositoryImage(&proj)) {
+			return false
+		}
 	}
-	if repo.Status.Artifact == nil {
-		return false
+	return true
+}
+
+// runRepositoryNames are the Repositories a run works from: its own, then,
+// for a plan run of a multi-repository Project, each tree's.
+func runRepositoryNames(run *v1alpha1.IntentRun) []string {
+	names := make([]string, 0, 1+len(run.Spec.Trees))
+	names = append(names, run.Spec.Repository.RepositoryRef.Name)
+	for _, tree := range run.Spec.Trees {
+		names = append(names, tree.RepositoryRef.Name)
 	}
-	return meta.IsStatusConditionTrue(repo.Status.Conditions, v1alpha1.ConditionReady) ||
-		imageStallIgnored(run, &repo, requireRepositoryImage(&proj))
+	return names
 }
 
 // imageStallIgnored allows a pinned, stored tree through an image-declaration
@@ -278,10 +297,28 @@ func (r *RunReconciler) run(ctx context.Context, req ctrl.Request) (ctrl.Result,
 // pending fails a pending run that can never launch: its Intent gone or
 // ended, or its Repository stalled (a rejected runner image under onReject
 // handoff blocks a build on its image and does not stop a plan, which never
-// runs it; any other stall aborts the run).
+// runs it; any other stall aborts the run). A plan run's every tree is held
+// to the same rule: one stalled for any reason but its declared image aborts
+// the run, naming the tree, rather than leave the Intent planning forever.
 func (r *RunReconciler) pending(ctx context.Context, run *v1alpha1.IntentRun) error {
 	if ended, err := r.intentEnded(ctx, run); ended || err != nil {
 		return err
+	}
+	for _, tree := range run.Spec.Trees {
+		var repo v1alpha1.Repository
+		err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: tree.RepositoryRef.Name}, &repo)
+		if kerrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		stalled := meta.FindStatusCondition(repo.Status.Conditions, v1alpha1.ConditionStalled)
+		if stalled == nil || stalled.Status != metav1.ConditionTrue || imageStallIgnored(run, &repo, true) {
+			continue
+		}
+		return r.settle(ctx, run, result{outcome: OutcomeAborted,
+			detail: fmt.Sprintf("the artifact of tree %s (%s) stalled: %s", tree.Name, tree.URL, stalled.Message)})
 	}
 	var repo v1alpha1.Repository
 	err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.Repository.RepositoryRef.Name}, &repo)
@@ -318,16 +355,31 @@ func runInputKey(run *v1alpha1.IntentRun) types.NamespacedName {
 }
 
 // intentEnded aborts an unfinished run whose Intent is gone, is not the one
-// that created it, or has ended: its Job is deleted and nothing it produces
-// is used.
+// that created it, or has ended; a build or revise run whose repository the
+// Project no longer lists (repositoryLeft); and a revise round whose pull
+// request was merged or closed while the Intent's other pull requests stay in
+// review (roundEnded): its Job is deleted and nothing it produces is used.
 func (r *RunReconciler) intentEnded(ctx context.Context, run *v1alpha1.IntentRun) (bool, error) {
 	var in v1alpha1.Intent
 	err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name}, &in)
 	if err != nil && !kerrors.IsNotFound(err) {
 		return false, err
 	}
+	detail := "the intent ended before the run did"
 	if err == nil && in.UID == run.Spec.IntentRef.UID && in.DeletionTimestamp.IsZero() && !terminal(in.Status.Phase) {
-		return false, nil
+		var proj v1alpha1.Project
+		perr := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: in.Spec.Project}, &proj)
+		if perr != nil && !kerrors.IsNotFound(perr) {
+			return false, perr
+		}
+		switch {
+		case perr == nil && repositoryLeft(&proj, run):
+			detail = repositoryLeftDetail(run)
+		case roundEnded(&in, run):
+			detail = roundEndedDetail(run)
+		default:
+			return false, nil
+		}
 	}
 	if run.Status.JobRef != nil {
 		if err := r.Jobs.Delete(ctx, run.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
@@ -336,8 +388,53 @@ func (r *RunReconciler) intentEnded(ctx context.Context, run *v1alpha1.IntentRun
 	}
 	// A build that pushed its commit, or was held for a suspension, already
 	// recorded its report, usage and transcript: they are kept.
-	return true, r.settle(ctx, run, result{outcome: OutcomeAborted, detail: "the intent ended before the run did",
+	return true, r.settle(ctx, run, result{outcome: OutcomeAborted, detail: detail,
 		keep: run.Status.PushedCommit != "" || pushHeld(run)})
+}
+
+// roundEnded reports a revise round of in whose pull request in.Status
+// records as merged or closed (or does not record at all): a round has
+// nothing to push to but its own repository's open pull request. The intent
+// reconciler records a pull request's state from GitHub as it reads it; with
+// one pull request, its merge or close ends the Intent in the same write, so
+// only a multi-repository intent, its siblings still in review, ever has a
+// round end this way.
+func roundEnded(in *v1alpha1.Intent, run *v1alpha1.IntentRun) bool {
+	if run.Spec.Stage != v1alpha1.IntentStageRevise {
+		return false
+	}
+	pr := recordedPullRequest(in, run.Spec.Repository.URL)
+	return pr == nil || pr.State != prOpen
+}
+
+// roundEndedDetail says why a revise round ended unpushed: its own
+// repository's pull request was merged or closed.
+func roundEndedDetail(run *v1alpha1.IntentRun) string {
+	return "the pull request in " + repoSlug(run.Spec.Repository.URL) + " was merged or closed before the round ended"
+}
+
+// repositoryLeft reports a build or revise run whose own repository proj no
+// longer lists. Nothing more of it is launched or pushed: the operator took
+// the repository out of the Project, and with it out of what the Project's
+// Ready proved the App may do there (intentperm.For). A plan run writes
+// nothing to any repository.
+func repositoryLeft(proj *v1alpha1.Project, run *v1alpha1.IntentRun) bool {
+	if run.Spec.Stage != v1alpha1.IntentStageBuild && run.Spec.Stage != v1alpha1.IntentStageRevise {
+		return false
+	}
+	return !slices.ContainsFunc(proj.Spec.Repositories, func(r v1alpha1.ProjectRepository) bool {
+		return sameRepo(r.URL, run.Spec.Repository.URL)
+	})
+}
+
+// repositoryLeftDetail says why a run whose repository left the Project
+// ended, and what of its push was made.
+func repositoryLeftDetail(run *v1alpha1.IntentRun) string {
+	left := "the repository " + repoSlug(run.Spec.Repository.URL) + " left the project"
+	if run.Status.PushedCommit != "" {
+		return left + "; commit " + run.Status.PushedCommit + " was made, and no branch was moved to it"
+	}
+	return left + "; nothing was pushed"
 }
 
 // launch creates the run's agent Job. A plan runs read-only on the default
@@ -358,6 +455,11 @@ func (r *RunReconciler) launch(ctx context.Context, run *v1alpha1.IntentRun) err
 	var proj v1alpha1.Project
 	if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: in.Spec.Project}, &proj); err != nil {
 		return err
+	}
+	if r.Settings.multiRepoOff(&proj) {
+		// Granted before the flag went off: nothing runs for the Project
+		// until it is on again.
+		return r.requeuePending(ctx, run)
 	}
 	var repo v1alpha1.Repository
 	if err := r.Get(ctx, types.NamespacedName{
@@ -412,11 +514,69 @@ func (r *RunReconciler) launch(ctx context.Context, run *v1alpha1.IntentRun) err
 		TokenBudget:     run.Spec.Grant.TokenBudget,
 		PreviousAttempt: agentresult.EncodePreviousAttempt(run.Spec.PreviousAttempt),
 	}
+	if len(run.Spec.Trees) > 0 {
+		ready, refusal, err := r.treesSpec(ctx, run, &proj, &spec)
+		switch {
+		case err != nil:
+			return err
+		case refusal != nil:
+			return r.settle(ctx, run, *refusal)
+		case !ready:
+			return r.requeuePending(ctx, run)
+		}
+	}
 	requireImage, refusal := r.stageSpec(run, &spec, &cm, &proj, imageRepo)
 	if refusal != nil {
 		return r.settle(ctx, run, *refusal)
 	}
 	return r.launchJob(ctx, run, &proj, spec, requireImage)
+}
+
+// treesSpec completes a plan run's spec with every tree it reads: each from
+// the Repository the run owns for it, under its derived name and for its
+// URL, pinned and stored (ready is false while one is not yet), named in the
+// Job's manifest by the Project key, with the planning repository's own key
+// (RepoKey) beside them. Someone else's object under a tree's name, or a
+// planning repository the Project no longer holds, launches nothing: the run
+// settles with refusal. The Job reads each tree read-only, on the default
+// image: jobs.Create refuses trees anywhere else.
+func (r *RunReconciler) treesSpec(ctx context.Context, run *v1alpha1.IntentRun, proj *v1alpha1.Project,
+	spec *jobs.Spec) (ready bool, refusal *result, err error) {
+	var own *v1alpha1.ProjectRepository
+	for i := range proj.Spec.Repositories {
+		if sameRepo(proj.Spec.Repositories[i].URL, run.Spec.Repository.URL) {
+			own = &proj.Spec.Repositories[i]
+		}
+	}
+	if own == nil {
+		return false, &result{outcome: OutcomeAborted,
+			detail: fmt.Sprintf("the planning repository %s is no longer one of the project's; nothing was launched",
+				run.Spec.Repository.URL)}, nil
+	}
+	spec.RepoKey, spec.RepoURL = own.Name, run.Spec.Repository.URL
+	for _, tree := range run.Spec.Trees {
+		var repo v1alpha1.Repository
+		if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: tree.RepositoryRef.Name},
+			&repo); err != nil {
+			if kerrors.IsNotFound(err) {
+				return false, nil, nil
+			}
+			return false, nil, err
+		}
+		if !controlledBy(repo.OwnerReferences, run.UID) || !sameRepo(repo.Spec.URL, tree.URL) {
+			return false, &result{outcome: OutcomeAborted,
+				detail: fmt.Sprintf("Repository %s is not this run's own (for tree %s, %s); nothing was launched",
+					repo.Name, tree.Name, tree.URL)}, nil
+		}
+		if repo.Status.Artifact == nil || repo.Status.ResolvedSHA == "" {
+			return false, nil, nil
+		}
+		spec.Trees = append(spec.Trees, jobs.Tree{
+			Key: tree.Name, URL: tree.URL, ArtifactURL: repo.Status.Artifact.URL,
+			ArtifactDigest: repo.Status.Artifact.Digest, BaseSHA: repo.Status.ResolvedSHA,
+		})
+	}
+	return true, nil, nil
 }
 
 func (r *RunReconciler) launchJob(ctx context.Context, run *v1alpha1.IntentRun,
@@ -431,6 +591,11 @@ func (r *RunReconciler) launchJob(ctx context.Context, run *v1alpha1.IntentRun,
 		// attempt counted, and the Intent reads why.
 		return r.settle(ctx, run, result{outcome: OutcomeLaunchRefused,
 			detail: "the API server refused the agent Job: " + err.Error()})
+	case errors.Is(err, jobs.ErrTreesRefused):
+		// The trees this run was given contradict what a Job may hold: the
+		// same launch would be refused again.
+		return r.settle(ctx, run, result{outcome: OutcomeLaunchRefused,
+			detail: "the agent Job's trees were refused: " + err.Error()})
 	case err != nil:
 		return fmt.Errorf("launch run %s: %w", run.Name, err)
 	}
@@ -447,6 +612,14 @@ func (r *RunReconciler) launchJob(ctx context.Context, run *v1alpha1.IntentRun,
 		cur.Status.RunnerImage = &image
 		cur.Status.BaseSHA = spec.BaseSHA
 		cur.Status.StartedAt = &now
+		// What each tree was when the planner was handed it, kept on the
+		// run record after the tree Repositories are deleted with it.
+		cur.Status.Trees = nil
+		for _, tree := range spec.Trees {
+			cur.Status.Trees = append(cur.Status.Trees, v1alpha1.IntentRunTreeStatus{
+				Name: tree.Key, BaseSHA: tree.BaseSHA, ArtifactDigest: tree.ArtifactDigest,
+			})
+		}
 	})
 }
 
@@ -589,7 +762,7 @@ func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (c
 		case errors.Is(err, errHeld):
 			return r.heldOr(err)
 		case errors.Is(err, errIntentEnded):
-			return ctrl.Result{}, r.endedBeforePush(ctx, run, result{keep: true})
+			return ctrl.Result{}, r.endedBeforePush(ctx, run, result{keep: true}, err)
 		case err != nil:
 			return ctrl.Result{}, err
 		}
@@ -644,9 +817,7 @@ func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (c
 // qualifies; all other missing Jobs retain their normal failure outcome.
 func (r *RunReconciler) settleMissingJob(ctx context.Context, run *v1alpha1.IntentRun) error {
 	if pushHeld(run) {
-		return r.settle(ctx, run, result{outcome: OutcomeHoldExpired, keep: true,
-			detail: "the build finished while its intent was suspended, and its Job expired before the " +
-				"suspension was lifted, taking the unpushed changeset with it; the attempt does not count"})
+		return r.settle(ctx, run, result{outcome: OutcomeHoldExpired, keep: true, detail: holdExpiredDetail(run)})
 	}
 	if run.Spec.Stage == v1alpha1.IntentStageRevise && run.Spec.Trigger == v1alpha1.IntentRunTriggerReview {
 		empty, err := r.legacyEmptyReviseFeedback(ctx, run)
@@ -661,6 +832,23 @@ func (r *RunReconciler) settleMissingJob(ctx context.Context, run *v1alpha1.Inte
 	}
 	return r.settle(ctx, run, result{outcome: OutcomeAborted,
 		detail: "agent job vanished before reporting"})
+}
+
+// holdExpiredDetail says why a held run's changeset was lost: its Job
+// expired (--job-ttl) while the hold lasted, whichever hold it was.
+func holdExpiredDetail(run *v1alpha1.IntentRun) string {
+	why := "its intent was suspended, and its Job expired before the suspension was lifted"
+	if c := meta.FindStatusCondition(run.Status.Conditions, v1alpha1.ConditionPushHeld); c != nil {
+		switch c.Reason {
+		case ReasonMultiRepositoryOff:
+			why = "intent-controller ran without --intent-multi-repo, and its Job expired before the flag was on again"
+		case ReasonIntentBlocked:
+			why = "its intent was blocked, and its Job expired before the block lifted"
+		case ReasonProjectGone:
+			why = "its project was gone, and its Job expired before the project was created again"
+		}
+	}
+	return "the build finished while " + why + ", taking the unpushed changeset with it; the attempt does not count"
 }
 
 // heldOr is the result of a collect that ended with err: a build held for a
@@ -678,16 +866,63 @@ func (r *RunReconciler) heldOr(err error) (ctrl.Result, error) {
 // is collected again when the suspension is cleared.
 var errHeld = errors.New("the intent is suspended; its push waits")
 
+// errMultiRepoOff: the run's Project lists more than one repository and this
+// controller runs without --intent-multi-repo. Like a suspension, nothing is
+// written to GitHub: the finished build waits, its push not made, until the
+// flag is on again.
+var errMultiRepoOff = fmt.Errorf("%w: multi-repository intents are off", errHeld)
+
+// errRoundBlocked: a revise round's Intent is Blocked from Revising while
+// the round is still in flight (turning --intent-multi-repo off blocks a
+// Revising intent where it stands). The round has not ended: like a
+// suspension, its finished push waits, not made, until the block lifts and
+// the Intent is Revising again, and is never mistaken for an ended intent.
+var errRoundBlocked = fmt.Errorf("%w: the intent is blocked mid-round", errHeld)
+
+// ReasonIntentBlocked is the PushHeld reason of a revise round whose Intent
+// is Blocked from Revising (errRoundBlocked).
+const ReasonIntentBlocked = "IntentBlocked"
+
+// errProjectGone: the run's Project is gone (deleted, or renamed away from
+// the Intent's spec.project). Deleting the Project withdraws everything its
+// Ready proved the App may do, so its absence holds the push like a
+// suspension and never lets it through: nothing is written to GitHub while
+// it is gone (a build held for another reason stays held), and a Project
+// created again under the name resumes the push, checked against what that
+// Project lists.
+var errProjectGone = fmt.Errorf("%w: the intent's project is gone", errHeld)
+
+// ReasonProjectGone is the PushHeld reason of a run whose Project is gone
+// (errProjectGone).
+const ReasonProjectGone = "ProjectGone"
+
 // errIntentEnded: the run's Intent, read uncached, is gone, is another
 // Intent under its name, is being deleted, or has ended (a cancel, a human
 // close). Nothing more of the build reaches GitHub.
 var errIntentEnded = errors.New("the intent ended before the build's push")
 
-// pushGate reads the run's Intent uncached before each write the push makes
-// to GitHub (the commit, then the branch), which are the only writes the run
-// reconciler makes: the cache it decided to collect from can lag a cancel or
-// a suspension written a moment ago. It is errIntentEnded when the Intent no
-// longer wants the build, errHeld while it is suspended, and nil to push.
+// errPullRequestEnded: the pull request a revise round of a multi-repository
+// intent works on was merged or closed while its siblings stay in review.
+// Like an ended intent, nothing more of the round reaches GitHub.
+var errPullRequestEnded = fmt.Errorf("%w: the round's pull request was merged or closed", errIntentEnded)
+
+// errRepositoryLeft: the Project no longer lists the repository a build or
+// revise run would push to (repositoryLeft). Like an ended intent, nothing
+// more of the run reaches GitHub.
+var errRepositoryLeft = fmt.Errorf("%w: the run's repository left the project", errIntentEnded)
+
+// pushGate reads the run's Intent and Project uncached before each write the
+// push makes to GitHub (the commit, then the branch), which are the only
+// writes the run reconciler makes: the cache it decided to collect from can
+// lag a cancel, a suspension or a Project change written a moment ago. It is
+// errIntentEnded when the Intent no longer wants the build (errRepositoryLeft
+// when the Project no longer lists the run's repository), errHeld while it is
+// suspended (errMultiRepoOff, an errHeld, while its Project is one this
+// controller runs no intent of; errProjectGone while its Project is gone),
+// and nil to push. A revise round pushes only while its Intent is Revising
+// (one Blocked from Revising holds it, errRoundBlocked, until it resumes),
+// and only to the pull request of its own repository, read live, while it is
+// open: one merged or closed beside open siblings is errPullRequestEnded.
 func (r *RunReconciler) pushGate(ctx context.Context, run *v1alpha1.IntentRun) error {
 	var in v1alpha1.Intent
 	err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name}, &in)
@@ -701,27 +936,67 @@ func (r *RunReconciler) pushGate(ctx context.Context, run *v1alpha1.IntentRun) e
 	case in.Spec.Suspend:
 		return errHeld
 	}
+	if err := r.projectGate(ctx, run, &in); err != nil {
+		return err
+	}
 	if run.Spec.Stage == v1alpha1.IntentStageRevise {
-		if in.Status.Phase != v1alpha1.IntentRevising || len(in.Status.PullRequests) != 1 {
-			return errIntentEnded
+		return r.roundGate(ctx, run, &in)
+	}
+	return nil
+}
+
+// projectGate is pushGate's read of the run's Project, uncached: it fails
+// closed, errProjectGone when it is gone; errRepositoryLeft when it no longer
+// lists the run's repository; errMultiRepoOff when it is one this controller
+// runs no intent of.
+func (r *RunReconciler) projectGate(ctx context.Context, run *v1alpha1.IntentRun, in *v1alpha1.Intent) error {
+	var proj v1alpha1.Project
+	switch err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: in.Spec.Project},
+		&proj); {
+	case kerrors.IsNotFound(err):
+		return errProjectGone
+	case err != nil:
+		return err
+	case repositoryLeft(&proj, run):
+		return errRepositoryLeft
+	case r.Settings.multiRepoOff(&proj):
+		return errMultiRepoOff
+	}
+	return nil
+}
+
+// roundGate is pushGate's check of a revise round: its Intent Revising (one
+// Blocked from Revising holds it, errRoundBlocked), and the pull request of
+// its own repository, read live, still open (errPullRequestEnded beside open
+// siblings).
+func (r *RunReconciler) roundGate(ctx context.Context, run *v1alpha1.IntentRun, in *v1alpha1.Intent) error {
+	if in.Status.Phase == v1alpha1.IntentBlocked && v1alpha1.IntentBlockedFrom(in) == v1alpha1.IntentRevising {
+		return errRoundBlocked
+	}
+	pr := recordedPullRequest(in, run.Spec.Repository.URL)
+	if in.Status.Phase != v1alpha1.IntentRevising || pr == nil {
+		return errIntentEnded
+	}
+	live, err := r.GitHub.GetPullRequest(ctx, pr.Repository, pr.Number)
+	if err != nil {
+		return fmt.Errorf("verify revise PR before push: %w", err)
+	}
+	if live.State != prOpen || live.Merged || pr.NodeID != "" && live.NodeID != pr.NodeID {
+		if len(in.Status.PullRequests) > 1 {
+			return errPullRequestEnded
 		}
-		pr := in.Status.PullRequests[0]
-		live, err := r.GitHub.GetPullRequest(ctx, pr.Repository, pr.Number)
-		if err != nil {
-			return fmt.Errorf("verify revise PR before push: %w", err)
-		}
-		if live.State != prOpen || live.Merged || pr.NodeID != "" && live.NodeID != pr.NodeID {
-			return errIntentEnded
-		}
+		return errIntentEnded
 	}
 	return nil
 }
 
 // endedBeforePush settles a build whose Intent ended before its push was
-// complete: aborted, keeping what the build reported, with its Job deleted
-// and nothing (more) written to GitHub. A commit already created is left
-// dangling, with no branch at it.
-func (r *RunReconciler) endedBeforePush(ctx context.Context, run *v1alpha1.IntentRun, res result) error {
+// complete (why is the gate's errIntentEnded): aborted, keeping what the
+// build reported, with its Job deleted and nothing (more) written to GitHub.
+// A commit already created is left dangling, with no branch at it. A revise
+// round whose own pull request ended beside open siblings
+// (errPullRequestEnded) says so instead.
+func (r *RunReconciler) endedBeforePush(ctx context.Context, run *v1alpha1.IntentRun, res result, why error) error {
 	if run.Status.JobRef != nil {
 		if err := r.Jobs.Delete(ctx, run.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
 			return fmt.Errorf("delete job %s: %w", run.Status.JobRef.Name, err)
@@ -733,6 +1008,16 @@ func (r *RunReconciler) endedBeforePush(ctx context.Context, run *v1alpha1.Inten
 		res.detail = "the intent ended before the build's branch was created; commit " + run.Status.PushedCommit +
 			" was made, and no branch points at it"
 	}
+	switch {
+	case errors.Is(why, errPullRequestEnded):
+		res.detail = roundEndedDetail(run) + "; nothing was pushed"
+		if run.Status.PushedCommit != "" {
+			res.detail = roundEndedDetail(run) + "; commit " + run.Status.PushedCommit +
+				" was made, and the branch was not moved to it"
+		}
+	case errors.Is(why, errRepositoryLeft):
+		res.detail = repositoryLeftDetail(run)
+	}
 	r.log().LogAttrs(ctx, slog.LevelInfo, "intent ended; the build's push is abandoned", slog.String("run", run.Name))
 	return r.settle(ctx, run, res)
 }
@@ -743,16 +1028,29 @@ func (r *RunReconciler) endedBeforePush(ctx context.Context, run *v1alpha1.Inten
 // frees its slot and keeps later passes from reading its Job until the
 // suspension is lifted; the run stays Running. A suspension that outlasts the
 // Job's TTL loses the Job, and with it the unpushed changeset: the run then
-// ends hold_expired, which does not count as an attempt.
-func (r *RunReconciler) hold(ctx context.Context, run *v1alpha1.IntentRun, res *result) error {
+// ends hold_expired, which does not count as an attempt. why is the gate's
+// errHeld: a suspension, errMultiRepoOff, errRoundBlocked or errProjectGone.
+func (r *RunReconciler) hold(ctx context.Context, run *v1alpha1.IntentRun, res *result, why error) error {
 	if pushHeld(run) {
 		return errHeld
 	}
+	reason, msg := "IntentSuspended", "the build finished while its intent is suspended; "+
+		"its push waits for the suspension to be lifted"
+	switch {
+	case errors.Is(why, errMultiRepoOff):
+		reason, msg = ReasonMultiRepositoryOff, "the build finished while its project lists more than one "+
+			"repository and intent-controller runs without --intent-multi-repo; its push waits for the flag"
+	case errors.Is(why, errRoundBlocked):
+		reason, msg = ReasonIntentBlocked, "the round finished while its intent is blocked; its push waits for "+
+			"the block to lift"
+	case errors.Is(why, errProjectGone):
+		reason, msg = ReasonProjectGone, "the run finished while its project is gone; its push waits for the "+
+			"project to be created again"
+	}
 	if err := r.updateRun(ctx, run, func(cur *v1alpha1.IntentRun) {
 		meta.SetStatusCondition(&cur.Status.Conditions, metav1.Condition{
-			Type: v1alpha1.ConditionPushHeld, Status: metav1.ConditionTrue, Reason: "IntentSuspended",
-			Message: "the build finished while its intent is suspended; " +
-				"its push waits for the suspension to be lifted",
+			Type: v1alpha1.ConditionPushHeld, Status: metav1.ConditionTrue, Reason: reason,
+			Message:            msg,
 			ObservedGeneration: cur.Generation,
 		})
 		if res != nil {
@@ -767,7 +1065,8 @@ func (r *RunReconciler) hold(ctx context.Context, run *v1alpha1.IntentRun, res *
 	}); err != nil {
 		return err
 	}
-	r.log().LogAttrs(ctx, slog.LevelInfo, "intent suspended; the build's push waits", slog.String("run", run.Name))
+	r.log().LogAttrs(ctx, slog.LevelInfo, "the build's push waits", slog.String("run", run.Name),
+		slog.String("reason", reason))
 	return errHeld
 }
 
@@ -991,9 +1290,9 @@ func legacyEmptyReviewHandoff(handoff string) bool {
 func (r *RunReconciler) push(ctx context.Context, run *v1alpha1.IntentRun, ev *envelope.Remediation, res result) error {
 	switch err := r.pushGate(ctx, run); {
 	case errors.Is(err, errIntentEnded):
-		return r.endedBeforePush(ctx, run, res)
+		return r.endedBeforePush(ctx, run, res, err)
 	case errors.Is(err, errHeld):
-		return r.hold(ctx, run, &res)
+		return r.hold(ctx, run, &res, err)
 	case err != nil:
 		return err
 	}
@@ -1053,9 +1352,9 @@ func (r *RunReconciler) push(ctx context.Context, run *v1alpha1.IntentRun, ev *e
 func (r *RunReconciler) advanceBranch(ctx context.Context, run *v1alpha1.IntentRun) error {
 	switch err := r.pushGate(ctx, run); {
 	case errors.Is(err, errIntentEnded):
-		return r.endedBeforePush(ctx, run, result{keep: true})
+		return r.endedBeforePush(ctx, run, result{keep: true}, err)
 	case errors.Is(err, errHeld):
-		return r.hold(ctx, run, nil)
+		return r.hold(ctx, run, nil, err)
 	case err != nil:
 		return err
 	}
@@ -1100,9 +1399,9 @@ func (r *RunReconciler) advanceBranch(ctx context.Context, run *v1alpha1.IntentR
 func (r *RunReconciler) createBranch(ctx context.Context, run *v1alpha1.IntentRun) error {
 	switch err := r.pushGate(ctx, run); {
 	case errors.Is(err, errIntentEnded):
-		return r.endedBeforePush(ctx, run, result{keep: true})
+		return r.endedBeforePush(ctx, run, result{keep: true}, err)
 	case errors.Is(err, errHeld):
-		return r.hold(ctx, run, nil)
+		return r.hold(ctx, run, nil, err)
 	case err != nil:
 		return err
 	}

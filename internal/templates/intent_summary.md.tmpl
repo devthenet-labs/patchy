@@ -15,6 +15,10 @@ Every pull request patchy opened for this intent has merged, so patchy closes th
 {{- end }}
 
 **Revisions:** {{ .Revisions }}
+{{- with .CheckFixes }}
+
+**CI-fix rounds:** {{ . }}
+{{- end }}
 {{- with .Cost }}
 
 **Reported cost:** {{ code . }}

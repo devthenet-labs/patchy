@@ -850,9 +850,11 @@ Slice 1 enforces one repository per Project.
 
 ## Slice 3: multi-repo intents
 
-**Status:** Proposed, 2026-10-03. Line references are to `main` at 5052706. This section replaces "Multi-repo: types
-now, behaviour in slice 3" and narrows the roadmap's slice 3: the sibling-wide `/patchy revise` and the webhook nudge
-are deferred. Estimate: about 7-9 dev days plus 1 infra day.
+**Status:** Proposed 2026-10-03; implemented behind `--intent-multi-repo` (off by default), wave A in 0.12.14 and wave B
+in the release after it, end to end in `e2e/intent_multirepo_test.go`. The live demo (marigold) is still to run. Line
+references are to `main` at 5052706. This section replaces "Multi-repo: types now, behaviour in slice 3" and narrows the
+roadmap's slice 3: the sibling-wide `/patchy revise` and the webhook nudge are deferred. Estimate: about 7-9 dev days
+plus 1 infra day.
 
 One intent can now change several app repositories of a Project and preview them together:
 
@@ -1100,7 +1102,8 @@ preview image path prefix.
 
 ### API changes
 
-All are additive or relaxing. `mise run codegen` regenerates both CRD copies and the patchy-config schema.
+The fields are additive and the Preview bounds relax, but the new CEL rules tighten (see **Rollback** below for what
+that means for a CRD rollback). `mise run codegen` regenerates both CRD copies and the patchy-config schema.
 
 - **Project.**
   - `repositories[].preview` (optional).
@@ -1166,8 +1169,20 @@ All are additive or relaxing. `mise run codegen` regenerates both CRD copies and
   Then one values change turns the flag on, raises `maxConcurrentRuns` to 2, sets the prefix explicitly (to the same
   value) and adds the demo Project.
 
-- **Rollback.** Either turn the flag off (multi-repo Projects go not Ready and their intents wait), or roll back the
-  Helm revisions. The CRD changes only relax.
+- **Rollback.** The flag is the supported rollback. Off, multi-repo Projects go not Ready and every intent of one is
+  held `Blocked` where it stands: no run is launched and nothing is pushed, a Job already running finishes and its push
+  waits, and a wait longer than the Job TTL discards that finished work, which is run again when the flag is on.
+  - Do not roll intent-controller back past wave B while any intent of a multi-repo Project is open. The older
+    controller does not hold them: its `openPullRequest` overwrites `status.pullRequests` with one record, losing the
+    siblings; its `building()` follows an arbitrary repository's build; its push gate treats more than one pull request
+    as an ended intent; and its round notices fail on every pass once an intent has two pull requests, which also holds
+    up the hand-off and the TTL. Drain first: cancel each such intent (or suspend it, `spec.suspend: true`, and keep it
+    suspended until the controller is rolled forward again).
+  - The CRD changes (wave A) do not only relax. They relax Preview `components` (at most 1, now 4) and add optional
+    fields. They also tighten, with new CEL rules: an IntentRun's `spec.trees` only on a plan run, each a different
+    repository; at most four previewed repositories with distinct paths; `spec.preview` only beside exactly one
+    repository; distinct Preview component paths. Rolling the CRDs back past wave A makes every stored Preview with more
+    than one component invalid, so its status can no longer be written: end those previews first.
 
 ### Demo apps
 

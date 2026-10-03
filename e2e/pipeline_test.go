@@ -40,6 +40,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -328,6 +329,17 @@ func probePort() (int, error) {
 // --listen-addr themselves.
 func (cl *cluster) controller(t *testing.T, name string, extra ...string) int {
 	t.Helper()
+	pid, _ := cl.stoppableController(t, name, extra...)
+	return pid
+}
+
+// stoppableController is controller, also returning a stop that ends the
+// binary before the test does, as a rollout's SIGTERM would, and waits for
+// it to exit: a test restarts a controller with other flags that way. Its
+// lease is not released on the way out (no controller here asks for that),
+// so a successor leads once the lease expires.
+func (cl *cluster) stoppableController(t *testing.T, name string, extra ...string) (pid int, stop func()) {
+	t.Helper()
 	health := fmt.Sprintf("127.0.0.1:%d", freePort(t))
 	args := append([]string{
 		"serve",
@@ -343,15 +355,31 @@ func (cl *cluster) controller(t *testing.T, name string, extra ...string) int {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start %s: %v", name, err)
 	}
+	var once sync.Once
+	end := func(sig os.Signal) {
+		once.Do(func() {
+			exited := make(chan struct{})
+			go func() {
+				_, _ = cmd.Process.Wait()
+				close(exited)
+			}()
+			_ = cmd.Process.Signal(sig)
+			select {
+			case <-exited:
+			case <-time.After(10 * time.Second):
+				_ = cmd.Process.Kill()
+				<-exited
+			}
+		})
+	}
 	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
+		end(os.Kill)
 		if t.Failed() {
 			t.Logf("%s logs:\n%s", name, logs.String())
 		}
 	})
 	waitReady(t, "http://"+health+"/readyz")
-	return cmd.Process.Pid
+	return cmd.Process.Pid, func() { end(syscall.SIGTERM) }
 }
 
 func waitReady(t *testing.T, url string) {

@@ -32,6 +32,20 @@ type PlanPrompt struct {
 	// PreviousAttempt is the failed plan this one retries; nil omits the
 	// section.
 	PreviousAttempt *PreviousAttempt
+	// Trees are the Project's repositories when the plan Job was handed
+	// more than one: the planning repository first, the working tree the
+	// agent runs in, then each other repository's read-only copy. Fewer
+	// than two omits the section, and the prompt is exactly the
+	// one-repository prompt.
+	Trees []PlanTree
+}
+
+// PlanTree is one repository a multi-repository plan reads: its URL as the
+// Project (and so the request's repository list) spells it, and where its
+// tree is in the pod.
+type PlanTree struct {
+	URL  string
+	Path string
 }
 
 // RequestQuoteMaxBytes bounds the request a plan prompt quotes; the rest stays
@@ -55,6 +69,9 @@ func quotableRequest(s string) string {
 func RenderPlanPrompt(p PlanPrompt) (string, error) {
 	p.PreviousAttempt = p.PreviousAttempt.quotable()
 	p.Intent = quotableRequest(p.Intent)
+	if len(p.Trees) < 2 {
+		p.Trees = nil
+	}
 	return render("prompt_plan.md.tmpl", p)
 }
 
@@ -78,10 +95,22 @@ type BuildPrompt struct {
 	// PreviousAttempt is the failed build this one retries; nil omits the
 	// section.
 	PreviousAttempt *PreviousAttempt
+	// ThisRepository is, when the approved plan changes more than one
+	// repository, the plan's entry for the one this run builds (the
+	// repository the controller launched it in), spelled as the plan spells
+	// it; Siblings are the plan's other entries, in plan order, each built
+	// by a run of its own. Both come from the approved plan's frontmatter,
+	// so no new input reaches the build. An empty ThisRepository omits the
+	// section, and the prompt is exactly the one-repository prompt.
+	ThisRepository string
+	Siblings       []string
 }
 
 // RenderBuildPrompt renders the build-stage prompt.
 func RenderBuildPrompt(p BuildPrompt) (string, error) {
 	p.PreviousAttempt = p.PreviousAttempt.quotable()
+	if p.ThisRepository == "" {
+		p.Siblings = nil
+	}
 	return render("prompt_build.md.tmpl", p)
 }

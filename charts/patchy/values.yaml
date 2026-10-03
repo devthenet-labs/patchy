@@ -676,8 +676,18 @@ intentController:
         approvalPollInterval: 30s
         # How often an intent in review polls its pull request.
         prPollInterval: 60s
+        # Run intents of Projects that list more than one repository: one plan
+        # over every repository, one build and one pull request per repository
+        # the approved plan changes. Off, such a Project is not Ready and its
+        # intents are held Blocked (UnsupportedRepositories) where they
+        # stand: no run is launched and nothing is pushed. A Job already
+        # running finishes (and spends) all the same, and its push waits; a
+        # wait longer than agent.jobTTL discards that finished work, which is
+        # then run again. One-repository Projects are the same either way.
+        multiRepo: false
         # Intent agent Jobs running at once: a pool of its own, separate from
-        # remediation's.
+        # remediation's. A multi-repository intent's builds share it, so raise
+        # it to build its repositories in parallel.
         maxConcurrentRuns: 1
         # Pause intent polling while the GitHub installation has fewer core
         # requests left than this, so intents never starve the security

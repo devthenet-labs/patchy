@@ -1171,6 +1171,7 @@
                         "pollInterval",
                         "approvalPollInterval",
                         "prPollInterval",
+                        "multiRepo",
                         "maxConcurrentRuns",
                         "rateLimitFloor",
                         "intentTTL",
@@ -1188,6 +1189,10 @@
                         },
                         "prPollInterval": {
                             "$ref": "#/definitions/duration"
+                        },
+                        "multiRepo": {
+                            "type": "boolean",
+                            "description": "Run intents of Projects that list more than one repository; off, their intents are held Blocked"
                         },
                         "maxConcurrentRuns": {
                             "type": "integer",

@@ -41,4 +41,13 @@
 // byte-for-byte what it was before the feature existed. Create returns the
 // image and source that actually apply, and that value is what the
 // launching controller records.
+//
+// A multi-repository intent's plan Job reads more than its own tree
+// (Spec.Trees): the per-Job Secret then carries a fetch list and a
+// repositories manifest, and the prepare init fetches, digest-verifies and
+// extracts each tree under /workspace/repos, with no git, before staging
+// the manifest for agent-runner. Create refuses trees anywhere but on a plan
+// Job on the default runner image (ErrTreesRefused), so N trees never meet
+// a repository-declared image, and every Job without them is byte-for-byte
+// what it was before.
 package jobs

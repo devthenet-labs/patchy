@@ -72,10 +72,12 @@ const (
 	// Terminal.
 	IntentMerged IntentPhase = "Merged"
 	// IntentClosed: a human closed the issue or ran /patchy cancel, every
-	// pull request was closed unmerged, or the trigger was not an
-	// approver's. Terminal. The issue is left without its trigger: closed
-	// (by the human, or by intent-controller for cancel and closed pull
-	// requests), or, after a refused trigger, with the label removed.
+	// pull request settled with at least one closed unmerged (a
+	// multi-repository intent's merged ones stay merged, and a notice says
+	// which), or the trigger was not an approver's. Terminal. The issue is
+	// left without its trigger: closed (by the human, or by intent-controller
+	// for cancel and closed pull requests), or, after a refused trigger, with
+	// the label removed.
 	IntentClosed IntentPhase = "Closed"
 	// IntentFailed: plan or build attempts exhausted, or the plan was
 	// invalid twice. Stamps completedAt, and the trigger label is removed
@@ -116,7 +118,8 @@ const (
 //   - Blocked→the phase it was blocked from: the Project changed and the
 //     block no longer holds (IntentBlockedFrom names the target).
 //   - every non-terminal phase→Closed: a human closed the issue or ran
-//     /patchy cancel, or every pull request was closed unmerged.
+//     /patchy cancel, or every pull request settled with at least one
+//     closed unmerged.
 //   - Failed→Planning: revival — an approver applied the trigger label again
 //     (it was removed on entry to Failed).
 var intentTransitions = map[IntentPhase][]IntentPhase{

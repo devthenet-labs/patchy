@@ -1,0 +1,33 @@
+{{- /* Posted once every pull request of an intent has settled with some
+merged and some closed unmerged, before patchy closes the issue as not
+planned. The pull requests are patchy's own, linked on purpose. One line per
+paragraph: GitHub renders a line break inside an issue comment as a hard
+break. */ -}}
+{{ .Marker }}
+### patchy: ended
+
+Every pull request patchy opened for this intent has merged or been closed, and not all of them merged, so patchy closes the issue as not planned. What merged is already on its repository's default branch, and patchy reverts none of it. patchy never closes a pull request because another one was closed.
+{{- with .Merged }}
+
+**Merged:**
+{{ range . }}
+- [{{ .Ref }}]({{ .URL }})
+{{- end }}
+{{- end }}
+{{- with .Closed }}
+
+**Closed without merging:**
+{{ range . }}
+- [{{ .Ref }}]({{ .URL }})
+{{- end }}
+{{- end }}
+
+**Revisions:** {{ .Revisions }}
+{{- with .CheckFixes }}
+
+**CI-fix rounds:** {{ . }}
+{{- end }}
+{{- with .Cost }}
+
+**Reported cost:** {{ code . }}
+{{- end }}

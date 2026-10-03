@@ -122,7 +122,33 @@ type fakePR struct {
 	// author opened it, base is what it merges into, headRepo is where its
 	// head branch lives ("acme/app", or a fork).
 	author, base, headRepo string
+	// repo is the "owner/name" of the repository it is in; "" is the app
+	// repository, acme/app. Numbers are unique across repositories here.
+	repo string
 }
+
+// in reports whether the pull request is in repoURL.
+func (p *fakePR) in(repoURL string) bool {
+	r := p.repo
+	if r == "" {
+		r = "acme/app"
+	}
+	return strings.EqualFold(r, repoSlug(repoURL))
+}
+
+// fakeRef is the key a branch or head of repoURL is kept under: the bare
+// branch for the app repository (as the one-repository tests spell it), the
+// repository's "owner/name:" before it for any other.
+func fakeRef(repoURL, branch string) string {
+	if repoURL == "" || sameRepo(repoURL, appRepoURL) {
+		return branch
+	}
+	return repoSlug(repoURL) + ":" + branch
+}
+
+// isPRSide reports a repository whose issue-comment endpoints the fake
+// serves as pull request conversations: any repository but the intent one.
+func isPRSide(repoURL string) bool { return !sameRepo(repoURL, intentRepoURL) }
 
 // view is the pull request as the list and create answers render it.
 func (p *fakePR) view(n int64) *ghclient.PR {
@@ -155,7 +181,12 @@ type fakeGitHub struct {
 	// whatever their updated_at says.
 	edited map[int64]bool
 
-	commits            []ghclient.CommitRequest
+	commits []ghclient.CommitRequest
+	// commitRepos are the "owner/name" each commit was created in, by
+	// index.
+	commitRepos []string
+	// lockedPRs refuse every comment on them (a locked conversation).
+	lockedPRs          map[int64]bool
 	parents            map[string]string
 	branches           map[string]string
 	prs                map[int64]*fakePR
@@ -175,6 +206,12 @@ type fakeGitHub struct {
 
 	resolveErr   error
 	installedErr error
+	// repoErrs answer "<method> <owner/name lower-cased>" (Resolve,
+	// Installed, RateRemaining, ListPullRequestComments and the other
+	// repository-scoped calls that ask repoErr) with an error on every
+	// call; "* <owner/name lower-cased>" answers every one of them (a
+	// repository no Forge covers any more).
+	repoErrs map[string]error
 	// refused fails the installation check of one permission set: GitHub
 	// refuses a token for a permission the installation was not granted.
 	refused map[ghclient.TokenPerms]error
@@ -197,6 +234,8 @@ func newFakeGitHub(clock *fakeClock) *fakeGitHub {
 		closes:             map[int64][]string{},
 		edited:             map[int64]bool{},
 		branches:           map[string]string{},
+		lockedPRs:          map[int64]bool{},
+		repoErrs:           map[string]error{},
 		parents:            map[string]string{},
 		prs:                map[int64]*fakePR{},
 		heads:              map[string]string{"main": baseSHA},
@@ -224,6 +263,16 @@ func (f *fakeGitHub) call(name string) error {
 		return q[0]
 	}
 	return nil
+}
+
+// repoErr is the error repoErrs sets for method on the repository at url:
+// the method's own, else the one for every call there.
+func (f *fakeGitHub) repoErr(method, url string) error {
+	slug := strings.ToLower(repoSlug(url))
+	if err := f.repoErrs[method+" "+slug]; err != nil {
+		return err
+	}
+	return f.repoErrs["* "+slug]
 }
 
 func (f *fakeGitHub) failNext(method string, errs ...error) {
@@ -367,11 +416,11 @@ func (f *fakeGitHub) deleteComment(id int64) {
 	f.version++
 }
 
-// humanClose closes issue n as a human would.
-func (f *fakeGitHub) humanClose(n int64, actor string) {
+// humanClose closes issue n as a human (the approver) would.
+func (f *fakeGitHub) humanClose(n int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.closeIssue(n, actor)
+	f.closeIssue(n, approver)
 }
 
 func (f *fakeGitHub) closeIssue(n int64, actor string) {
@@ -424,10 +473,13 @@ func (f *fakeGitHub) state() string {
 }
 
 // closePR closes pull request 1, merged or not.
-func (f *fakeGitHub) closePR(merged bool) {
+func (f *fakeGitHub) closePR(merged bool) { f.closePRn(1, merged) }
+
+// closePRn closes pull request n, merged or not.
+func (f *fakeGitHub) closePRn(n int64, merged bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	pr := f.prs[1]
+	pr := f.prs[n]
 	pr.pr.State = "closed"
 	if merged {
 		pr.pr.Merged = true
@@ -438,10 +490,13 @@ func (f *fakeGitHub) closePR(merged bool) {
 
 // ---- GitHub ----
 
-func (f *fakeGitHub) Resolve(context.Context, string) error {
+func (f *fakeGitHub) Resolve(_ context.Context, repoURL string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("Resolve"); err != nil {
+		return err
+	}
+	if err := f.repoErr("Resolve", repoURL); err != nil {
 		return err
 	}
 	return f.resolveErr
@@ -460,16 +515,22 @@ func (f *fakeGitHub) Installed(_ context.Context, url string, perms ghclient.Tok
 		return err
 	}
 	f.installs = append(f.installs, installCheck{url: url, perms: perms})
+	if err := f.repoErr("Installed", url); err != nil {
+		return err
+	}
 	if err := f.refused[perms]; err != nil {
 		return err
 	}
 	return f.installedErr
 }
 
-func (f *fakeGitHub) BotLogin(context.Context, string) (string, error) {
+func (f *fakeGitHub) BotLogin(_ context.Context, repoURL string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.bot, f.call("BotLogin")
+	if err := f.call("BotLogin"); err != nil {
+		return "", err
+	}
+	return f.bot, f.repoErr("BotLogin", repoURL)
 }
 
 func (f *fakeGitHub) Permission(_ context.Context, _, login string) (string, error) {
@@ -491,6 +552,9 @@ func (f *fakeGitHub) Permission(_ context.Context, _, login string) (string, err
 func (f *fakeGitHub) RateRemaining(_ context.Context, repoURL string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.repoErr("RateRemaining", repoURL); err != nil {
+		return 0, err
+	}
 	if f.appRemaining != nil && sameRepo(repoURL, appRepoURL) {
 		return *f.appRemaining, f.call("RateRemaining")
 	}
@@ -585,8 +649,11 @@ func (f *fakeGitHub) ListIssueComments(_ context.Context, repoURL string, number
 	}
 	f.sinces = append(f.sinces, since)
 	var comments []*ghclient.Comment
-	if repoURL == appRepoURL {
-		if _, ok := f.prs[number]; !ok {
+	if isPRSide(repoURL) {
+		if err := f.repoErr("ListPullRequestComments", repoURL); err != nil {
+			return nil, err
+		}
+		if pr, ok := f.prs[number]; !ok || !pr.in(repoURL) {
 			return nil, ghError(http.StatusNotFound, "Not Found")
 		}
 		comments = f.prComments[number]
@@ -613,7 +680,7 @@ func (f *fakeGitHub) GetIssueComment(_ context.Context, repoURL string, id int64
 	if err := f.call("GetIssueComment"); err != nil {
 		return nil, err
 	}
-	if repoURL == appRepoURL {
+	if isPRSide(repoURL) {
 		for _, comments := range f.prComments {
 			for _, c := range comments {
 				if c.ID == id {
@@ -641,7 +708,7 @@ func (f *fakeGitHub) CommentEdited(_ context.Context, repoURL, nodeID string) (b
 	if err := f.call("CommentEdited"); err != nil {
 		return false, err
 	}
-	if repoURL == appRepoURL {
+	if isPRSide(repoURL) {
 		for _, comments := range f.prComments {
 			for _, c := range comments {
 				if c.NodeID == nodeID && nodeID != "" {
@@ -668,9 +735,15 @@ func (f *fakeGitHub) CreateIssueComment(_ context.Context, repoURL string, numbe
 	if err := f.call("CreateIssueComment"); err != nil {
 		return nil, err
 	}
-	if repoURL == appRepoURL {
-		if _, ok := f.prs[number]; !ok {
+	if isPRSide(repoURL) {
+		if err := f.repoErr("CreatePullRequestComment", repoURL); err != nil {
+			return nil, err
+		}
+		if pr, ok := f.prs[number]; !ok || !pr.in(repoURL) {
 			return nil, ghError(http.StatusNotFound, "Not Found")
+		}
+		if f.lockedPRs[number] {
+			return nil, ghError(http.StatusForbidden, "Unable to create comment because issue is locked.")
 		}
 		id := f.id()
 		a := actorOf(f.bot)
@@ -772,127 +845,160 @@ func (f *fakeGitHub) DefaultBranch(context.Context, string) (string, error) {
 	return "main", f.call("DefaultBranch")
 }
 
-func (f *fakeGitHub) HeadSHA(_ context.Context, _, branch string) (string, error) {
+func (f *fakeGitHub) HeadSHA(_ context.Context, repoURL, branch string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("HeadSHA"); err != nil {
 		return "", err
 	}
-	if sha, ok := f.heads[branch]; ok {
+	if err := f.repoErr("HeadSHA", repoURL); err != nil {
+		return "", err
+	}
+	ref := fakeRef(repoURL, branch)
+	if sha, ok := f.heads[ref]; ok {
 		return sha, nil
 	}
-	if sha, ok := f.branches[branch]; ok {
+	if sha, ok := f.branches[ref]; ok {
+		return sha, nil
+	}
+	if sha, ok := f.heads[branch]; ok && branch == "main" {
+		// Every repository's default branch starts where the app's does.
 		return sha, nil
 	}
 	return "", ghError(http.StatusNotFound, "Not Found")
 }
 
-func (f *fakeGitHub) CreateCommit(_ context.Context, _ string, req ghclient.CommitRequest) (string, error) {
+func (f *fakeGitHub) CreateCommit(_ context.Context, repoURL string, req ghclient.CommitRequest) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("CreateCommit"); err != nil {
 		return "", err
 	}
+	if err := f.repoErr("CreateCommit", repoURL); err != nil {
+		return "", err
+	}
 	f.commits = append(f.commits, req)
+	f.commitRepos = append(f.commitRepos, repoSlug(repoURL))
 	sha := fmt.Sprintf("%040x", 0xc0ffee00+len(f.commits))
 	f.parents[sha] = req.BaseSHA
 	return sha, nil
 }
 
-func (f *fakeGitHub) CreateBranchRef(_ context.Context, _, branch, sha string) error {
+func (f *fakeGitHub) CreateBranchRef(_ context.Context, repoURL, branch, sha string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("CreateBranchRef"); err != nil {
 		return err
 	}
-	if cur, ok := f.branches[branch]; ok && cur != sha {
+	if err := f.repoErr("CreateBranchRef", repoURL); err != nil {
+		return err
+	}
+	ref := fakeRef(repoURL, branch)
+	if cur, ok := f.branches[ref]; ok && cur != sha {
 		return fmt.Errorf("create branch %s: it is at %s: %w", branch, cur, ghclient.ErrBranchExists)
 	}
-	f.branches[branch] = sha
+	f.branches[ref] = sha
 	return nil
 }
 
-func (f *fakeGitHub) FastForwardRef(_ context.Context, _, branch, sha string) error {
+func (f *fakeGitHub) FastForwardRef(_ context.Context, repoURL, branch, sha string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("FastForwardRef"); err != nil {
 		return err
 	}
-	cur, ok := f.branches[branch]
+	if err := f.repoErr("FastForwardRef", repoURL); err != nil {
+		return err
+	}
+	ref := fakeRef(repoURL, branch)
+	cur, ok := f.branches[ref]
 	if !ok {
 		return ghclient.ErrRefNotFound
 	}
 	if cur != sha && f.parents[sha] != cur {
 		return ghclient.ErrNotFastForward
 	}
-	f.branches[branch] = sha
+	f.branches[ref] = sha
 	for _, pr := range f.prs {
-		if pr.head == branch && pr.pr.State == "open" {
+		if pr.in(repoURL) && pr.head == branch && pr.pr.State == "open" {
 			pr.pr.HeadSHA = sha
 		}
 	}
 	return nil
 }
 
-func (f *fakeGitHub) FindPullRequest(_ context.Context, _, head, base string) (*ghclient.PR, error) {
+func (f *fakeGitHub) FindPullRequest(_ context.Context, repoURL, head, base string) (*ghclient.PR, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("FindPullRequest"); err != nil {
 		return nil, err
 	}
 	for n, pr := range f.prs {
-		if pr.head == head && pr.base == base && pr.pr.State == "open" {
+		if pr.in(repoURL) && pr.head == head && pr.base == base && pr.pr.State == "open" {
 			return pr.view(n), nil
 		}
 	}
 	return nil, nil
 }
 
-func (f *fakeGitHub) CreatePullRequest(_ context.Context, _ string, req ghclient.PRRequest) (*ghclient.PR, error) {
+func (f *fakeGitHub) CreatePullRequest(_ context.Context, repoURL string, req ghclient.PRRequest) (*ghclient.PR,
+	error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("CreatePullRequest"); err != nil {
 		return nil, err
 	}
 	n := int64(len(f.prs) + 1)
+	slug := repoSlug(repoURL)
 	pr := &fakePR{
-		head: req.Head, url: fmt.Sprintf("%s/pull/%d", appRepoURL, n), body: req.Body,
+		head: req.Head, url: fmt.Sprintf("%s/pull/%d", repoURL, n), body: req.Body,
 		pr: ghclient.PullRequest{Number: int(n), State: "open", NodeID: fmt.Sprintf("PR_%d", n),
-			HeadSHA: f.branches[req.Head]},
-		author: f.bot, base: req.Base, headRepo: "acme/app",
+			HeadSHA: f.branches[fakeRef(repoURL, req.Head)]},
+		author: f.bot, base: req.Base, headRepo: slug, repo: slug,
 	}
 	f.prs[n] = pr
 	return pr.view(n), nil
 }
 
-func (f *fakeGitHub) GetPullRequest(_ context.Context, _ string, number int64) (*ghclient.PullRequest, error) {
+func (f *fakeGitHub) GetPullRequest(_ context.Context, repoURL string, number int64) (*ghclient.PullRequest,
+	error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("GetPullRequest"); err != nil {
 		return nil, err
 	}
+	if err := f.repoErr("GetPullRequest", repoURL); err != nil {
+		return nil, err
+	}
 	pr, ok := f.prs[number]
-	if !ok {
+	if !ok || !pr.in(repoURL) {
 		return nil, ghError(http.StatusNotFound, "Not Found")
 	}
 	cp := pr.pr
 	return &cp, nil
 }
 
-func (f *fakeGitHub) ListPullRequestReviews(_ context.Context, _ string, number int64) ([]ghclient.Review, error) {
+func (f *fakeGitHub) ListPullRequestReviews(_ context.Context, repoURL string, number int64) ([]ghclient.Review,
+	error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("ListPullRequestReviews"); err != nil {
 		return nil, err
 	}
+	if err := f.repoErr("ListPullRequestReviews", repoURL); err != nil {
+		return nil, err
+	}
 	return slices.Clone(f.reviews[number]), nil
 }
 
-func (f *fakeGitHub) ListPullRequestReviewComments(_ context.Context, _ string, number int64) (
+func (f *fakeGitHub) ListPullRequestReviewComments(_ context.Context, repoURL string, number int64) (
 	[]ghclient.ReviewComment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("ListPullRequestReviewComments"); err != nil {
+		return nil, err
+	}
+	if err := f.repoErr("ListPullRequestReviewComments", repoURL); err != nil {
 		return nil, err
 	}
 	return slices.Clone(f.inline[number]), nil
@@ -916,10 +1022,13 @@ func (f *fakeGitHub) ComparePatch(context.Context, string, string, string) (stri
 	return f.patch, f.call("ComparePatch")
 }
 
-func (f *fakeGitHub) RequestReviewers(_ context.Context, _ string, number int64, logins []string) error {
+func (f *fakeGitHub) RequestReviewers(_ context.Context, repoURL string, number int64, logins []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("RequestReviewers"); err != nil {
+		return err
+	}
+	if err := f.repoErr("RequestReviewers", repoURL); err != nil {
 		return err
 	}
 	f.requestedReviewers[number] = append(f.requestedReviewers[number], logins...)
@@ -1300,6 +1409,13 @@ func (e *env) runRuns() {
 // would: pinned at baseSHA with an artifact, declaring image when set.
 func (e *env) readyRepositories(image string) {
 	e.t.Helper()
+	e.readyEach(func(*v1alpha1.Repository) string { return image })
+}
+
+// readyEach is readyRepositories with each Repository declaring imageOf(it),
+// none when "".
+func (e *env) readyEach(imageOf func(*v1alpha1.Repository) string) {
+	e.t.Helper()
 	ctx := context.Background()
 	var list v1alpha1.RepositoryList
 	if err := e.c.List(ctx, &list, client.InNamespace(testNS)); err != nil {
@@ -1319,10 +1435,13 @@ func (e *env) readyRepositories(image string) {
 			}
 		}
 		repo.Status.ResolvedSHA = sha
-		repo.Status.Artifact = &v1alpha1.Artifact{URL: "http://artifacts/x.tar.gz", Digest: "sha256:aa"}
+		// A bare hex sha256, as the artifact store records one, distinct
+		// per Repository.
+		repo.Status.Artifact = &v1alpha1.Artifact{URL: "http://artifacts/" + repo.Name + ".tar.gz",
+			Digest: strings.TrimPrefix(digest([]byte(repo.Name)), "sha256:")}
 		repo.Status.Conditions = []metav1.Condition{{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue,
 			Reason: "Ready", LastTransitionTime: metav1.NewTime(e.clock.Now())}}
-		if image != "" {
+		if image := imageOf(repo); image != "" {
 			repo.Status.RunnerImage = &v1alpha1.RunnerImage{Image: image, Manifest: ".patchy/agent.yaml",
 				SearchPath: "/usr/bin:/bin"}
 		}
@@ -1337,13 +1456,20 @@ func (e *env) readyRepositories(image string) {
 // interval each round so every poll is due.
 func (e *env) drive(name string, want v1alpha1.IntentPhase, image string) *v1alpha1.Intent {
 	e.t.Helper()
+	return e.driveEach(name, want, func(*v1alpha1.Repository) string { return image })
+}
+
+// driveEach is drive with each Repository declaring imageOf(it).
+func (e *env) driveEach(name string, want v1alpha1.IntentPhase,
+	imageOf func(*v1alpha1.Repository) string) *v1alpha1.Intent {
+	e.t.Helper()
 	for range 60 {
 		in := e.get(name)
 		if in.Status.Phase == want {
 			return in
 		}
 		e.mustIntent(name)
-		e.readyRepositories(image)
+		e.readyEach(imageOf)
 		e.runRuns()
 		e.clock.Advance(time.Minute)
 	}

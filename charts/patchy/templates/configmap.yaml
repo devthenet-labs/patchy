@@ -201,6 +201,7 @@ is its own: a build stage alone may take an hour.
 {{- $_ := set $data "PATCHY_INTENT_APPROVAL_POLL_INTERVAL" $own.approvalPollInterval }}
 {{- $_ := set $data "PATCHY_INTENT_PR_POLL_INTERVAL" $own.prPollInterval }}
 {{- $_ := set $data "PATCHY_INTENT_PREVIEWS_ENABLED" $root.Values.previewController.enabled }}
+{{- $_ := set $data "PATCHY_INTENT_MULTI_REPO" $own.multiRepo }}
 {{- $_ := set $data "PATCHY_INTENT_MAX_CONCURRENT_RUNS" $own.maxConcurrentRuns }}
 {{- $_ := set $data "PATCHY_INTENT_RATE_LIMIT_FLOOR" $own.rateLimitFloor }}
 {{- $_ := set $data "PATCHY_INTENT_TTL" $own.intentTTL }}

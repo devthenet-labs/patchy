@@ -911,6 +911,15 @@ cm intent-tuned intent-controller PATCHY_INTENT_TTL 0s
 cm intent-tuned intent-controller PATCHY_INTENT_RATE_LIMIT_FLOOR 0
 cm intent-tuned intent-controller PATCHY_LOG_LEVEL debug
 cm intent-tuned intent-controller PATCHY_INTENT_POLL_INTERVAL 2m
+# Multi-repository intents are off unless asked for, and the flag rolls the
+# controller like any other setting.
+cm intent intent-controller PATCHY_INTENT_MULTI_REPO false
+render intent-multi -f "$ifx" --set intentController.config.multiRepo=true
+cm intent-multi intent-controller PATCHY_INTENT_MULTI_REPO true
+if [ "$(get intent "$it | .metadata.annotations[\"checksum/config\"]")" = \
+  "$(get intent-multi "$it | .metadata.annotations[\"checksum/config\"]")" ]; then
+  fail "intent-multi: checksum/config did not change, so turning multiRepo on would not roll the controller"
+fi
 if [ "$(get intent "$it | .metadata.annotations[\"checksum/config\"]")" = \
   "$(get intent-tuned "$it | .metadata.annotations[\"checksum/config\"]")" ]; then
   fail "intent-tuned: checksum/config did not change, so an upgrade would not roll the controller"

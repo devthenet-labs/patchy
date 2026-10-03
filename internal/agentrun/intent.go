@@ -23,10 +23,12 @@ const (
 
 // runIntent runs an intent stage, PhasePlan or PhaseBuild. Like Run it
 // returns an error only for a fatal, before-the-stage failure — a harness
-// intents may not run on, or a build handed no parseable approved plan or
-// a request beside it (buildInput) — which it has already emitted as a
-// fatal event. Stage outcomes, failed ones included, are events with a nil
-// return.
+// intents may not run on, a plan whose repositories manifest is broken or
+// whose trees are missing (repositories), or a build handed no parseable
+// approved plan, a request beside it, or a multi-repository plan it cannot
+// find its own repository in (buildInput) — which it has already emitted as
+// a fatal event. Stage outcomes, failed ones included, are events with a
+// nil return.
 func (a *Agent) runIntent(ctx context.Context) error {
 	fatal := func(err error) error {
 		a.emit(envelope.Event{Type: envelope.TypeFatal, Error: err.Error()})
@@ -36,17 +38,21 @@ func (a *Agent) runIntent(ctx context.Context) error {
 		if err := a.intentHarness(a.cfg.InvestigateHarness); err != nil {
 			return fatal(err)
 		}
-		a.emit(envelope.Event{Type: envelope.TypePlan, Plan: a.plan(ctx)})
+		repos, err := a.repositories()
+		if err != nil {
+			return fatal(err)
+		}
+		a.emit(envelope.Event{Type: envelope.TypePlan, Plan: a.plan(ctx, repos)})
 		return nil
 	}
 	if err := a.intentHarness(a.cfg.RemediateHarness); err != nil {
 		return fatal(err)
 	}
-	params, err := a.buildInput()
+	params, scope, err := a.buildInput()
 	if err != nil {
 		return fatal(err)
 	}
-	a.emit(envelope.Event{Type: envelope.TypeRemediation, Remediation: a.build(ctx, params)})
+	a.emit(envelope.Event{Type: envelope.TypeRemediation, Remediation: a.build(ctx, params, scope)})
 	return nil
 }
 
@@ -129,24 +135,35 @@ func (a *Agent) lowered(name string, grant, ceiling, fallback int) int {
 // nothing. A request in the pod would sit where the build agent, which may
 // read the whole workspace, could act on text no approver saw, so a build
 // handed one is refused before any agent runs.
-func (a *Agent) buildInput() (remediationParams, error) {
+//
+// A plan naming several repositories is built once in each, so the build
+// resolves which one it is in (scopeBuild) from the controller's
+// PATCHY_REPO and the plan's own frontmatter alone: no new input reaches
+// it.
+func (a *Agent) buildInput() (remediationParams, buildScope, error) {
 	request, err := os.ReadFile(a.cfg.issuePath())
 	if err != nil {
-		return remediationParams{}, fmt.Errorf("input request: %w", err)
+		return remediationParams{}, buildScope{}, fmt.Errorf("input request: %w", err)
 	}
 	if len(request) > 0 {
-		return remediationParams{}, fmt.Errorf("input request: %s holds %d bytes; an intent build is handed "+
-			"the approved plan alone, and its request file must be empty", a.cfg.issuePath(), len(request))
+		return remediationParams{}, buildScope{}, fmt.Errorf("input request: %s holds %d bytes; an intent "+
+			"build is handed the approved plan alone, and its request file must be empty",
+			a.cfg.issuePath(), len(request))
 	}
 	raw, err := os.ReadFile(a.cfg.inputInvestigation())
 	if err != nil {
-		return remediationParams{}, fmt.Errorf("input plan: %w", err)
+		return remediationParams{}, buildScope{}, fmt.Errorf("input plan: %w", err)
 	}
-	if _, err := report.ParsePlanInput(raw); err != nil {
-		return remediationParams{}, fmt.Errorf("input plan: %w", err)
+	plan, err := report.ParsePlanInput(raw)
+	if err != nil {
+		return remediationParams{}, buildScope{}, fmt.Errorf("input plan: %w", err)
+	}
+	scope, err := scopeBuild(plan.Repositories, a.cfg.Repo)
+	if err != nil {
+		return remediationParams{}, buildScope{}, fmt.Errorf("input plan: %w", err)
 	}
 	maxTurns, budget := a.buildLimits()
-	return remediationParams{maxTurns: maxTurns, budget: budget}, nil
+	return remediationParams{maxTurns: maxTurns, budget: budget}, scope, nil
 }
 
 // readReport reads an intent stage's report, at most one byte past the
@@ -163,8 +180,16 @@ func readReport(path string) ([]byte, error) {
 
 // plan runs the plan stage read-only and folds the result into the event
 // payload: the report exactly as written, which is what the approver reads
-// and the build follows, and its parsed frontmatter.
-func (a *Agent) plan(ctx context.Context) *envelope.Plan {
+// and the build follows, and its parsed frontmatter. repos is the
+// repositories manifest of a multi-repository plan (nil for one
+// repository): the prompt lists each tree, and a plan naming a repository
+// outside it is invalid, with the reason its retry is told.
+//
+// The planner reads the other trees with the read-only posture's own
+// tools: they sit under the workspace, which every stage adds as a
+// directory the agent may read, and they have no git history for the
+// posture's git-only Bash to read, so the posture is not widened for them.
+func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.Plan {
 	ev := &envelope.Plan{Stage: envelope.Stage{
 		Harness: a.cfg.InvestigateHarness,
 		Model:   a.cfg.InvestigateModel,
@@ -200,6 +225,7 @@ func (a *Agent) plan(ctx context.Context) *envelope.Plan {
 		BuildMaxTurns:    a.cfg.RemediateManualMaxTurns,
 		BuildTokenBudget: a.cfg.RemediateManualTokenBudget,
 		PreviousAttempt:  a.cfg.PreviousAttempt,
+		Trees:            planTrees(repos),
 	})
 	if err != nil {
 		ev.Outcome = envelope.OutcomeRuntimeError
@@ -252,6 +278,11 @@ func (a *Agent) plan(ctx context.Context) *envelope.Plan {
 		ev.Detail = err.Error()
 		return ev
 	}
+	if reason := outsideManifest(p.Repositories, repos); reason != "" {
+		ev.Outcome = envelope.OutcomeReportInvalid
+		ev.Detail = reason
+		return ev
+	}
 	ev.Outcome = envelope.OutcomeOK
 	// Raw, frontmatter included: these bytes are what the controller stores,
 	// digests, posts for approval and hands the build.
@@ -269,8 +300,10 @@ func (a *Agent) plan(ctx context.Context) *envelope.Plan {
 // build runs the build stage — the approved plan's first build or a revise
 // round — with the workspace writable, and packages the changeset exactly as
 // a remediation does: the same branch checkout, commit.sh, verification and
-// changeset helpers, so the repository, not the agent's claim, decides.
-func (a *Agent) build(ctx context.Context, params remediationParams) *envelope.Remediation {
+// changeset helpers, so the repository, not the agent's claim, decides. In
+// one repository of a multi-repository plan, scope names that repository
+// and its siblings to the prompt.
+func (a *Agent) build(ctx context.Context, params remediationParams, scope buildScope) *envelope.Remediation {
 	ev := &envelope.Remediation{Stage: envelope.Stage{
 		Harness: a.cfg.RemediateHarness,
 		Model:   a.cfg.RemediateModel,
@@ -323,6 +356,8 @@ func (a *Agent) build(ctx context.Context, params remediationParams) *envelope.R
 		ReportPath:       a.cfg.buildPath(),
 		CommitScriptPath: a.cfg.commitScript(),
 		PreviousAttempt:  a.cfg.PreviousAttempt,
+		ThisRepository:   scope.this,
+		Siblings:         scope.siblings,
 	})
 	if err != nil {
 		ev.Outcome = envelope.OutcomeRuntimeError

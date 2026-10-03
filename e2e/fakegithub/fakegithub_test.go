@@ -1015,3 +1015,111 @@ func TestRepoFilesInTarball(t *testing.T) {
 		}
 	}
 }
+
+// TestRefsPerRepository: a multi-repository intent pushes the same branch
+// name, patchy-intent/<intent>, to each of its repositories, and opens a
+// pull request from it in each. As on GitHub, each repository's refs and
+// pull request listing are its own: the second create is not "Reference
+// already exists", a head read in one repository never sees another's, and
+// finding a pull request by its head finds the repository's own. A branch a
+// test points with SetBranch stays visible in every repository, as the
+// single-repository tests rely on.
+func TestRefsPerRepository(t *testing.T) {
+	srv, c, _ := newFake(t)
+	ctx := context.Background()
+	web := ghclient.Repo{Owner: "acme", Name: "Acme.Web_App"}
+	api := ghclient.Repo{Owner: "acme", Name: "api"}
+	commit := func(repo ghclient.Repo, msg string) string {
+		t.Helper()
+		sha, err := c.CreateCommit(ctx, repo, ghclient.CommitRequest{BaseSHA: fakegithub.BaseSHA, Message: msg,
+			Files: []ghclient.CommitFile{{Path: "VERSION", Mode: "100644", Content: []byte(msg)}}})
+		if err != nil {
+			t.Fatalf("CreateCommit(%s) error = %v", repo, err)
+		}
+		return sha
+	}
+	const branch = "patchy-intent/shop-1"
+	webSHA, apiSHA := commit(web, "web"), commit(api, "api")
+	for repo, sha := range map[ghclient.Repo]string{web: webSHA, api: apiSHA} {
+		if err := c.CreateBranchRef(ctx, repo, branch, sha); err != nil {
+			t.Fatalf("CreateBranchRef(%s) error = %v", repo, err)
+		}
+	}
+	for repo, want := range map[ghclient.Repo]string{web: webSHA, api: apiSHA} {
+		if got, err := c.HeadSHA(ctx, repo, branch); err != nil || got != want {
+			t.Errorf("HeadSHA(%s) = %s, %v, want its own %s", repo, got, err, want)
+		}
+		if got := srv.RepoBranchHead(repo.Owner, repo.Name, branch); got != want {
+			t.Errorf("RepoBranchHead(%s) = %s, want %s", repo, got, want)
+		}
+		writes := srv.RepoRefWrites(repo.Owner, repo.Name)
+		wantWrites := []fakegithub.RefWrite{{Op: "create", Ref: "heads/" + branch, SHA: want, Status: http.StatusCreated}}
+		if !reflect.DeepEqual(writes, wantWrites) {
+			t.Errorf("RepoRefWrites(%s) = %+v, want %+v", repo, writes, wantWrites)
+		}
+	}
+	if got := srv.BranchHead(branch); got != "" {
+		t.Errorf("BranchHead(%s) = %q with the branch in two repositories, want \"\"", branch, got)
+	}
+	if got := len(srv.RefWrites()); got != 2 {
+		t.Errorf("RefWrites() = %d writes, want both repositories' creates", got)
+	}
+	// The ref names the case-insensitive repository, as GitHub's does.
+	if got := srv.RepoBranchHead("ACME", "acme.web_app", branch); got != webSHA {
+		t.Errorf("RepoBranchHead in another case = %s, want %s", got, webSHA)
+	}
+
+	// A branch in one repository is in no other.
+	only := commit(web, "only")
+	if err := c.CreateBranchRef(ctx, web, "patchy-intent/shop-2", only); err != nil {
+		t.Fatalf("CreateBranchRef() error = %v", err)
+	}
+	if got, err := c.HeadSHA(ctx, api, "patchy-intent/shop-2"); err == nil {
+		t.Errorf("HeadSHA(api) = %s, want the branch missing from a repository it was never pushed to", got)
+	}
+	if got := srv.BranchHead("patchy-intent/shop-2"); got != only {
+		t.Errorf("BranchHead() = %s, want the one repository's %s", got, only)
+	}
+
+	// Each repository's pull request listing is its own.
+	prs := map[ghclient.Repo]*ghclient.PR{}
+	for _, repo := range []ghclient.Repo{web, api} {
+		pr, err := c.CreatePR(ctx, repo, ghclient.PRRequest{Title: "t", Head: branch, Base: "main", Body: "b"})
+		if err != nil {
+			t.Fatalf("CreatePR(%s) error = %v", repo, err)
+		}
+		prs[repo] = pr
+	}
+	for repo, want := range map[ghclient.Repo]string{web: webSHA, api: apiSHA} {
+		found, err := c.FindPRByHead(ctx, repo, branch)
+		if err != nil || found == nil || found.Number != prs[repo].Number || found.HeadSHA != want {
+			t.Errorf("FindPRByHead(%s) = %+v, %v, want #%d at %s", repo, found, err, prs[repo].Number, want)
+		}
+	}
+
+	// A human closes one pull request without merging it.
+	if !srv.ClosePull(prs[api].Number) {
+		t.Fatal("ClosePull() = false, want the open pull request closed")
+	}
+	if srv.ClosePull(prs[api].Number) {
+		t.Error("ClosePull() of a closed pull request = true")
+	}
+	got, err := c.GetPullRequest(ctx, api, prs[api].Number)
+	if err != nil || got.State != "closed" || got.Merged || got.HeadSHA != apiSHA {
+		t.Errorf("GetPullRequest() after close = %+v, %v, want closed unmerged at %s", got, err, apiSHA)
+	}
+	if got, err := c.GetPullRequest(ctx, web, prs[web].Number); err != nil || got.State != "open" {
+		t.Errorf("the sibling pull request = %+v, %v, want it still open", got, err)
+	}
+
+	// A branch a test points is every repository's, until one has its own.
+	srv.SetBranch("main", webSHA)
+	for _, repo := range []ghclient.Repo{web, api} {
+		if got, err := c.HeadSHA(ctx, repo, "main"); err != nil || got != webSHA {
+			t.Errorf("HeadSHA(%s, main) = %s, %v, want the shared %s", repo, got, err, webSHA)
+		}
+	}
+	if got := srv.BranchHead("main"); got != webSHA {
+		t.Errorf("BranchHead(main) = %s, want the shared %s", got, webSHA)
+	}
+}

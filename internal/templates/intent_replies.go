@@ -5,6 +5,7 @@ package templates
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/bitwise-media-group/patchy/internal/action"
 	"github.com/bitwise-media-group/patchy/internal/command"
@@ -173,8 +174,11 @@ type IntentSummaryComment struct {
 	Intent    string
 	// PullRequests are the pull requests patchy opened, all merged.
 	PullRequests []IntentPullRequest
-	// Revisions counts the revision rounds.
+	// Revisions counts the revision rounds review feedback started.
 	Revisions int32
+	// CheckFixes counts the CI-fix rounds failed checks started, apart from
+	// the revisions; 0 omits the line.
+	CheckFixes int32
 	// CostMicroUSD is the reported spend.
 	CostMicroUSD int64
 }
@@ -182,24 +186,185 @@ type IntentSummaryComment struct {
 // SummaryKey is the notice key of an intent's summary comment.
 const SummaryKey = "summary"
 
-// RenderIntentSummaryComment renders an IntentSummaryComment.
-func RenderIntentSummaryComment(c IntentSummaryComment) (string, error) {
-	prs := make([]statusPR, len(c.PullRequests))
-	for i, pr := range c.PullRequests {
-		prs[i] = statusPR{
-			Ref: fmt.Sprintf("%s#%d", oneLine(pr.Repository), pr.Number),
-			URL: oneLine(pr.URL),
+// CIFixRound is how a pull request notice names a round failed checks
+// started, rather than review feedback: "CI-fix round for `test`", the
+// checks joined "`a`, `b` and `c`", or "CI-fix round" when none is known.
+// Each name is a code span it cannot close early, on one line.
+func CIFixRound(checks []string) string {
+	var names []string
+	for _, c := range checks {
+		if c = oneLine(c); c != "" {
+			names = append(names, code(c))
 		}
 	}
+	switch len(names) {
+	case 0:
+		return "CI-fix round"
+	case 1:
+		return "CI-fix round for " + names[0]
+	}
+	return "CI-fix round for " + strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+}
+
+// RenderIntentSummaryComment renders an IntentSummaryComment.
+func RenderIntentSummaryComment(c IntentSummaryComment) (string, error) {
 	return render("intent_summary.md.tmpl", struct {
 		Marker       string
 		PullRequests []statusPR
 		Revisions    int32
+		CheckFixes   int32
 		Cost         string
 	}{
 		Marker:       NoticeMarker(c.Namespace, c.Intent, SummaryKey),
-		PullRequests: prs,
+		PullRequests: linkedPRs(c.PullRequests),
 		Revisions:    c.Revisions,
+		CheckFixes:   c.CheckFixes,
 		Cost:         usd(c.CostMicroUSD),
+	})
+}
+
+// linkedPRs renders pull requests patchy opened as the links a comment
+// lists them by: "owner/name#number", to the pull request's URL.
+func linkedPRs(prs []IntentPullRequest) []statusPR {
+	out := make([]statusPR, len(prs))
+	for i, pr := range prs {
+		out[i] = statusPR{
+			Ref:   fmt.Sprintf("%s#%d", oneLine(pr.Repository), pr.Number),
+			URL:   oneLine(pr.URL),
+			State: oneLine(pr.State),
+		}
+	}
+	return out
+}
+
+// PartialKey is the notice key of the comment patchy posts on the intent
+// issue when the intent ends with some of its pull requests merged and the
+// others closed unmerged.
+const PartialKey = "partial"
+
+// IntentPartialNotice is the comment patchy posts on the intent issue when
+// every pull request it opened has settled and at least one closed without
+// merging while another merged, before it closes the issue as not planned:
+// what merged (already on its repository's default branch) and what did
+// not. patchy reverts nothing, and never closes a pull request because
+// another one closed.
+type IntentPartialNotice struct {
+	// Namespace and Intent name the Intent, for the marker (NoticeMarker,
+	// keyed PartialKey).
+	Namespace string
+	Intent    string
+	// Merged and Closed are the pull requests that merged and those closed
+	// without merging.
+	Merged []IntentPullRequest
+	Closed []IntentPullRequest
+	// Revisions and CheckFixes count the review revision rounds and the
+	// CI-fix rounds, as in IntentSummaryComment; CheckFixes 0 omits its line.
+	Revisions  int32
+	CheckFixes int32
+	// CostMicroUSD is the reported spend.
+	CostMicroUSD int64
+}
+
+// RenderIntentPartialNotice renders an IntentPartialNotice.
+func RenderIntentPartialNotice(n IntentPartialNotice) (string, error) {
+	return render("intent_notice_partial.md.tmpl", struct {
+		Marker     string
+		Merged     []statusPR
+		Closed     []statusPR
+		Revisions  int32
+		CheckFixes int32
+		Cost       string
+	}{
+		Marker:     NoticeMarker(n.Namespace, n.Intent, PartialKey),
+		Merged:     linkedPRs(n.Merged),
+		Closed:     linkedPRs(n.Closed),
+		Revisions:  n.Revisions,
+		CheckFixes: n.CheckFixes,
+		Cost:       usd(n.CostMicroUSD),
+	})
+}
+
+// UntrackedKey is the notice key of the comment patchy posts on each pull
+// request a multi-repository intent left open when it ended before every
+// one of its pull requests was opened.
+const UntrackedKey = "untracked"
+
+// IntentUntrackedNotice is the comment patchy posts, once, on each pull
+// request it opened for an intent that then ended (closed, or failed) while
+// the others were still to be opened: the pull request is not part of a
+// completed change, and patchy no longer tracks it. patchy closes no pull
+// request itself.
+type IntentUntrackedNotice struct {
+	// Namespace and Intent name the Intent, for the marker (NoticeMarker,
+	// keyed UntrackedKey).
+	Namespace string
+	Intent    string
+	// Failed is true for an intent that failed, false for one closed (a
+	// cancel, or the issue closed).
+	Failed bool
+	// Opened are the pull requests patchy opened for the intent, in plan
+	// order; NeverOpened the repositories ("owner/name") of the approved plan
+	// that have none.
+	Opened      []IntentPullRequest
+	NeverOpened []string
+}
+
+// RenderIntentUntrackedNotice renders an IntentUntrackedNotice.
+func RenderIntentUntrackedNotice(n IntentUntrackedNotice) (string, error) {
+	never := make([]string, len(n.NeverOpened))
+	for i, r := range n.NeverOpened {
+		never[i] = oneLine(r)
+	}
+	return render("intent_notice_untracked.md.tmpl", struct {
+		Marker      string
+		Failed      bool
+		Opened      []statusPR
+		NeverOpened []string
+	}{
+		Marker:      NoticeMarker(n.Namespace, n.Intent, UntrackedKey),
+		Failed:      n.Failed,
+		Opened:      linkedPRs(n.Opened),
+		NeverOpened: never,
+	})
+}
+
+// SiblingsKey is the notice key of the comment cross-linking the pull
+// requests of an intent that opened more than one: one such comment on each
+// of them, so a repeated pass finds the one it posted.
+const SiblingsKey = "siblings"
+
+// IntentSiblingsComment is the comment patchy posts on each pull request of
+// an intent that opened more than one, listing the others by URL. It is the
+// only cross-link: no pull request body is ever edited, and the body
+// references nothing but the intent issue.
+type IntentSiblingsComment struct {
+	// Namespace and Intent name the Intent, for the marker (NoticeMarker,
+	// keyed SiblingsKey).
+	Namespace string
+	Intent    string
+	// Repository ("owner/name") is the repository of the pull request the
+	// comment is posted on, which the list leaves out.
+	Repository string
+	// PullRequests are every pull request the intent opened, this one's
+	// included, in plan order.
+	PullRequests []IntentPullRequest
+}
+
+// RenderIntentSiblingsComment renders an IntentSiblingsComment.
+func RenderIntentSiblingsComment(c IntentSiblingsComment) (string, error) {
+	var others []IntentPullRequest
+	for _, pr := range c.PullRequests {
+		if !strings.EqualFold(oneLine(pr.Repository), oneLine(c.Repository)) {
+			others = append(others, pr)
+		}
+	}
+	return render("intent_siblings.md.tmpl", struct {
+		Marker   string
+		Count    int
+		Siblings []statusPR
+	}{
+		Marker:   NoticeMarker(c.Namespace, c.Intent, SiblingsKey),
+		Count:    len(c.PullRequests),
+		Siblings: linkedPRs(others),
 	})
 }

@@ -9,11 +9,12 @@
 //
 // # Reconcilers
 //
-//   - ProjectReconciler validates each Project (exactly one repository in
-//     slice 1; every repository resolves to one Forge; the App is installed
-//     on the intent repository and the app repository with the permissions
-//     intents use, the internal/intentperm table, each proven by minting a
-//     token with it; no other Project shares the intent repository and trigger
+//   - ProjectReconciler validates each Project (exactly one repository
+//     unless the controller runs with --intent-multi-repo; every repository
+//     resolves to one Forge; the App is installed on the intent repository
+//     and on every app repository with the permissions intents use, the
+//     internal/intentperm table, each proven by minting a token with it; no
+//     other Project shares the intent repository and trigger
 //     label; the trigger and approve labels exist, created when missing),
 //     then polls the intent repository for open issues carrying the trigger
 //     label with a conditional (ETag) listing, and creates the Intent
@@ -27,7 +28,68 @@
 //     authority from GitHub API facts, snapshots the request, creates the
 //     plan and build IntentRuns, writes the plan back for approval, accepts
 //     an approval bound to the plan and input digests, opens the pull
-//     request, and settles merge, close, cancel, failure and revival.
+//     requests, and settles merge, close, cancel, failure and revival.
+//
+// # Several repositories
+//
+// With --intent-multi-repo a Project may list up to eight repositories. One
+// plan run covers every one: it plans from the first and reads each other
+// one read-only as a tree (spec.trees), from a Repository of its own the run
+// owns; it launches only once every tree is stored, a tree stalled for any
+// reason but its declared image aborts it, and what each tree was at launch
+// is kept on its status.trees after the tree Repositories are deleted with
+// it. The approval then builds every repository the approved plan names
+// (approvedRepositories, in plan order), one build run each, all created in
+// one pass, each in its own repository's accepted image, its rounds, attempts
+// and branch checks its repository's own (round takes the repository). A
+// repository whose attempts are spent fails the whole Intent; one with no
+// accepted image blocks it, naming the repository. activeRun is sticky
+// while Building: it names one in-flight build until that one settles. The
+// pull requests open only once every build has pushed, recorded one per pass,
+// the last record moving the Intent to InReview; an Intent that ends while
+// they are being opened tells each one already opened, once, that it is no
+// longer tracked (UntrackedPullRequests), and a revival forgets them. A build
+// name another repository's run holds (keys swapped) is never adopted: it
+// blocks (UnsupportedRepositories, RepositoryKeyChanged). In review a comment
+// cross-linking the pull requests is posted on each, best effort, reported by
+// SiblingsLinked, never holding a phase back, and after a refusal tried again
+// only once the Project or a pull request's head changes. In review, rounds
+// stay serialised per Intent, each on the pull request of one repository: a
+// review on A revises A, a /patchy revise on B revises B, a failed named check
+// on C's patchy head fixes C. A round already leased is adopted before any
+// other is considered, whatever its repository (read live before a round is
+// leased, so a cache that lags a lease cannot give its number twice), and the
+// open pull requests are then served in turn; a round needs only its own
+// repository to stay in the Project. A
+// round's review cutoff, feedback window, compare base, image, pushed head,
+// observed checks and repeated-failure signature are its own repository's;
+// its counters and limits, and the blocks they raise (naming the
+// repository), stay the Intent's. A round whose pull request is merged or
+// closed under it ends unpushed and is not retried. Nothing more is written
+// to a repository that leaves the Project (repositoryLeft): a build or round
+// there is not launched, is aborted, or has its push refused (pushGate reads
+// the Project uncached), a failed one is not retried, and no round notice,
+// untracked notice or sibling cross-link is posted there. Nor does it hold
+// the others: a pass asks the rate floor only of the repositories it calls,
+// its pull request is read only where it can be (readDepartedPullRequest)
+// and otherwise counts as it was last read, so an unreachable one never stops
+// another pull request's round, an issue close, an ending, or an ended
+// Intent's notices and hand-off. A deleted Project withdraws everything:
+// pushGate holds every push (errProjectGone, PushHeld ProjectGone) until a
+// Project of that name exists again. The Intent is Merged only
+// when every pull request has merged; once every one has settled with any
+// closed unmerged it is Closed, the issue closed as not planned after a
+// notice naming what merged and what did not. patchy never closes one pull
+// request because another closed. With the preview projection on, the first
+// review pass records the default-branch head of each previewed repository
+// without a pull request (status.previewBases), once: its preview component
+// runs that commit's image. Without the flag, an Intent of a Project listing
+// more than one repository is held Blocked (UnsupportedRepositories): no run
+// is launched or created and no push made for it (a Job already running
+// finishes, and its push waits), so turning the flag off is a real rollback.
+// A revise round blocked mid-flight is the same round when the flag is on
+// again: its held push waits for the resume (errRoundBlocked), and the resume
+// follows its run. A one-repository Project takes the same path either way.
 //   - RunReconciler is the run scheduler: its own slot pool, granted FIFO
 //     with build before plan (schedule.Pick), launches each IntentRun's
 //     agent Job (jobs.Create, kind intent), collects its result, persists the
@@ -61,11 +123,16 @@
 // when attempts are exhausted (two per stage; a plan the approval comment
 // cannot show counts as an invalid attempt), Failed → Planning when an
 // approver applies the trigger label again, any non-terminal phase →
-// Closed on a human close, a cancel, or every pull request closed unmerged,
+// Closed on a human close, a cancel, or every pull request settled with at
+// least one closed unmerged,
 // and Planning or Building → Blocked on the cost ceiling, a missing,
 // rejected or unusable repository image, or an intent branch or pull request
 // that is not patchy's own (BranchConflict), resuming to the phase it was
-// blocked from once the block no longer holds.
+// blocked from once the block no longer holds. Any phase but a terminal one
+// → Blocked while multi-repository intents are off for a Project that lists
+// several repositories (UnsupportedRepositories), and Building → Blocked when
+// a build's name is another repository's run (UnsupportedRepositories,
+// RepositoryKeyChanged).
 //
 // # Authority
 //

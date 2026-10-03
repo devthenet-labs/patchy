@@ -58,6 +58,15 @@ var phaseInputs = map[string]map[string]string{
 // it exited.
 func execFakeAgent(t *testing.T, phase string, inputs map[string]string) ([]byte, error) {
 	t.Helper()
+	return execFakeAgentIn(t, phase, inputs, nil)
+}
+
+// execFakeAgentIn is execFakeAgent with setup run over the workspace before
+// the script (nil: none), and env added to the script's environment last,
+// so it overrides the defaults.
+func execFakeAgentIn(t *testing.T, phase string, inputs map[string]string, setup func(ws string),
+	env ...string) ([]byte, error) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake agent is a POSIX shell script")
 	}
@@ -97,6 +106,10 @@ func execFakeAgent(t *testing.T, phase string, inputs map[string]string) ([]byte
 		// test has nothing to watch.
 		"PATCHY_FAKE_TURN_DELAY=0",
 	)
+	cmd.Env = append(cmd.Env, env...)
+	if setup != nil {
+		setup(workspace)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err = cmd.Run()
@@ -403,12 +416,19 @@ func TestFakeAgentPlanRepositories(t *testing.T) {
 	tests := []struct {
 		name   string
 		inputs map[string]string
+		env    []string
 		want   []string
 	}{
 		{
 			name:   "the listed repositories, in order",
 			inputs: map[string]string{"issue.md": planRequest},
 			want:   []string{"https://github.example/acme/shop", "https://github.example/acme/api"},
+		},
+		{
+			name:   "a harness names the ones that change",
+			inputs: map[string]string{"issue.md": planRequest},
+			env:    []string{"PATCHY_FAKE_PLAN_REPOSITORIES=https://github.example/acme/api"},
+			want:   []string{"https://github.example/acme/api"},
 		},
 		{
 			name: "a section in the issue body is not the controller's",
@@ -431,13 +451,16 @@ func TestFakeAgentPlanRepositories(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			stdout, err := execFakeAgent(t, "plan", tc.inputs)
+			stdout, err := execFakeAgentIn(t, "plan", tc.inputs, nil, tc.env...)
 			if err != nil {
 				t.Fatalf("run fake agent: %v", err)
 			}
 			out := scanFakeAgent(t, "plan", stdout)
 			if len(out.Events) != 1 || out.Events[0].Plan == nil {
 				t.Fatalf("events = %+v, want one plan event", out.Events)
+			}
+			if got := out.Events[0].Plan.Repositories; !slices.Equal(got, tc.want) {
+				t.Errorf("plan event repositories = %v, want %v", got, tc.want)
 			}
 			parsed, err := report.ParsePlan([]byte(out.Events[0].Plan.ReportMarkdown))
 			if err != nil {
@@ -475,6 +498,84 @@ func TestFakeAgentBuildHandoff(t *testing.T) {
 			}
 			if !strings.Contains(out.Events[0].Error, tc.want) {
 				t.Errorf("fatal error = %q, want it to say %q", out.Events[0].Error, tc.want)
+			}
+		})
+	}
+}
+
+// TestFakeAgentPlanTrees mirrors agent-runner's guard on a multi-repository
+// plan: every tree the manifest lists is there, or the plan Job fails
+// fatally before planning. A pod path is looked for under the workspace
+// the script was handed.
+func TestFakeAgentPlanTrees(t *testing.T) {
+	manifest := "web /workspace/repo https://github.example/acme/shop\n" +
+		"api /workspace/repos/api https://github.example/acme/api\n"
+	inputs := map[string]string{"issue.md": planRequest, "repositories": manifest}
+	dirs := func(paths ...string) func(ws string) {
+		return func(ws string) {
+			for _, p := range paths {
+				if err := os.MkdirAll(filepath.Join(ws, p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	stdout, err := execFakeAgentIn(t, "plan", inputs, dirs("repo", "repos/api"))
+	if err != nil {
+		t.Fatalf("plan with every tree: %v", err)
+	}
+	if out := scanFakeAgent(t, "plan", stdout); len(out.Events) != 1 || out.Events[0].Plan == nil {
+		t.Fatalf("events = %+v, want one plan event", out.Events)
+	}
+
+	stdout, err = execFakeAgentIn(t, "plan", inputs, dirs("repo"))
+	if err == nil {
+		t.Error("plan with a missing tree exited 0")
+	}
+	out := scanFakeAgent(t, "plan", stdout)
+	if len(out.Events) != 1 || out.Events[0].Type != envelope.TypeFatal ||
+		!strings.Contains(out.Events[0].Error, "the tree of api") {
+		t.Errorf("events = %+v, want one fatal event naming the missing tree", out.Events)
+	}
+}
+
+// TestFakeAgentBuildScope mirrors agent-runner's guard on a build of a
+// multi-repository plan: exactly one of the plan's repositories is the
+// Job's own (PATCHY_REPO, case and .git ignored), or the build fails
+// fatally; a one-repository plan builds whatever PATCHY_REPO says.
+func TestFakeAgentBuildScope(t *testing.T) {
+	multi := strings.Replace(approvedPlan, "  - https://github.example/acme/shop\n",
+		"  - \"https://github.example/acme/shop\"\n  - \"https://github.example/Acme/API.git\"\n", 1)
+	flow := strings.Replace(approvedPlan, "repositories:\n  - https://github.example/acme/shop\n",
+		"repositories: [https://github.example/acme/shop, https://github.example/acme/api]\n", 1)
+	tests := []struct {
+		name, plan, repo string
+		ok               bool
+	}{
+		{"one repository, any job", approvedPlan, "someone/else", true},
+		{"the first of two", multi, "acme/shop", true},
+		{"the second, spelled otherwise", multi, "ACME/api", true},
+		{"neither", multi, "acme/docs", false},
+		{"a flow list", flow, "acme/api", true},
+		{"a flow list, neither", flow, "acme/docs", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, err := execFakeAgentIn(t, "build",
+				map[string]string{"issue.md": "", "investigation.md": tc.plan}, nil, "PATCHY_REPO="+tc.repo)
+			out := scanFakeAgent(t, "build", stdout)
+			if tc.ok {
+				if err != nil || len(out.Events) != 1 || out.Events[0].Remediation == nil {
+					t.Fatalf("err = %v, events = %+v, want one build event", err, out.Events)
+				}
+				return
+			}
+			if err == nil {
+				t.Error("exit code = 0, want non-zero")
+			}
+			if len(out.Events) != 1 || out.Events[0].Type != envelope.TypeFatal ||
+				!strings.Contains(out.Events[0].Error, "builds exactly one of them") {
+				t.Errorf("events = %+v, want one fatal event refusing the build", out.Events)
 			}
 		})
 	}

@@ -114,6 +114,7 @@ func TestComponentConfigReachesSettings(t *testing.T) {
 	// route but the environment would show.
 	t.Setenv("PATCHY_INTENT_PLAN_MAX_TURNS", "7")
 	t.Setenv("PATCHY_INTENT_BUILD_TIMEOUT", "61m")
+	t.Setenv("PATCHY_INTENT_MULTI_REPO", "true")
 
 	opts, root, _ := command(t)
 	if err := root.Execute(); err != nil {
@@ -131,6 +132,7 @@ func TestComponentConfigReachesSettings(t *testing.T) {
 		PRPollInterval:       time.Minute,
 		RateLimitFloor:       1000,
 		MaxAttempts:          intent.DefaultMaxAttempts,
+		MultiRepo:            true,
 		Plan:                 intent.StageCeiling{MaxTurns: 7, TokenBudget: 200000, Timeout: 20 * time.Minute},
 		Build:                intent.StageCeiling{MaxTurns: 150, TokenBudget: 800000, Timeout: 61 * time.Minute},
 		Revise:               intent.StageCeiling{MaxTurns: 80, TokenBudget: 400000, Timeout: 45 * time.Minute},

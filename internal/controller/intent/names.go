@@ -48,8 +48,12 @@ const (
 	// keyApprovedPlan keeps the exact approved prefix of a revise handoff.
 	keyApprovedPlan   = "approved-plan.md"
 	keyCheckSignature = "check-signature"
-	keyInputRefusal   = "input-refusal"
-	keyNoFeedback     = "no-usable-feedback"
+	// keyCheckNames are the names of the failed checks a check-fix round
+	// fixes, one per line: what its pull request notice names. Never part of
+	// the Job's input.
+	keyCheckNames   = "check-names"
+	keyInputRefusal = "input-refusal"
+	keyNoFeedback   = "no-usable-feedback"
 	// keyPlan is the plan report exactly as the planner wrote it.
 	keyPlan = "plan.md"
 	// The input snapshot's parts, kept beside the rendered request so an
@@ -143,6 +147,25 @@ type Settings struct {
 	// Plan, Build and Revise are the per-stage ceilings: a Project's limits are
 	// clamped to them, and the Job's stage configuration carries them.
 	Plan, Build, Revise StageCeiling
+	// MultiRepo runs intents of Projects that list more than one repository
+	// (--intent-multi-repo). Off, such a Project is not Ready, and every
+	// Intent of one is held Blocked (UnsupportedRepositories): nothing is
+	// planned, built, pushed or revised for it until the flag is on again or
+	// the Project lists one repository, so turning the flag off is a real
+	// rollback. A one-repository Project behaves the same either way.
+	MultiRepo bool
+	// Previews is --intent-previews-enabled: the preview projection
+	// (PreviewSourceReconciler) runs. The intent reconciler then records, at
+	// review start, the default-branch head each previewed repository the
+	// intent has no pull request in runs in its preview
+	// (status.previewBases); off, it reads nothing for previews.
+	Previews bool
+}
+
+// multiRepoOff reports a Project these settings run no intent of: one that
+// lists more than one repository while MultiRepo is off.
+func (s Settings) multiRepoOff(p *v1alpha1.Project) bool {
+	return !s.MultiRepo && len(p.Spec.Repositories) > 1
 }
 
 // StageCeiling bounds one agent stage.

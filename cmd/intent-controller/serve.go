@@ -50,6 +50,9 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 		"how often an intent in review polls its pull requests")
 	f.Bool("intent-previews-enabled", false,
 		"project opted-in, open intent PRs into Preview resources; requires a separately enabled preview-controller")
+	f.Bool("intent-multi-repo", false,
+		"run intents of Projects that list more than one repository; off, such a Project is not Ready and its "+
+			"intents are held Blocked (UnsupportedRepositories), so turning it off stops them where they stand")
 	f.Int("intent-max-concurrent-runs", 1, "intent agent Jobs running at once (a pool separate from remediation's)")
 	f.Int("intent-rate-limit-floor", intent.DefaultRateLimitFloor,
 		"pause intent polling while the installation has fewer core GitHub requests left than this (0 disables)")
@@ -89,6 +92,7 @@ func settings(opts *cli.Options, namespace, agentNS string) (intent.Settings, er
 		PRPollInterval:       opts.Duration("intent-pr-poll-interval"),
 		RateLimitFloor:       opts.Int("intent-rate-limit-floor"),
 		MaxAttempts:          intent.DefaultMaxAttempts,
+		MultiRepo:            opts.Bool("intent-multi-repo"),
 		Plan: intent.StageCeiling{
 			MaxTurns:    int32(opts.Int("intent-plan-max-turns")),
 			TokenBudget: int64(opts.Int("intent-plan-token-budget")),
@@ -290,6 +294,7 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		slog.String("agent_namespace", agentNS),
 		slog.String("harness", harnessID),
 		slog.Int("max_concurrent_runs", opts.Int("intent-max-concurrent-runs")),
+		slog.Bool("multi_repo", set.MultiRepo),
 		slog.Bool("repository_images", repositoryImages))
 
 	if err := mgr.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {

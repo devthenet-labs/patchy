@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -208,10 +209,10 @@ func (p *pass) inputSnapshot(ctx context.Context, input *v1alpha1.IntentInput) (
 // unshowable one, until the attempts are spent and the Intent fails.
 func (p *pass) planning(ctx context.Context) (bool, error) {
 	round := p.in.Status.Input.Revision
-	rs := p.round(v1alpha1.IntentStagePlan, round)
+	rs := p.round(v1alpha1.IntentStagePlan, round, anyRepository)
 	latest := rs.latest()
 	if latest == nil {
-		return p.launch(ctx, v1alpha1.IntentStagePlan, round, 1, nil)
+		return p.launchPlan(ctx, round, 1, nil)
 	}
 	switch latest.Status.Phase {
 	case v1alpha1.RunComplete:
@@ -232,7 +233,7 @@ func (p *pass) planning(ctx context.Context) (bool, error) {
 	if rs.counted(p.planRefused) >= p.set.MaxAttempts {
 		return true, p.fail(ctx)
 	}
-	return p.launch(ctx, v1alpha1.IntentStagePlan, round, rs.next(), p.previousAttempt(latest))
+	return p.launchPlan(ctx, round, rs.next(), p.previousAttempt(latest))
 }
 
 // planComment is the approval comment's input for a plan report.
@@ -245,7 +246,25 @@ func (p *pass) planComment(revision int32, raw []byte) (templates.PlanComment, e
 		Namespace: p.in.Namespace, Intent: p.in.Name, Revision: revision, Report: raw,
 		Summary: parsed.Summary, NewDependencies: parsed.NewDependencies, Questions: parsed.Questions,
 		ApproveLabel: approveLabel(p.proj), TriggerLabel: p.trigger(),
+		Repositories: p.planRepositories(parsed.Repositories),
 	}, nil
+}
+
+// planRepositories are the Project repositories a plan names, in the plan's
+// order, as "owner/name" in the Project's own spelling: the header of the
+// plan comment lists them from the validated frontmatter, never in the
+// planner's spelling (its casing, or an underscore a comment would render as
+// emphasis). A name the Project does not hold is left out: such a plan was
+// refused when its run was collected.
+func (p *pass) planRepositories(named []string) []string {
+	var repos []v1alpha1.ProjectRepository
+	for _, u := range named {
+		r, ok := p.projectRepository(u)
+		if ok && !slices.ContainsFunc(repos, func(o v1alpha1.ProjectRepository) bool { return sameRepo(o.URL, r.URL) }) {
+			repos = append(repos, r)
+		}
+	}
+	return repositorySlugs(repos)
 }
 
 // planRefusal says why a completed plan run's plan cannot be offered for

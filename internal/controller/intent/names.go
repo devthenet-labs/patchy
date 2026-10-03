@@ -143,6 +143,19 @@ type Settings struct {
 	// Plan, Build and Revise are the per-stage ceilings: a Project's limits are
 	// clamped to them, and the Job's stage configuration carries them.
 	Plan, Build, Revise StageCeiling
+	// MultiRepo runs intents of Projects that list more than one repository
+	// (--intent-multi-repo). Off, such a Project is not Ready, and every
+	// Intent of one is held Blocked (UnsupportedRepositories): nothing is
+	// planned, built, pushed or revised for it until the flag is on again or
+	// the Project lists one repository, so turning the flag off is a real
+	// rollback. A one-repository Project behaves the same either way.
+	MultiRepo bool
+}
+
+// multiRepoOff reports a Project these settings run no intent of: one that
+// lists more than one repository while MultiRepo is off.
+func (s Settings) multiRepoOff(p *v1alpha1.Project) bool {
+	return !s.MultiRepo && len(p.Spec.Repositories) > 1
 }
 
 // StageCeiling bounds one agent stage.

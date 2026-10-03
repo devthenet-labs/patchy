@@ -104,27 +104,32 @@ func (r *RunReconciler) settle(ctx context.Context, run *v1alpha1.IntentRun, res
 	return r.deletePlanRepository(ctx, run)
 }
 
-// deletePlanRepository deletes a finished plan run's Repository, which
-// nothing needs once the run is collected; only a build's is kept, as the
-// intent's runner-image anchor. Only the Repository the run owns is deleted,
-// never another object under its name.
+// deletePlanRepository deletes a finished plan run's Repository, and each of
+// its tree Repositories, which nothing needs once the run is collected (what
+// the trees were is kept on the run's status.trees); only a build's is kept,
+// as the intent's runner-image anchor. Only a Repository the run owns is
+// deleted, never another object under its name.
 func (r *RunReconciler) deletePlanRepository(ctx context.Context, run *v1alpha1.IntentRun) error {
 	if run.Spec.Stage != v1alpha1.IntentStagePlan {
 		return nil
 	}
-	var repo v1alpha1.Repository
-	key := types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.Repository.RepositoryRef.Name}
-	if err := r.Get(ctx, key, &repo); err != nil {
-		return client.IgnoreNotFound(err)
-	}
-	if !repo.DeletionTimestamp.IsZero() || !controlledBy(repo.OwnerReferences, run.UID) {
-		return nil
-	}
-	uid := repo.UID
-	if err := r.Delete(ctx, &repo, &client.DeleteOptions{
-		Preconditions: &metav1.Preconditions{UID: &uid},
-	}); err != nil && !kerrors.IsNotFound(err) {
-		return fmt.Errorf("delete the plan repository %s: %w", repo.Name, err)
+	for _, name := range runRepositoryNames(run) {
+		var repo v1alpha1.Repository
+		if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: name}, &repo); err != nil {
+			if kerrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		if !repo.DeletionTimestamp.IsZero() || !controlledBy(repo.OwnerReferences, run.UID) {
+			continue
+		}
+		uid := repo.UID
+		if err := r.Delete(ctx, &repo, &client.DeleteOptions{
+			Preconditions: &metav1.Preconditions{UID: &uid},
+		}); err != nil && !kerrors.IsNotFound(err) {
+			return fmt.Errorf("delete the plan repository %s: %w", repo.Name, err)
+		}
 	}
 	return nil
 }

@@ -25,7 +25,7 @@ func (p *pass) syncPRRoundNotices(ctx context.Context) (bool, error) {
 	if next > upto {
 		return false, nil
 	}
-	run := p.round(v1alpha1.IntentStageRevise, next).latest()
+	run := p.round(v1alpha1.IntentStageRevise, next, anyRepository).latest()
 	if run == nil || len(p.in.Status.PullRequests) != 1 {
 		return false, fmt.Errorf("round %d notice lacks its run or recorded PR", next)
 	}

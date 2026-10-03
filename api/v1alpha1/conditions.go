@@ -87,15 +87,32 @@ const (
 	// none of the Intent's runs pushed (left by an earlier Intent under the
 	// same name, or made by someone else; reason BranchExists), or an open
 	// pull request patchy did not open already holds it (reason
-	// ForeignPullRequest). Nothing is forced and nothing foreign adopted: the
-	// block lifts once the branch, or that pull request, is gone.
+	// ForeignPullRequest), or it is at a commit an earlier round of this
+	// same Intent pushed (reason StaleRoundBranch: patchy's own, safe to
+	// delete). Nothing is forced and nothing foreign adopted: the block lifts
+	// once the branch, or that pull request, is gone. On a multi-repository
+	// intent the message names the repository.
 	ConditionBranchConflict = "BranchConflict"
+	// ConditionUnsupportedRepositories marks a Blocked Intent whose Project
+	// lists more than one repository while intent-controller runs without
+	// --intent-multi-repo: nothing is planned, built, pushed or revised for
+	// it. The block lifts once the flag is on again or the Project lists one
+	// repository.
+	ConditionUnsupportedRepositories = "UnsupportedRepositories"
+	// ConditionSiblingsLinked reports, on an Intent that opened more than
+	// one pull request, whether the comment cross-linking them was posted on
+	// every one: True once it was, False with GitHub's refusal while it could
+	// not be. The comment is cosmetic: it is posted after the Intent entered
+	// InReview, and never holds a phase back.
+	ConditionSiblingsLinked = "SiblingsLinked"
 
 	// ConditionPushHeld marks a Running build IntentRun whose Job has
-	// finished while its Intent is suspended: the push waits for the
-	// suspension to be lifted. Its agent no longer runs, so it holds no slot
-	// of the run pool, and while it waits its Job is not read again. Set by
-	// intent-controller's run reconciler, and False once the run settles.
+	// finished while its Intent is suspended (or, reason
+	// MultiRepositoryOff, while its Project lists more than one repository
+	// and intent-controller runs without --intent-multi-repo): the push
+	// waits for that to be lifted. Its agent no longer runs, so it holds no
+	// slot of the run pool, and while it waits its Job is not read again. Set
+	// by intent-controller's run reconciler, and False once the run settles.
 	ConditionPushHeld = "PushHeld"
 
 	// ConditionIntentNameConflict marks a Project, True while one of its

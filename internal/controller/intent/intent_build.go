@@ -5,8 +5,10 @@ package intent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -55,25 +57,45 @@ func imageReason(run *v1alpha1.IntentRun) string {
 	return ReasonDefaultImageRan
 }
 
-// building runs the approved plan's build round: a first attempt, the pull
-// request once a build has pushed its branch, a block when the build had no
-// accepted image to run on, and the next attempt after a failed one, until
-// the attempts are spent and the Intent fails.
+// building runs the approved plan's build round: one build per approved
+// repository (approvedRepositories, in plan order), each on its own
+// repository's pin and accepted image, all created in one pass and launched
+// by the run pool as its slots free. A repository's next attempt follows its
+// failed one. A repository whose attempts are spent fails the whole Intent at
+// once: its siblings' runs then abort and their Jobs are deleted, since the
+// Intent has ended, and the branches they pushed stay, with no pull request.
+// One whose build had no accepted image to run on blocks the Intent, naming
+// the repository, while the siblings already running finish and push. The
+// pull requests open only once every approved repository's build is
+// Complete, so a Failed intent never leaves one behind.
 func (p *pass) building(ctx context.Context) (bool, error) {
 	ap := p.in.Status.Approval
 	if ap == nil {
 		return true, p.fail(ctx)
 	}
-	rs := p.round(v1alpha1.IntentStageBuild, ap.PlanRevision)
-	latest := rs.latest()
-	if latest == nil {
-		return p.launch(ctx, v1alpha1.IntentStageBuild, ap.PlanRevision, 1, nil)
+	repos, gone := p.approvedRepositories()
+	if gone {
+		p.r.log().LogAttrs(ctx, slog.LevelWarn, "the approved plan's repository left the project; the intent fails",
+			slog.String("intent", p.in.Name))
+		return true, p.fail(ctx)
 	}
-	switch latest.Status.Phase {
-	case v1alpha1.RunComplete:
-		return p.openPullRequest(ctx, latest)
-	case v1alpha1.RunFailed:
-		if imageBlocked(latest) {
+	var (
+		launches []buildLaunch
+		inFlight []*v1alpha1.IntentRun
+		blocked  *v1alpha1.IntentRun
+		complete int
+	)
+	for _, repo := range repos {
+		rs := p.round(v1alpha1.IntentStageBuild, ap.PlanRevision, repo.URL)
+		latest := rs.latest()
+		switch {
+		case latest == nil:
+			launches = append(launches, buildLaunch{repo: repo, attempt: 1})
+		case latest.Status.Phase == v1alpha1.RunComplete:
+			complete++
+		case latest.Status.Phase != v1alpha1.RunFailed:
+			inFlight = append(inFlight, latest)
+		case imageBlocked(latest):
 			if rs.next() > v1alpha1.MaxIntentRunAttempt {
 				// No attempt is left to try the image again with: a block
 				// could never lift, and resuming from it would only block
@@ -82,35 +104,132 @@ func (p *pass) building(ctx context.Context) (bool, error) {
 					slog.String("intent", p.in.Name), slog.String("run", latest.Name))
 				return true, p.fail(ctx)
 			}
-			return true, p.block(ctx, v1alpha1.ConditionImageRequired, imageReason(latest),
-				fmt.Sprintf("the build could not run on an accepted repository image: %s", latest.Status.Detail))
+			if blocked == nil {
+				blocked = latest
+			}
+		case rs.counted(nil) >= p.set.MaxAttempts:
+			return true, p.fail(ctx)
+		default:
+			launches = append(launches, buildLaunch{repo: repo, attempt: rs.next(), prev: p.previousAttempt(latest)})
 		}
-	default:
-		return p.ensureActive(ctx, latest)
 	}
-	if rs.counted(nil) >= p.set.MaxAttempts {
-		return true, p.fail(ctx)
+	if blocked != nil {
+		return true, p.block(ctx, v1alpha1.ConditionImageRequired, imageReason(blocked),
+			fmt.Sprintf("the build%s could not run on an accepted repository image: %s",
+				p.inRepository(blocked.Spec.Repository.URL), blocked.Status.Detail))
 	}
-	return p.launch(ctx, v1alpha1.IntentStageBuild, ap.PlanRevision, rs.next(), p.previousAttempt(latest))
+	if complete == len(repos) {
+		return p.openPullRequests(ctx, ap.PlanRevision, repos)
+	}
+	if len(launches) > 0 {
+		runs, stop, err := p.launchBuilds(ctx, ap.PlanRevision, launches)
+		if stop || err != nil {
+			return stop, err
+		}
+		inFlight = append(inFlight, runs...)
+	}
+	return p.ensureBuilds(ctx, inFlight)
+}
+
+// ensureBuilds makes sure every unfinished build of the round has its input
+// ConfigMap and Repository, separately from the one status write that
+// records which of them is the Intent's activeRun. In Building activeRun is
+// sticky: it names one in-flight build and is rewritten only once that run
+// has settled, so a fan-out's siblings never make the status flip between
+// them, and a pass writes it at most once.
+func (p *pass) ensureBuilds(ctx context.Context, runs []*v1alpha1.IntentRun) (bool, error) {
+	for _, run := range runs {
+		if err := p.ensureRunChildren(ctx, run); err != nil {
+			if errors.Is(err, errPlanChanged) {
+				return true, p.fail(ctx)
+			}
+			return false, err
+		}
+	}
+	if len(runs) == 0 {
+		return false, nil
+	}
+	if ar := p.in.Status.ActiveRun; ar != nil {
+		for _, run := range runs {
+			if ar.Name == run.Name && ar.UID == run.UID {
+				return false, nil
+			}
+		}
+	}
+	run := runs[0]
+	return true, p.update(ctx, func(cur *v1alpha1.Intent) error {
+		cur.Status.ActiveRun = &v1alpha1.ObjectReference{Name: run.Name, UID: run.UID}
+		return nil
+	})
+}
+
+// inRepository names repoURL in a message about one of a multi-repository
+// Project's repositories (" in owner/name"); for a one-repository Project it
+// is empty, so its messages read as they always have.
+func (p *pass) inRepository(repoURL string) string {
+	if len(p.proj.Spec.Repositories) < 2 {
+		return ""
+	}
+	return " in " + repoSlug(repoURL)
+}
+
+// pullRequestsOpened reports whether the pull requests recorded are every one
+// the intent opens: so in every phase but Building (and Blocked from it),
+// since the record that completes the approved set is written with the move
+// to InReview. A one-repository intent's one record is always that write.
+func (p *pass) pullRequestsOpened() bool {
+	phase := p.in.Status.Phase
+	return phase != v1alpha1.IntentBuilding &&
+		(phase != v1alpha1.IntentBlocked || v1alpha1.IntentBlockedFrom(p.in) != v1alpha1.IntentBuilding)
+}
+
+// pullRequest is the recorded pull request in repoURL, or nil.
+func (p *pass) pullRequest(repoURL string) *v1alpha1.IntentPullRequest {
+	for i := range p.in.Status.PullRequests {
+		if sameRepo(p.in.Status.PullRequests[i].Repository, repoURL) {
+			return &p.in.Status.PullRequests[i]
+		}
+	}
+	return nil
+}
+
+// openPullRequests opens the pull request of the first approved repository,
+// in plan order, that has none recorded: one per pass, while the Intent stays
+// Building, the last one's record moving it to InReview.
+func (p *pass) openPullRequests(ctx context.Context, round int32, repos []v1alpha1.ProjectRepository) (bool, error) {
+	for _, repo := range repos {
+		if p.pullRequest(repo.URL) != nil {
+			continue
+		}
+		return p.openPullRequest(ctx, p.round(v1alpha1.IntentStageBuild, round, repo.URL).latest(), repos)
+	}
+	return true, p.setPhase(ctx, v1alpha1.IntentInReview, func(cur *v1alpha1.Intent) {
+		cur.Status.ActiveRun = nil
+	})
 }
 
 // openPullRequest opens the pull request for a build that pushed the intent
-// branch, or adopts the one a failed pass opened, records it, and moves to
-// InReview. Only patchy's own is adopted (ownPullRequest); an open pull
-// request from the branch that is anyone else's blocks the Intent on
-// BranchConflict until it is closed, since GitHub keeps one open pull request
-// per head and base. The title and body are patchy's own, from the approved
-// plan: the body says "Part of" the intent issue and holds no closing
-// keyword.
-func (p *pass) openPullRequest(ctx context.Context, run *v1alpha1.IntentRun) (bool, error) {
+// branch, or adopts the one a failed pass opened, and records it, upserted
+// by repository; the record that completes the approved set moves the Intent
+// to InReview in the same write. Only patchy's own is adopted
+// (ownPullRequest); an open pull request from the branch that is anyone
+// else's blocks the Intent on BranchConflict until it is closed, since GitHub
+// keeps one open pull request per head and base. A block names the
+// repository, and on resume patchy carries on with the rest. The title and
+// body are patchy's own, from the approved plan: the body says "Part of" the
+// intent issue and holds no closing keyword; with more than one repository
+// it also says which, and that the intent completes when every one merges.
+func (p *pass) openPullRequest(ctx context.Context, run *v1alpha1.IntentRun,
+	repos []v1alpha1.ProjectRepository) (bool, error) {
 	repoURL := run.Spec.Repository.URL
+	in := p.inRepository(repoURL)
 	branch := branchName(p.in.Name)
 	pr, own, base, err := p.findPullRequest(ctx, repoURL)
 	if err != nil {
 		if ghclient.IsRefused(err) {
 			return true, p.block(ctx, v1alpha1.ConditionBranchConflict, ReasonPullRequestRefused,
-				fmt.Sprintf("GitHub refused to look for the pull request from %s: %v; fix the refusal and update "+
-					"the Project to retry", branch, err))
+				fmt.Sprintf("GitHub refused to look for the pull request from %s%s: %v; fix the refusal and update "+
+					"the Project to retry", branch, in, err))
 		}
 		return false, err
 	}
@@ -130,23 +249,24 @@ func (p *pass) openPullRequest(ctx context.Context, run *v1alpha1.IntentRun) (bo
 		switch {
 		case ghclient.IsNotFound(headErr):
 			return true, p.block(ctx, v1alpha1.ConditionBranchConflict, ReasonBranchMissing,
-				fmt.Sprintf("branch %s was deleted after the build pushed %s; restore it at that commit to resume",
-					branch, run.Status.PushedCommit))
+				fmt.Sprintf("branch %s%s was deleted after the build pushed %s; restore it at that commit to resume",
+					branch, in, run.Status.PushedCommit))
 		case ghclient.IsRefused(headErr):
 			return true, p.block(ctx, v1alpha1.ConditionBranchConflict, ReasonPullRequestRefused,
-				fmt.Sprintf("GitHub refused to read branch %s: %v; fix access and update the Project to retry",
-					branch, headErr))
+				fmt.Sprintf("GitHub refused to read branch %s%s: %v; fix access and update the Project to retry",
+					branch, in, headErr))
 		case headErr != nil:
 			return false, fmt.Errorf("read the intent branch before opening its pull request: %w", headErr)
 		case head != run.Status.PushedCommit:
 			return true, p.block(ctx, v1alpha1.ConditionBranchConflict, ReasonBranchChanged,
-				fmt.Sprintf("branch %s moved from the build's commit %s to %s before patchy opened its pull request; "+
-					"restore it to the build's commit to resume", branch, run.Status.PushedCommit, head))
+				fmt.Sprintf("branch %s%s moved from the build's commit %s to %s before patchy opened its pull request; "+
+					"restore it to the build's commit to resume", branch, in, run.Status.PushedCommit, head))
 		}
 		ap, pl := p.in.Status.Approval, p.in.Status.Plan
 		body, err := templates.RenderIntentPRBody(templates.IntentPRBody{
 			IntentRepository: repoSlug(p.repo()), IssueNumber: p.number(), Summary: pl.Summary,
 			PlanRevision: ap.PlanRevision, PlanDigest: ap.PlanDigest, ApprovedBy: ap.By,
+			Repositories: repositorySlugs(repos),
 		})
 		if err != nil {
 			return false, err
@@ -156,8 +276,8 @@ func (p *pass) openPullRequest(ctx context.Context, run *v1alpha1.IntentRun) (bo
 		}); err != nil {
 			if ghclient.IsRefused(err) {
 				return true, p.block(ctx, v1alpha1.ConditionBranchConflict, ReasonPullRequestRefused,
-					fmt.Sprintf("GitHub refused to open the pull request from %s: %v; fix the refusal and update the "+
-						"Project to retry", branch, err))
+					fmt.Sprintf("GitHub refused to open the pull request from %s%s: %v; fix the refusal and update the "+
+						"Project to retry", branch, in, err))
 			}
 			return false, fmt.Errorf("open the pull request: %w", err)
 		}
@@ -170,11 +290,42 @@ func (p *pass) openPullRequest(ctx context.Context, run *v1alpha1.IntentRun) (bo
 		Repository: repoURL, Number: int64(pr.Number), URL: pr.HTMLURL, NodeID: pr.NodeID, HeadSHA: head,
 		State: prOpen,
 	}
+	prs := upsertPullRequest(p.in.Status.PullRequests, rec)
+	if !everyRecorded(prs, repos) {
+		return true, p.update(ctx, func(cur *v1alpha1.Intent) error {
+			cur.Status.Branch = branch
+			cur.Status.PullRequests = prs
+			return nil
+		})
+	}
 	return true, p.setPhase(ctx, v1alpha1.IntentInReview, func(cur *v1alpha1.Intent) {
 		cur.Status.Branch = branch
-		cur.Status.PullRequests = []v1alpha1.IntentPullRequest{rec}
+		cur.Status.PullRequests = prs
 		cur.Status.ActiveRun = nil
 	})
+}
+
+// upsertPullRequest is prs with rec in place of the record of its
+// repository, or appended when there is none; prs itself is not changed.
+func upsertPullRequest(prs []v1alpha1.IntentPullRequest, rec v1alpha1.IntentPullRequest) []v1alpha1.IntentPullRequest {
+	out := slices.Clone(prs)
+	for i := range out {
+		if sameRepo(out[i].Repository, rec.Repository) {
+			out[i] = rec
+			return out
+		}
+	}
+	return append(out, rec)
+}
+
+// everyRecorded reports whether prs holds a record for each of repos.
+func everyRecorded(prs []v1alpha1.IntentPullRequest, repos []v1alpha1.ProjectRepository) bool {
+	for _, repo := range repos {
+		if !slices.ContainsFunc(prs, func(pr v1alpha1.IntentPullRequest) bool { return sameRepo(pr.Repository, repo.URL) }) {
+			return false
+		}
+	}
+	return true
 }
 
 // findPullRequest reads the default branch of repoURL and the open pull
@@ -245,23 +396,17 @@ func (p *pass) reviewNow(ctx context.Context) (bool, error) {
 	if err != nil || !readable {
 		return false, err
 	}
-	switch {
-	case merged == len(prs):
-		return true, p.merged(ctx, prs, mergedAt)
-	case closed == len(prs):
-		// Every pull request closed unmerged: patchy closes the issue.
-		if err := p.r.GitHub.CloseIssue(ctx, p.repo(), p.number(), ghclient.CloseNotPlanned); err != nil {
-			return false, fmt.Errorf("close the issue: %w", err)
-		}
-		return true, p.setPhase(ctx, v1alpha1.IntentClosed, func(cur *v1alpha1.Intent) {
-			cur.Status.PullRequests = prs
-		})
+	if ended, err := p.endReview(ctx, prs, merged, closed, mergedAt); ended || err != nil {
+		return ended, err
 	}
 	if !prsEqual(prs, p.in.Status.PullRequests) {
 		return true, p.update(ctx, func(cur *v1alpha1.Intent) error {
 			cur.Status.PullRequests = prs
 			return nil
 		})
+	}
+	if changed, err := p.linkSiblings(ctx); changed || err != nil {
+		return changed, err
 	}
 	if changed, err := p.syncPRRoundNotices(ctx); changed || err != nil {
 		return changed, err
@@ -274,6 +419,31 @@ func (p *pass) reviewNow(ctx context.Context) (bool, error) {
 			return started, err
 		}
 		return p.checkRound(ctx, &prs[0])
+	}
+	return false, nil
+}
+
+// endReview ends the Intent when every pull request in prs (read just now)
+// has merged (Merged) or closed unmerged (Closed, the issue closed). While
+// the pull requests are still being opened (Building, one record per pass)
+// the ones recorded are not every one the intent opens, and their state ends
+// nothing.
+func (p *pass) endReview(ctx context.Context, prs []v1alpha1.IntentPullRequest, merged, closed int,
+	mergedAt time.Time) (bool, error) {
+	if !p.pullRequestsOpened() {
+		return false, nil
+	}
+	switch {
+	case merged == len(prs):
+		return true, p.merged(ctx, prs, mergedAt)
+	case closed == len(prs):
+		// Every pull request closed unmerged: patchy closes the issue.
+		if err := p.r.GitHub.CloseIssue(ctx, p.repo(), p.number(), ghclient.CloseNotPlanned); err != nil {
+			return false, fmt.Errorf("close the issue: %w", err)
+		}
+		return true, p.setPhase(ctx, v1alpha1.IntentClosed, func(cur *v1alpha1.Intent) {
+			cur.Status.PullRequests = prs
+		})
 	}
 	return false, nil
 }

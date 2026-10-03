@@ -46,6 +46,7 @@ other binary binds, so the shared kustomize ConfigMap cannot set one by accident
 | `--intent-approval-poll-interval` | `PATCHY_INTENT_APPROVAL_POLL_INTERVAL` | `30s`                       | How often an intent awaiting approval polls its issue's events                                   |
 | `--intent-pr-poll-interval`       | `PATCHY_INTENT_PR_POLL_INTERVAL`       | `60s`                       | How often an intent in review polls its pull request                                             |
 | `--intent-previews-enabled`       | `PATCHY_INTENT_PREVIEWS_ENABLED`       | `false`                     | Project opted-in PRs into Preview CRs; Helm ties this to `previewController.enabled`             |
+| `--intent-multi-repo`             | `PATCHY_INTENT_MULTI_REPO`             | `false`                     | Run intents of Projects listing several repositories; off, their intents are held `Blocked`      |
 | `--intent-max-concurrent-runs`    | `PATCHY_INTENT_MAX_CONCURRENT_RUNS`    | `1`                         | Intent agent Jobs running at once: a pool of its own, separate from remediation's                |
 | `--intent-rate-limit-floor`       | `PATCHY_INTENT_RATE_LIMIT_FLOOR`       | `1000`                      | Pause intent polling while the installation has fewer core requests left than this; `0` disables |
 | `--intent-ttl`                    | `PATCHY_INTENT_TTL`                    | `336h` (14 days)            | How long an ended intent is kept, with everything it owns; `0` keeps it forever                  |

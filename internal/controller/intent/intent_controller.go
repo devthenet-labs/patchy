@@ -229,8 +229,16 @@ func (p *pass) run(ctx context.Context) (ctrl.Result, error) {
 }
 
 // step does the phase's own work, the part driven by the resources rather
-// than by a human.
+// than by a human. An Intent of a Project this controller runs no intent of
+// (a multi-repository Project without --intent-multi-repo) takes none: it is
+// held Blocked, whatever phase it is in, so turning the flag off stops every
+// such intent where it stands.
 func (p *pass) step(ctx context.Context) (bool, error) {
+	if p.in.Status.Phase != v1alpha1.IntentBlocked {
+		if stop, err := p.holdMultiRepo(ctx); stop || err != nil {
+			return stop, err
+		}
+	}
 	switch p.in.Status.Phase {
 	case v1alpha1.IntentPending:
 		return p.pending(ctx)

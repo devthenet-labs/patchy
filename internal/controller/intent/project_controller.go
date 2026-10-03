@@ -228,9 +228,10 @@ func (r *ProjectReconciler) validate(ctx context.Context, p *v1alpha1.Project) (
 		return metav1.Condition{Type: v1alpha1.ConditionReady, Status: metav1.ConditionFalse,
 			Reason: reason, Message: fmt.Sprintf(format, args...)}, nil
 	}
-	if n := len(p.Spec.Repositories); n != 1 {
+	if n := len(p.Spec.Repositories); n != 1 && !r.Settings.MultiRepo {
 		return notReady(ReasonUnsupportedRepositories,
-			"intents build in exactly one repository for now, and this Project lists %d", n)
+			"intents build in exactly one repository unless intent-controller runs with --intent-multi-repo, "+
+				"and this Project lists %d", n)
 	}
 	trigger := v1alpha1.ProjectTriggerLabel(p)
 	var projects v1alpha1.ProjectList
@@ -246,39 +247,11 @@ func (r *ProjectReconciler) validate(ctx context.Context, p *v1alpha1.Project) (
 				o.Name, trigger)
 		}
 	}
-	app := p.Spec.Repositories[0].URL
-	for _, u := range []string{p.Spec.IntentRepository, app} {
-		if _, _, err := forge.ParseRepoURL(u); err != nil {
-			return notReady(v1alpha1.ReasonForgeUnresolved, "%v", err)
-		}
-		if err := r.GitHub.Resolve(ctx, u); err != nil {
-			if forgeUnresolved(err) {
-				return notReady(v1alpha1.ReasonForgeUnresolved, "%s: %v", u, err)
-			}
+	if cond, err := r.validateRepositories(ctx, p); cond != nil || err != nil {
+		if cond == nil {
 			return metav1.Condition{}, err
 		}
-	}
-	// The permissions intents use on each repository, each proven by
-	// minting the scoped token itself.
-	for _, check := range []struct {
-		url   string
-		perms ghclient.TokenPerms
-		what  string
-	}{
-		{p.Spec.IntentRepository, issuesWrite, "issues: write"},
-		{app, contentsWrite, "contents: write"},
-		{app, pullsWrite, "pull requests: write"},
-	} {
-		if err := r.GitHub.Installed(ctx, check.url, check.perms); err != nil {
-			if secretUnreadable(err) {
-				return notReady(ReasonForgeSecretUnreadable, forgeSecretMessage, check.url, err)
-			}
-			if installationRefused(err) {
-				return notReady(v1alpha1.ReasonAppNotInstalled,
-					"the App cannot act on %s with %s: %v", check.url, check.what, err)
-			}
-			return metav1.Condition{}, err
-		}
+		return *cond, nil
 	}
 	for _, l := range []struct{ name, color, description string }{
 		{trigger, triggerLabelColor, "patchy: plan and build this issue in project " + p.Name},
@@ -297,6 +270,60 @@ func (r *ProjectReconciler) validate(ctx context.Context, p *v1alpha1.Project) (
 	}
 	return metav1.Condition{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: ReasonValidated,
 		Message: "the repositories resolve, the App is installed on them, and the labels exist"}, nil
+}
+
+// validateRepositories checks the intent repository and every app
+// repository, in the Project's order (with --intent-multi-repo a Project may
+// list several, and an intent builds in any of them): each resolves to one
+// Forge, and the App holds on each the permissions intents use there, each
+// proven by minting the scoped token itself. It returns the not-Ready
+// condition naming the first repository that fails, nil when all pass, or an
+// error when GitHub could not answer.
+func (r *ProjectReconciler) validateRepositories(ctx context.Context, p *v1alpha1.Project) (*metav1.Condition,
+	error) {
+	notReady := func(reason, format string, args ...any) (*metav1.Condition, error) {
+		return &metav1.Condition{Type: v1alpha1.ConditionReady, Status: metav1.ConditionFalse,
+			Reason: reason, Message: fmt.Sprintf(format, args...)}, nil
+	}
+	urls := make([]string, 0, 1+len(p.Spec.Repositories))
+	urls = append(urls, p.Spec.IntentRepository)
+	for _, repo := range p.Spec.Repositories {
+		urls = append(urls, repo.URL)
+	}
+	for _, u := range urls {
+		if _, _, err := forge.ParseRepoURL(u); err != nil {
+			return notReady(v1alpha1.ReasonForgeUnresolved, "%v", err)
+		}
+		if err := r.GitHub.Resolve(ctx, u); err != nil {
+			if forgeUnresolved(err) {
+				return notReady(v1alpha1.ReasonForgeUnresolved, "%s: %v", u, err)
+			}
+			return nil, err
+		}
+	}
+	type permCheck struct {
+		url   string
+		perms ghclient.TokenPerms
+		what  string
+	}
+	checks := []permCheck{{p.Spec.IntentRepository, issuesWrite, "issues: write"}}
+	for _, repo := range p.Spec.Repositories {
+		checks = append(checks, permCheck{repo.URL, contentsWrite, "contents: write"},
+			permCheck{repo.URL, pullsWrite, "pull requests: write"})
+	}
+	for _, check := range checks {
+		if err := r.GitHub.Installed(ctx, check.url, check.perms); err != nil {
+			if secretUnreadable(err) {
+				return notReady(ReasonForgeSecretUnreadable, forgeSecretMessage, check.url, err)
+			}
+			if installationRefused(err) {
+				return notReady(v1alpha1.ReasonAppNotInstalled,
+					"the App cannot act on %s with %s: %v", check.url, check.what, err)
+			}
+			return nil, err
+		}
+	}
+	return nil, nil
 }
 
 // forgeSecretMessage explains a ForgeSecretUnreadable Project: the

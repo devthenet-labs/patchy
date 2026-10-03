@@ -50,13 +50,15 @@ func (p *pass) revising(ctx context.Context) (bool, error) {
 	if ok, err := p.rateOKForPullRequests(ctx); err != nil || !ok {
 		return false, err
 	}
-	if run := p.round(v1alpha1.IntentStageRevise, p.in.Status.Rounds).latest(); run != nil &&
+	// A revise round's number is the Intent's own ordinal, never repeated
+	// across repositories: the round is whichever repository's it is.
+	if run := p.round(v1alpha1.IntentStageRevise, p.in.Status.Rounds, anyRepository).latest(); run != nil &&
 		run.Spec.Trigger == v1alpha1.IntentRunTriggerCommand {
 		if err := p.ackPRCommand(ctx, run); err != nil {
 			return false, err
 		}
 	}
-	rs := p.round(v1alpha1.IntentStageRevise, p.in.Status.Rounds)
+	rs := p.round(v1alpha1.IntentStageRevise, p.in.Status.Rounds, anyRepository)
 	run := rs.latest()
 	if run == nil {
 		return false, fmt.Errorf("revising intent %s has no round %d run", p.in.Name, p.in.Status.Rounds)
@@ -198,8 +200,8 @@ func (p *pass) finishPRRound(ctx context.Context, run *v1alpha1.IntentRun) error
 // branch and re-renders its diff; an agent failure carries PreviousAttempt.
 func (p *pass) retryReviseAttempt(ctx context.Context, run *v1alpha1.IntentRun, attempt int32,
 	previous *v1alpha1.PreviousAttempt) (bool, error) {
-	repository, ok := p.runRepository(v1alpha1.IntentStageRevise)
-	if !ok || !sameRepo(repository.URL, run.Spec.Repository.URL) {
+	repository, ok := p.approvedRepository(run.Spec.Repository.URL)
+	if !ok {
 		return false, errRepositoryGone
 	}
 	name := v1alpha1.IntentRunName(p.in.Name, v1alpha1.IntentStageRevise, run.Spec.Round,
@@ -317,7 +319,8 @@ func (p *pass) reviseInput(ctx context.Context, run *v1alpha1.IntentRun, plan []
 	if run.Spec.Trigger != v1alpha1.IntentRunTriggerChecks && feedback == "" {
 		return nil, errNoUsableFeedback
 	}
-	build := p.round(v1alpha1.IntentStageBuild, run.Spec.Inputs.PlanRevision).latest()
+	// The compare base is the build of this round's own repository.
+	build := p.round(v1alpha1.IntentStageBuild, run.Spec.Inputs.PlanRevision, run.Spec.Repository.URL).latest()
 	if build == nil || build.Status.BaseSHA == "" {
 		return nil, errors.New("revise round lacks the completed build's base SHA")
 	}
@@ -386,12 +389,13 @@ func (p *pass) reviseFeedback(ctx context.Context, run *v1alpha1.IntentRun,
 // comment or edit cannot expand the agent's authority mid-round.
 func (p *pass) reviseWindow(run *v1alpha1.IntentRun) (time.Time, time.Time) {
 	upper := run.CreationTimestamp.Time
-	if rs := p.round(v1alpha1.IntentStageRevise, run.Spec.Round); len(rs) > 0 &&
+	if rs := p.round(v1alpha1.IntentStageRevise, run.Spec.Round, anyRepository); len(rs) > 0 &&
 		!rs[0].CreationTimestamp.IsZero() {
 		upper = rs[0].CreationTimestamp.Time
 	}
 	var cutoff time.Time
-	if build := p.round(v1alpha1.IntentStageBuild, run.Spec.Inputs.PlanRevision).latest(); build != nil &&
+	if build := p.round(v1alpha1.IntentStageBuild, run.Spec.Inputs.PlanRevision,
+		run.Spec.Repository.URL).latest(); build != nil &&
 		build.Status.FinishedAt != nil {
 		cutoff = build.Status.FinishedAt.Time
 	}
@@ -591,7 +595,7 @@ var prCommandParser = command.Parser{Surface: command.IntentPR}
 // itself: the author must be in this Project's approvers and have write
 // access to the application repository.
 func (p *pass) commandRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (bool, error) {
-	cutoff := p.reviewCutoff()
+	cutoff := p.reviewCutoff(pr.Repository)
 	comments, err := p.r.GitHub.ListPullRequestComments(ctx, pr.Repository, pr.Number, cutoff.Add(-time.Second))
 	if err != nil {
 		return false, err
@@ -657,8 +661,11 @@ func (p *pass) eligiblePRCommand(ctx context.Context, pr *v1alpha1.IntentPullReq
 		return false, err
 	}
 	if parsed.Verb == action.VerbRetry {
+		// A retry retries a failed round of this pull request's own
+		// repository, never a sibling's.
 		for _, run := range p.runs {
-			if run.Spec.Stage == v1alpha1.IntentStageRevise && run.Status.Phase == v1alpha1.RunFailed {
+			if run.Spec.Stage == v1alpha1.IntentStageRevise && run.Status.Phase == v1alpha1.RunFailed &&
+				sameRepo(run.Spec.Repository.URL, pr.Repository) {
 				return true, nil
 			}
 		}
@@ -762,7 +769,7 @@ func fencedBounded(s string, maxBytes int) string {
 // review is considered: its deterministic create is the round's lease.
 func (p *pass) reviewRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (bool, error) {
 	round := p.in.Status.Rounds + 1
-	if pending := p.round(v1alpha1.IntentStageRevise, round).latest(); pending != nil {
+	if pending := p.round(v1alpha1.IntentStageRevise, round, anyRepository).latest(); pending != nil {
 		if pending.Spec.Trigger == v1alpha1.IntentRunTriggerCommand {
 			if err := p.ackPRCommand(ctx, pending); err != nil {
 				return false, err
@@ -777,7 +784,7 @@ func (p *pass) reviewRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) 
 	reviews = slices.DeleteFunc(reviews, func(r ghclient.Review) bool {
 		return !isApprover(p.proj, r.Author.Login)
 	})
-	cutoff := p.reviewCutoff()
+	cutoff := p.reviewCutoff(pr.Repository)
 	eligible, requests, err := p.eligibleReviews(ctx, pr, reviews, cutoff)
 	if err != nil {
 		return false, err
@@ -860,7 +867,7 @@ func (p *pass) revisionRounds() int32 {
 	seen := map[int32]bool{}
 	for _, run := range p.runs {
 		if run.Spec.Stage == v1alpha1.IntentStageRevise && run.Spec.Trigger != v1alpha1.IntentRunTriggerChecks {
-			if latest := p.round(v1alpha1.IntentStageRevise, run.Spec.Round).latest(); latest != nil &&
+			if latest := p.round(v1alpha1.IntentStageRevise, run.Spec.Round, anyRepository).latest(); latest != nil &&
 				latest.Status.Phase == v1alpha1.RunFailed && latest.Status.Outcome == OutcomeNoUsableFeedback {
 				continue
 			}
@@ -870,13 +877,14 @@ func (p *pass) revisionRounds() int32 {
 	return int32(len(seen))
 }
 
-// reviewCutoff ignores feedback predating the previous round. IDs consumed
-// by its run are also recorded there; the time bound covers a burst larger
-// than the schema's 32 IDs without starting duplicate rounds from its tail.
-func (p *pass) reviewCutoff() time.Time {
+// reviewCutoff ignores feedback on the pull request in repoURL predating its
+// build, and predating the previous round. IDs consumed by its run are also
+// recorded there; the time bound covers a burst larger than the schema's 32
+// IDs without starting duplicate rounds from its tail.
+func (p *pass) reviewCutoff(repoURL string) time.Time {
 	var at time.Time
 	if ap := p.in.Status.Approval; ap != nil {
-		if build := p.round(v1alpha1.IntentStageBuild, ap.PlanRevision).latest(); build != nil &&
+		if build := p.round(v1alpha1.IntentStageBuild, ap.PlanRevision, repoURL).latest(); build != nil &&
 			build.Status.FinishedAt != nil {
 			at = build.Status.FinishedAt.Time
 		}
@@ -909,7 +917,9 @@ func (p *pass) createReviseRun(ctx context.Context, pr *v1alpha1.IntentPullReque
 	if ap == nil {
 		return nil, errors.New("a revise round has no approved plan")
 	}
-	build := p.round(v1alpha1.IntentStageBuild, ap.PlanRevision).latest()
+	// The round runs in its own repository's build-round image, never a
+	// sibling's: the build of the pull request's repository.
+	build := p.round(v1alpha1.IntentStageBuild, ap.PlanRevision, pr.Repository).latest()
 	if build == nil || build.Status.Phase != v1alpha1.RunComplete {
 		return nil, errors.New("a revise round has no completed build")
 	}
@@ -921,8 +931,8 @@ func (p *pass) createReviseRun(ctx context.Context, pr *v1alpha1.IntentPullReque
 	if !controlledBy(imageRepo.OwnerReferences, build.UID) || imageRepo.UID == "" {
 		return nil, fmt.Errorf("build image Repository %s is not the build run's own", imageRepo.Name)
 	}
-	repo, ok := p.runRepository(v1alpha1.IntentStageRevise)
-	if !ok || !sameRepo(repo.URL, pr.Repository) {
+	repo, ok := p.approvedRepository(pr.Repository)
+	if !ok {
 		return nil, errRepositoryGone
 	}
 	name := v1alpha1.IntentRunName(p.in.Name, v1alpha1.IntentStageRevise, round, repo.Name, 1)

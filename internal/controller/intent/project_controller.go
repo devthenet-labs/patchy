@@ -27,6 +27,7 @@ import (
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/forge"
 	"github.com/bitwise-media-group/patchy/internal/ghclient"
+	"github.com/bitwise-media-group/patchy/internal/intentperm"
 )
 
 // Project Ready reasons this controller sets beside the API's own.
@@ -247,11 +248,31 @@ func (r *ProjectReconciler) validate(ctx context.Context, p *v1alpha1.Project) (
 				o.Name, trigger)
 		}
 	}
-	if cond, err := r.validateRepositories(ctx, p); cond != nil || err != nil {
-		if cond == nil {
+	// Every repository resolves to one Forge, in the Project's order: with
+	// --intent-multi-repo a Project may list several, and an intent builds
+	// in any of them. The grants each needs are intentperm's, proven below.
+	urls := make([]string, 0, 1+len(p.Spec.Repositories))
+	urls = append(urls, p.Spec.IntentRepository)
+	for _, repo := range p.Spec.Repositories {
+		urls = append(urls, repo.URL)
+	}
+	for _, u := range urls {
+		if _, _, err := forge.ParseRepoURL(u); err != nil {
+			return notReady(v1alpha1.ReasonForgeUnresolved, "%v", err)
+		}
+		if err := r.GitHub.Resolve(ctx, u); err != nil {
+			if forgeUnresolved(err) {
+				return notReady(v1alpha1.ReasonForgeUnresolved, "%s: %v", u, err)
+			}
 			return metav1.Condition{}, err
 		}
-		return *cond, nil
+	}
+	reason, msg, err := r.proveGrants(ctx, p)
+	if err != nil {
+		return metav1.Condition{}, err
+	}
+	if reason != "" {
+		return notReady(reason, "%s", msg)
 	}
 	for _, l := range []struct{ name, color, description string }{
 		{trigger, triggerLabelColor, "patchy: plan and build this issue in project " + p.Name},
@@ -272,58 +293,71 @@ func (r *ProjectReconciler) validate(ctx context.Context, p *v1alpha1.Project) (
 		Message: "the repositories resolve, the App is installed on them, and the labels exist"}, nil
 }
 
-// validateRepositories checks the intent repository and every app
-// repository, in the Project's order (with --intent-multi-repo a Project may
-// list several, and an intent builds in any of them): each resolves to one
-// Forge, and the App holds on each the permissions intents use there, each
-// proven by minting the scoped token itself. It returns the not-Ready
-// condition naming the first repository that fails, nil when all pass, or an
-// error when GitHub could not answer.
-func (r *ProjectReconciler) validateRepositories(ctx context.Context, p *v1alpha1.Project) (*metav1.Condition,
-	error) {
-	notReady := func(reason, format string, args ...any) (*metav1.Condition, error) {
-		return &metav1.Condition{Type: v1alpha1.ConditionReady, Status: metav1.ConditionFalse,
-			Reason: reason, Message: fmt.Sprintf(format, args...)}, nil
-	}
-	urls := make([]string, 0, 1+len(p.Spec.Repositories))
-	urls = append(urls, p.Spec.IntentRepository)
-	for _, repo := range p.Spec.Repositories {
-		urls = append(urls, repo.URL)
-	}
-	for _, u := range urls {
-		if _, _, err := forge.ParseRepoURL(u); err != nil {
-			return notReady(v1alpha1.ReasonForgeUnresolved, "%v", err)
-		}
-		if err := r.GitHub.Resolve(ctx, u); err != nil {
-			if forgeUnresolved(err) {
-				return notReady(v1alpha1.ReasonForgeUnresolved, "%s: %v", u, err)
+// proveGrants proves the permissions intents use on each repository (the
+// intentperm table), each by minting a token with that one permission. It
+// returns no reason when the App holds them all, otherwise the Ready reason
+// and message naming the first it does not; an error is a transient failure
+// to find out.
+func (r *ProjectReconciler) proveGrants(ctx context.Context, p *v1alpha1.Project) (string, string, error) {
+	for _, need := range intentperm.For(&p.Spec) {
+		for _, g := range need.Grants {
+			perms, err := tokenPerms(g)
+			if err != nil {
+				return "", "", err
 			}
-			return nil, err
+			err = r.GitHub.Installed(ctx, need.URL, perms)
+			switch {
+			case err == nil:
+			case secretUnreadable(err):
+				return ReasonForgeSecretUnreadable, fmt.Sprintf(forgeSecretMessage, need.URL, err), nil
+			case installationRefused(err):
+				return v1alpha1.ReasonAppNotInstalled,
+					fmt.Sprintf("the App cannot act on %s with %s%s: %v", need.URL, g, grantPurpose(g), err), nil
+			default:
+				return "", "", err
+			}
 		}
 	}
-	type permCheck struct {
-		url   string
-		perms ghclient.TokenPerms
-		what  string
+	return "", "", nil
+}
+
+// tokenPerms is the token permission set that proves g alone: one
+// permission, as every intent token requests.
+func tokenPerms(g intentperm.Grant) (ghclient.TokenPerms, error) {
+	var p ghclient.TokenPerms
+	switch g.Permission {
+	case intentperm.Issues:
+		p.Issues = g.Access
+	case intentperm.Contents:
+		p.Contents = g.Access
+	case intentperm.PullRequests:
+		p.PullRequests = g.Access
+	case intentperm.Checks:
+		p.Checks = g.Access
+	case intentperm.Statuses:
+		p.Statuses = g.Access
+	case intentperm.Actions:
+		p.Actions = g.Access
+	default:
+		return p, fmt.Errorf("intent permission %s has no token permission", g)
 	}
-	checks := []permCheck{{p.Spec.IntentRepository, issuesWrite, "issues: write"}}
-	for _, repo := range p.Spec.Repositories {
-		checks = append(checks, permCheck{repo.URL, contentsWrite, "contents: write"},
-			permCheck{repo.URL, pullsWrite, "pull requests: write"})
+	if err := p.Validate(); err != nil {
+		return p, fmt.Errorf("intent permission %s: %w", g, err)
 	}
-	for _, check := range checks {
-		if err := r.GitHub.Installed(ctx, check.url, check.perms); err != nil {
-			if secretUnreadable(err) {
-				return notReady(ReasonForgeSecretUnreadable, forgeSecretMessage, check.url, err)
-			}
-			if installationRefused(err) {
-				return notReady(v1alpha1.ReasonAppNotInstalled,
-					"the App cannot act on %s with %s: %v", check.url, check.what, err)
-			}
-			return nil, err
-		}
+	return p, nil
+}
+
+// grantPurpose says what a grant is for when its name alone does not: the
+// check-fix reads exist only for spec.checks.fix, and the repository reads
+// are what approver permissions and the rate budget are read with.
+func grantPurpose(g intentperm.Grant) string {
+	switch {
+	case slices.Contains(intentperm.CheckFix(), g):
+		return " (spec.checks.fix reads failing checks)"
+	case slices.Contains(intentperm.RepositoryReads(), g):
+		return " (a reviewer's permission and the rate budget are read with it)"
 	}
-	return nil, nil
+	return ""
 }
 
 // forgeSecretMessage explains a ForgeSecretUnreadable Project: the

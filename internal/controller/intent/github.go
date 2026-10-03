@@ -88,7 +88,11 @@ type GitHub interface {
 
 // The permission set of each token. Every token requests exactly one
 // permission on exactly one repository; GitHub adds metadata read on its own,
-// which is what the collaborator-permission and rate-limit reads need.
+// which is what the collaborator-permission and rate-limit reads need. A
+// token must still request something, so those two request issues read, on
+// an application repository too: intentperm.RepositoryReads lists it there,
+// and Ready proves it. Every token is a grant of the intentperm table for
+// the repository it is used on (TestEveryTokenIsInTheTable).
 var (
 	issuesRead    = ghclient.TokenPerms{Issues: ghclient.PermRead}
 	issuesWrite   = ghclient.TokenPerms{Issues: ghclient.PermWrite}

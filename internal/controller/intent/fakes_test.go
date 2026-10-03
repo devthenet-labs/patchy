@@ -207,12 +207,15 @@ type fakeGitHub struct {
 	resolveErr   error
 	installedErr error
 	// repoErrs answer "<method> <owner/name lower-cased>" (Resolve,
-	// Installed) with an error on every call; installed records each
-	// installation check, "<owner/name> <perms>".
-	repoErrs  map[string]error
-	installed []string
-	errs      map[string][]error
-	calls     map[string]int
+	// Installed) with an error on every call.
+	repoErrs map[string]error
+	// refused fails the installation check of one permission set: GitHub
+	// refuses a token for a permission the installation was not granted.
+	refused map[ghclient.TokenPerms]error
+	// installs are the installation checks made, in order.
+	installs []installCheck
+	errs     map[string][]error
+	calls    map[string]int
 	// sinces are the since of every comment listing, in order.
 	sinces []time.Time
 }
@@ -486,14 +489,23 @@ func (f *fakeGitHub) Resolve(_ context.Context, repoURL string) error {
 	return f.resolveErr
 }
 
-func (f *fakeGitHub) Installed(_ context.Context, repoURL string, perms ghclient.TokenPerms) error {
+// installCheck is one Installed call: a token for perms on url.
+type installCheck struct {
+	url   string
+	perms ghclient.TokenPerms
+}
+
+func (f *fakeGitHub) Installed(_ context.Context, url string, perms ghclient.TokenPerms) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("Installed"); err != nil {
 		return err
 	}
-	f.installed = append(f.installed, fmt.Sprintf("%s %+v", repoSlug(repoURL), perms))
-	if err := f.repoErrs["Installed "+strings.ToLower(repoSlug(repoURL))]; err != nil {
+	f.installs = append(f.installs, installCheck{url: url, perms: perms})
+	if err := f.repoErrs["Installed "+strings.ToLower(repoSlug(url))]; err != nil {
+		return err
+	}
+	if err := f.refused[perms]; err != nil {
 		return err
 	}
 	return f.installedErr

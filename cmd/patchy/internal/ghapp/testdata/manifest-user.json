@@ -1,0 +1,13 @@
+{
+  "name": "patchy",
+  "url": "https://example.test/patchy",
+  "description": "patchy: intents",
+  "redirect_url": "https://github.com/settings/apps",
+  "public": false,
+  "default_permissions": {
+    "contents": "write",
+    "issues": "write",
+    "metadata": "read",
+    "pull_requests": "write"
+  }
+}

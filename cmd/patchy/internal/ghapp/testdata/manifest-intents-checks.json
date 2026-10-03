@@ -1,0 +1,16 @@
+{
+  "name": "patchy-acme",
+  "url": "https://github.com/bitwise-media-group/patchy",
+  "description": "patchy: intents, check-fix rounds",
+  "redirect_url": "https://github.com/organizations/acme/settings/apps",
+  "public": false,
+  "default_permissions": {
+    "actions": "read",
+    "checks": "read",
+    "contents": "write",
+    "issues": "write",
+    "metadata": "read",
+    "pull_requests": "write",
+    "statuses": "read"
+  }
+}

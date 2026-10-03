@@ -13,7 +13,7 @@
 # The base, pinned to a patchy release (release-please stamps the version).
 # Pin its digest as well once you have built against it.
 # x-release-please-start-version
-ARG AGENT_BASE=ghcr.io/devthenet-labs/patchy/agent-base:v0.12.13
+ARG AGENT_BASE=ghcr.io/devthenet-labs/patchy/agent-base:v0.12.14
 # x-release-please-end
 FROM ${AGENT_BASE}
 
@@ -21,7 +21,7 @@ FROM ${AGENT_BASE}
 # runs as 65532 whatever the image says).
 USER 0:0
 
-# The toolchain go.mod's go directive asks for (1.24 for patchy-target). Wolfi
+# The toolchain go.mod's go directive asks for (1.24 here; match yours). Wolfi
 # builds it against glibc, puts go on /usr/bin, and pulls in build-base, so
 # cgo works too.
 # hadolint ignore=DL3018

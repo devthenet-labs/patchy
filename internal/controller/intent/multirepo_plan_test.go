@@ -22,6 +22,7 @@ import (
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/forge"
+	"github.com/bitwise-media-group/patchy/internal/intentperm"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 )
 
@@ -119,19 +120,22 @@ func (e *env) repository(name string) *v1alpha1.Repository {
 // TestMultiRepoProjectValidation: a Project of more than one repository is
 // Ready only with --intent-multi-repo, and then every repository is held to
 // the checks the one repository always was: it resolves to one Forge, and the
-// App can push to it and open pull requests in it. A failing repository is
-// named. A repository name with mixed case, a dot and an underscore is as
-// good as any.
+// App holds on it every grant of the intentperm table, each proven by a token
+// minted with it, the check-fix reads included when spec.checks.fix names a
+// check. A failing repository is named. A repository name with mixed case, a
+// dot and an underscore is as good as any.
 func TestMultiRepoProjectValidation(t *testing.T) {
 	for _, tt := range []struct {
 		name       string
 		multi      bool
+		fix        []string
 		repoErrs   map[string]error
 		wantReason string
 		wantIn     string
 	}{
 		{name: "off", wantReason: ReasonUnsupportedRepositories, wantIn: "--intent-multi-repo"},
 		{name: "on", multi: true, wantReason: ReasonValidated},
+		{name: "on with check fixes", multi: true, fix: []string{"test"}, wantReason: ReasonValidated},
 		{name: "the second repository not installed", multi: true,
 			repoErrs:   map[string]error{"Installed acme/acme.web_app": ghError(http.StatusNotFound, "Not Found")},
 			wantReason: v1alpha1.ReasonAppNotInstalled, wantIn: webRepoURL},
@@ -140,7 +144,9 @@ func TestMultiRepoProjectValidation(t *testing.T) {
 			wantReason: v1alpha1.ReasonForgeUnresolved, wantIn: webRepoURL},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			e := newEnv(t, testMultiProject())
+			p := testMultiProject()
+			p.Spec.Checks.Fix = tt.fix
+			e := newEnv(t, p)
 			e.multiRepo(tt.multi)
 			maps.Copy(e.gh.repoErrs, tt.repoErrs)
 			e.reconcileProject()
@@ -154,17 +160,21 @@ func TestMultiRepoProjectValidation(t *testing.T) {
 			if tt.wantReason != ReasonValidated {
 				return
 			}
-			for _, slug := range []string{"acme/app", webSlug} {
-				var checks int
-				for _, s := range e.gh.installed {
-					if strings.HasPrefix(s, slug+" ") {
-						checks++
+			var want []installCheck
+			for _, need := range intentperm.For(&p.Spec) {
+				for _, g := range need.Grants {
+					perms, err := tokenPerms(g)
+					if err != nil {
+						t.Fatal(err)
 					}
+					want = append(want, installCheck{url: need.URL, perms: perms})
 				}
-				if checks != 2 {
-					t.Errorf("%s: %d installation checks, want contents and pull requests: %v", slug, checks,
-						e.gh.installed)
-				}
+			}
+			e.gh.mu.Lock()
+			got := slices.Clone(e.gh.installs)
+			e.gh.mu.Unlock()
+			if !slices.Equal(got, want) {
+				t.Errorf("installation checks =\n%+v\nwant the intentperm table's\n%+v", got, want)
 			}
 		})
 	}

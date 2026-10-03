@@ -72,9 +72,12 @@ func Color(w io.Writer, noColor bool) bool {
 	if noColor || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		return false
 	}
+	return IsTerminal(w)
+}
+
+// IsTerminal reports whether w is a terminal: someone reads it with their
+// eyes, and it keeps what it shows in a scrollback.
+func IsTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
-	return term.IsTerminal(int(f.Fd()))
+	return ok && term.IsTerminal(int(f.Fd()))
 }

@@ -1,0 +1,12 @@
+{
+  "name": "patchy-acme",
+  "url": "https://github.com/bitwise-media-group/patchy",
+  "description": "patchy: intents",
+  "public": false,
+  "default_permissions": {
+    "contents": "write",
+    "issues": "write",
+    "metadata": "read",
+    "pull_requests": "write"
+  }
+}

@@ -95,13 +95,17 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   caller's own kubeconfig, no channel through any controller. get/describe/review/browse/can-i plus the five
   action verbs. Writes SPEC only, same as status-server; enforcement of the custom verbs for direct API
   writes is the ValidatingAdmissionPolicy in `deploy/kustomize/base/admission-policy.yaml`, NOT the CLI's
-  own SelfSubjectAccessReview (that is ergonomics). Three cluster-free commands ride along: `dev` (the
+  own SelfSubjectAccessReview (that is ergonomics). Four cluster-free commands ride along: `dev` (the
   generic-integration test harness), `mirror` (vendored chart/artifact mirroring over `internal/mirror`;
-  kubeconfig flags inert, git never touched) and `check image` (source-controller's runner-image checks through
+  kubeconfig flags inert, git never touched), `check image` (source-controller's runner-image checks through
   `resolve.Inspect`, plus `--run`: `agent-runner preflight` in a local docker shaped like the agent pod; engine in
-  `cmd/patchy/internal/imagecheck`). Builds for windows too, and ships a `kubectl-patchy`
-  alias. Ships no container image: it is distributed as its own `patchy-cli` release archive (separate from
-  the cluster binaries' `patchy` archive) and as a Homebrew cask in bitwise-media-group/homebrew-tap.
+  `cmd/patchy/internal/imagecheck`) and `setup github-app` (creates the GitHub App through the manifest flow with
+  exactly `intentperm.ForApp`'s permissions and events for `--security`/`--intents`/`--checks`, then writes its
+  ghsecret-keyed Secret manifest to a 0600 file or a pipe, never to the cluster and never the private key to a
+  terminal or a file other users can read; engine in `cmd/patchy/internal/ghapp`, plain net/http, no GitHub
+  client). Builds for windows too, and ships a `kubectl-patchy` alias. Ships no container image: it is distributed
+  as its own `patchy-cli` release archive (separate from the cluster binaries' `patchy` archive) and as a Homebrew
+  cask in bitwise-media-group/homebrew-tap.
 
 ## Layout
 
@@ -266,6 +270,15 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   definitions), shared so the controllers that push never import each other: remediation holds a Finding's
   changesets to `Rules` without a deny list, intent-controller an intent's to `IntentRules` (plus `.github`,
   `.patchy`, `.devcontainer` refused). Imports only the stdlib and `envelope` (a test pins that).
+- `intentperm` — the one table of the GitHub App permissions patchy needs, in two views of the same rows. `For`: what
+  a Project needs per repository (issues write on the intent repository; contents and pull requests write and issues
+  read on each app repository, the last being the token reviewer permissions and the rate budget are read with;
+  checks, statuses and actions read there too when `spec.checks.fix` is set). `ForApp`: the permissions and webhook
+  events an App registered for a set of features (`security`, `intents`, `checks`) must hold, metadata read included,
+  and nothing more. Pure (stdlib + `api/v1alpha1`, a test pins that), so the CLI can read it without linking a GitHub
+  client; intent-controller's Ready mints a token per grant of `For`, and an App manifest is built from `ForApp`, so
+  the App holds exactly what a Project is checked for. Every token intent-controller mints must be a grant of `For` for
+  its repository (`TestEveryTokenIsInTheTable`), so a new GitHub call cannot widen what Ready proves.
 - `runnerimage` (+ `runnerimage/resolve`) — repository-declared agent runner images. The parent is the pure
   core (declaration files out of a tar.gz stream, `.patchy/agent.yaml` and the devcontainer.json fallback with
   precedence, reference grammar and strict digests, the allowlist `Policy`, PATH/ENV/VOLUME checks, the

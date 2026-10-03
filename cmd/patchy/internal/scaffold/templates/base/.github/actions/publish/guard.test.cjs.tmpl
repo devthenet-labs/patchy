@@ -1,8 +1,9 @@
 'use strict';
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {validate, parseID, declaredTag} = require('./guard.cjs');
+const {guard, validate, parseID, declaredTag} = require('./guard.cjs');
 const sha = 'a'.repeat(40);
+const branchHead = 'b'.repeat(40);
 const BRANCH = '<% .Branch %>';
 const REPO_ID = 1234567890;
 const OWNER_ID = 987654321;
@@ -10,6 +11,14 @@ const RUNTIME_WORKFLOW = '.github/workflows/<% .RuntimeWorkflowFile %>';
 const AGENT_WORKFLOW = '.github/workflows/agent-image.yml';
 const AGENT_REPOSITORY = '123456789012.dkr.ecr.us-east-1.amazonaws.com/team/agents/example-app';
 const AGENT_YAML = `# a comment\nimage: ${AGENT_REPOSITORY}:toolchain-v3\n`;
+
+// The default branch as the branches API names it, with the comparison
+// from the built commit to its head: here two commits ahead, so the built
+// commit is an ancestor of the head.
+function onBranch() {
+  return {name: BRANCH, head: branchHead, comparison: {status: 'ahead', ahead_by: 2, behind_by: 0,
+    base_commit: {sha}, merge_base_commit: {sha}}};
+}
 
 function fixture(kind = 'runtime', event = 'pull_request') {
   const identity = {owner: 'example-org', name: 'Example.App', repoID: REPO_ID, ownerID: OWNER_ID};
@@ -19,7 +28,7 @@ function fixture(kind = 'runtime', event = 'pull_request') {
     head_sha: sha, workflow_id: 5, path, event, head_branch: BRANCH, run_attempt: 1, pull_requests: [{number: 3}]},
   {id: 5, path, state: 'active'}, {number: 3, state: 'open', base: {ref: BRANCH, repo}, head: {repo, sha}},
   [{id: 7, name: `${kind}-${sha}-1`, expired: false, size_in_bytes: 123}], kind,
-  {yaml: AGENT_YAML, repository: AGENT_REPOSITORY}];
+  {yaml: AGENT_YAML, repository: AGENT_REPOSITORY}, event === 'pull_request' ? undefined : onBranch()];
 }
 
 test('same-repo current PR, default-branch runtime, dispatched runtime and agent accepted', () => {
@@ -64,6 +73,106 @@ for (const [name, mutate] of Object.entries({
 })) {
   test(`reject ${name}`, () => {const args = fixture(); mutate(args); assert.throws(() => validate(...args));});
 }
+
+test('the built commit may be the default branch head itself', () => {
+  const args = fixture('agent', 'push');
+  Object.assign(args[8].comparison, {status: 'identical', ahead_by: 0});
+  args[8].head = sha;
+  assert.equal(validate(...args).source, 'main');
+});
+
+// head_branch names the default branch for a run of a tag named after it
+// too, at a commit no review reached; only ancestry proves the branch.
+test('a default-branch build must be on the branch, not only named for it', () => {
+  const elsewhere = 'c'.repeat(40);
+  for (const [name, mutate] of Object.entries({
+    unproved: a => {a[8] = undefined;},
+    // A tag named after the branch, at a commit on a side branch: the
+    // branch head is behind it.
+    tag_named_like_the_branch: a => {Object.assign(a[8].comparison,
+      {status: 'behind', ahead_by: 0, behind_by: 1, merge_base_commit: {sha: branchHead}});},
+    diverged: a => {Object.assign(a[8].comparison,
+      {status: 'diverged', ahead_by: 2, behind_by: 1, merge_base_commit: {sha: elsewhere}});},
+    other_merge_base: a => {a[8].comparison.merge_base_commit = {sha: elsewhere};},
+    other_base: a => {a[8].comparison.base_commit = {sha: elsewhere};},
+    missing_merge_base: a => {delete a[8].comparison.merge_base_commit;},
+    behind_count: a => {a[8].comparison.behind_by = 1;},
+    no_comparison: a => {delete a[8].comparison;},
+    other_branch: a => {a[8].name = 'other';},
+    unsafe_head: a => {a[8].head = BRANCH;},
+  })) {
+    for (const kind of ['runtime', 'agent']) {
+      for (const event of ['push', 'workflow_dispatch']) {
+        const args = fixture(kind, event);
+        mutate(args);
+        assert.throws(() => validate(...args), /must be on/, `${name} ${kind} ${event}`);
+      }
+    }
+  }
+});
+
+// A fake GitHub API holding exactly the fixture: getBranch names the branch
+// head, and the comparison is whatever the test says it is.
+function fakeGitHub(args, comparison) {
+  const [, repo, run, workflow, pr, artifacts] = args;
+  const calls = [];
+  const data = value => Promise.resolve({data: value});
+  const github = {
+    rest: {
+      repos: {
+        get: () => data(repo),
+        getBranch: p => {calls.push(`getBranch ${p.branch}`); return data({name: p.branch, commit: {sha: branchHead}});},
+        compareCommitsWithBasehead: p => {calls.push(`compare ${p.basehead}`); return data(comparison);},
+        getContent: p => {
+          calls.push(`getContent ${p.path}@${p.ref}`);
+          return data({type: 'file', encoding: 'base64', size: AGENT_YAML.length,
+            content: Buffer.from(AGENT_YAML).toString('base64')});
+        },
+      },
+      actions: {
+        getWorkflowRun: () => data(run),
+        getWorkflow: () => data(workflow),
+        listWorkflowRunArtifacts: () => data({artifacts}),
+      },
+      pulls: {get: () => data(pr)},
+    },
+    paginate: async (method, params) => (await method(params)).data.artifacts,
+  };
+  return {github, calls};
+}
+
+function guardArgs(github, kind) {
+  return {github, context: {repo: {owner: 'example-org', repo: 'Example.App'}}, runID: '42', kind,
+    repositoryID: String(REPO_ID), ownerID: String(OWNER_ID), agentRepository: AGENT_REPOSITORY};
+}
+
+test('guard compares the built commit with the branch head by SHA', async () => {
+  for (const kind of ['runtime', 'agent']) {
+    const args = fixture(kind, 'push');
+    const {github, calls} = fakeGitHub(args, args[8].comparison);
+    const result = await guard(guardArgs(github, kind));
+    assert.equal(result.source, 'main', kind);
+    assert.deepEqual(calls.slice(0, 2), [`getBranch ${BRANCH}`, `compare ${sha}...${branchHead}`], kind);
+  }
+});
+
+test('guard refuses a run of a tag named after the default branch', async () => {
+  for (const kind of ['runtime', 'agent']) {
+    // The run reports head_branch as the branch's name, but the tag's
+    // commit sits on a side branch: the branch head is behind it.
+    const args = fixture(kind, 'push');
+    const {github} = fakeGitHub(args, {status: 'behind', ahead_by: 0, behind_by: 1,
+      base_commit: {sha}, merge_base_commit: {sha: branchHead}});
+    await assert.rejects(guard(guardArgs(github, kind)), /must be on/, kind);
+  }
+});
+
+test('guard never compares a pull request head with the branch', async () => {
+  const args = fixture();
+  const {github, calls} = fakeGitHub(args, undefined);
+  assert.equal((await guard(guardArgs(github, 'runtime'))).source, 'pull_request');
+  assert.deepEqual(calls, []);
+});
 
 test('agent images come only from default-branch runs of the agent workflow', () => {
   const args = fixture('agent', 'push');

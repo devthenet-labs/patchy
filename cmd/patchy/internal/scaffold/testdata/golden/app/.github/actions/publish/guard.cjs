@@ -5,6 +5,12 @@
 // an open same-repository PR head or of the default branch. Nothing here
 // trusts the workflow_run payload or the artifact's contents.
 //
+// A run's head_branch is only a name: for a run a tag triggered, or a
+// dispatch at a tag, it is the tag's name, so a tag named after the default
+// branch carries it too. A default-branch build is therefore proved by
+// ancestry: its commit must be the branch's head or an ancestor of it,
+// compared by SHA against the head the branches API names.
+//
 // The repository's identity is its immutable numeric IDs, from the
 // repository variables PUBLISH_REPOSITORY_ID and PUBLISH_OWNER_ID. The name
 // comes from the run's own context and only selects the API path; a
@@ -50,7 +56,19 @@ function declaredTag(text, repository) {
   return tag;
 }
 
-function validate(identity, repo, run, workflow, pr, artifacts, kind, agent) {
+// Whether sha is on the default branch: branch is the branch as the
+// branches API names it, with the three-dot comparison from sha to its
+// head. sha is the head or an ancestor of it exactly when it is the
+// comparison's merge base and the head is not behind it.
+function onBranch(branch, sha) {
+  if (!branch || branch.name !== BRANCH || !SHA.test(branch.head) || !branch.comparison) return false;
+  const c = branch.comparison;
+  return ['identical', 'ahead'].includes(c.status) && c.behind_by === 0 &&
+    Boolean(c.base_commit) && c.base_commit.sha === sha &&
+    Boolean(c.merge_base_commit) && c.merge_base_commit.sha === sha;
+}
+
+function validate(identity, repo, run, workflow, pr, artifacts, kind, agent, branch) {
   const {owner, name, repoID, ownerID} = identity;
   check(Number.isSafeInteger(repoID) && repoID > 0 && Number.isSafeInteger(ownerID) && ownerID > 0, 'configured identity');
   check(repo.id === repoID && repo.owner.id === ownerID && repo.full_name === `${owner}/${name}` &&
@@ -72,6 +90,7 @@ function validate(identity, repo, run, workflow, pr, artifacts, kind, agent) {
     source = 'pull_request';
   } else {
     check(['push', 'workflow_dispatch'].includes(run.event) && run.head_branch === BRANCH, 'default branch only');
+    check(onBranch(branch, run.head_sha), `the built commit must be on ${BRANCH}, not only named for it`);
     source = 'main';
   }
   const artifactName = `${kind}-${run.head_sha}-${run.run_attempt}`;
@@ -103,6 +122,18 @@ async function guard({github, context, runID, kind, repositoryID, ownerID, agent
   if (run.event === 'pull_request' && run.pull_requests.length === 1) {
     ({data: pr} = await github.rest.pulls.get({...params, pull_number: run.pull_requests[0].number}));
   }
+  // A default-branch build's commit, compared with the branch's head by SHA:
+  // the branch is named only to the branches API, never as a ref a tag of
+  // the same name could shadow.
+  let branch;
+  if (run.event !== 'pull_request' && SHA.test(run.head_sha)) {
+    const {data: b} = await github.rest.repos.getBranch({...params, branch: BRANCH});
+    const head = b && b.commit && b.commit.sha;
+    check(SHA.test(head), `${BRANCH} head`);
+    const {data: comparison} = await github.rest.repos.compareCommitsWithBasehead({...params,
+      basehead: `${run.head_sha}...${head}`, per_page: 1});
+    branch = {name: b.name, head, comparison};
+  }
   // Per-run artifacts only; never search globally or trust metadata from the artifact.
   const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts,
     {...params, run_id: runID, per_page: 100});
@@ -114,7 +145,7 @@ async function guard({github, context, runID, kind, repositoryID, ownerID, agent
       `${AGENT_YAML} must be a file`);
     agent = {yaml: Buffer.from(file.content, 'base64').toString('utf8'), repository: agentRepository};
   }
-  return validate(identity, repo, run, workflow, pr, artifacts, kind, agent);
+  return validate(identity, repo, run, workflow, pr, artifacts, kind, agent, branch);
 }
 
 module.exports = {guard, validate, parseID, declaredTag};

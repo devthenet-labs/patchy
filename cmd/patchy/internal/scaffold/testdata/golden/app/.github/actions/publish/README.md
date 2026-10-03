@@ -22,7 +22,9 @@ request source and never unpacks image layers. Before it asks for AWS credential
 1. checks its repository variables (`check-config.sh`): an unset or malformed one fails closed;
 2. re-reads the repository, run, workflow, pull request and artifact metadata from GitHub's API (`guard.cjs`). The
    repository's identity is its immutable numeric ID and owner ID; a pull request must still be open, in this exact
-   repository, targeting `main`, at the successful run's exact head. The artifact is selected by ID from that
+   repository, targeting `main`, at the successful run's exact head. A `main` build's commit must be
+   the branch's head or an ancestor of it, compared by SHA with the head the branches API names: a run's `head_branch`
+   is only a name, and a run of a tag named `main` carries it too. The artifact is selected by ID from that
    specific run. For the agent image it also reads `.patchy/agent.yaml` at the built commit, which must name
    `ECR_REGISTRY/AGENT_IMAGE_REPOSITORY` with a `toolchain-v<N>` tag;
 3. validates a bounded, single-image linux/amd64 OCI archive (`validate_oci.py`): blob hashes and descriptor sizes, no
@@ -48,7 +50,8 @@ The `job_workflow_ref` is compared exactly, case included. The runtime publisher
 and neither role can write any other repository. A wrong repository variable can only make a publish fail.
 
 Changes to `.github/` and `.patchy/` need human review; patchy's intent changesets refuse both paths. These protections
-assume the default branch's maintainers stay trusted.
+assume the default branch's maintainers stay trusted. As defence in depth, protect `main` with a branch ruleset
+and add a tag ruleset that restricts creating tags named `main`, so no ref can pass for the branch by name.
 
 ## Repository variables
 

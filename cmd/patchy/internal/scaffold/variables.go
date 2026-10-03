@@ -30,7 +30,8 @@ type Variable struct {
 	// the scaffold does not (the repository's numeric IDs).
 	Shell string
 	// Placeholder describes the value when neither does (a role ARN, which
-	// the infrastructure that creates the role reports).
+	// the infrastructure that creates the role reports). It is shown in
+	// angle brackets inside single quotes, so it never holds a quote.
 	Placeholder string
 	// About says what the variable is.
 	About string
@@ -50,13 +51,13 @@ func Variables(o Options) []Variable {
 		{Name: "AWS_REGION", Value: o.Region(), About: "the registry's AWS region"},
 		{Name: "ECR_REGISTRY", Value: o.Registry, About: "the ECR registry host"},
 		{Name: "AGENT_IMAGE_REPOSITORY", Value: o.AgentRepository(),
-			About: "the agent image's ECR repository, which .patchy/agent.yaml names"},
-		{Name: "AGENT_ROLE_ARN", Placeholder: "the agent publisher role's ARN",
-			About: "assumed only by publish-agent.yml"},
+			About: "the agent image's ECR repository, which `.patchy/agent.yaml` names"},
+		{Name: "AGENT_ROLE_ARN", Placeholder: "agent publisher role ARN",
+			About: "assumed only by `publish-agent.yml`"},
 		{Name: "RUNTIME_IMAGE_REPOSITORY", Value: o.RuntimeRepository(),
 			About: "the runtime (preview) image's ECR repository"},
-		{Name: "RUNTIME_ROLE_ARN", Placeholder: "the runtime publisher role's ARN",
-			About: "assumed only by publish-runtime.yml"},
+		{Name: "RUNTIME_ROLE_ARN", Placeholder: "runtime publisher role ARN",
+			About: "assumed only by `publish-runtime.yml`"},
 		{Name: AgentPublishEnabled, Value: "true",
 			About: "publishes the agent image; anything else skips it"},
 		{Name: PreviewPublishEnabled, Value: "true",
@@ -68,7 +69,7 @@ func Variables(o Options) []Variable {
 func variablesTable(o Options) string {
 	rows := [][]string{{"Variable", "Value", "What it is"}}
 	for _, v := range Variables(o) {
-		value := v.Placeholder
+		value := "the " + v.Placeholder
 		switch {
 		case v.Value != "":
 			value = "`" + v.Value + "`"

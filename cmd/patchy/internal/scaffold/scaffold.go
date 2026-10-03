@@ -166,7 +166,7 @@ func validatePinned(ref string) error {
 		return err
 	}
 	if parsed.Digest == "" {
-		return fmt.Errorf("image %q must be pinned by digest (…@sha256:<64 hex>)", ref)
+		return fmt.Errorf("image %q must be pinned by digest (...@sha256:<64 hex>)", ref)
 	}
 	return nil
 }

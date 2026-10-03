@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/spf13/cobra"
 
@@ -21,7 +22,7 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/version"
 )
 
-// agentBaseTimeout bounds pinning the agent base: a tag listing and a HEAD.
+// agentBaseTimeout bounds pinning the agent base: one HEAD.
 const agentBaseTimeout = time.Minute
 
 // newInitCmd is the `init` verb: write the files a repository needs to work
@@ -92,9 +93,12 @@ func newInitAppCmd(opts *Options) *cobra.Command {
 			"branch to the one origin's HEAD names (else main); both are read from .git, so no\n" +
 			"git binary is needed. The image name, which both registry repositories end in,\n" +
 			"defaults to the repository name made image-safe (Hello.Web becomes hello-web).\n" +
-			"The agent base is the one released with this CLI (for a development build, the\n" +
-			"newest release in the registry), pinned to the digest its tag names there now;\n" +
-			"--agent-base overrides it. Nothing else is fetched: no GitHub call is made.\n\n" +
+			"The agent base is the one released with this CLI, pinned to the digest its tag\n" +
+			"names in the registry now. --agent-base overrides it: a reference pinned by\n" +
+			"digest is used as given, and a tag is pinned the same way. A development build\n" +
+			"has no agent base of its own, so it needs --agent-base, as does a registry that\n" +
+			"cannot be reached; pass a reference pinned by digest (...@sha256:<64 hex>) then.\n" +
+			"Nothing else is fetched: no GitHub call is made.\n\n" +
 			"An existing file is never overwritten without --force, and a symbolic link or\n" +
 			"other non-regular file never is: every path is checked before any is written.\n" +
 			"The written paths are printed on stdout, the next steps on stderr.",
@@ -123,7 +127,7 @@ func newInitAppCmd(opts *Options) *cobra.Command {
 	fl.StringVar(&f.agentPrefix, "agent-prefix", scaffold.DefaultAgentPrefix,
 		"registry path the agent image sits under, as the operator's --repository-image-registries allows")
 	fl.StringVar(&f.agentBase, "agent-base", "",
-		"agent base image to build FROM; a tag is pinned to its digest (default: the one released with this CLI)")
+		"agent base image to build FROM, pinned by digest or a tag to pin (default: the one released with this CLI)")
 	fl.StringVar(&f.branch, "default-branch", "",
 		"the repository's default branch (default: the one origin's HEAD names, else main)")
 	fl.BoolVar(&f.existing, "existing", false,
@@ -161,12 +165,12 @@ func runInitApp(ctx context.Context, opts *Options, f *initAppFlags, dir string,
 		return err
 	}
 	pinCtx, cancel := context.WithTimeout(ctx, agentBaseTimeout)
-	o.AgentBase, err = agentBase(pinCtx, deps, f.agentBase)
+	o.Images.AgentBase, err = resolveAgentBase(pinCtx, deps.registry, deps.version, f.agentBase)
 	cancel()
 	if err != nil {
 		return err
 	}
-	opts.debugf("agent base %s", o.AgentBase)
+	opts.debugf("agent base %s", o.Images.AgentBase)
 
 	files, err := scaffold.Plan(o)
 	if err != nil {
@@ -188,7 +192,7 @@ func runInitApp(ctx context.Context, opts *Options, f *initAppFlags, dir string,
 		}
 	}
 	notef(opts.ErrOut, "\npatchy: wrote %d files for %s into %s (agent base %s).\n\n", len(files), o.Repo, dir,
-		o.AgentBase)
+		o.Images.AgentBase)
 	notef(opts.ErrOut, "%s", scaffold.NextSteps(o, scaffold.Present{
 		Dockerfile: fileExists(filepath.Join(dir, "Dockerfile")),
 		GoMod:      fileExists(filepath.Join(dir, "go.mod")),
@@ -207,6 +211,7 @@ func initAppOptions(f *initAppFlags, dir string) (scaffold.Options, error) {
 		AgentPrefix: f.agentPrefix,
 		Branch:      f.branch,
 		Existing:    f.existing,
+		Images:      scaffold.Images{Go: scaffold.GoImage, Runtime: scaffold.RuntimeImage},
 	}
 	if !slices.Contains(scaffold.Langs(), f.lang) {
 		return o, errUsage(fmt.Errorf("--lang %q has no templates; choose one of %s", f.lang,
@@ -237,26 +242,36 @@ func initAppOptions(f *initAppFlags, dir string) (scaffold.Options, error) {
 	return o, nil
 }
 
-// agentBase is the agent base reference, pinned by digest: --agent-base as
-// given when it carries a digest, its tag's digest when it does not, and
-// otherwise the release's own agent base.
-func agentBase(ctx context.Context, deps initAppDeps, flag string) (string, error) {
-	const pass = "pass --agent-base with an image reference pinned by digest"
-	if flag == "" {
-		img, err := imagecheck.ReleaseImage(ctx, deps.registry, imagecheck.AgentBaseRepository, deps.version)
-		if err != nil {
-			return "", fmt.Errorf("agent base: %w; %s", err, pass)
+// agentBaseRepository is where a patchy release publishes its agent base,
+// tagged v<version>: the FROM of a scaffolded .patchy/Dockerfile.
+const agentBaseRepository = "ghcr.io/devthenet-labs/patchy/agent-base"
+
+// resolveAgentBase is the one place `init app` chooses the agent base, and
+// it always returns a reference pinned by digest, since the scaffold engine
+// takes nothing else. override (--agent-base) is used as given when it
+// carries a digest (scaffold.Plan checks it), and a tag is pinned to the
+// digest it names in the registry now. Without an override, a release CLI
+// (exactly X.Y.Z, with or without its v) takes the agent base released with
+// it, pinned the same way. Anything else cannot be resolved, and the error
+// says to pass a digest-pinned --agent-base.
+func resolveAgentBase(ctx context.Context, reg imagecheck.Registry, cliVersion, override string) (string, error) {
+	const pass = "pass --agent-base <image>@sha256:<digest>"
+	ref := override
+	if ref == "" {
+		v, err := semver.StrictNewVersion(strings.TrimPrefix(cliVersion, "v"))
+		if err != nil || v.Prerelease() != "" || v.Metadata() != "" {
+			return "", fmt.Errorf("this CLI is a development build (version %q) with no agent base released "+
+				"with it; %s", cliVersion, pass)
 		}
-		return img.String(), nil
+		ref = agentBaseRepository + ":v" + v.String()
+	} else if strings.Contains(ref, "@") {
+		return ref, nil
 	}
-	if strings.Contains(flag, "@") {
-		return flag, nil // Plan validates it.
-	}
-	digest, err := deps.registry.Digest(ctx, flag)
+	digest, err := reg.Digest(ctx, ref)
 	if err != nil {
-		return "", fmt.Errorf("--agent-base %s did not resolve in the registry: %w; %s", flag, err, pass)
+		return "", fmt.Errorf("agent base %s did not resolve in the registry: %w; %s", ref, err, pass)
 	}
-	return imagecheck.RunnerImage{Reference: flag, Digest: digest}.String(), nil
+	return ref + "@" + digest, nil
 }
 
 // conflictHint explains a refusal to overwrite: --force for files that may

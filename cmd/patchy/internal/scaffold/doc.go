@@ -14,9 +14,12 @@
 // publish-agent.yml, gated separately on PREVIEW_PUBLISH_ENABLED and
 // AGENT_PUBLISH_ENABLED) and their guard scripts and tests under
 // .github/actions/publish, which patchy's changeset rules keep agents out
-// of. A new application also gets a runtime Dockerfile, a .dockerignore and
-// a small service that meets the preview runtime contract (uid 65532, a
-// read-only root filesystem, one port, a readiness path). Options.Existing
+// of; that directory's README.md lists the repository variables to set and
+// the two trusted workflow paths the AWS roles trust. A new application also
+// gets a runtime Dockerfile, a .dockerignore, a .gitignore, a README.md
+// carrying the same two tables, and a small service that meets the preview
+// runtime contract (uid 65532, a read-only root filesystem, one port, a
+// readiness path). Options.Existing
 // leaves the application's own files alone and builds its runtime image in
 // a workflow of its own, so its CI is untouched.
 //

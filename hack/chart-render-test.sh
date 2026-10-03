@@ -281,7 +281,9 @@ expect_fail 'preview missing image registry' 'preview.imageRegistry' --set previ
 expect_fail 'preview missing node pool' 'preview.nodeIsolation.nodePool' -f "$fixtures/preview-foundation.yaml" --set preview.nodeIsolation.nodePool=
 expect_fail 'preview missing node class' 'preview.nodeIsolation.nodeClass' -f "$fixtures/preview-foundation.yaml" --set preview.nodeIsolation.nodeClass=
 expect_fail 'preview missing node taint key' 'preview.nodeIsolation.taintKey' -f "$fixtures/preview-foundation.yaml" --set preview.nodeIsolation.taintKey=
-expect_fail 'preview zero slots' 'preview.slotCount' -f "$fixtures/preview-foundation.yaml" --set preview.slotCount=0
+expect_fail 'preview zero slots' "'/preview/slotCount': minimum" -f "$fixtures/preview-foundation.yaml" --set preview.slotCount=0
+expect_fail 'preview zero slots, schema skipped' 'preview.slotCount must be between 1 and 4' \
+  -f "$fixtures/preview-foundation.yaml" --set preview.slotCount=0 --skip-schema-validation
 expect_fail 'preview missing cert' 'preview.certificateARN' -f "$fixtures/preview-foundation.yaml" --set preview.certificateARN=
 
 # ---- EKS Auto Mode toggles: off by default, and off means absent ------------
@@ -434,6 +436,25 @@ expect_fail 'edge load balancer name with capitals' "'/edgeIngressClass/loadBala
   --set edgeIngressClass.create=true --set edgeIngressClass.loadBalancerName=Example-Patchy
 expect_fail 'edge load balancer name over 32 characters' "'/edgeIngressClass/loadBalancerName'" \
   --set edgeIngressClass.create=true --set edgeIngressClass.loadBalancerName=abcdefghijklmnopqrstuvwxyz0123456
+
+# ---- the install NOTES walk previews through what is left -----------------
+notes notes-preview -f "$pf"
+notes_has notes-preview "kubectl get ingress patchy-preview-placeholder -n patchy-preview-0" yes
+notes_has notes-preview "point *.preview.patchy.devthe.net at that hostname" yes
+notes_has notes-preview "NodeClass patchy-preview and NodePool patchy-preview must" yes
+notes_has notes-preview "bash hack/preview-isolation-probe/run.sh" yes
+notes_has notes-preview "--taint-key patchy.devthe.net/preview-only" yes
+notes_has notes-preview "COST: the preview ALB bills from the moment the placeholder creates it" yes
+notes_has notes-preview "(even with previewController off)" yes
+notes notes-preview-nodes -f "$pf" -f "$am"
+notes_has notes-preview-nodes "this release renders NodeClass patchy-preview" yes
+notes_has notes-preview-nodes "the pool stops at 4 CPUs and 2 nodes" yes
+notes notes-preview-guardrails -f "$pf" --set preview.placeholder.enabled=false
+notes_has notes-preview-guardrails "preview.placeholder.enabled is false" yes
+notes_has notes-preview-guardrails "kubectl get ingress patchy-preview-placeholder" no
+notes notes-preview-off
+notes_has notes-preview-off "Previews:" no
+notes_has notes-preview-off "COST:" no
 
 # ---- feature on: keys on the right controllers ------------------------------
 render on -f "$fixtures/repository-images.yaml"

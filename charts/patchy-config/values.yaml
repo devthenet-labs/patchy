@@ -245,6 +245,22 @@ projects: []
 #       repositories:               # up to 8; slice 1 builds in exactly one
 #           - name: target          # key used in run names (DNS label, at most 16)
 #             url: https://github.com/acme/target
+#             # preview:            # this repository's preview component; at
+#             #                     # most 4 per Project, at distinct paths
+#             #     imageRepository: 123456789012.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/target
+#             #     port: 8080
+#             #     readinessPath: /healthz
+#             #     path: /         # the default; /api for an API, say
+#       # Previews (the patchy chart's preview and previewController): each
+#       # intent PR is deployed at <name>-<issue>.<preview.hostSuffix>. For a
+#       # one-repository Project, spec.preview is the shorthand for
+#       # repositories[0].preview at path /; use one form, never both. The
+#       # image comes from the operator's preview registry only, tagged with
+#       # the PR head (sha-<40 hex>), never from issue text or the agent.
+#       # preview:
+#       #     imageRepository: 123456789012.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/target
+#       #     port: 8080            # the one HTTP container port
+#       #     readinessPath: /healthz                   # also the ALB health check
 #       # limits:                   # the schema defaults
 #       #     maxActiveIntents: 2
 #       #     maxRevisions: 3
@@ -257,7 +273,14 @@ projects: []
 #       #     build:  { maxTurns: 150, tokenBudget: 800000 }
 #       #     revise: { maxTurns: 80, tokenBudget: 400000 }
 #       # checks:
-#       #     fix: [test, lint]     # checks whose failure starts a fix round
-#       #     timeout: 30m
+#       #     # Check-run names or commit-status contexts whose failure on
+#       #     # patchy's own PR head starts a fix round without a human (at
+#       #     # most limits.maxCheckFixes, under the same cost ceiling). Empty
+#       #     # means a failing check is only reported and an approver runs
+#       #     # /patchy revise. Setting it needs the App's checks, statuses
+#       #     # and actions read permissions on every app repository, or the
+#       #     # Project is not Ready.
+#       #     fix: [test, lint]
+#       #     timeout: 30m          # how long to wait for them after a push
 #       # requireRepositoryImage: true                  # the default
 #       # suspend: false

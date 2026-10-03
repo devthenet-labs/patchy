@@ -294,7 +294,7 @@
             "required": ["enabled", "slotCount", "placeholder", "nodeIsolation", "imageRegistry", "dnsCIDR", "albSubnetCIDRs", "albSubnetIDs", "inboundCIDRs", "certificateARN", "hostSuffix", "albName"],
             "properties": {
                 "enabled": {"type": "boolean"},
-                "slotCount": {"type": "integer", "minimum": 0, "maximum": 4},
+                "slotCount": {"type": "integer", "minimum": 1, "maximum": 4},
                 "placeholder": {
                     "type": "object",
                     "additionalProperties": false,

@@ -110,6 +110,12 @@ type Options struct {
 // Validate checks every option, so a bad one fails before anything is
 // written.
 func (o Options) Validate() error {
+	return errors.Join(o.ValidateTarget(), o.Images.Validate())
+}
+
+// ValidateTarget checks every option but the images: what the caller can
+// check before it resolves them, which may take a registry call.
+func (o Options) ValidateTarget() error {
 	var errs []error
 	if _, err := ParseRepo(o.Repo.String()); err != nil {
 		errs = append(errs, err)
@@ -131,8 +137,14 @@ func (o Options) Validate() error {
 	if err := ValidateBranch(o.Branch); err != nil {
 		errs = append(errs, err)
 	}
+	return errors.Join(errs...)
+}
+
+// Validate checks every image is a valid reference pinned by digest.
+func (i Images) Validate() error {
+	var errs []error
 	for _, img := range []struct{ what, ref string }{
-		{"agent base", o.Images.AgentBase}, {"Go image", o.Images.Go}, {"runtime image", o.Images.Runtime},
+		{"agent base", i.AgentBase}, {"Go image", i.Go}, {"runtime image", i.Runtime},
 	} {
 		if err := validatePinned(img.ref); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", img.what, err))

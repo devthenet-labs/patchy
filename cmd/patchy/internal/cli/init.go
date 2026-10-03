@@ -156,6 +156,9 @@ func runInitApp(ctx context.Context, opts *Options, f *initAppFlags, dir string,
 	if err != nil {
 		return err
 	}
+	if err := o.ValidateTarget(); err != nil {
+		return errUsage(err)
+	}
 	switch info, err := os.Stat(dir); {
 	case err == nil && !info.IsDir():
 		return errUsage(fmt.Errorf("%s is not a directory", dir))

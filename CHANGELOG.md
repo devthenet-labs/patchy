@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.14](https://github.com/devthenet-labs/patchy/compare/v0.12.13...v0.12.14) (2026-10-03)
+
+
+### Features
+
+* slice 3 wave A — multi-repo API fields and multi-component previews ([#93](https://github.com/devthenet-labs/patchy/issues/93)) ([76e6ac9](https://github.com/devthenet-labs/patchy/commit/76e6ac9cb177d3d8bd0c75b59075951b3ed2295e))
+
 ## [0.12.13](https://github.com/devthenet-labs/patchy/compare/v0.12.12...v0.12.13) (2026-10-03)
 
 

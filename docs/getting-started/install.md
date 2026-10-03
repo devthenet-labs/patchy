@@ -1,9 +1,10 @@
 # Install with Helm
 
 Two charts are published to GHCR as OCI artifacts on every release: `patchy` installs the whole stack — the
-`patchy.bitwisemedia.uk` CRDs, five controller Deployments with their RBAC and ConfigMaps, the two Services, the agent
-namespace, and the baseline network policies — and `patchy-config` installs the `Integration`/`Forge` custom resources
-that switch the pipeline on, as a second release once the CRDs exist.
+`patchy.bitwisemedia.uk` CRDs, the five pipeline controllers, the egress broker and the status page as Deployments with
+their RBAC and ConfigMaps (plus the optional intent, preview and evaluation controllers when enabled), their Services,
+the agent namespace, and the baseline network policies — and `patchy-config` installs the `Integration`/`Forge` custom
+resources that switch the pipeline on, as a second release once the CRDs exist.
 
 ## Create the namespaces
 

@@ -150,7 +150,7 @@ func TestManifestIsTheTable(t *testing.T) {
 
 // allFeatureSelections is every combination of the three switches.
 func allFeatureSelections() []Features {
-	var out []Features
+	out := make([]Features, 0, 8)
 	for i := range 8 {
 		out = append(out, Features{Security: i&1 != 0, Intents: i&2 != 0, Checks: i&4 != 0})
 	}

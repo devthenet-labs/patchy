@@ -311,6 +311,53 @@ func (g *fakeAppGitHub) leaks(out string) []string {
 	return found
 }
 
+// checkManifest asserts GitHub received, once, at the organization's form
+// with a fresh state, a private App manifest named patchy-acme holding
+// exactly the table's permissions and events for features, redirecting to
+// the loopback callback.
+func (g *fakeAppGitHub) checkManifest(t *testing.T, features []intentperm.Feature) {
+	t.Helper()
+	m, created := g.received()
+	want, _ := intentperm.ForApp(features...)
+	perms := map[string]string{}
+	for _, gr := range want.Grants {
+		perms[gr.Permission] = gr.Access
+	}
+	if !maps.Equal(m.DefaultPermissions, perms) || !slices.Equal(m.DefaultEvents, want.Events) ||
+		m.Public || m.Name != "patchy-acme" {
+		t.Errorf("GitHub received %+v; the table says %v and %v", m, perms, want.Events)
+	}
+	if !strings.HasPrefix(m.RedirectURL, "http://127.0.0.1:") || !strings.HasSuffix(m.RedirectURL, "/callback") {
+		t.Errorf("redirect_url %q is not the loopback callback", m.RedirectURL)
+	}
+	if len(created) != 1 || !regexp.MustCompile(`^/organizations/acme/settings/apps/new\?state=[0-9a-f]{64}$`).
+		MatchString(created[0]) {
+		t.Errorf("the form was posted to %v", created)
+	}
+}
+
+// checkSecretFile asserts the file at path is a 0600 Secret patchy-github in
+// namespace with exactly keys, the App's ID and key, and no OAuth secret.
+func checkSecretFile(t *testing.T, g *fakeAppGitHub, path, namespace string, keys []string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := readSecret(t, raw)
+	if s.Name != ghapp.DefaultSecretName || s.Namespace != namespace ||
+		!slices.Equal(slices.Sorted(maps.Keys(s.Data)), keys) || string(s.Data[ghapp.KeyAppID]) != "4242" ||
+		string(s.Data[ghapp.KeyPrivateKey]) != g.key {
+		t.Errorf("the Secret is %s/%s with %v", s.Namespace, s.Name, slices.Sorted(maps.Keys(s.Data)))
+	}
+	if strings.Contains(string(raw), setupClientSecret) {
+		t.Error("the Secret carries the OAuth client secret")
+	}
+	if info, _ := os.Stat(path); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf("the Secret file mode is %o, want 600", info.Mode().Perm())
+	}
+}
+
 // TestSetupGitHubAppBrowserFlow drives the whole loopback flow against the
 // fake GitHub: the manifest GitHub receives is exactly the table's for the
 // chosen features; a callback under another state is refused; the code is
@@ -342,40 +389,8 @@ func TestSetupGitHubAppBrowserFlow(t *testing.T) {
 				t.Fatalf("setup: %v\n%s", err, stderr)
 			}
 
-			m, created := g.received()
-			want, _ := intentperm.ForApp(tt.features...)
-			perms := map[string]string{}
-			for _, gr := range want.Grants {
-				perms[gr.Permission] = gr.Access
-			}
-			if !maps.Equal(m.DefaultPermissions, perms) || !slices.Equal(m.DefaultEvents, want.Events) ||
-				m.Public || m.Name != "patchy-acme" {
-				t.Errorf("GitHub received %+v; the table says %v and %v", m, perms, want.Events)
-			}
-			if !strings.HasPrefix(m.RedirectURL, "http://127.0.0.1:") || !strings.HasSuffix(m.RedirectURL, "/callback") {
-				t.Errorf("redirect_url %q is not the loopback callback", m.RedirectURL)
-			}
-			if len(created) != 1 || !regexp.MustCompile(`^/organizations/acme/settings/apps/new\?state=[0-9a-f]{64}$`).
-				MatchString(created[0]) {
-				t.Errorf("the form was posted to %v", created)
-			}
-
-			raw, err := os.ReadFile(out)
-			if err != nil {
-				t.Fatal(err)
-			}
-			s := readSecret(t, raw)
-			if s.Name != ghapp.DefaultSecretName || s.Namespace != "patchy-system" ||
-				!slices.Equal(slices.Sorted(maps.Keys(s.Data)), tt.keys) || string(s.Data[ghapp.KeyAppID]) != "4242" ||
-				string(s.Data[ghapp.KeyPrivateKey]) != g.key {
-				t.Errorf("the Secret is %s/%s with %v", s.Namespace, s.Name, slices.Sorted(maps.Keys(s.Data)))
-			}
-			if strings.Contains(string(raw), setupClientSecret) {
-				t.Error("the Secret carries the OAuth client secret")
-			}
-			if info, _ := os.Stat(out); runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
-				t.Errorf("the Secret file mode is %o, want 600", info.Mode().Perm())
-			}
+			g.checkManifest(t, tt.features)
+			checkSecretFile(t, g, out, "patchy-system", tt.keys)
 			if stdout != "" {
 				t.Errorf("stdout = %q, want nothing: the Secret went to a file", stdout)
 			}

@@ -81,24 +81,43 @@ func mode(t *testing.T, path string) os.FileMode {
 	return info.Mode().Perm()
 }
 
-// TestWriteFile: a new file is 0600; an existing one is refused, untouched,
-// without force, and with force replaced by a 0600 file whatever its old
-// mode, a symlink replaced rather than followed.
-func TestWriteFile(t *testing.T) {
+// TestCheckWritable: a new path in an existing directory is writable; an
+// existing file only with force; a directory or a missing parent never.
+func TestCheckWritable(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "patchy-github.secret.yaml")
 	if err := CheckWritable(path, false); err != nil {
 		t.Fatalf("CheckWritable(new) = %v", err)
 	}
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckWritable(path, false); !errors.Is(err, ErrExists) {
+		t.Errorf("CheckWritable(existing) = %v, want ErrExists", err)
+	}
+	if err := CheckWritable(path, true); err != nil {
+		t.Errorf("CheckWritable(existing, force) = %v", err)
+	}
+	if err := CheckWritable(filepath.Join(dir, "missing", "x.yaml"), false); err == nil {
+		t.Error("CheckWritable accepted a missing directory")
+	}
+	if err := CheckWritable(dir, true); err == nil || !strings.Contains(err.Error(), "is a directory") {
+		t.Errorf("CheckWritable(a directory, force) = %v, want a refusal", err)
+	}
+}
+
+// TestWriteFile: a new file is 0600; an existing one is refused, untouched,
+// without force, and with force replaced by a 0600 file whatever its old
+// mode, leaving nothing else behind.
+func TestWriteFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "patchy-github.secret.yaml")
 	if err := WriteFile(path, []byte("one"), false); err != nil {
 		t.Fatal(err)
 	}
 	unix := runtime.GOOS != "windows"
 	if unix && mode(t, path) != 0o600 {
 		t.Errorf("new file mode %o, want 600", mode(t, path))
-	}
-	if err := CheckWritable(path, false); !errors.Is(err, ErrExists) {
-		t.Errorf("CheckWritable(existing) = %v, want ErrExists", err)
 	}
 	if err := WriteFile(path, []byte("two"), false); !errors.Is(err, ErrExists) {
 		t.Errorf("WriteFile(existing) = %v, want ErrExists", err)
@@ -108,9 +127,6 @@ func TestWriteFile(t *testing.T) {
 	}
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)
-	}
-	if err := CheckWritable(path, true); err != nil {
-		t.Errorf("CheckWritable(existing, force) = %v", err)
 	}
 	if err := WriteFile(path, []byte("three"), true); err != nil {
 		t.Fatal(err)
@@ -124,16 +140,15 @@ func TestWriteFile(t *testing.T) {
 	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
 		t.Errorf("the directory holds %d entries, want only the file", len(entries))
 	}
-	if err := CheckWritable(filepath.Join(dir, "missing", "x.yaml"), false); err == nil {
-		t.Error("CheckWritable accepted a missing directory")
-	}
-	if err := CheckWritable(dir, true); err == nil || !strings.Contains(err.Error(), "is a directory") {
-		t.Errorf("CheckWritable(a directory, force) = %v, want a refusal", err)
-	}
+}
 
-	if !unix {
-		return
+// TestWriteFileReplacesSymlink: a symlink at the path is refused without
+// force, and with force replaced by a 0600 file rather than followed.
+func TestWriteFileReplacesSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on windows")
 	}
+	dir := t.TempDir()
 	target := filepath.Join(dir, "target")
 	if err := os.WriteFile(target, []byte("keep"), 0o644); err != nil {
 		t.Fatal(err)

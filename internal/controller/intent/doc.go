@@ -12,7 +12,8 @@
 //   - ProjectReconciler validates each Project (exactly one repository in
 //     slice 1; every repository resolves to one Forge; the App is installed
 //     on the intent repository and the app repository with the permissions
-//     intents use; no other Project shares the intent repository and trigger
+//     intents use, the internal/intentperm table, each proven by minting a
+//     token with it; no other Project shares the intent repository and trigger
 //     label; the trigger and approve labels exist, created when missing),
 //     then polls the intent repository for open issues carrying the trigger
 //     label with a conditional (ETag) listing, and creates the Intent

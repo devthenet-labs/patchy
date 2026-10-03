@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,8 @@ import (
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/forge"
+	"github.com/bitwise-media-group/patchy/internal/ghclient"
+	"github.com/bitwise-media-group/patchy/internal/intentperm"
 )
 
 func (e *env) getProject() *v1alpha1.Project {
@@ -92,6 +95,97 @@ func TestProjectValidation(t *testing.T) {
 				t.Errorf("labels created = %v", e.gh.createdLabels)
 			}
 		})
+	}
+}
+
+// TestProjectValidationProvesCheckFixReads is the regression test for a
+// Project with spec.checks.fix whose App was never granted the reads a
+// check-fix round makes: it used to report Ready, then fail on the first
+// failing check. Ready now proves checks, statuses and actions read on the
+// application repository, and names the one GitHub refused.
+func TestProjectValidationProvesCheckFixReads(t *testing.T) {
+	notGranted := ghError(http.StatusUnprocessableEntity,
+		"The permissions requested are not granted to this installation.")
+	tests := []struct {
+		name    string
+		refused ghclient.TokenPerms
+		want    string
+	}{
+		{name: "checks", refused: ghclient.TokenPerms{Checks: ghclient.PermRead}, want: "checks: read"},
+		{name: "statuses", refused: ghclient.TokenPerms{Statuses: ghclient.PermRead}, want: "statuses: read"},
+		{name: "actions", refused: ghclient.TokenPerms{Actions: ghclient.PermRead}, want: "actions: read"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := testProject()
+			p.Spec.Checks.Fix = []string{"test"}
+			e := newEnv(t, p)
+			e.gh.refused = map[ghclient.TokenPerms]error{tt.refused: notGranted}
+			e.reconcileProject()
+			c := meta.FindStatusCondition(e.getProject().Status.Conditions, v1alpha1.ConditionReady)
+			if c == nil || c.Status != metav1.ConditionFalse || c.Reason != v1alpha1.ReasonAppNotInstalled {
+				t.Fatalf("Ready = %+v, want False/%s", c, v1alpha1.ReasonAppNotInstalled)
+			}
+			if !strings.Contains(c.Message, appRepoURL+" with "+tt.want) || !strings.Contains(c.Message, "spec.checks.fix") {
+				t.Errorf("message %q does not name %s on %s and why", c.Message, tt.want, appRepoURL)
+			}
+		})
+	}
+}
+
+// TestProjectValidationMintsTheTable: Ready mints one token per grant of
+// the intentperm table, each with that one permission on its repository;
+// the check-fix reads only when spec.checks.fix names a check.
+func TestProjectValidationMintsTheTable(t *testing.T) {
+	base := []installCheck{
+		{intentRepoURL, ghclient.TokenPerms{Issues: ghclient.PermWrite}},
+		{appRepoURL, ghclient.TokenPerms{Contents: ghclient.PermWrite}},
+		{appRepoURL, ghclient.TokenPerms{PullRequests: ghclient.PermWrite}},
+	}
+	checkFix := append(slices.Clone(base),
+		installCheck{appRepoURL, ghclient.TokenPerms{Checks: ghclient.PermRead}},
+		installCheck{appRepoURL, ghclient.TokenPerms{Statuses: ghclient.PermRead}},
+		installCheck{appRepoURL, ghclient.TokenPerms{Actions: ghclient.PermRead}},
+	)
+	for _, tt := range []struct {
+		name string
+		fix  []string
+		want []installCheck
+	}{
+		{name: "no check fixes", want: base},
+		{name: "check fixes", fix: []string{"test", "lint"}, want: checkFix},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p := testProject()
+			p.Spec.Checks.Fix = tt.fix
+			e := newEnv(t, p)
+			e.reconcileProject()
+			if c := meta.FindStatusCondition(e.getProject().Status.Conditions, v1alpha1.ConditionReady); c == nil ||
+				c.Reason != ReasonValidated {
+				t.Fatalf("Ready = %+v", c)
+			}
+			e.gh.mu.Lock()
+			got := slices.Clone(e.gh.installs)
+			e.gh.mu.Unlock()
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("installation checks =\n%+v\nwant\n%+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTokenPermsRefusesWhatNoTokenCanProve: a grant the token request
+// cannot express, or one it must not (a write of a read-only permission),
+// is an error rather than a token minted with something else.
+func TestTokenPermsRefusesWhatNoTokenCanProve(t *testing.T) {
+	for _, g := range []intentperm.Grant{
+		{Permission: "administration", Access: intentperm.Write},
+		{Permission: intentperm.Checks, Access: intentperm.Write},
+		{Permission: intentperm.Issues, Access: "admin"},
+	} {
+		if p, err := tokenPerms(g); err == nil {
+			t.Errorf("tokenPerms(%s) = %+v, want an error", g, p)
+		}
 	}
 }
 

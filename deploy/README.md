@@ -117,6 +117,13 @@ Register one App for the whole pipeline and install it on the repositories patch
 
 **Webhook events to subscribe:** `code_scanning_alert`, `issues`, `issue_comment`, `pull_request`.
 
+**Intents (intent-controller, optional)** need, on the intent repository, Issues read & write, and on every application
+repository, Contents and Pull requests read & write. A Project with `spec.checks.fix` also needs, on its application
+repositories, **Checks**, **Commit statuses** and **Actions** read: a check-fix round reads the failed check runs, their
+annotations, the commit statuses and the job log tails behind a failed Actions run. Intents poll GitHub, so they add no
+webhook event. The Project reports `Ready` only once the App holds every one of these grants (`internal/intentperm` is
+the table), and `AppNotInstalled` names the first one missing.
+
 **Webhook URL — exactly one, pointed at the integration-controller:** `https://<your-host>/github/webhooks`. The
 integration-controller is the single receiver: it validates each delivery against the webhook secrets of your configured
 Integrations, ingests scanner events into Findings, and applies the human signals (issue close, `/patchy` commands, PR

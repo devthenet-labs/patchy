@@ -27,6 +27,7 @@ import (
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/forge"
 	"github.com/bitwise-media-group/patchy/internal/ghclient"
+	"github.com/bitwise-media-group/patchy/internal/intentperm"
 )
 
 // Project Ready reasons this controller sets beside the API's own.
@@ -258,27 +259,12 @@ func (r *ProjectReconciler) validate(ctx context.Context, p *v1alpha1.Project) (
 			return metav1.Condition{}, err
 		}
 	}
-	// The permissions intents use on each repository, each proven by
-	// minting the scoped token itself.
-	for _, check := range []struct {
-		url   string
-		perms ghclient.TokenPerms
-		what  string
-	}{
-		{p.Spec.IntentRepository, issuesWrite, "issues: write"},
-		{app, contentsWrite, "contents: write"},
-		{app, pullsWrite, "pull requests: write"},
-	} {
-		if err := r.GitHub.Installed(ctx, check.url, check.perms); err != nil {
-			if secretUnreadable(err) {
-				return notReady(ReasonForgeSecretUnreadable, forgeSecretMessage, check.url, err)
-			}
-			if installationRefused(err) {
-				return notReady(v1alpha1.ReasonAppNotInstalled,
-					"the App cannot act on %s with %s: %v", check.url, check.what, err)
-			}
-			return metav1.Condition{}, err
-		}
+	reason, msg, err := r.proveGrants(ctx, p)
+	if err != nil {
+		return metav1.Condition{}, err
+	}
+	if reason != "" {
+		return notReady(reason, "%s", msg)
 	}
 	for _, l := range []struct{ name, color, description string }{
 		{trigger, triggerLabelColor, "patchy: plan and build this issue in project " + p.Name},
@@ -297,6 +283,69 @@ func (r *ProjectReconciler) validate(ctx context.Context, p *v1alpha1.Project) (
 	}
 	return metav1.Condition{Type: v1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: ReasonValidated,
 		Message: "the repositories resolve, the App is installed on them, and the labels exist"}, nil
+}
+
+// proveGrants proves the permissions intents use on each repository (the
+// intentperm table), each by minting a token with that one permission. It
+// returns no reason when the App holds them all, otherwise the Ready reason
+// and message naming the first it does not; an error is a transient failure
+// to find out.
+func (r *ProjectReconciler) proveGrants(ctx context.Context, p *v1alpha1.Project) (string, string, error) {
+	for _, need := range intentperm.For(&p.Spec) {
+		for _, g := range need.Grants {
+			perms, err := tokenPerms(g)
+			if err != nil {
+				return "", "", err
+			}
+			err = r.GitHub.Installed(ctx, need.URL, perms)
+			switch {
+			case err == nil:
+			case secretUnreadable(err):
+				return ReasonForgeSecretUnreadable, fmt.Sprintf(forgeSecretMessage, need.URL, err), nil
+			case installationRefused(err):
+				return v1alpha1.ReasonAppNotInstalled,
+					fmt.Sprintf("the App cannot act on %s with %s%s: %v", need.URL, g, grantPurpose(g), err), nil
+			default:
+				return "", "", err
+			}
+		}
+	}
+	return "", "", nil
+}
+
+// tokenPerms is the token permission set that proves g alone: one
+// permission, as every intent token requests.
+func tokenPerms(g intentperm.Grant) (ghclient.TokenPerms, error) {
+	var p ghclient.TokenPerms
+	switch g.Permission {
+	case intentperm.Issues:
+		p.Issues = g.Access
+	case intentperm.Contents:
+		p.Contents = g.Access
+	case intentperm.PullRequests:
+		p.PullRequests = g.Access
+	case intentperm.Checks:
+		p.Checks = g.Access
+	case intentperm.Statuses:
+		p.Statuses = g.Access
+	case intentperm.Actions:
+		p.Actions = g.Access
+	default:
+		return p, fmt.Errorf("intent permission %s has no token permission", g)
+	}
+	if err := p.Validate(); err != nil {
+		return p, fmt.Errorf("intent permission %s: %w", g, err)
+	}
+	return p, nil
+}
+
+// grantPurpose names the Project setting a grant follows from, when one
+// does: the check-fix reads exist only for spec.checks.fix.
+func grantPurpose(g intentperm.Grant) string {
+	if slices.Contains(intentperm.CheckFix(), g) {
+		return " (spec.checks.fix reads failing checks)"
+	}
+	return ""
 }
 
 // forgeSecretMessage explains a ForgeSecretUnreadable Project: the

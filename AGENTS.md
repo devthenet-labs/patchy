@@ -255,6 +255,10 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   definitions), shared so the controllers that push never import each other: remediation holds a Finding's
   changesets to `Rules` without a deny list, intent-controller an intent's to `IntentRules` (plus `.github`,
   `.patchy`, `.devcontainer` refused). Imports only the stdlib and `envelope` (a test pins that).
+- `intentperm` — the one table of the GitHub App permissions a Project needs per repository (issues write on the
+  intent repository; contents and pull requests write on each app repository; checks, statuses and actions read there
+  too when `spec.checks.fix` is set). Pure (stdlib + `api/v1alpha1`, a test pins that), so the CLI can read it
+  without linking a GitHub client; intent-controller's Ready mints a token per grant.
 - `runnerimage` (+ `runnerimage/resolve`) — repository-declared agent runner images. The parent is the pure
   core (declaration files out of a tar.gz stream, `.patchy/agent.yaml` and the devcontainer.json fallback with
   precedence, reference grammar and strict digests, the allowlist `Policy`, PATH/ENV/VOLUME checks, the

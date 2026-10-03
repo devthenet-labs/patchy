@@ -57,8 +57,22 @@ zero), and the old host returns 404. Total agent cost for the intent: $0.81.
 `/patchy expedite` → PR #70 (pushedCommit = PR head `1c553a4c`), checks green, merged `4a3dd6f0` → Remediated, issue
 closed completed with the remediated label, one comment per marker, main CodeQL marked #38 fixed, no duplicate Finding.
 
-**Next (owner's choice):** exercise the intent CI-fix round live; then the "Deployable by others" roadmap (design doc);
-follow-ups below.
+**Intent CI-fix round, live: PASSED (2026-10-03, 06:50–07:09 UTC).** patchy-preview-demo #8 (squash `c8c68365`) added
+CHANGELOG.md and a `changelog` check that fails a PR with no line naming its `#<number>`. It is a workflow of its own
+because `publish images` follows only `test`; the runtime publish for #8 still succeeded. terraform-devthenet #29 set
+the `preview-demo` Project's `checks.fix: [changelog]` → patchy-config **rev 28** (rollback point 27; patchy stays rev
+47). Intent `devthenet-labs/intents#5` ("Deployed by patchy" footer) → `preview-demo-5`: plan 66 s (`$0.22`; it left
+CHANGELOG.md alone, since the PR number does not exist yet), approved, build 118 s (`$0.28`) opened
+`devthenet-labs/patchy-preview-demo#9` at `7f4d2aae`. `changelog` failed at 07:00:29 ("CHANGELOG.md has no entry for #9:
+add a line under ## Unreleased"). 54 s later intent-controller created `preview-demo-5-rev1-preview-demo-a1`
+(`trigger: checks`, `checkRunIDs: [111151376149]`) with the annotations and the Actions log tail fenced as data. The
+round (112 s, `$0.24`) fast-forwarded `ff754761` (parent `7f4d2aae`; CHANGELOG.md +1 line naming #9). `changelog` passed
+at 07:03:29 and `test` at 07:04:59; the Intent recorded `checkFixes: 1` with `revisions` untouched. The Preview
+redeployed at `ff754761` (Ready 07:06:38, then about 15 s of an empty response and a 404 during the ALB switch).
+Squash-merged `8604f200` → Merged in 12 s, issue closed completed, Preview deleted within 30 s, preview pool at 0 nodes
+about 57 s later. Intent cost: `$0.75` (748594 µUSD).
+
+**Next (owner's choice):** the "Deployable by others" roadmap (design doc); follow-ups below.
 
 ## Previous checkpoint — 2026-10-02 (Codex stage-1 handover; historical)
 
@@ -598,6 +612,12 @@ already-pushed commits (or nothing) and can be removed once #51 is merged.
 
 ## Other known follow-ups
 
+- The check-fix repeat guard cannot fire for GitHub Actions checks. `checkDiagnostics` hashes the raw job-log tail into
+  the round's signature, and Actions log lines carry timestamps and runner metadata, so a repeated failure never matches
+  (seen in the 2026-10-03 round's handoff; the repeat path itself was not exercised). `maxCheckFixes` is the only
+  effective bound. Hash the annotations and a timestamp-stripped tail instead.
+- A check-fix round is not named as one: its diagnostics sit under "Approver feedback" in the agent's handoff, the PR
+  comment says "Revision round pushed commit", and the done summary says "Revisions: 0" without the check-fix round.
 - Extend slice 1b's bounded check-fix rounds to Finding PRs: during the 0.12.1 live gate, patchy's `go/request-forgery`
   remediation passed its Go tests but its PR still failed CodeQL with a new critical alert, so it needed a separate
   manual correction. This is the second such miss after the earlier path-traversal case. A failing CodeQL check on a

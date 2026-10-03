@@ -148,11 +148,17 @@ previewController:
         # Mode's pod readiness gate injection
         # (eks.amazonaws.com/pod-readiness-gate-inject); the Ingress is
         # created before the Pods so their gates are injected, and stays
-        # across redeploys. Off by default until a live preview has shown
-        # Auto Mode injecting the gate: without it every rollout times out.
-        # false is slice 2's Ready (Pod Ready, then the Ingress), which can
-        # answer 404 briefly after Ready.
-        targetHealth: false
+        # across redeploys. On by default: previews run only on EKS Auto
+        # Mode (the alb-preview class is Auto Mode's), and a preview whose
+        # URL still answers 404 or nothing is not ready to review. Auto Mode
+        # was seen injecting the gate on a live preview (patchy 0.12.14),
+        # whose URL then answered 200 to all 60 once-a-second requests from
+        # Ready, where the ungated Ready gave about 15 seconds of 404s and
+        # empty replies.
+        # false is that ungated Ready (Pod Ready, then the Ingress): set it
+        # if Auto Mode ever stops injecting the gate, since without the gate
+        # every rollout times out.
+        targetHealth: true
         extra: {}
     resources:
         requests:

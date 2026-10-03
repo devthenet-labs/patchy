@@ -109,10 +109,11 @@ Ingress hosts are single-label subdomains of `preview.hostSuffix`; only a safe h
 An Ingress has one rule of at most four `Prefix` paths in the component path grammar, each backed by a `preview-`
 Service on port 80; the kept placeholder backs `/` with its own Service. The slot quota fits one Preview of up to four
 components: five Services (one each, plus slot 0's placeholder) and eight Pods. With
-`previewController.config.targetHealth: true` (off by default until a live preview has shown Auto Mode injecting the
-gate) the slot namespaces are labelled `eks.amazonaws.com/pod-readiness-gate-inject: enabled`, so EKS Auto Mode's load
-balancer injects a target-health readiness gate into each slot Pod, and the preview-controller marks a Preview Ready
-only once its targets are healthy; see `docs/configuration/preview-controller.md`.
+`previewController.config.targetHealth: true` (the default, since previews run only on EKS Auto Mode and Auto Mode was
+seen injecting the gate on a live preview) the slot namespaces are labelled
+`eks.amazonaws.com/pod-readiness-gate-inject: enabled`, so EKS Auto Mode's load balancer injects a target-health
+readiness gate into each slot Pod, and the preview-controller marks a Preview Ready only once its targets are healthy;
+`false` restores the ungated Ready. See `docs/configuration/preview-controller.md`.
 
 Slot Pods and Deployment templates must also select the configured NodePool and NodeClass, tolerate the exact
 `NoExecute` taint, use the default scheduler, and leave `nodeName` unset. A second fail-closed policy on **all other

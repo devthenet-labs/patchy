@@ -117,6 +117,12 @@ naming yours, or delete yours before turning it on.
 | `preview.nodeIsolation.cpuLimit` / `nodeLimit`        | `"4"` / `"2"`                | The NodePool's `limits`: the bound on what previews spend on nodes                                                                                                                                                                              |
 | `preview.nodeIsolation.ephemeralStorage`              | `20Gi`, 3000 IOPS, 125 MiB/s | Each node's ephemeral storage                                                                                                                                                                                                                   |
 
+`previewController.config.targetHealth` defaults to `true`: a Preview turns `Ready` only once the load balancer reports
+each component's target healthy, because the slot namespaces opt into Auto Mode's readiness-gate injection. Previews
+require Auto Mode, which was seen injecting the gate on a live preview, and without the gate the host answers 404 or
+nothing for several seconds after an ungated `Ready`. Set it to `false` only if Auto Mode stops injecting the gate
+(every rollout then times out, naming the missing gate).
+
 The rest of the preview values (`preview.*` and `previewController.*`) and the security model are in the
 [chart README](https://github.com/devthenet-labs/patchy/blob/main/charts/patchy/README.md#preview-security-foundation-opt-in)
 and [Preview controller](../configuration/preview-controller.md). With `preview.enabled` the install NOTES list what is

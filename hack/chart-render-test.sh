@@ -399,6 +399,11 @@ expect_fail 'node role as an ARN' "'/preview/nodeIsolation/role'" \
   -f "$pf" -f "$am" --set preview.nodeIsolation.role=arn:aws:iam::123456789012:role/preview
 expect_fail 'node subnet as a CIDR' "'/preview/nodeIsolation/subnetIDs/0'" \
   -f "$pf" -f "$am" --set-json 'preview.nodeIsolation.subnetIDs=["10.0.0.0/24"]'
+# AWS IDs are 8 or 17 hex digits, as preview.albSubnetIDs already holds them.
+expect_fail 'node subnet of neither ID length' "'/preview/nodeIsolation/subnetIDs/0'" \
+  -f "$pf" -f "$am" --set-json 'preview.nodeIsolation.subnetIDs=["subnet-0123456789ab"]'
+expect_fail 'node security group of neither ID length' "'/preview/nodeIsolation/securityGroupIDs/0'" \
+  -f "$pf" -f "$am" --set-json 'preview.nodeIsolation.securityGroupIDs=["sg-0123456789ab"]'
 # DefaultDeny is fixed: there is no value to turn it into DefaultAllow.
 expect_fail 'node class network policy as a value' "additional properties 'networkPolicy' not allowed" \
   -f "$pf" -f "$am" --set preview.nodeIsolation.networkPolicy=DefaultAllow

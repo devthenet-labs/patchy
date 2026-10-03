@@ -6,12 +6,13 @@ package ghapp
 import (
 	"encoding/json"
 	"flag"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
-	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/intentperm"
 )
 
@@ -82,7 +83,7 @@ func TestBuildRefuses(t *testing.T) {
 		{"checks without intents", func(c *Config) { c.Features = Features{Security: true, Checks: true} },
 			"it needs --intents"},
 		{"security without a webhook", func(c *Config) { c.Features.Security = true }, "needs --webhook-url"},
-		{"a webhook without security", func(c *Config) { c.WebhookURL = testWebhook }, "is for --security"},
+		{"a webhook without security", func(c *Config) { c.WebhookURL = testWebhook }, "receives webhook events"},
 		{"http webhook", func(c *Config) {
 			c.Features.Security, c.WebhookURL = true, "http://patchy.acme.test/github/webhooks"
 		}, "not an https URL"},
@@ -111,42 +112,57 @@ func TestBuildRefuses(t *testing.T) {
 	}
 }
 
-// TestIntentPermissionsCoverEveryProject: an App made for intents holds, at
-// sufficient access, every grant the intent table asks of any Project,
-// with or without check fixes, so a Project on it can be Ready; without
-// --checks it holds none of the check-fix reads, the least it can.
-func TestIntentPermissionsCoverEveryProject(t *testing.T) {
-	spec := func(fix []string) *v1alpha1.ProjectSpec {
-		return &v1alpha1.ProjectSpec{IntentRepository: "https://github.com/acme/intents",
-			Repositories: []v1alpha1.ProjectRepository{{Name: "web", URL: "https://github.com/acme/web"},
-				{Name: "api", URL: "https://github.com/acme/api"}},
-			Checks: v1alpha1.ProjectChecks{Fix: fix}}
+// TestManifestIsTheTable: for every selection of features, the manifest
+// requests exactly the permissions and events the shared table
+// (intentperm.ForApp) gives it, which intent-controller's own checks come
+// from, and has a webhook exactly when it subscribes to an event; a
+// selection the table refuses is never built.
+func TestManifestIsTheTable(t *testing.T) {
+	for _, f := range allFeatureSelections() {
+		cfg := Config{Features: f, Name: "patchy-acme", HomepageURL: DefaultHomepageURL}
+		if f.Security {
+			cfg.WebhookURL = testWebhook
+		}
+		m, err := Build(cfg)
+		want, tableErr := intentperm.ForApp(f.Selected()...)
+		if f.Validate() != nil {
+			if err == nil {
+				t.Errorf("%+v: Build accepted a selection Validate refuses", f)
+			}
+			continue
+		}
+		if err != nil || tableErr != nil {
+			t.Fatalf("%+v: Build: %v; ForApp: %v", f, err, tableErr)
+		}
+		perms := map[string]string{}
+		for _, g := range want.Grants {
+			perms[g.Permission] = g.Access
+		}
+		if !maps.Equal(m.DefaultPermissions, perms) || !slices.Equal(m.DefaultEvents, want.Events) {
+			t.Errorf("%+v: manifest permissions %v, events %v; the table says %v, %v", f, m.DefaultPermissions,
+				m.DefaultEvents, perms, want.Events)
+		}
+		if (m.HookAttributes != nil) != (len(want.Events) > 0) {
+			t.Errorf("%+v: webhook %+v with events %v", f, m.HookAttributes, want.Events)
+		}
 	}
-	for _, checks := range []bool{false, true} {
-		held := map[string]string{}
-		for _, g := range (Features{Intents: true, Checks: checks}).Permissions() {
-			held[g.Permission] = g.Access
-		}
-		var fix []string
-		if checks {
-			fix = []string{"test"}
-		}
-		for _, need := range intentperm.For(spec(fix)) {
-			for _, g := range need.Grants {
-				if have := held[g.Permission]; have != g.Access && have != intentperm.Write {
-					t.Errorf("checks=%v: the App holds %s %q, the Project needs %s on %s", checks, g.Permission,
-						have, g, need.URL)
-				}
-			}
-		}
-		for _, g := range intentperm.CheckFix() {
-			if _, has := held[g.Permission]; has != checks {
-				t.Errorf("checks=%v: the App holds %s: %v", checks, g.Permission, has)
-			}
-		}
-		if _, has := held[permSecurityEvents]; has {
-			t.Errorf("checks=%v: an intents App holds %s", checks, permSecurityEvents)
-		}
+}
+
+// allFeatureSelections is every combination of the three switches.
+func allFeatureSelections() []Features {
+	var out []Features
+	for i := range 8 {
+		out = append(out, Features{Security: i&1 != 0, Intents: i&2 != 0, Checks: i&4 != 0})
+	}
+	return out
+}
+
+// TestFeaturesAreTheTable: the switches cover exactly the table's
+// features, in its order.
+func TestFeaturesAreTheTable(t *testing.T) {
+	if got := (Features{Security: true, Intents: true, Checks: true}).Selected(); !slices.Equal(got,
+		intentperm.Features()) {
+		t.Errorf("Selected() = %v, want the table's %v", got, intentperm.Features())
 	}
 }
 

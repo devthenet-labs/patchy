@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -125,6 +126,9 @@ func TestWriteFile(t *testing.T) {
 	}
 	if err := CheckWritable(filepath.Join(dir, "missing", "x.yaml"), false); err == nil {
 		t.Error("CheckWritable accepted a missing directory")
+	}
+	if err := CheckWritable(dir, true); err == nil || !strings.Contains(err.Error(), "is a directory") {
+		t.Errorf("CheckWritable(a directory, force) = %v, want a refusal", err)
 	}
 
 	if !unix {

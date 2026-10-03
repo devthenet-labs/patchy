@@ -28,19 +28,10 @@ const DefaultHomepageURL = "https://github.com/bitwise-media-group/patchy"
 // MaxNameLength is the longest App name GitHub accepts.
 const MaxNameLength = 34
 
-// Permission names the findings pipeline uses beside the intent table's.
-const (
-	permSecurityEvents = "security_events"
-	permMetadata       = "metadata"
-)
-
-// securityEvents are the webhook events the findings pipeline consumes, all
-// at the integration-controller (docs/getting-started/github-app.md).
-var securityEvents = []string{"code_scanning_alert", "issue_comment", "issues", "pull_request"}
-
-// Features selects what the App is for. Each adds only the permissions and
-// events its controllers use: an App for intents alone holds no
-// security_events grant and has no webhook.
+// Features selects what the App is for, one switch per intentperm.Feature;
+// the CLI names each flag after its feature. Each adds only the
+// permissions and events its controllers use, as the table says: an App
+// for intents alone holds no security_events grant and has no webhook.
 type Features struct {
 	// Security is the findings pipeline: code scanning alerts in through the
 	// integration-controller's webhook, tracking issues, remediation pull
@@ -50,47 +41,53 @@ type Features struct {
 	// so intents add permissions but no webhook event.
 	Intents bool
 	// Checks adds the reads check-fix rounds make (a Project's
-	// spec.checks.fix). It needs Intents.
+	// spec.checks.fix). It extends Intents.
 	Checks bool
 }
 
-// Validate reports a selection the flow cannot serve.
+// Selected is f as the table's features, in the table's order.
+func (f Features) Selected() []intentperm.Feature {
+	var out []intentperm.Feature
+	for _, s := range []struct {
+		on      bool
+		feature intentperm.Feature
+	}{
+		{f.Security, intentperm.FeatureSecurity},
+		{f.Intents, intentperm.FeatureIntents},
+		{f.Checks, intentperm.FeatureChecks},
+	} {
+		if s.on {
+			out = append(out, s.feature)
+		}
+	}
+	return out
+}
+
+// Validate reports a selection the flow cannot serve, in the CLI's terms:
+// nothing patchy runs on, or a feature without the one it extends.
 func (f Features) Validate() error {
-	switch {
-	case !f.Security && !f.Intents:
-		return errors.New("choose what the App is for: --security, --intents, or both")
-	case f.Checks && !f.Intents:
-		return errors.New("--checks adds the check-fix reads to intents: it needs --intents")
+	selected := f.Selected()
+	if !f.Security && !f.Intents {
+		return fmt.Errorf("choose what the App is for: --%s, --%s, or both",
+			intentperm.FeatureSecurity, intentperm.FeatureIntents)
+	}
+	for _, feature := range selected {
+		for _, base := range feature.Requires() {
+			if !slices.Contains(selected, base) {
+				return fmt.Errorf("--%s extends --%s: it needs --%s", feature, base, base)
+			}
+		}
 	}
 	return nil
 }
 
-// Permissions is the App's repository permissions for f, one grant per
-// permission at the highest access any selected feature needs, sorted.
-// Metadata read is always there: GitHub requires it of every App.
-func (f Features) Permissions() []intentperm.Grant {
-	sets := [][]intentperm.Grant{{{Permission: permMetadata, Access: intentperm.Read}}}
-	if f.Security {
-		// docs/getting-started/github-app.md, "Repository permissions".
-		sets = append(sets, []intentperm.Grant{
-			{Permission: permSecurityEvents, Access: intentperm.Write},
-			{Permission: intentperm.Issues, Access: intentperm.Write},
-			{Permission: intentperm.Contents, Access: intentperm.Write},
-			{Permission: intentperm.PullRequests, Access: intentperm.Write},
-		})
+// Needs is what the App must hold for f, and nothing more: the table's
+// ForApp, metadata read included.
+func (f Features) Needs() (intentperm.Needs, error) {
+	if err := f.Validate(); err != nil {
+		return intentperm.Needs{}, err
 	}
-	if f.Intents {
-		sets = append(sets, intentperm.Intent(), intentperm.App(f.Checks))
-	}
-	return intentperm.Merge(sets...)
-}
-
-// Events is the App's webhook events for f, sorted; none without Security.
-func (f Features) Events() []string {
-	if !f.Security {
-		return nil
-	}
-	return slices.Clone(securityEvents)
+	return intentperm.ForApp(f.Selected()...)
 }
 
 // describe is the App's description: what it is for.
@@ -175,10 +172,11 @@ type Manifest struct {
 }
 
 // Build makes the manifest for cfg: the App is private, requests exactly
-// cfg.Features' permissions and events, and has a webhook only for
-// Security.
+// what cfg.Features needs (intentperm.ForApp), and has a webhook exactly
+// when a selected feature consumes webhook events.
 func Build(cfg Config) (Manifest, error) {
-	if err := cfg.Features.Validate(); err != nil {
+	needs, err := cfg.Features.Needs()
+	if err != nil {
 		return Manifest{}, err
 	}
 	if err := validateName(cfg.Name); err != nil {
@@ -193,24 +191,24 @@ func Build(cfg Config) (Manifest, error) {
 		Description:        cfg.Features.describe(),
 		RedirectURL:        cfg.RedirectURL,
 		DefaultPermissions: map[string]string{},
-		DefaultEvents:      cfg.Features.Events(),
+		DefaultEvents:      needs.Events,
 	}
-	for _, g := range cfg.Features.Permissions() {
+	for _, g := range needs.Grants {
 		m.DefaultPermissions[g.Permission] = g.Access
 	}
 	switch {
-	case cfg.Features.Security:
+	case len(needs.Events) > 0:
 		if cfg.WebhookURL == "" {
-			return Manifest{}, errors.New("--security needs --webhook-url: the integration-controller's " +
-				"https://<host>/github/webhooks, where GitHub delivers code scanning alerts")
+			return Manifest{}, fmt.Errorf("the App receives webhook events (%s), so it needs --webhook-url: "+
+				"the integration-controller's https://<host>/github/webhooks", strings.Join(needs.Events, ", "))
 		}
 		if err := validateURL("webhook URL", cfg.WebhookURL, true); err != nil {
 			return Manifest{}, err
 		}
 		m.HookAttributes = &HookAttributes{URL: cfg.WebhookURL, Active: true}
 	case cfg.WebhookURL != "":
-		return Manifest{}, errors.New("--webhook-url is for --security: intents poll GitHub, " +
-			"so an App for intents alone has no webhook")
+		return Manifest{}, fmt.Errorf("--webhook-url is for an App that receives webhook events (--%s); "+
+			"intents poll GitHub, so this App has no webhook", intentperm.FeatureSecurity)
 	}
 	return m, nil
 }

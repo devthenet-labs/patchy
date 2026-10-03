@@ -9,9 +9,9 @@
 // The flow has four parts, each its own seam:
 //
 //   - Build makes the manifest: only the permissions and events the chosen
-//     Features use. Intents take theirs from internal/intentperm, the table
-//     intent-controller proves a Project's grants against, so the two cannot
-//     drift.
+//     Features use, as internal/intentperm's ForApp lists them. That table
+//     is the one intent-controller proves a Project's grants against, so
+//     the App and the check cannot drift.
 //   - Callback is a one-shot loopback server: it serves the page that posts
 //     the manifest to GitHub, and takes the code GitHub sends the browser
 //     back with, checked against the state it was started with. ParseCode is

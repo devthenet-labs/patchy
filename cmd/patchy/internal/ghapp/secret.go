@@ -70,12 +70,17 @@ func SecretManifest(app *App, name, namespace string) ([]byte, error) {
 var ErrExists = errors.New("the file exists")
 
 // CheckWritable reports, before anything is created, a path WriteFile would
-// refuse: one that exists, unless force, or whose directory is missing. The
-// flow checks it first, so a GitHub App is never created only for its
-// credentials to have nowhere to go.
+// refuse: one that exists, unless force; a directory, even with force; or
+// one whose directory is missing. The flow checks it first, so a GitHub App
+// is never created only for its credentials to have nowhere to go.
 func CheckWritable(path string, force bool) error {
-	if _, err := os.Lstat(path); err == nil && !force {
-		return fmt.Errorf("%s: %w; pass --force to replace it", path, ErrExists)
+	if info, err := os.Lstat(path); err == nil {
+		if info.IsDir() {
+			return fmt.Errorf("%s is a directory: name a file to write the Secret to", path)
+		}
+		if !force {
+			return fmt.Errorf("%s: %w; pass --force to replace it", path, ErrExists)
+		}
 	}
 	dir := filepath.Dir(path)
 	info, err := os.Stat(dir)

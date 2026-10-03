@@ -1,6 +1,6 @@
 # Handoff: intent-driven development in patchy
 
-## Current checkpoint — 2026-10-02, evening (source of truth; Claude resumed from Codex)
+## Current checkpoint — 2026-10-03 (source of truth; Claude resumed from Codex)
 
 **Previews are set up and ready for the first live demo; no preview has run yet.** Done today, each owner-approved
 separately, with rollback points recorded before each Helm revision:
@@ -130,7 +130,37 @@ ALBs unchanged, status page 200.
   image exists. The plan named `main.go` for the page template (it is in `server.go`; PR #9's title made the same slip);
   the build edited the right file. T-02 (the `marigold` Project and its Helm values) is still not done.
 
-**Next (owner's choice):** the "Deployable by others" roadmap (design doc); follow-ups below.
+**Deployability phase 1 merged; 0.12.15 released and deployed; fresh-Finding gate PASSED (2026-10-03, 16:17–17:58 UTC;
+overnight, owner asleep, under the standing permissions below).** Merged: #97 (W5: a Project with `checks.fix` is Ready
+only once the App's checks, statuses and actions read are proven by minting), #100 (W2: the CLI's image repositories
+stamped from the release registry; isolation probe parameterised), #101 (W6 `patchy setup github-app`), #99 (W9
+`patchy check project`), #98 (W7 `deploy/terraform/aws` reference module), #102 (W8 `patchy init app`, its agent base
+resolved from the stamped release registry), #104 (the flaky `TestMergeFromRenamedRepository`: `freePort` had handed one
+port to both `--listen-addr` and `--health-addr`; now a no-repeat pool). Release PR #103 (diff: version stamps and
+CHANGELOG only; both CI runs approved at the verified heads, green) → `8496b2f`; the Release workflow published images,
+both charts and the CLI at 0.12.15. Live values equalled the terraform-devthenet `k8s/` files; the 0.12.14→0.12.15
+renders differ only by versions and config checksums (patchy-config by versions only). No Job, Preview or active Intent
+was running. patchy **rev 50** (45 s), patchy-config **rev 30** (3 s); rollback points **49 / 29**. Nine Deployments
+Ready on v0.12.15, zero restarts, status page 200. Both Projects (both have `checks.fix`) were re-validated by the new
+controller at start-up and stayed Ready, so the App's new read grants are proven live.
+
+- **Gate:** weak-key alert #41 (`onboardgatekey.go`, seed `8df0b99`) → `finding-514becf18f-16` → issue #75 →
+  `/patchy expedite` (17:53:50) → Remediating 17:55:58 → InReview 17:57:21 → PR #76 (`onboardgatekey_test.go`, a
+  ≥2048-bit assertion, committed with the fix), checks green incl. CodeQL → merged `0b917e2b` 17:58:19 → Remediated 7 s
+  later, issue closed completed with the remediated label, one comment per marker, no duplicate Finding.
+- **Also merged after the release (in the next one):** #105 (W3: opt-in chart rendering of the DNS egress rule, the
+  preview NodeClass/NodePool and the edge IngressClass, all default off and byte-identical when off; a read-only
+  server-side diff against devthenet's hand-applied objects showed no spec change;
+  `previewController.config.targetHealth` now defaults to true — devthenet already sets it). Do not flip
+  `nodeIsolation.create` or `edgeIngressClass.create` on devthenet: Helm does not adopt the hand-applied objects.
+- **In flight:** slice 3 wave B (#95, multi-repo intents) in review round 2; W10 live onboarding (template repo
+  `devthenet-labs/app-template` and app `devthenet-labs/Hello.Web` from the released CLI and the reference module,
+  stopping at a reviewed, additive-only terraform plan).
+
+**Next:** merge wave B, release, gate, then T-02 (`marigold` Project, `intentController.config.multiRepo: true`) and the
+live multi-repo demo; finish W10, then W11 (operator guide); W1 (configurable preview image prefix with disjointness)
+after wave B. Owner decisions pending: external-dns support (W4), and the home IP / account ID in this public repo
+(current files and history).
 
 ## Previous checkpoint — 2026-10-02 (Codex stage-1 handover; historical)
 

@@ -35,7 +35,10 @@
 # so a controller that breaks it fails here as it would against the real
 # runner. A plan reads the request (input/issue.md) and names, as the
 # repositories it changes, the ones the request lists under its
-# "## Repositories" heading, exactly as listed there. A build is handed the
+# "## Repositories" heading, exactly as listed there; or, when
+# PATCHY_FAKE_PLAN_REPOSITORIES is set (space-separated URLs, a test
+# harness's stand-in for a model deciding that only some of them must
+# change), exactly those. A build is handed the
 # approved plan alone (input/investigation.md) with an empty request; a
 # request beside it is a fatal event, as agent-runner makes it. The
 # changeset stays clear of .github, .patchy and .devcontainer, which an
@@ -202,6 +205,9 @@ plan)
     END { for (i = 1; i <= n; i++) print urls[i] }
   ' "$workspace/input/issue.md" 2>/dev/null || true)
   [ -n "$repos" ] || repos="https://github.com/$repo"
+  # A planner names only the repositories that must change: a harness
+  # decides which, in the model's place.
+  [ -z "${PATCHY_FAKE_PLAN_REPOSITORIES:-}" ] || repos="$PATCHY_FAKE_PLAN_REPOSITORIES"
   repo_yaml='' repo_json=''
   for url in $repos; do
     repo_yaml="$repo_yaml  - $url\\n"

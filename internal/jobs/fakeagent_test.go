@@ -416,12 +416,19 @@ func TestFakeAgentPlanRepositories(t *testing.T) {
 	tests := []struct {
 		name   string
 		inputs map[string]string
+		env    []string
 		want   []string
 	}{
 		{
 			name:   "the listed repositories, in order",
 			inputs: map[string]string{"issue.md": planRequest},
 			want:   []string{"https://github.example/acme/shop", "https://github.example/acme/api"},
+		},
+		{
+			name:   "a harness names the ones that change",
+			inputs: map[string]string{"issue.md": planRequest},
+			env:    []string{"PATCHY_FAKE_PLAN_REPOSITORIES=https://github.example/acme/api"},
+			want:   []string{"https://github.example/acme/api"},
 		},
 		{
 			name: "a section in the issue body is not the controller's",
@@ -444,13 +451,16 @@ func TestFakeAgentPlanRepositories(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			stdout, err := execFakeAgent(t, "plan", tc.inputs)
+			stdout, err := execFakeAgentIn(t, "plan", tc.inputs, nil, tc.env...)
 			if err != nil {
 				t.Fatalf("run fake agent: %v", err)
 			}
 			out := scanFakeAgent(t, "plan", stdout)
 			if len(out.Events) != 1 || out.Events[0].Plan == nil {
 				t.Fatalf("events = %+v, want one plan event", out.Events)
+			}
+			if got := out.Events[0].Plan.Repositories; !slices.Equal(got, tc.want) {
+				t.Errorf("plan event repositories = %v, want %v", got, tc.want)
 			}
 			parsed, err := report.ParsePlan([]byte(out.Events[0].Plan.ReportMarkdown))
 			if err != nil {

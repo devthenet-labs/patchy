@@ -29,11 +29,12 @@ func (s *Server) SetParents(parents map[string]string) {
 }
 
 // SetBranch points a branch at a commit, the way a push (or a force-push)
-// does; the compare endpoint resolves branch names through it.
+// does, in every repository with no branch of that name of its own; the
+// compare endpoint resolves branch names through it.
 func (s *Server) SetBranch(name, sha string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.git.refs["heads/"+name] = sha
+	s.git.shared["heads/"+name] = sha
 }
 
 // Compares reports how many compare calls the fake has answered.
@@ -65,7 +66,8 @@ func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, patch)
 		return
 	}
-	base, head = s.resolve(base), s.resolve(head)
+	repo := repoKey(r.PathValue("owner"), r.PathValue("repo"))
+	base, head = s.resolve(repo, base), s.resolve(repo, head)
 	status, ahead, behind := "diverged", 0, 0
 	switch {
 	case base == head:
@@ -91,10 +93,11 @@ func (s *Server) steps(descendant, ancestor string) int {
 	return 0
 }
 
-// resolve maps a branch name to its head commit; anything else is taken to
-// be a commit already. Callers hold s.mu.
-func (s *Server) resolve(rev string) string {
-	if sha, ok := s.git.refs["heads/"+rev]; ok {
+// resolve maps a branch name to its head commit in the repository repo (a
+// repoKey); anything else is taken to be a commit already. Callers hold
+// s.mu.
+func (s *Server) resolve(repo, rev string) string {
+	if sha, ok := s.git.refIn(repo, "heads/"+rev); ok {
 		return sha
 	}
 	return rev

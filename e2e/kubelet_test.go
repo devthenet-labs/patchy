@@ -4,18 +4,22 @@
 package e2e
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -54,10 +58,15 @@ const fakeAgentScript = "../hack/fake-agent/agent-runner"
 //     to a real kubelet: the controllers read logs through the clientset,
 //     unchanged.
 //   - For each Job carrying its run kind, it does what the Job's pod would.
-//     The prepare step fetches the artifact and checks its digest, and
-//     copies the handoff from the per-Job Secret into the workspace's
-//     input/. The agent container is hack/fake-agent, run with the
-//     container's own environment.
+//     The prepare step fetches the artifact, checks its digest and unpacks
+//     it as the working tree (repo/), and copies the handoff from the
+//     per-Job Secret into the workspace's input/. On a plan Job with trees
+//     (a multi-repository intent's), it then fetches each tree the Secret's
+//     trees file lists, checks its digest, unpacks it under repos/<key>, and
+//     stages the repositories manifest beside the handoff, as the trees
+//     script does. The agent container is hack/fake-agent, run with the
+//     container's own environment, plus whatever a test set with
+//     setAgentEnv: what the stand-in agent decides in a model's place.
 //   - It records the pod, bound to the Node, with its containers'
 //     terminated statuses, then the Job's terminal status, as the kubelet
 //     and the Job controller would.
@@ -71,10 +80,11 @@ type kubelet struct {
 	work    string
 	srv     *httptest.Server
 
-	mu   sync.Mutex
-	logs map[string][]byte // "<namespace>/<pod>/<container>"
-	ran  map[string]bool   // Job names already run
-	runs []agentRun        // in the order they ran
+	mu       sync.Mutex
+	logs     map[string][]byte // "<namespace>/<pod>/<container>"
+	ran      map[string]bool   // Job names already run
+	runs     []agentRun        // in the order they ran
+	agentEnv map[string]string // set by setAgentEnv
 }
 
 // agentRun is one Job as the kubelet ran it: the Job, the handoff its agent
@@ -90,8 +100,28 @@ type agentRun struct {
 	Issue            []byte
 	Investigation    []byte
 	HasInvestigation bool
-	Stdout           []byte
-	ExitCode         int
+	// Trees and Repositories are a plan Job's trees file and repositories
+	// manifest, nil on any other Job.
+	Trees        []byte
+	Repositories []byte
+	// Workspace is the directory the pod's /workspace stood for: the
+	// working tree at repo/, any trees under repos/, the handoff in input/.
+	Workspace string
+	Stdout    []byte
+	ExitCode  int
+}
+
+// setAgentEnv sets name to value in the environment of every agent the
+// kubelet runs from now on, after the container's own: a test's way to
+// make the fake agent decide what a model would (which repositories a plan
+// changes, say).
+func (k *kubelet) setAgentEnv(name, value string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.agentEnv == nil {
+		k.agentEnv = map[string]string{}
+	}
+	k.agentEnv[name] = value
 }
 
 // startKubelet registers the Node and runs every Job of runKind the
@@ -230,19 +260,19 @@ func (k *kubelet) run(ctx context.Context, job *batchv1.Job) error {
 	rec := agentRun{Job: *job.DeepCopy(), Image: agent.Image, Env: literalEnv(agent.Env)}
 	rec.Issue = secret.Data["issue.md"]
 	rec.Investigation, rec.HasInvestigation = secret.Data["investigation.md"]
+	rec.Trees, rec.Repositories = secret.Data[secretTrees], secret.Data[secretRepositories]
 
-	// The prepare step: the digest-verified artifact, then the handoff.
-	prepareExit := int32(0)
-	if err := fetchArtifact(ctx, literalEnv(prepare.Env)); err != nil {
-		k.t.Errorf("kubelet: job %s: prepare: %v", job.Name, err)
-		prepareExit = 1
-	}
+	// The prepare step: the digest-verified working tree, the handoff, then
+	// any trees.
 	workspace, err := os.MkdirTemp(k.work, job.Name+"-")
 	if err != nil {
 		return err
 	}
-	if err := writeHandoff(workspace, &secret); err != nil {
-		return err
+	rec.Workspace = workspace
+	prepareExit := int32(0)
+	if err := prepareWorkspace(ctx, workspace, literalEnv(prepare.Env), &secret); err != nil {
+		k.t.Errorf("kubelet: job %s: prepare: %v", job.Name, err)
+		prepareExit = 1
 	}
 
 	// The agent container, when the prepare step let it start.
@@ -303,30 +333,137 @@ func literalEnv(env []corev1.EnvVar) map[string]string {
 	return out
 }
 
-// fetchArtifact is the prepare step's fetch: the artifact the Job pins,
-// refused unless its bytes hash to the digest the Job carries.
-func fetchArtifact(ctx context.Context, env map[string]string) error {
-	url, want := env["PATCHY_ARTIFACT_URL"], env["PATCHY_ARTIFACT_DIGEST"]
-	if url == "" || want == "" {
+// The per-Job Secret's keys a plan Job with trees carries beside its
+// handoff (internal/jobs' trees.go): the trees file, one
+// "<key> <sha256> <artifact URL>" line per tree, and the repositories
+// manifest the prepare step stages for the agent.
+const (
+	secretTrees        = "trees"
+	secretRepositories = "repositories"
+)
+
+// prepareWorkspace does the prepare init's work in workspace: the Job's own
+// artifact, fetched and digest-verified, unpacked as the working tree
+// (repo/); the handoff copied into input/; and on a Job with trees, each
+// tree fetched, verified and unpacked into its own new directory under
+// repos/, then the repositories manifest staged in input/. Like the init,
+// it stops at the first failure, and the agent never starts.
+func prepareWorkspace(ctx context.Context, workspace string, env map[string]string, secret *corev1.Secret) error {
+	url, digest := env["PATCHY_ARTIFACT_URL"], env["PATCHY_ARTIFACT_DIGEST"]
+	if url == "" || digest == "" {
 		return errors.New("the Job names no artifact URL or digest")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	raw, err := fetchArtifact(ctx, url, digest)
 	if err != nil {
 		return err
 	}
+	if err := untarGz(raw, filepath.Join(workspace, "repo")); err != nil {
+		return fmt.Errorf("unpack the working tree: %w", err)
+	}
+	if err := writeHandoff(workspace, secret); err != nil {
+		return err
+	}
+	trees, ok := secret.Data[secretTrees]
+	if !ok {
+		return nil
+	}
+	for line := range strings.Lines(string(trees)) {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || !treeKey.MatchString(fields[0]) {
+			return fmt.Errorf("trees line %q is not \"<key> <sha256> <url>\"", strings.TrimSpace(line))
+		}
+		key, digest, url := fields[0], fields[1], fields[2]
+		dir := filepath.Join(workspace, "repos", key)
+		if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+			return err
+		}
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			return fmt.Errorf("tree %s: %w", key, err) // a key listed twice
+		}
+		raw, err := fetchArtifact(ctx, url, digest)
+		if err != nil {
+			return fmt.Errorf("tree %s: %w", key, err)
+		}
+		if err := untarGz(raw, dir); err != nil {
+			return fmt.Errorf("unpack tree %s: %w", key, err)
+		}
+	}
+	manifest, ok := secret.Data[secretRepositories]
+	if !ok {
+		return errors.New("the Job lists trees but no repositories manifest")
+	}
+	return os.WriteFile(filepath.Join(workspace, "input", secretRepositories), manifest, 0o600)
+}
+
+// treeKey is a Project repository key, the only directory name a tree gets.
+var treeKey = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+// fetchArtifact is the prepare step's fetch: the artifact at url, refused
+// unless its bytes hash to want, the hex digest the Job pins.
+func fetchArtifact(ctx context.Context, url, want string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("fetch %s: %w", url, err)
+		return nil, fmt.Errorf("fetch %s: %w", url, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil || resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch %s: status %d, %v", url, resp.StatusCode, err)
+		return nil, fmt.Errorf("fetch %s: status %d, %v", url, resp.StatusCode, err)
 	}
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != want {
-		return fmt.Errorf("artifact %s hashes to %s, not the pinned %s", url, got, want)
+		return nil, fmt.Errorf("artifact %s hashes to %s, not the pinned %s", url, got, want)
 	}
-	return nil
+	return raw, nil
+}
+
+// untarGz unpacks a tarball into dir, its top-level directory stripped, as
+// `tar -xz --strip-components=1` does: GitHub's archives hold the tree under
+// one "<owner>-<repo>-<sha7>/" directory. Only directories and regular files
+// are written, and nothing outside dir.
+func untarGz(raw []byte, dir string) error {
+	gz, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		_, rel, ok := strings.Cut(hdr.Name, "/")
+		if !ok || rel == "" {
+			continue // the top-level directory itself
+		}
+		path := filepath.Join(dir, filepath.FromSlash(rel))
+		if !strings.HasPrefix(path, filepath.Clean(dir)+string(filepath.Separator)) {
+			return fmt.Errorf("tar entry %q leaves the tree", hdr.Name)
+		}
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(path, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return err
+			}
+			body, err := io.ReadAll(tr)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(path, body, 0o644); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // writeHandoff copies the per-Job Secret's files into the workspace's
@@ -360,6 +497,11 @@ func (k *kubelet) runAgent(ctx context.Context, workspace string, env map[string
 		}
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
+	k.mu.Lock()
+	for name, value := range k.agentEnv {
+		cmd.Env = append(cmd.Env, name+"="+value)
+	}
+	k.mu.Unlock()
 	cmd.Env = append(cmd.Env, "HOME="+workspace, "PATCHY_WORKSPACE="+workspace, "PATCHY_FAKE_TURN_DELAY=0")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -502,18 +644,55 @@ func phaseIs(phase string) func(agentRun) bool {
 	return func(r agentRun) bool { return r.Env["PATCHY_PHASE"] == phase }
 }
 
+// tarGz is a repository archive as GitHub serves one: files under a single
+// top-level "<top>/" directory, gzipped.
+func tarGz(t *testing.T, top string, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, name := range slices.Sorted(maps.Keys(files)) {
+		body := files[name]
+		if err := tw.WriteHeader(&tar.Header{Name: top + "/" + name, Mode: 0o644, Size: int64(len(body)),
+			Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 // TestKubelet checks the stand-in itself against the real API server: a Job
 // whose agent succeeds ends Complete and one whose agent fails ends Failed,
 // each with its pod's terminated statuses, and either way the agent's log is
-// what pods/log serves; a Job of another run kind is never run.
+// what pods/log serves; a Job of another run kind is never run; and a plan
+// Job with trees gets each tree, digest-verified, in its own directory and
+// the repositories manifest beside its handoff, as the trees script stages
+// them, so the agent's check of every listed tree passes.
 func TestKubelet(t *testing.T) {
 	const runKind = "intent"
 	cl := startCluster(t)
 	k := startKubelet(t, cl, runKind)
 	ctx := context.Background()
-	artifact := []byte("the pinned tree")
-	art := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(artifact) }))
+	artifact := tarGz(t, "acme-shop-0000000", map[string]string{"README.md": "# acme/shop\n"})
+	apiTree := tarGz(t, "acme-api-0000000", map[string]string{"README.md": "# acme/api\n", "cmd/api/main.go": "package main\n"})
+	art := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api" {
+			_, _ = w.Write(apiTree)
+			return
+		}
+		_, _ = w.Write(artifact)
+	}))
 	t.Cleanup(art.Close)
+	digest := func(b []byte) string { return fmt.Sprintf("%x", sha256.Sum256(b)) }
 	cfg, err := clientcmd.BuildConfigFromFlags("", cl.kubeconfig)
 	if err != nil {
 		t.Fatal(err)
@@ -529,15 +708,28 @@ func TestKubelet(t *testing.T) {
 		wantCondition     batchv1.JobConditionType
 		wantPod           corev1.PodPhase
 		wantLog           string
+		// wantFiles are files the workspace holds once the Job ran.
+		wantFiles map[string]string
 	}{
 		{"an agent that succeeds", runKind, "plan", map[string]string{"issue.md": "# a request\n"},
-			batchv1.JobComplete, corev1.PodSucceeded, `"type":"plan"`},
+			batchv1.JobComplete, corev1.PodSucceeded, `"type":"plan"`,
+			map[string]string{"repo/README.md": "# acme/shop\n", "input/issue.md": "# a request\n"}},
 		// agent-runner refuses a build handed a request; so does the fake.
 		{"an agent that fails", runKind, "build",
 			map[string]string{"issue.md": "# a request\n", "investigation.md": "---\n---\n"},
-			batchv1.JobFailed, corev1.PodFailed, `"type":"fatal"`},
+			batchv1.JobFailed, corev1.PodFailed, `"type":"fatal"`, nil},
 		{"another run kind", string(v1alpha1.RunKindInvestigation), "investigate",
-			map[string]string{"issue.md": "# a finding\n"}, "", "", ""},
+			map[string]string{"issue.md": "# a finding\n"}, "", "", "", nil},
+		{"a plan with trees", runKind, "plan", map[string]string{
+			"issue.md":         "# a request\n",
+			secretTrees:        "api " + digest(apiTree) + " " + art.URL + "/api\n",
+			secretRepositories: "shop /workspace/repo https://github.example/acme/shop\napi /workspace/repos/api https://github.example/acme/api\n",
+		}, batchv1.JobComplete, corev1.PodSucceeded, `"type":"plan"`, map[string]string{
+			"repo/README.md":              "# acme/shop\n",
+			"repos/api/README.md":         "# acme/api\n",
+			"repos/api/cmd/api/main.go":   "package main\n",
+			"input/" + secretRepositories: "shop /workspace/repo https://github.example/acme/shop\napi /workspace/repos/api https://github.example/acme/api\n",
+		}},
 	}
 	for i, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -555,7 +747,7 @@ func TestKubelet(t *testing.T) {
 						RestartPolicy: corev1.RestartPolicyNever,
 						InitContainers: []corev1.Container{{Name: "prepare", Image: "tools", Env: []corev1.EnvVar{
 							{Name: "PATCHY_ARTIFACT_URL", Value: art.URL},
-							{Name: "PATCHY_ARTIFACT_DIGEST", Value: fmt.Sprintf("%x", sha256.Sum256(artifact))},
+							{Name: "PATCHY_ARTIFACT_DIGEST", Value: digest(artifact)},
 						}}},
 						Containers: []corev1.Container{{Name: "agent", Image: "agent", Env: []corev1.EnvVar{
 							{Name: "PATCHY_PHASE", Value: tc.phase},
@@ -576,7 +768,13 @@ func TestKubelet(t *testing.T) {
 				})
 				return
 			}
-			k.waitRun(t, "the kubelet to run "+name, func(r agentRun) bool { return r.Job.Name == name })
+			ran := k.waitRun(t, "the kubelet to run "+name, func(r agentRun) bool { return r.Job.Name == name })
+			for path, want := range tc.wantFiles {
+				if got, err := os.ReadFile(filepath.Join(ran.Workspace, filepath.FromSlash(path))); err != nil ||
+					string(got) != want {
+					t.Errorf("workspace %s = %q (%v), want %q", path, got, err, want)
+				}
+			}
 			var cur batchv1.Job
 			if err := cl.client.Get(ctx, client.ObjectKeyFromObject(job), &cur); err != nil {
 				t.Fatal(err)

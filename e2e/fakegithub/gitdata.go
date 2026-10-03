@@ -24,11 +24,23 @@ type gitData struct {
 	blobs   map[string][]byte            // blob sha -> raw content
 	trees   map[string]map[string]string // tree sha -> path -> blob sha ("" = delete)
 	commits map[string]commitRec
-	refs    map[string]string // "heads/<branch>" -> commit sha
-	next    int
+	// refs are each repository's own refs, by repoKey and then
+	// "heads/<branch>": a branch pushed to one repository is in no other,
+	// as on GitHub, so two repositories each have their own
+	// patchy-intent/<intent>. shared are the refs a test pointed with
+	// SetBranch, which every repository sees until it has its own.
+	refs   map[string]map[string]string
+	shared map[string]string
+	next   int
 	// writes are every ref create and update asked for, refused ones
-	// included, in order.
-	writes []RefWrite
+	// included, in order, each with the repository it was asked of.
+	writes []refWrite
+}
+
+// refWrite is a RefWrite and the repository (a repoKey) it was asked of.
+type refWrite struct {
+	repo string
+	RefWrite
 }
 
 type commitRec struct {
@@ -49,12 +61,30 @@ type RefWrite struct {
 }
 
 // RefWrites returns every ref create and update asked for so far, refused
-// ones included, in order: what a test reads to prove a branch was never
-// forced.
+// ones included, in order, in every repository: what a test reads to prove
+// a branch was never forced.
 func (s *Server) RefWrites() []RefWrite {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]RefWrite(nil), s.git.writes...)
+	out := make([]RefWrite, 0, len(s.git.writes))
+	for _, w := range s.git.writes {
+		out = append(out, w.RefWrite)
+	}
+	return out
+}
+
+// RepoRefWrites is RefWrites in owner/repo alone.
+func (s *Server) RepoRefWrites(owner, repo string) []RefWrite {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := repoKey(owner, repo)
+	var out []RefWrite
+	for _, w := range s.git.writes {
+		if w.repo == key {
+			out = append(out, w.RefWrite)
+		}
+	}
+	return out
 }
 
 // Commit is a snapshot of one pushed commit: its message, its parents, and
@@ -90,8 +120,54 @@ func newGitData() gitData {
 		blobs:   map[string][]byte{},
 		trees:   map[string]map[string]string{},
 		commits: map[string]commitRec{},
-		refs:    map[string]string{},
+		refs:    map[string]map[string]string{},
+		shared:  map[string]string{},
 	}
+}
+
+// refIn is where ref points in the repository repo (a repoKey): its own
+// ref, else a shared one SetBranch pointed. Callers hold the server's mu.
+func (g *gitData) refIn(repo, ref string) (string, bool) {
+	if sha, ok := g.refs[repo][ref]; ok {
+		return sha, true
+	}
+	sha, ok := g.shared[ref]
+	return sha, ok
+}
+
+// setRef points ref in the repository repo (a repoKey) at sha. Callers
+// hold the server's mu.
+func (g *gitData) setRef(repo, ref, sha string) {
+	if g.refs[repo] == nil {
+		g.refs[repo] = map[string]string{}
+	}
+	g.refs[repo][ref] = sha
+}
+
+// owners counts the repositories that have ref as their own, and returns
+// where it points in the last one counted. Callers hold the server's mu.
+func (g *gitData) owners(ref string) (n int, sha string) {
+	for _, refs := range g.refs {
+		if at, ok := refs[ref]; ok {
+			n, sha = n+1, at
+		}
+	}
+	return n, sha
+}
+
+// anyRef is where ref points when no repository is named: in the one
+// repository that has it as its own, else a shared one. ok is false when
+// none has it, or when more than one repository has it as its own and the
+// answer would depend on which. Callers hold the server's mu.
+func (g *gitData) anyRef(ref string) (string, bool) {
+	switch n, sha := g.owners(ref); {
+	case n == 1:
+		return sha, true
+	case n > 1:
+		return "", false
+	}
+	sha, ok := g.shared[ref]
+	return sha, ok
 }
 
 func (g *gitData) sha(kind string) string {
@@ -99,24 +175,33 @@ func (g *gitData) sha(kind string) string {
 	return fmt.Sprintf("%s%07d", strings.Repeat(kind[:1], 33), g.next)
 }
 
-// BranchHead returns the pushed head of "heads/<branch>", or BaseSHA if the
-// branch was never pushed.
+// BranchHead returns the pushed head of "heads/<branch>" in the one
+// repository it was pushed to, or BaseSHA if it was never pushed; "" when
+// more than one repository has it (RepoBranchHead names which).
 func (s *Server) BranchHead(branch string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sha, ok := s.git.refs["heads/"+branch]; ok {
-		return sha
+	if n, _ := s.git.owners("heads/" + branch); n > 1 {
+		return ""
 	}
-	return BaseSHA
+	return s.headSHA("", branch)
+}
+
+// RepoBranchHead returns the head of "heads/<branch>" in owner/repo, or
+// BaseSHA if it was never pushed there.
+func (s *Server) RepoBranchHead(owner, repo, branch string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.headSHA(repoKey(owner, repo), branch)
 }
 
 // BranchFiles returns the file contents committed to a pushed branch (deleted
 // paths map to nil), plus the commit message; ok is false when the branch was
-// never pushed.
+// never pushed, or when more than one repository has it.
 func (s *Server) BranchFiles(branch string) (files map[string][]byte, message string, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sha, ok := s.git.refs["heads/"+branch]
+	sha, ok := s.git.anyRef("heads/" + branch)
 	if !ok {
 		return nil, "", false
 	}
@@ -146,7 +231,7 @@ func (s *Server) gitRoutes(handle func(pattern, perm string, h http.HandlerFunc)
 func (s *Server) getRef(w http.ResponseWriter, r *http.Request) {
 	ref := r.PathValue("ref")
 	s.mu.Lock()
-	sha, ok := s.git.refs[ref]
+	sha, ok := s.git.refIn(repoKey(r.PathValue("owner"), r.PathValue("repo")), ref)
 	s.mu.Unlock()
 	if !ok {
 		// Every un-pushed branch sits at the fixed base, except an intent
@@ -251,11 +336,13 @@ func (s *Server) createRef(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ref := strings.TrimPrefix(body.Ref, "refs/")
+	repo := repoKey(r.PathValue("owner"), r.PathValue("repo"))
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	write := RefWrite{Op: "create", Ref: ref, SHA: body.SHA, Status: http.StatusUnprocessableEntity}
+	write := refWrite{repo: repo,
+		RefWrite: RefWrite{Op: "create", Ref: ref, SHA: body.SHA, Status: http.StatusUnprocessableEntity}}
 	defer func() { s.git.writes = append(s.git.writes, write) }()
-	if _, exists := s.git.refs[ref]; exists {
+	if _, exists := s.git.refIn(repo, ref); exists {
 		unprocessable(w, msgRefExists)
 		return
 	}
@@ -263,7 +350,7 @@ func (s *Server) createRef(w http.ResponseWriter, r *http.Request) {
 		unprocessable(w, msgObjectMissing)
 		return
 	}
-	s.git.refs[ref] = body.SHA
+	s.git.setRef(repo, ref, body.SHA)
 	write.Status = http.StatusCreated
 	w.WriteHeader(http.StatusCreated)
 	writeJSON(w, map[string]any{"ref": body.Ref, "object": map[string]any{"type": "commit", "sha": body.SHA}})
@@ -284,11 +371,13 @@ func (s *Server) updateRef(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	repo := repoKey(r.PathValue("owner"), r.PathValue("repo"))
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	write := RefWrite{Op: "update", Ref: ref, SHA: body.SHA, Force: body.Force, Status: http.StatusUnprocessableEntity}
+	write := refWrite{repo: repo, RefWrite: RefWrite{Op: "update", Ref: ref, SHA: body.SHA, Force: body.Force,
+		Status: http.StatusUnprocessableEntity}}
 	defer func() { s.git.writes = append(s.git.writes, write) }()
-	current, exists := s.git.refs[ref]
+	current, exists := s.git.refIn(repo, ref)
 	switch {
 	case !exists:
 		unprocessable(w, msgRefMissing)
@@ -300,7 +389,7 @@ func (s *Server) updateRef(w http.ResponseWriter, r *http.Request) {
 		unprocessable(w, msgNotFastForward)
 		return
 	}
-	s.git.refs[ref] = body.SHA
+	s.git.setRef(repo, ref, body.SHA)
 	write.Status = http.StatusOK
 	writeJSON(w, map[string]any{"ref": "refs/" + ref, "object": map[string]any{"type": "commit", "sha": body.SHA}})
 }
@@ -318,7 +407,14 @@ func (s *Server) knownCommit(sha string) bool {
 	if _, ok := s.parents[sha]; ok {
 		return true
 	}
-	for _, target := range s.git.refs {
+	for _, refs := range s.git.refs {
+		for _, target := range refs {
+			if target == sha {
+				return true
+			}
+		}
+	}
+	for _, target := range s.git.shared {
 		if target == sha {
 			return true
 		}

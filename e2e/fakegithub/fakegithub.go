@@ -14,8 +14,11 @@
 // it exactly: conditional list requests (ETag, 304), the Git refs 422
 // messages, event actors (label events carry no performed_via_github_app),
 // and the public-repository permission answers ("read" for anyone, "none"
-// for the App's bot, 404 for a nonexistent login). Issue numbers, refs and
-// permissions are global to the fake, not per repository.
+// for the App's bot, 404 for a nonexistent login). Issue and pull request
+// numbers and permissions are global to the fake, not per repository. Refs
+// are each repository's own, as on GitHub (a branch a test points with
+// SetBranch is seen by every repository without one of its own), and a
+// repository's pull request listing holds its own pull requests.
 //
 // Credentials matter as they do on GitHub: an installation token the fake
 // minted is held to the repositories and permissions it was minted with

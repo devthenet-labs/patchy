@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	previewRegistry = "377946145366.dkr.ecr.us-east-1.amazonaws.com"
+	previewRegistry = "111122223333.dkr.ecr.us-east-1.amazonaws.com"
 	previewHost     = "demo-1.preview.patchy.devthe.net"
 	previewSHA      = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	previewImage    = previewRegistry + "/patchy/previews/demo:sha-" + previewSHA

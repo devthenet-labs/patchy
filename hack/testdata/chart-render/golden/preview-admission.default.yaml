@@ -37,7 +37,7 @@ spec:
     validations:
         - expression: >-
               variables.pod.containers.all(c,
-                c.image.startsWith('377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/') &&
+                c.image.startsWith('111122223333.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/') &&
                 c.image.substring(61).matches('^[a-z0-9-]+:sha-[0-9a-f]{40}$'))
           message: only immutable patchy preview ECR images are allowed
         - expression: size(variables.pod.containers) == 1
@@ -145,7 +145,7 @@ spec:
     validations:
         - expression: >-
               variables.pod.containers.all(c,
-                c.image.startsWith('377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/') &&
+                c.image.startsWith('111122223333.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/') &&
                 c.image.substring(61).matches('^[a-z0-9-]+:sha-[0-9a-f]{40}$'))
           message: only immutable patchy preview ECR images are allowed
         - expression: size(variables.pod.containers) == 1

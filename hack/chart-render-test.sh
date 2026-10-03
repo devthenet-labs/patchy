@@ -205,7 +205,7 @@ expect preview-runtime 'select(.kind == "Role" and .metadata.name == "patchy-pre
 expect preview-runtime 'select(.kind == "Role" and .metadata.namespace == "patchy" and .metadata.name == "patchy-preview-controller") | .rules[] | select(.resources[] == "events") | .verbs | join(",")' create,patch
 expect preview-runtime 'select(.kind == "NetworkPolicy" and .metadata.name == "patchy-preview-controller") | .spec.egress[].to[].ipBlock.cidr | select(. != null)' 172.20.0.1/32
 cm preview-runtime preview-controller PATCHY_PREVIEW_SLOT_COUNT 2
-cm preview-runtime preview-controller PATCHY_PREVIEW_IMAGE_PREFIX 377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/
+cm preview-runtime preview-controller PATCHY_PREVIEW_IMAGE_PREFIX 111122223333.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/
 cm preview-runtime preview-controller PATCHY_PREVIEW_HOST_SUFFIX preview.patchy.devthe.net
 cm preview-runtime preview-controller PATCHY_PREVIEW_NODE_POOL patchy-preview
 cm preview-runtime preview-controller PATCHY_PREVIEW_NODE_CLASS patchy-preview
@@ -280,7 +280,7 @@ expect preview 'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name =
   'preview Ingresses have one rule of at most 4 Prefix paths in the component path grammar, each backed by a preview- Service on port 80'
 expect preview 'select(.kind == "IngressClass" and .metadata.name == "alb-preview") | .metadata.annotations."ingressclass.kubernetes.io/is-default-class"' 'false'
 expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.namespaceSelector.matchExpressions[0].values | join(",")' 'patchy-preview-0,patchy-preview-1'
-expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.inboundCIDRs | join(",")' '75.70.97.14/32'
+expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.inboundCIDRs | join(",")' '203.0.113.10/32'
 expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.certificateARNs | length' '1'
 expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.sslPolicy' 'ELBSecurityPolicy-TLS13-1-2-2021-06'
 expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.listeners[0].protocol + "/" + (.spec.listeners[0].port | tostring)' 'HTTPS/443'
@@ -348,7 +348,7 @@ expect_fail 'preview missing cert' 'preview.certificateARN' -f "$fixtures/previe
 # same helm template command and review the diff against the default).
 golden=$fixtures/golden
 pv=$fixtures/preview-foundation.yaml
-reg=377946145366.dkr.ecr.us-east-1.amazonaws.com
+reg=111122223333.dkr.ecr.us-east-1.amazonaws.com
 # The comparison itself, on edits of the default golden, so no helm version
 # decides whether it is exercised. Helm 4.3's shape (two blank lines before
 # every document but the first) is the same render; a changed rule, a changed
@@ -399,8 +399,8 @@ expect_fail 'preview image path prefix trailing slash, schema skipped' \
 # preview.
 ri=$fixtures/repository-images.yaml
 for entry in "$reg/patchy/" "$reg/patchy/previews" "$reg/patchy/previews/" "$reg/patchy/previews/agents/" \
-  "377946145366.DKR.ECR.us-east-1.amazonaws.com/Patchy/" "$reg:443/patchy/" \
-  "377946145366.dkr-ecr.us-east-1.on.aws/patchy/" "377946145366.dkr.ecr-fips.us-east-1.amazonaws.com/patchy/previews/x"; do
+  "111122223333.DKR.ECR.us-east-1.amazonaws.com/Patchy/" "$reg:443/patchy/" \
+  "111122223333.dkr-ecr.us-east-1.on.aws/patchy/" "111122223333.dkr.ecr-fips.us-east-1.amazonaws.com/patchy/previews/x"; do
   expect_fail "agent registry $entry overlaps the preview prefix" \
     "agent.repositoryImages.registries entry \"$entry\" overlaps the preview image prefix $reg/patchy/previews/" \
     -f "$pv" -f "$ri" --set "agent.repositoryImages.registries={ghcr.io/example/agent-images/,$entry}"
@@ -412,7 +412,7 @@ expect_fail 'custom preview prefix under an agent registry' \
 # characters, another region's registry, a disjoint custom pair; and with
 # repository images off nothing is judged (the kill switch never fails a
 # render).
-for entry in "$reg/patchy/previews-agents/" "377946145366.dkr.ecr.us-west-2.amazonaws.com/patchy/" "$reg/patchy/app-envs/"; do
+for entry in "$reg/patchy/previews-agents/" "111122223333.dkr.ecr.us-west-2.amazonaws.com/patchy/" "$reg/patchy/app-envs/"; do
   render "preview-disjoint-$(echo "$entry" | tr -c 'a-z0-9\n' '-')" -f "$pv" -f "$ri" \
     --set "agent.repositoryImages.registries={$entry}"
 done

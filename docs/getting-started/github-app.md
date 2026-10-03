@@ -26,6 +26,27 @@ Grant exactly these — nothing more:
 | **Pull requests**        | Read & write | Open the pull request a human reviews                                                     |
 | **Metadata**             | Read         | Mandatory for every App; also reads a commenter's repository permission                   |
 
+### Intents
+
+Intent-driven development (the optional [intent-controller](../configuration/intent-controller.md)) uses the same App.
+It needs no webhook event, because it polls GitHub, and these permissions:
+
+| Repository             | Permission          | Access       | Why                                                                         |
+| ---------------------- | ------------------- | ------------ | --------------------------------------------------------------------------- |
+| The intent repository  | **Issues**          | Read & write | Read intent issues and their events; post the plan and status; label, close |
+| Each app repository    | **Contents**        | Read & write | Push the `patchy-intent/…` branch                                           |
+| Each app repository    | **Pull requests**   | Read & write | Open the pull request; read its reviews and conversation                    |
+| Each app repository    | **Issues**          | Read         | Check a reviewer's or commenter's permission; read the rate budget          |
+| With `spec.checks.fix` | **Checks**          | Read         | Find the failed check runs and read their annotations                       |
+| With `spec.checks.fix` | **Commit statuses** | Read         | Find the failed commit statuses                                             |
+| With `spec.checks.fix` | **Actions**         | Read         | Read the job log tail behind a failed Actions check run                     |
+
+Issues read on an app repository is not about its issues: intent-controller reads a pull request reviewer's or
+commenter's repository permission, and the installation's rate budget, with an issues-read token. The last three are
+needed only by a Project that names checks in `spec.checks.fix`, on its app repositories. A Project reports `Ready` only
+once the App holds every grant it needs (each is proven by minting a token with it), and `AppNotInstalled` names the
+first one missing.
+
 ## Webhook events
 
 Subscribe to these four events:

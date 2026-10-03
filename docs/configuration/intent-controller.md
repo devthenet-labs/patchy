@@ -134,8 +134,10 @@ The Project reports `Ready` once:
 
 - its repository resolves to exactly one Forge (`ForgeUnresolved` otherwise), whose credential Secret intent-controller
   may read (`ForgeSecretUnreadable` otherwise);
-- the App is installed on the intent and app repositories, with the issues, contents and pull-requests permissions
-  intents use (`AppNotInstalled` otherwise);
+- the App is installed on the intent and app repositories, with the permissions intents use: issues write on the intent
+  repository; contents and pull requests write and issues read (a reviewer's permission and the rate budget are read
+  with it) on the app repository; and, when `spec.checks.fix` names a check, checks, statuses and actions read on the
+  app repository too (`AppNotInstalled` otherwise, naming the permission);
 - no other Project shares its intent repository and trigger label (`AmbiguousIntentRepository`).
 
 It creates the trigger and approve labels when they are missing. An issue whose Intent name is held by another
@@ -207,8 +209,10 @@ intent-controller is the second code path that writes to a forge (remediation-co
   - no ClusterRole.
 - **Network:** egress to DNS, the Kubernetes API server and GitHub on 443. It never dials the artifact server or an
   agent pod.
-- **GitHub App:** this slice needs no new permission or event subscription. It uses issues, contents and pull requests
-  (write) and metadata (read).
+- **GitHub App:** intents need no event subscription. They use issues, contents and pull requests (write) and metadata
+  (read), issues read on the app repository too; a Project with `spec.checks.fix` also needs checks, statuses and
+  actions (read) on its app repository, for the check-fix rounds. See
+  [Create the GitHub App](../getting-started/github-app.md#intents).
 
 It writes no Finding spec, so it is not exempt from the finding admission policy.
 

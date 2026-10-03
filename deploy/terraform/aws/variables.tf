@@ -156,10 +156,13 @@ variable "previews" {
     - alb_name: the preview ALB, at most 32 characters. Null means `<cluster_name>-preview`. It must differ from
       edge.alb_name: previews get an ALB of their own.
     - alb_subnet_ids: the public subnets the preview ALB is placed in: 2 to 4, one per Availability Zone, each in the
-      cluster's VPC and tagged kubernetes.io/role/elb. helm_values pins the ALB to exactly these subnets
-      (preview.albSubnetIDs), and their CIDRs become preview.albSubnetCIDRs, the only sources preview pods admit.
-    - node_subnet_ids: the private subnets preview nodes run in (the NodeClass subnetSelectorTerms). Untrusted
-      preview workloads must never get public IPs, so a subnet that assigns them fails the plan.
+      cluster's VPC, tagged kubernetes.io/role/elb and /20 or narrower. helm_values pins the ALB to exactly these
+      subnets (preview.albSubnetIDs), and their CIDRs become preview.albSubnetCIDRs, the only sources preview pods
+      admit.
+    - node_subnet_ids: the private subnets preview nodes run in (the NodeClass subnetSelectorTerms), each in a zone
+      of one of the alb_subnet_ids: the ALB sends no traffic to a target in a zone it has not enabled. Untrusted
+      preview workloads must never get public IPs, so a subnet that assigns them fails the plan. The nodes join the
+      cluster and pull from ECR out of these subnets, so they need a NAT gateway or EKS, ECR and S3 endpoints.
     - inbound_cidrs: who may reach previews: 1 to 8 IPv4 /32s.
     - dns_cidr, api_server_cidr: the cluster DNS and Kubernetes API Service /32s. Null derives .10 and .1 of the
       cluster's service CIDR, which is what EKS assigns.
@@ -237,7 +240,8 @@ variable "edge" {
     - zone_id: the Route53 hosted zone that holds the hosts.
     - webhook_host, status_host: the two hostnames; status_host is optional.
     - certificate_domains: the names the certificate covers, which must cover both hosts. Null means the hosts.
-    - alb_name: the ALB the edge Ingresses share, looked up by name only for the alias records.
+    - alb_name: the ALB the edge Ingresses share, looked up by name only for the alias records: the chart's
+      edgeIngressClass.loadBalancerName, when the chart creates the edge class.
   EOT
   type = object({
     zone_id             = string

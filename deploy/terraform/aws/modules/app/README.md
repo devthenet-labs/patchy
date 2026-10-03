@@ -54,7 +54,8 @@ If the first publish fails with `Not authorized to perform sts:AssumeRoleWithWeb
 the repository's real subject. Only GitHub's immutable subject, `repo:<owner>@<owner_id>/<name>@<repository_id>`, is
 trusted. A repository still on the classic `repo:<owner>/<name>` subject (the API reports
 `use_immutable_subject: false`), or on a custom `include_claim_keys` template, fails the plan until it switches to
-immutable subject claims.
+immutable subject claims
+([how, and what that changes for its other workflows](../../../../../docs/intents/deploying.md#4-terraform-phase-1)).
 
 ## Reference
 

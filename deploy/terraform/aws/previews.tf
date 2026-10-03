@@ -108,6 +108,18 @@ resource "aws_iam_role" "preview_node" {
       condition     = length(distinct([for id in var.previews.alb_subnet_ids : data.aws_subnet.preview_alb[id].availability_zone])) == length(var.previews.alb_subnet_ids)
       error_message = "previews.alb_subnet_ids must be in distinct Availability Zones: an ALB takes one subnet per zone."
     }
+    precondition {
+      # The preview ALB uses IP targets, and an ALB sends no traffic to a
+      # target in a zone it has not enabled (target health Target.NotInUse).
+      # The NodePool may launch a node in any node subnet, so a node subnet
+      # outside the ALB's zones would leave every preview scheduled there
+      # unreachable, never Ready, until its rollout times out.
+      condition = length(setsubtract(
+        [for id in var.previews.node_subnet_ids : data.aws_subnet.preview_node[id].availability_zone],
+        [for id in var.previews.alb_subnet_ids : data.aws_subnet.preview_alb[id].availability_zone],
+      )) == 0
+      error_message = "Every previews.node_subnet_ids subnet must be in an Availability Zone of one of the previews.alb_subnet_ids: the preview ALB sends no traffic to a node in a zone it has not enabled."
+    }
   }
 }
 

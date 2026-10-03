@@ -90,7 +90,7 @@ func (p *pass) noticeUntracked(ctx context.Context) (changed, wait bool, err err
 	var noticed, refused, left []string
 	for _, pr := range prs {
 		ref := fmt.Sprintf("%s#%d", repoSlug(pr.Repository), pr.Number)
-		if _, ok := p.projectRepository(pr.Repository); !ok {
+		if p.leftProject(pr.Repository) {
 			left = append(left, ref)
 			continue
 		}

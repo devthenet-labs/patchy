@@ -358,6 +358,13 @@ func (p *pass) projectRepository(url string) (v1alpha1.ProjectRepository, bool) 
 	return v1alpha1.ProjectRepository{}, false
 }
 
+// leftProject reports a repository the Project no longer holds. patchy
+// writes nothing more to one: no push, no round notice, no untracked notice.
+func (p *pass) leftProject(url string) bool {
+	_, ok := p.projectRepository(url)
+	return !ok
+}
+
 // approvedRepositories are the Project repositories the approved plan names,
 // in the plan's order: what the build round builds, one run each, and where
 // it opens one pull request each. gone is true when the plan names one the

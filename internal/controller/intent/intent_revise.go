@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"slices"
 	"strings"
@@ -125,10 +126,19 @@ func (p *pass) missingPendingReviseBranch(ctx context.Context, run *v1alpha1.Int
 
 // failedRevise retries a failed round's attempt when the failure allows it,
 // on the round's own repository, and otherwise ends the round. A round whose
-// pull request is no longer open is ended, never retried.
+// pull request is no longer open, or whose repository has left the Project,
+// is ended, never retried: nothing more is done there, and rounds being
+// serialised per Intent, a round left waiting would hold up every other pull
+// request's.
 func (p *pass) failedRevise(ctx context.Context, run *v1alpha1.IntentRun, rs roundRuns) (bool, error) {
 	if run.Status.Outcome == OutcomeInputUnavailable || run.Status.Outcome == OutcomeImageRequired ||
 		run.Status.Outcome == OutcomeNoUsableFeedback || !p.roundOpen(run) {
+		return p.endReviseRound(ctx, run)
+	}
+	if p.leftProject(run.Spec.Repository.URL) {
+		p.r.log().LogAttrs(ctx, slog.LevelInfo, "a failed round's repository left the project; the round ends",
+			slog.String("intent", p.in.Name), slog.String("run", run.Name),
+			slog.String("repository", run.Spec.Repository.URL))
 		return p.endReviseRound(ctx, run)
 	}
 	if run.Status.Outcome == OutcomeHeadMoved && run.Spec.Trigger != v1alpha1.IntentRunTriggerChecks &&
@@ -171,10 +181,19 @@ func (p *pass) endReviseRound(ctx context.Context, run *v1alpha1.IntentRun) (boo
 // own repository, once (adopting the bot's earlier one by its marker, whose
 // round number never repeats across repositories): what the round pushed and
 // that review is requested again, or that it ended without a push. A round
-// whose repository has no recorded pull request has nowhere to say it.
+// whose repository has no recorded pull request has nowhere to say it, and
+// one whose repository has left the Project says nothing there: patchy
+// writes nothing more to a repository the Project no longer holds, whose
+// token is no longer one Ready proved, and which it may no longer reach.
 func (p *pass) finishPRRound(ctx context.Context, run *v1alpha1.IntentRun) error {
 	rec := p.pullRequest(run.Spec.Repository.URL)
 	if rec == nil {
+		return nil
+	}
+	if p.leftProject(run.Spec.Repository.URL) {
+		p.r.log().LogAttrs(ctx, slog.LevelInfo, "a round's repository left the project; its notice is not posted",
+			slog.String("intent", p.in.Name), slog.String("run", run.Name),
+			slog.String("repository", run.Spec.Repository.URL))
 		return nil
 	}
 	pr := *rec
@@ -748,7 +767,8 @@ func (p *pass) eligiblePRCommand(ctx context.Context, pr *v1alpha1.IntentPullReq
 func (p *pass) ackPRCommand(ctx context.Context, run *v1alpha1.IntentRun) error {
 	id := run.Spec.Inputs.CommandID
 	rec := p.pullRequest(run.Spec.Repository.URL)
-	if id < 1 || rec == nil {
+	if id < 1 || rec == nil || p.leftProject(run.Spec.Repository.URL) {
+		// Nothing is written to a repository that left the Project.
 		return nil
 	}
 	pr := *rec

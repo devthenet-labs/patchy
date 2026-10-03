@@ -394,6 +394,51 @@ source-controller's and the preview nodes' own credentials can is shown by a Rep
 Preview's status. The exit status is 1 when any check fails, 3 when the Project does not exist and 4 when you may not
 read it.
 
+## Scaffolding an application repository
+
+`patchy init app` is the fifth cluster-free command. It writes the files an application repository needs before patchy
+can build intents in it and preview its pull requests, from templates built into the CLI, and makes no GitHub call:
+
+```sh
+patchy init app hello-web --repo acme/Hello.Web --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com
+patchy init app --existing --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com   # in a checkout, beside its code
+```
+
+| Path                                                                         | What it is                                                                                                                                                      |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.patchy/agent.yaml`                                                         | the [agent image](integrations/agent-images.md) the repository declares: `<registry>/patchy/app-envs/<image-name>:toolchain-v1`                                 |
+| `.patchy/Dockerfile`                                                         | that image's recipe: patchy's agent base, pinned by digest, plus the toolchain and the dependencies, offline                                                    |
+| `.github/workflows/ci.yml`                                                   | `test`: tests the exact head and builds the runtime image as an artifact, with no credential and no OIDC                                                        |
+| `.github/workflows/agent-image.yml`                                          | `agent image`: builds the agent image from the default branch, reproducibly, also uncredentialed                                                                |
+| `.github/workflows/publish-images.yml`                                       | the `workflow_run` dispatcher: holds no role and runs no step, and calls each kind's publisher behind its own gate variable                                     |
+| `.github/workflows/publish-runtime.yml`                                      | the trusted runtime publisher (`workflow_call`), the only workflow that assumes `RUNTIME_ROLE_ARN`                                                              |
+| `.github/workflows/publish-agent.yml`                                        | the trusted agent publisher (`workflow_call`), the only workflow that assumes `AGENT_ROLE_ARN`                                                                  |
+| `.github/actions/publish/`                                                   | the publishers' scripts (`guard.cjs`, `validate_oci.py`, `check-config.sh`, `copy-image.sh`), their tests, and a README listing the variables and the workflows |
+| `Dockerfile`, `.dockerignore`, `README.md`, `.gitignore`, a small Go service | for a new application only: a runtime image that meets the preview contract (uid 65532, a read-only root filesystem, one port, a readiness path)                |
+
+No generated workflow or script names an account, region, role or repository ID: the publishers read them from
+repository variables, and AWS role trust (the repository's numeric IDs, the default branch and the publisher's own
+`job_workflow_ref`) is the boundary. Only `.patchy/agent.yaml` names the registry, because source-controller reads the
+image from it. The variables, which `init app` prints as `gh variable set` commands, are `PUBLISH_REPOSITORY_ID`,
+`PUBLISH_OWNER_ID`, `AWS_REGION`, `ECR_REGISTRY`, `AGENT_IMAGE_REPOSITORY`, `AGENT_ROLE_ARN`, `RUNTIME_IMAGE_REPOSITORY`
+and `RUNTIME_ROLE_ARN`, then the two gates: `AGENT_PUBLISH_ENABLED` publishes the agent image (a repository without
+previews still needs it), and `PREVIEW_PUBLISH_ENABLED`, set last, publishes runtime images.
+
+The repository defaults to the checkout's `origin` remote and the default branch to the one `origin`'s HEAD names, both
+read from `.git` with no git binary. `--image-name`, the leaf of both registry repositories, defaults to the repository
+name made image-safe (`Hello.Web` becomes `hello-web`). The agent base is the one released with this CLI, pinned to the
+digest its tag names in the registry now; `--agent-base` overrides it (a digest-pinned reference is used as given), and
+a development build, which has no agent base of its own, needs it.
+
+An existing file is never overwritten without `--force`, and a symbolic link never is: every path is checked before any
+is written. `--existing` writes only `.patchy/` and the CI publishers, builds the runtime image in a workflow of its own
+(`runtime-image.yml`, named `runtime image`) so the application's CI is untouched, and ends its next steps with what the
+application must be adapted to.
+
+Published tags are immutable. To change the agent toolchain, edit `.patchy/Dockerfile` (or the dependencies) and bump
+the tag in `.patchy/agent.yaml` to `toolchain-v2`, `toolchain-v3` and so on, in the same commit: the agent publisher
+reads the tag from that file, and refuses a changed image at a published tag with a message saying to bump it.
+
 ## Permissions
 
 Each action is a **custom RBAC verb**, granted independently: holding `approve` says nothing about `suspend`. The

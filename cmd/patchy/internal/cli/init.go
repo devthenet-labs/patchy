@@ -76,8 +76,10 @@ func newInitAppCmd(opts *Options) *cobra.Command {
 			"                           plus the toolchain and the dependencies, offline\n" +
 			"  .github/workflows/       uncredentialed builds of the runtime and agent images,\n" +
 			"                           and the trusted publishers that push them to ECR\n" +
-			"  .github/actions/publish/ the publishers' guard scripts and their tests\n" +
-			"  Dockerfile, .dockerignore and a small service, for a new application only\n\n" +
+			"  .github/actions/publish/ the publishers' guard scripts, their tests and a README\n" +
+			"                           listing the repository variables and trusted workflows\n" +
+			"  Dockerfile, .dockerignore, .gitignore, README.md and a small service, for a new\n" +
+			"  application only\n\n" +
 			"The publishers push the runtime image of every open same-repository PR head and\n" +
 			"default-branch commit (sha-<commit>) and the agent image from the default branch,\n" +
 			"each gated on its own repository variable (PREVIEW_PUBLISH_ENABLED,\n" +

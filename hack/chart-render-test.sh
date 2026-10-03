@@ -72,16 +72,52 @@ expect_fail() {
   fi
 }
 
+# same_render WANT GOT: GOT is the render WANT records, whichever helm
+# rendered either. Every line counts byte for byte, comments included, except
+# blank ones: helm 4.3 writes two blank lines before each document a
+# {{- range }} emits where 4.2 wrote none, and changed nothing else, so a
+# toolchain bump must not read as a changed policy. A blank line inside a
+# block scalar is content, though, so the parsed documents must be equal too.
+# On a difference, $out/same.diff says what differs.
+same_render() {
+  grep -v '^[[:space:]]*$' "$1" >"$out/same.want" || true
+  grep -v '^[[:space:]]*$' "$2" >"$out/same.got" || true
+  if ! cmp -s "$out/same.want" "$out/same.got"; then
+    { echo "(blank lines left out)"; diff "$out/same.want" "$out/same.got"; } >"$out/same.diff" || true
+    return 1
+  fi
+  if ! yq -o=json -I=0 '.' "$1" >"$out/same.want.json" 2>"$out/same.diff" ||
+    ! yq -o=json -I=0 '.' "$2" >"$out/same.got.json" 2>"$out/same.diff"; then
+    return 1
+  fi
+  if ! cmp -s "$out/same.want.json" "$out/same.got.json"; then
+    { echo "the parsed documents differ (a blank line inside a block scalar?)"; diff "$out/same.want.json" "$out/same.got.json"; } >"$out/same.diff" || true
+    return 1
+  fi
+}
+
 # golden_render NAME FILE [helm args...]: the render (pass --show-only for one
-# template) equals the committed golden FILE byte for byte.
+# template) is the committed golden FILE, as same_render compares them.
 golden_render() {
   name=$1
   file=$2
   shift 2
   if ! helm template patchy "$chart" --namespace patchy "$@" >"$out/$name.golden" 2>"$out/$name.err"; then
     fail "$name: render failed: $(cat "$out/$name.err")"
-  elif ! cmp -s "$file" "$out/$name.golden"; then
-    fail "$name: render differs from $file: $(diff "$file" "$out/$name.golden" | head -20)"
+  elif ! same_render "$file" "$out/$name.golden"; then
+    fail "$name: render differs from $file: $(head -20 "$out/same.diff")"
+  fi
+}
+
+# same_render_is DESC WANT FILE: same_render's verdict on FILE against the
+# default golden is WANT (same or differs).
+same_render_is() {
+  got=differs
+  if same_render "$golden/preview-admission.default.yaml" "$3"; then
+    got=same
+  fi
+  if [ "$got" != "$2" ]; then
+    fail "golden comparison, $1: $got, want $2"
   fi
 }
 
@@ -305,13 +341,29 @@ expect_fail 'preview missing cert' 'preview.certificateARN' -f "$fixtures/previe
 # One helper (patchy.previewImagePrefix) feeds the slot admission policy, the
 # preview-controller and source-controller's denied path. With the default
 # path the admission policies are byte for byte what main rendered before the
-# path was configurable: preview-admission.default.yaml is that render, and is
-# never regenerated to make this pass. A custom path changes only the prefix
-# and its length (preview-admission.custom.yaml; regenerate it with the same
-# helm template command and review the diff against the default).
+# path was configurable, blank lines aside (same_render: helm versions differ
+# in those alone): preview-admission.default.yaml is that render (helm 4.2.3),
+# and is never regenerated to make this pass. A custom path changes only the
+# prefix and its length (preview-admission.custom.yaml; regenerate it with the
+# same helm template command and review the diff against the default).
 golden=$fixtures/golden
 pv=$fixtures/preview-foundation.yaml
 reg=377946145366.dkr.ecr.us-east-1.amazonaws.com
+# The comparison itself, on edits of the default golden, so no helm version
+# decides whether it is exercised. Helm 4.3's shape (two blank lines before
+# every document but the first) is the same render; a changed rule, a changed
+# comment or a blank line inside a folded CEL expression is not.
+awk 'NR > 1 && $0 == "---" { print ""; print "" } { print }' \
+  "$golden/preview-admission.default.yaml" >"$out/golden-helm43.yaml"
+same_render_is 'helm 4.3 blank lines between documents' same "$out/golden-helm43.yaml"
+sed 's/substring(61)/substring(60)/' "$golden/preview-admission.default.yaml" >"$out/golden-rule.yaml"
+same_render_is 'a changed rule' differs "$out/golden-rule.yaml"
+sed 's/^    # for this security decision\.$/    # for this decision./' \
+  "$golden/preview-admission.default.yaml" >"$out/golden-comment.yaml"
+same_render_is 'a changed comment' differs "$out/golden-comment.yaml"
+awk '{ print } !done && /variables\.pod\.containers\.all\(c,$/ { print ""; done = 1 }' \
+  "$golden/preview-admission.default.yaml" >"$out/golden-scalar.yaml"
+same_render_is 'a blank line inside a block scalar' differs "$out/golden-scalar.yaml"
 golden_render preview-vap-default "$golden/preview-admission.default.yaml" -f "$pv" \
   --show-only templates/preview-admission.yaml
 golden_render preview-vap-custom "$golden/preview-admission.custom.yaml" -f "$pv" \

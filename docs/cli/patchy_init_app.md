@@ -23,14 +23,21 @@ The publishers push the runtime image of every open same-repository PR head and
 default-branch commit (sha-<commit>) and the agent image from the default branch,
 each gated on its own repository variable (PREVIEW_PUBLISH_ENABLED,
 AGENT_PUBLISH_ENABLED). No generated file names an account ID, role or repository
-ID: the publishers read them from repository variables, and the next steps
-printed afterwards say which to set. Only .patchy/agent.yaml carries the registry,
-because patchy reads the image from it.
+ID: the publishers read them from repository variables. The next steps printed
+afterwards give the block for patchy's reference terraform module
+(deploy/terraform/aws/modules/app, pinned to this CLI's release), which creates
+the registry repositories and publisher roles and outputs those variables for
+gh variable set. Set them on the repository, never the organization: an
+organization variable reaches every repository with these workflows. Only
+.patchy/agent.yaml carries the registry, because patchy reads the image from it.
 
 --existing is for an application that already has its source and runtime
 Dockerfile: it writes only .patchy/ and the CI publishers, builds the runtime
 image in a workflow of its own (runtime-image.yml) so the application's CI is
-untouched, and prints what the application must be adapted to.
+untouched, and prints what the application must be adapted to. It is not for a
+repository init app scaffolded, such as a copy of a template repository: retarget
+that with a full init app --force, after removing .patchy/agent.yaml and
+.patchy/Dockerfile, which --force keeps and which name the template's image.
 
 The repository defaults to the git checkout's origin remote and the default
 branch to the one origin's HEAD names (else main); both are read from .git, so no
@@ -62,6 +69,9 @@ patchy init app [dir] [flags]
   patchy init app --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com
   patchy init app hello-web --repo acme/Hello.Web --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com
   patchy init app --existing --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com --image-name shop
+  # a copy of a template repository, retargeted:
+  rm .patchy/agent.yaml .patchy/Dockerfile
+  patchy init app --force --repo acme/Shop.Web --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com
 ```
 
 ### Options

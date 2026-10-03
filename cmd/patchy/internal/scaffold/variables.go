@@ -65,6 +65,22 @@ func Variables(o Options) []Variable {
 	}
 }
 
+// variablesHowTo is the Markdown the READMEs carry above the variables
+// table: where the variables are set (the repository, never the
+// organization), how the reference terraform module's output sets the
+// configuration in one command (the output NextSteps names), and the
+// order.
+func variablesHowTo(o Options) string {
+	return "None of them is secret. Set them on this repository, never on the organization: an organization variable " +
+		"reaches every\nrepository with these workflows, a template repository and its copies included. patchy's " +
+		"reference terraform module\n(`deploy/terraform/aws/modules/app`) outputs the configuration as " +
+		"`github_variables_dotenv`; export it from your\nterraform root and set it in one command:\n\n" +
+		"```sh\n" +
+		"terraform output -raw " + moduleName(o) + "_variables | gh variable set -f - --repo " + o.Repo.String() + "\n" +
+		"```\n\n" +
+		"Set the configuration first and the two `*_PUBLISH_ENABLED` gates last:"
+}
+
 // variablesTable is the Markdown table of Variables the READMEs carry.
 func variablesTable(o Options) string {
 	vars := Variables(o)

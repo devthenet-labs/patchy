@@ -84,13 +84,20 @@ func newInitAppCmd(opts *Options) *cobra.Command {
 			"default-branch commit (sha-<commit>) and the agent image from the default branch,\n" +
 			"each gated on its own repository variable (PREVIEW_PUBLISH_ENABLED,\n" +
 			"AGENT_PUBLISH_ENABLED). No generated file names an account ID, role or repository\n" +
-			"ID: the publishers read them from repository variables, and the next steps\n" +
-			"printed afterwards say which to set. Only .patchy/agent.yaml carries the registry,\n" +
-			"because patchy reads the image from it.\n\n" +
+			"ID: the publishers read them from repository variables. The next steps printed\n" +
+			"afterwards give the block for patchy's reference terraform module\n" +
+			"(deploy/terraform/aws/modules/app, pinned to this CLI's release), which creates\n" +
+			"the registry repositories and publisher roles and outputs those variables for\n" +
+			"gh variable set. Set them on the repository, never the organization: an\n" +
+			"organization variable reaches every repository with these workflows. Only\n" +
+			".patchy/agent.yaml carries the registry, because patchy reads the image from it.\n\n" +
 			"--existing is for an application that already has its source and runtime\n" +
 			"Dockerfile: it writes only .patchy/ and the CI publishers, builds the runtime\n" +
 			"image in a workflow of its own (runtime-image.yml) so the application's CI is\n" +
-			"untouched, and prints what the application must be adapted to.\n\n" +
+			"untouched, and prints what the application must be adapted to. It is not for a\n" +
+			"repository init app scaffolded, such as a copy of a template repository: retarget\n" +
+			"that with a full init app --force, after removing .patchy/agent.yaml and\n" +
+			".patchy/Dockerfile, which --force keeps and which name the template's image.\n\n" +
 			"The repository defaults to the git checkout's origin remote and the default\n" +
 			"branch to the one origin's HEAD names (else main); both are read from .git, so no\n" +
 			"git binary is needed. The image name, which both registry repositories end in,\n" +
@@ -111,7 +118,10 @@ func newInitAppCmd(opts *Options) *cobra.Command {
 			"The written paths are printed on stdout, the next steps on stderr.",
 		Example: "  patchy init app --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com\n" +
 			"  patchy init app hello-web --repo acme/Hello.Web --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com\n" +
-			"  patchy init app --existing --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com --image-name shop",
+			"  patchy init app --existing --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com --image-name shop\n" +
+			"  # a copy of a template repository, retargeted:\n" +
+			"  rm .patchy/agent.yaml .patchy/Dockerfile\n" +
+			"  patchy init app --force --repo acme/Shop.Web --registry 123456789012.dkr.ecr.us-east-1.amazonaws.com",
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: dirCompletion,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -167,6 +177,7 @@ func runInitApp(ctx context.Context, opts *Options, f *initAppFlags, dir string,
 	if err := o.ValidateTarget(); err != nil {
 		return errUsage(err)
 	}
+	o.Release, _ = releaseOf(deps.version)
 	switch info, err := os.Stat(dir); {
 	case err == nil && !info.IsDir():
 		return errUsage(fmt.Errorf("%s is not a directory", dir))
@@ -221,8 +232,21 @@ func runInitApp(ctx context.Context, opts *Options, f *initAppFlags, dir string,
 		Dockerfile: fileExists(filepath.Join(dir, "Dockerfile")),
 		GoMod:      fileExists(filepath.Join(dir, "go.mod")),
 		Toolchain:  kept.Tag,
+		ScaffoldCI: o.Existing && fileContains(filepath.Join(dir, ".github", "workflows", "ci.yml"),
+			scaffold.ScaffoldCIMarker),
 	}))
 	return nil
+}
+
+// releaseOf is the patchy release a CLI version names: exactly X.Y.Z, with
+// or without its v, and false for anything else (a development build, a
+// pre-release, a git describe version).
+func releaseOf(cliVersion string) (string, bool) {
+	v, err := semver.StrictNewVersion(strings.TrimPrefix(cliVersion, "v"))
+	if err != nil || v.Prerelease() != "" || v.Metadata() != "" {
+		return "", false
+	}
+	return v.String(), true
 }
 
 // keptAs is "it is" or "they are", for n kept files.
@@ -304,12 +328,12 @@ func resolveAgentBase(ctx context.Context, reg imagecheck.Registry, cliVersion, 
 	const pass = "pass --agent-base <image>@sha256:<digest>"
 	ref := override
 	if ref == "" {
-		v, err := semver.StrictNewVersion(strings.TrimPrefix(cliVersion, "v"))
-		if err != nil || v.Prerelease() != "" || v.Metadata() != "" {
+		release, ok := releaseOf(cliVersion)
+		if !ok {
 			return "", fmt.Errorf("this CLI is a development build (version %q) with no agent base released "+
 				"with it; %s", cliVersion, pass)
 		}
-		img, err := imagecheck.ReleaseImage(ctx, reg, agentBaseRepository, v.String())
+		img, err := imagecheck.ReleaseImage(ctx, reg, agentBaseRepository, release)
 		if err != nil {
 			return "", fmt.Errorf("%w; %s", err, pass)
 		}
@@ -353,4 +377,13 @@ func conflictHint(c *scaffold.ConflictError, f *initAppFlags) error {
 func fileExists(p string) bool {
 	info, err := os.Stat(p)
 	return err == nil && info.Mode().IsRegular()
+}
+
+// fileContains reports whether p is an existing regular file holding s.
+func fileContains(p, s string) bool {
+	if !fileExists(p) {
+		return false
+	}
+	data, err := os.ReadFile(p)
+	return err == nil && strings.Contains(string(data), s)
 }

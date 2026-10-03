@@ -159,7 +159,9 @@ func TestInitAppWritesAndRefusesToOverwrite(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"wrote 24 files for acme/Hello.Web", "image name hello-web",
-		"gh variable set AGENT_ROLE_ARN", "imageRepository: " + testRegistryHost + "/patchy/previews/hello-web"} {
+		"//deploy/terraform/aws/modules/app?ref=v0.12.14\"",
+		"terraform output -raw patchy_app_hello_web_variables | gh variable set -f - --repo acme/Hello.Web",
+		"imageRepository: " + testRegistryHost + "/patchy/previews/hello-web"} {
 		if !strings.Contains(errOut, want) {
 			t.Errorf("stderr lacks %q:\n%s", want, errOut)
 		}
@@ -353,6 +355,46 @@ func TestInitAppExisting(t *testing.T) {
 		if !strings.Contains(errOut+out, want) {
 			t.Errorf("output lacks %q:\n%s\n%s", want, out, errOut)
 		}
+	}
+	if strings.Contains(errOut, "an earlier init app's") {
+		t.Errorf("the application's own ci.yml was taken for an earlier scaffold's:\n%s", errOut)
+	}
+}
+
+// TestInitAppExistingOverAFullScaffold: --existing over a tree a full
+// init app wrote (a template's copy) says that the old ci.yml still builds
+// a runtime image nothing publishes, and how to scaffold it properly.
+func TestInitAppExistingOverAFullScaffold(t *testing.T) {
+	dir := t.TempDir()
+	f := &initAppFlags{repo: "acme/Hello.Web", registry: testRegistryHost}
+	if _, errOut, err := initApp(t, f, dir, releaseDeps()); err != nil {
+		t.Fatalf("init app: %v\n%s", err, errOut)
+	}
+	f = &initAppFlags{repo: "acme/Hello.Web", registry: testRegistryHost, existing: true, force: true}
+	_, errOut, err := initApp(t, f, dir, releaseDeps())
+	if err != nil {
+		t.Fatalf("init app --existing --force: %v\n%s", err, errOut)
+	}
+	for _, want := range []string{".github/workflows/ci.yml is an earlier init app's",
+		"delete runtime-image.yml and scaffold\n    again without --existing"} {
+		if !strings.Contains(errOut, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, errOut)
+		}
+	}
+}
+
+// TestInitAppPinsTheModuleOnlyForARelease: the reference module's ref is
+// the CLI's own release, and a development build (here with a pinned
+// --agent-base) is told to pin it instead.
+func TestInitAppPinsTheModuleOnlyForARelease(t *testing.T) {
+	pinned := "registry.example.com/patchy/agent-base:v1@sha256:" + strings.Repeat("a", 64)
+	f := &initAppFlags{repo: "acme/Hello.Web", registry: testRegistryHost, agentBase: pinned}
+	_, errOut, err := initApp(t, f, t.TempDir(), initAppDeps{registry: fakeAgentBases{}, version: "dev"})
+	if err != nil {
+		t.Fatalf("init app: %v\n%s", err, errOut)
+	}
+	if !strings.Contains(errOut, "modules/app?ref=vX.Y.Z\"") || !strings.Contains(errOut, "development build: pin ref") {
+		t.Errorf("a development build's next steps:\n%s", errOut)
 	}
 }
 

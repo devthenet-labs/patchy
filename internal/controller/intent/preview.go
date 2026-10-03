@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"regexp"
 	"time"
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
@@ -21,11 +20,10 @@ import (
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 )
 
-var previewRevision = regexp.MustCompile(`^[0-9a-f]{40}$`)
-
 // PreviewSourceReconciler is the sole writer of Preview spec. It copies only
-// operator Project configuration and the PR head already verified and
-// recorded by the Intent reconciler; it never reads issue or agent text.
+// operator Project configuration and the PR heads (or preview bases) already
+// verified and recorded by the Intent reconciler; it never reads issue or
+// agent text.
 // A separate reconciler prevents preview errors from blocking an Intent's
 // merge, status comment, or Finding flow. Disabled unless the operator
 // explicitly enables it alongside the preview-controller.
@@ -85,29 +83,23 @@ func (r *PreviewSourceReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{RequeueAfter: time.Minute}, nil
 }
 
+// desiredPreview is the Intent's Preview, derived by
+// v1alpha1.DesiredPreviewComponents: the one function preview-controller
+// re-checks every Preview against before rendering it, so the writer never
+// creates a Preview the controller would refuse or delete (which, requeued
+// every second, would churn create and delete for as long as the state held).
 func desiredPreview(in *v1alpha1.Intent, project *v1alpha1.Project) (*v1alpha1.Preview, bool) {
-	if project.Spec.Preview == nil || len(project.Spec.Repositories) != 1 ||
-		len(in.Status.PullRequests) != 1 ||
-		(in.Status.Phase != v1alpha1.IntentInReview && in.Status.Phase != v1alpha1.IntentRevising &&
-			in.Status.Phase != v1alpha1.IntentBlocked) {
+	components, ok := v1alpha1.DesiredPreviewComponents(project, in)
+	if !ok {
 		return nil, false
 	}
-	pr := in.Status.PullRequests[0]
-	if pr.State != "open" || !sameRepo(pr.Repository, project.Spec.Repositories[0].URL) ||
-		!previewRevision.MatchString(pr.HeadSHA) {
-		return nil, false
-	}
-	p := project.Spec.Preview
 	return &v1alpha1.Preview{
 		ObjectMeta: metav1.ObjectMeta{Name: in.Name, Namespace: in.Namespace},
 		Spec: v1alpha1.PreviewSpec{
-			IntentRef: v1alpha1.ObjectReference{Name: in.Name, UID: in.UID},
-			HostLabel: in.Name,
-			Components: []v1alpha1.PreviewComponent{{
-				Name: project.Spec.Repositories[0].Name, ImageRepository: p.ImageRepository,
-				Revision: pr.HeadSHA, Port: p.Port, ReadinessPath: p.ReadinessPath,
-			}},
-			TTL: metav1.Duration{Duration: previewTTL},
+			IntentRef:  v1alpha1.ObjectReference{Name: in.Name, UID: in.UID},
+			HostLabel:  in.Name,
+			Components: components,
+			TTL:        metav1.Duration{Duration: previewTTL},
 		},
 	}, true
 }

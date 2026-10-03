@@ -13,9 +13,9 @@
 //     is the one intent-controller proves a Project's grants against, so
 //     the App and the check cannot drift.
 //   - Callback is a one-shot loopback server: it serves the page that posts
-//     the manifest to GitHub, and takes the code GitHub sends the browser
-//     back with, checked against the state it was started with. ParseCode is
-//     the same check for a code pasted in by hand.
+//     the manifest to GitHub on a random path, and takes the code GitHub
+//     sends the browser back with, checked against the state it was started
+//     with. ParseCode is the same check for a code pasted in by hand.
 //   - Convert exchanges the code (POST /app-manifests/{code}/conversions, an
 //     unauthenticated endpoint) for the App and its credentials, over plain
 //     net/http: the CLI links no GitHub client. The OAuth client ID and

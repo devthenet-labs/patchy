@@ -339,9 +339,11 @@ The flow: patchy listens on a random `127.0.0.1` port and opens a page in your b
 GitHub's "create a GitHub App" form, for `--org` (you must be an owner of it) or, with `--user`, your own account. Check
 the form and click **Create GitHub App**. GitHub sends the browser back with a one-time code, which patchy accepts only
 with the random state it started the flow with; it exchanges the code for the App's ID, private key and webhook secret
-(`POST /app-manifests/{code}/conversions`, which needs no credential) and stops listening. On a machine without a
-browser, `--no-browser` writes the page to a file you open anywhere, and you paste back the address GitHub sends you to.
-A code works once, within an hour.
+(`POST /app-manifests/{code}/conversions`, which needs no credential) and stops listening. A code for an App that an
+account other than `--org` owns is refused, and nothing is written. On a machine without a browser, `--no-browser`
+writes the page to a file you open anywhere, and you paste back the address GitHub sends you to (it asks again until it
+gets one from this run). A code works once, within an hour; if the run ends without one, the error says where to delete
+the App or how to finish it.
 
 The Secret (`appID`, `privateKey`, and `webhookSecret` for an App with a webhook; `--secret-name`, default
 `patchy-github`, in `-n`, default `patchy`) is written to `<secret-name>.secret.yaml` with mode 0600, and an existing

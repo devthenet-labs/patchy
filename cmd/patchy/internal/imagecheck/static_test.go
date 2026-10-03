@@ -170,6 +170,34 @@ func TestStatic(t *testing.T) {
 			reason: map[string]string{CheckPath: "has no absolute entries"},
 		},
 		{
+			// The chart denies the preview image prefix; an agent allowlist
+			// above it must not admit a preview image.
+			name: "denied registry path inside an allowed one",
+			cfg: func(t *testing.T, repo name.Repository) StaticConfig {
+				p, err := policy(t, repo.RegistryStr()+"/org/").Deny([]string{repo.RegistryStr() + "/org/app/"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return StaticConfig{Reference: pushed(t, repo, testImage(t, good)), Policy: &p}
+			},
+			want: "reference=PASS allowlist=FAIL resolve=PASS platform=PASS size=PASS volume=PASS env=PASS " +
+				"path=PASS signature=SKIP",
+			reason: map[string]string{CheckAllowlist: "/org/app/`, a registry path agent images may never come from"},
+		},
+		{
+			name: "denied registry path beside the image",
+			cfg: func(t *testing.T, repo name.Repository) StaticConfig {
+				p, err := policy(t, repo.RegistryStr()+"/org/").Deny([]string{repo.RegistryStr() + "/org/previews/"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return StaticConfig{Reference: pushed(t, repo, testImage(t, good)), Policy: &p}
+			},
+			want: "reference=PASS allowlist=PASS resolve=PASS platform=PASS size=PASS volume=PASS env=PASS " +
+				"path=PASS signature=SKIP",
+			reason: map[string]string{CheckAllowlist: "/org/; not under the denied "},
+		},
+		{
 			name: "disallowed registry",
 			cfg: func(t *testing.T, repo name.Repository) StaticConfig {
 				return StaticConfig{Reference: pushed(t, repo, testImage(t, good)),

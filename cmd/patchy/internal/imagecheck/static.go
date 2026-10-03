@@ -28,7 +28,8 @@ type StaticConfig struct {
 	// Reference is the image as a repository would declare it.
 	Reference string
 	// Policy is the registry allowlist to check against, standing in for
-	// source-controller's --repository-image-registries; nil skips the
+	// source-controller's --repository-image-registries less its
+	// --repository-image-denied-registries (Policy.Deny); nil skips the
 	// check.
 	Policy *runnerimage.Policy
 	// MaxBytes caps the compressed layers of each platform, as
@@ -68,7 +69,11 @@ func Static(ctx context.Context, cfg StaticConfig) (Report, error) {
 		if err := cfg.Policy.Allow(ref); err != nil {
 			r.add(CheckAllowlist, Fail, err.Error())
 		} else {
-			r.add(CheckAllowlist, Pass, "under "+strings.Join(cfg.Policy.Entries(), ", "))
+			reason := "under " + strings.Join(cfg.Policy.Entries(), ", ")
+			if denied := cfg.Policy.Denied(); len(denied) > 0 {
+				reason += "; not under the denied " + strings.Join(denied, ", ")
+			}
+			r.add(CheckAllowlist, Pass, reason)
 		}
 	}
 

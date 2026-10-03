@@ -347,6 +347,10 @@ it; on Linux, binfmt_misc with QEMU), and a platform the host cannot emulate is 
 over. Each check prints one line (PASS, FAIL or SKIP, the platform for a `--run` check, then the reason); `-o json`
 prints the report as data, and the exit status is non-zero when any check fails.
 
+`--deny` stands in for the registry paths the operator carves out of the allowlist
+(`--repository-image-denied-registries`). The chart denies its preview image prefix there, so an image under it fails
+the allowlist line even inside an allowed path, as it would in source-controller. It needs `--allow`.
+
 `check image` takes an image reference, never a repository. To check what a repository declares before any Project
 points at it, read the reference out of its `.patchy/agent.yaml`, from a checkout or from GitHub (once a Project exists,
 [`check project`](#checking-a-project) does this for you):

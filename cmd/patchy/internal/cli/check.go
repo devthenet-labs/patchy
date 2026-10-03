@@ -50,6 +50,7 @@ func newCheckCmd(opts *Options) *cobra.Command {
 // checkImageFlags are `check image`'s flags.
 type checkImageFlags struct {
 	allow       []string
+	deny        []string
 	cosignKey   string
 	maxBytes    int64
 	run         bool
@@ -66,13 +67,14 @@ func newCheckImageCmd(opts *Options) *cobra.Command {
 			".devcontainer/devcontainer.json, with the checks patchy itself runs.\n\n" +
 			"Without --run, the checks are source-controller's own, run by the same code: the\n" +
 			"reference is canonicalised, checked against --allow (the operator's\n" +
-			"--repository-image-registries) when given, pinned to a digest, and every\n" +
-			"linux/amd64 and linux/arm64 manifest is judged for platform, compressed size,\n" +
-			"VOLUME, reserved ENV and PATH; with --cosign-key the signature is verified as\n" +
-			"well. Registry credentials are your local docker credentials\n" +
-			"(~/.docker/config.json and its credential helpers), so an image you can pull\n" +
-			"is an image this can check. Every check is reported, not just the first\n" +
-			"failure.\n\n" +
+			"--repository-image-registries) when given, less any --deny (the operator's\n" +
+			"--repository-image-denied-registries, which the chart sets to the preview image\n" +
+			"prefix), pinned to a digest, and every linux/amd64 and linux/arm64 manifest is\n" +
+			"judged for platform, compressed size, VOLUME, reserved ENV and PATH; with\n" +
+			"--cosign-key the signature is verified as well. Registry credentials are your\n" +
+			"local docker credentials (~/.docker/config.json and its credential helpers), so\n" +
+			"an image you can pull is an image this can check. Every check is reported, not\n" +
+			"just the first failure.\n\n" +
 			"With --run, the image is also run the way the agent pod runs it, on your local\n" +
 			"docker: agent-runner and the claude CLI are copied out of the claude runner\n" +
 			"image released with this CLI or, for a development build, which has none, the\n" +
@@ -105,6 +107,7 @@ func newCheckImageCmd(opts *Options) *cobra.Command {
 			"non-zero when any check fails.",
 		Example: "  patchy check image ghcr.io/acme/shop-agent:1\n" +
 			"  patchy check image ghcr.io/acme/shop-agent:1 --allow ghcr.io/acme/ --cosign-key cosign.pub\n" +
+			"  patchy check image ghcr.io/acme/shop-agent:1 --allow ghcr.io/acme/ --deny ghcr.io/acme/previews/\n" +
 			"  patchy check image ghcr.io/acme/shop-agent:1 --run\n" +
 			"  patchy check image ghcr.io/acme/shop-agent:1 --run -o json | jq '.checks[] | select(.status == \"FAIL\")'",
 		Args:              cobra.ExactArgs(1),
@@ -117,6 +120,9 @@ func newCheckImageCmd(opts *Options) *cobra.Command {
 	fl.StringArrayVar(&f.allow, "allow", nil,
 		"registry path prefix the image must sit under, as the operator's --repository-image-registries "+
 			"entries (repeatable)")
+	fl.StringArrayVar(&f.deny, "deny", nil,
+		"registry path prefix the image may never sit under, even inside an --allow entry, as the operator's "+
+			"--repository-image-denied-registries entries: the chart's preview image prefix (repeatable; needs --allow)")
 	fl.StringVar(&f.cosignKey, "cosign-key", "",
 		"operator's PEM cosign public key; verify the image's signature with it")
 	fl.Int64Var(&f.maxBytes, "max-bytes", resolve.DefaultMaxBytes,
@@ -127,6 +133,7 @@ func newCheckImageCmd(opts *Options) *cobra.Command {
 			"(default: the one released with this CLI, or the newest release for a development build, "+
 			"in the release registry this CLI was built with, pinned to its digest)")
 	_ = cmd.RegisterFlagCompletionFunc("allow", noFileCompletion)
+	_ = cmd.RegisterFlagCompletionFunc("deny", noFileCompletion)
 	_ = cmd.RegisterFlagCompletionFunc("runner-image", noFileCompletion)
 	return cmd
 }
@@ -168,10 +175,21 @@ func runCheckImage(ctx context.Context, opts *Options, f *checkImageFlags, refer
 		return errUsage(errors.New("--max-bytes must be positive"))
 	}
 	cfg := imagecheck.StaticConfig{Reference: reference, MaxBytes: f.maxBytes, Keychain: authn.DefaultKeychain}
+	if len(f.deny) > 0 && len(f.allow) == 0 {
+		// source-controller denies paths only inside its allowlist, which it
+		// always has; a denial with nothing allowed would judge nothing.
+		return errUsage(errors.New("--deny needs --allow: the denied paths are carved out of the allowlist"))
+	}
 	if len(f.allow) > 0 {
 		policy, err := runnerimage.NewPolicy(f.allow)
 		if err != nil {
 			return errUsage(fmt.Errorf("--allow: %w", err))
+		}
+		// The same carve-out source-controller makes with
+		// --repository-image-denied-registries: without it an image under the
+		// preview prefix would PASS here and be refused there.
+		if policy, err = policy.Deny(f.deny); err != nil {
+			return errUsage(fmt.Errorf("--deny: %w", err))
 		}
 		cfg.Policy = &policy
 	}

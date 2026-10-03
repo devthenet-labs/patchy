@@ -77,6 +77,18 @@ func TestCheckImage(t *testing.T) {
 			[]string{"FAIL  allowlist", "is not under an allowlisted registry path (ghcr.io/acme/)"}},
 		{"host-only allowlist entry is a usage error", []string{"check", "image", good, "--allow", "ghcr.io"},
 			"--allow: registry allowlist entry `ghcr.io` must be `host/path/`", nil},
+		// source-controller refuses an image under its denied registries
+		// (the chart's preview image prefix) even inside an allowed path.
+		{"denied path inside the allowlist", []string{"check", "image", good, "--allow", goodHost + "/org/",
+			"--deny", goodHost + "/org/app/"}, "1 check failed",
+			[]string{"FAIL  allowlist", "a registry path agent images may never come from"}},
+		{"denied path beside the image", []string{"check", "image", good, "--allow", goodHost + "/org/",
+			"--deny", goodHost + "/org/previews/"}, "",
+			[]string{"PASS  allowlist", "not under the denied " + goodHost + "/org/previews/"}},
+		{"host-only denied path is a usage error", []string{"check", "image", good, "--allow", goodHost + "/org/",
+			"--deny", "ghcr.io"}, "--deny: denied registry path `ghcr.io` must be `host/path/`", nil},
+		{"--deny without --allow is a usage error", []string{"check", "image", good, "--deny", goodHost + "/org/"},
+			"--deny needs --allow", nil},
 		{"unreadable key is a usage error", []string{"check", "image", good, "--cosign-key", "/nonexistent.pub"},
 			"--cosign-key:", nil},
 		{"one reference only", []string{"check", "image"}, "accepts 1 arg", nil},
@@ -104,6 +116,10 @@ func TestCheckImageUsageExitCode(t *testing.T) {
 	_, err := execDev(t, "check", "image", good, "--allow", "ghcr.io")
 	if code := exitCode(err); code != ExitUsage {
 		t.Errorf("exit code = %d, want %d for a malformed --allow", code, ExitUsage)
+	}
+	_, err = execDev(t, "check", "image", good, "--deny", "ghcr.io/acme/previews/")
+	if code := exitCode(err); code != ExitUsage {
+		t.Errorf("exit code = %d, want %d for --deny without --allow", code, ExitUsage)
 	}
 	_, err = execDev(t, "check", "image", good, "--allow", "ghcr.io/acme/")
 	if code := exitCode(err); code != ExitError {

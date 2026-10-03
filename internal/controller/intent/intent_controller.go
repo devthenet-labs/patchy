@@ -228,12 +228,20 @@ func (p *pass) ended(ctx context.Context) (ctrl.Result, error) {
 			return ctrl.Result{}, err
 		}
 	}
-	// Before any hand-off: a revival clears the pull requests recorded.
-	changed, wait, err := p.noticeUntracked(ctx)
-	if changed || err != nil {
-		return ctrl.Result{}, err
+	// Before any hand-off: a revival clears the pull requests recorded. The
+	// notice is advice, so while it waits on a rate floor or a failure that
+	// may pass, it holds back the hand-off alone, never the status comment.
+	changed, wait, noticeErr := p.noticeUntracked(ctx)
+	if changed || errors.Is(noticeErr, errConflict) {
+		return ctrl.Result{}, noticeErr
 	}
-	if wait {
+	if noticeErr != nil || wait {
+		if err := p.syncStatusComment(ctx); err != nil {
+			return ctrl.Result{}, errors.Join(noticeErr, err)
+		}
+		if noticeErr != nil {
+			return ctrl.Result{}, noticeErr
+		}
 		return ctrl.Result{RequeueAfter: p.set.PRPollInterval}, nil
 	}
 	if p.r.Nudger.take(p.in.Name) {

@@ -207,7 +207,8 @@ type fakeGitHub struct {
 	resolveErr   error
 	installedErr error
 	// repoErrs answer "<method> <owner/name lower-cased>" (Resolve,
-	// Installed) with an error on every call.
+	// Installed, RateRemaining, ListPullRequestComments) with an error on
+	// every call.
 	repoErrs map[string]error
 	// refused fails the installation check of one permission set: GitHub
 	// refuses a token for a permission the installation was not granted.
@@ -536,6 +537,9 @@ func (f *fakeGitHub) Permission(_ context.Context, _, login string) (string, err
 func (f *fakeGitHub) RateRemaining(_ context.Context, repoURL string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.repoErrs["RateRemaining "+strings.ToLower(repoSlug(repoURL))]; err != nil {
+		return 0, err
+	}
 	if f.appRemaining != nil && sameRepo(repoURL, appRepoURL) {
 		return *f.appRemaining, f.call("RateRemaining")
 	}
@@ -631,6 +635,9 @@ func (f *fakeGitHub) ListIssueComments(_ context.Context, repoURL string, number
 	f.sinces = append(f.sinces, since)
 	var comments []*ghclient.Comment
 	if isPRSide(repoURL) {
+		if err := f.repoErrs["ListPullRequestComments "+strings.ToLower(repoSlug(repoURL))]; err != nil {
+			return nil, err
+		}
 		if pr, ok := f.prs[number]; !ok || !pr.in(repoURL) {
 			return nil, ghError(http.StatusNotFound, "Not Found")
 		}

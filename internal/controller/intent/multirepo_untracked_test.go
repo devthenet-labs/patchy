@@ -5,6 +5,8 @@ package intent
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/forge"
 	"github.com/bitwise-media-group/patchy/internal/templates"
 )
 
@@ -128,5 +131,145 @@ func TestOneRepositoryEndingPostsNoUntrackedNotice(t *testing.T) {
 	if c := meta.FindStatusCondition(e.get(name).Status.Conditions,
 		v1alpha1.ConditionUntrackedPullRequests); c != nil {
 		t.Errorf("UntrackedPullRequests = %+v on a one-repository intent", c)
+	}
+}
+
+// dropRepository removes the repository at url from the test Project.
+func (e *env) dropRepository(url string) {
+	e.t.Helper()
+	p := e.getProject()
+	var kept []v1alpha1.ProjectRepository
+	for _, r := range p.Spec.Repositories {
+		if !sameRepo(r.URL, url) {
+			kept = append(kept, r)
+		}
+	}
+	p.Spec.Repositories = kept
+	p.Generation++
+	if err := e.c.Update(context.Background(), p); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// setRepoErrs makes the fake answer each "<method> <owner/name>" of errs
+// with its error, on every call.
+func (e *env) setRepoErrs(errs map[string]error) {
+	e.gh.mu.Lock()
+	defer e.gh.mu.Unlock()
+	for k, err := range errs {
+		e.gh.repoErrs[k] = err
+	}
+}
+
+// TestUnreachableUntrackedNoticeNeverHoldsARevival is the round-2 regression
+// of the untracked notice: an intent fails while its pull requests are being
+// opened, and the one already opened is in a repository patchy can no longer
+// reach, or no longer may write to. Its notice is recorded as not posted,
+// never retried, and so neither the status comment nor the approver
+// re-applying the trigger label waits on it: the intent is revived. Before
+// the fix every ended pass returned the repository's error, and the intent
+// stayed Failed, its status comment at Building, until the TTL deleted it.
+func TestUnreachableUntrackedNoticeNeverHoldsARevival(t *testing.T) {
+	tests := []struct {
+		name string
+		// drop is the repository removed from the Project, which fails the
+		// intent; errs answer app's calls.
+		drop      string
+		errs      map[string]error
+		wantInMsg []string
+	}{
+		{
+			name: "the opened pull request's repository left the project",
+			drop: appRepoURL,
+			// Any call to app would fail: none is made.
+			errs: map[string]error{
+				"RateRemaining acme/app":           fmt.Errorf("x: %w", forge.ErrNoMatch),
+				"ListPullRequestComments acme/app": fmt.Errorf("x: %w", forge.ErrNoMatch),
+			},
+			wantInMsg: []string{"acme/app#1 was not told, its repository having left the project"},
+		},
+		{
+			name:      "no forge covers the opened pull request's repository",
+			drop:      webRepoURL,
+			errs:      map[string]error{"RateRemaining acme/app": fmt.Errorf("x: %w", forge.ErrNoMatch)},
+			wantInMsg: []string{"could not be posted on acme/app#1", "no forge matches repository"},
+		},
+		{
+			name: "the installation refuses the opened pull request's repository",
+			drop: webRepoURL,
+			errs: map[string]error{
+				"ListPullRequestComments acme/app": ghError(http.StatusUnprocessableEntity, "not installed"),
+			},
+			wantInMsg: []string{"could not be posted on acme/app#1", "not installed"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := newMultiEnv(t)
+			name := e.blockedOpening()
+			e.setRepoErrs(tt.errs)
+			e.dropRepository(tt.drop)
+			e.passUntil(name, func() bool { return e.get(name).Status.Phase == v1alpha1.IntentFailed })
+			e.settleActions(name)
+
+			in := e.get(name)
+			c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionUntrackedPullRequests)
+			if c == nil || c.Reason != ReasonUntrackedNoticeRefused {
+				t.Fatalf("UntrackedPullRequests = %+v, want NoticeRefused", c)
+			}
+			for _, want := range tt.wantInMsg {
+				if !strings.Contains(c.Message, want) {
+					t.Errorf("UntrackedPullRequests message %q lacks %q", c.Message, want)
+				}
+			}
+			if n := len(e.untrackedNotices(1)); n != 0 {
+				t.Errorf("%d untracked notices on app's pull request, want none", n)
+			}
+			if body := e.statusBody(); !strings.Contains(body, "`Failed`") {
+				t.Errorf("status comment = %q, want it to say Failed", body)
+			}
+
+			e.clock.Advance(time.Minute)
+			e.gh.label(1, "patchy:target", approver)
+			e.reconcileProject()
+			e.passUntil(name, func() bool { return e.get(name).Status.Phase == v1alpha1.IntentPlanning })
+		})
+	}
+}
+
+// TestTransientUntrackedNoticeFailureHoldsOnlyTheHandOff: a failure that may
+// pass (a 502 reading app's rate budget) retries the notice. Meanwhile the
+// status comment still says the intent failed, and the trigger label waits,
+// unanswered, since a revival forgets the pull requests the notice is owed
+// on. Once app answers again, the notice is posted and the intent revived.
+func TestTransientUntrackedNoticeFailureHoldsOnlyTheHandOff(t *testing.T) {
+	e := newMultiEnv(t)
+	name := e.blockedOpening()
+	e.setRepoErrs(map[string]error{"RateRemaining acme/app": ghError(http.StatusBadGateway, "Bad Gateway")})
+	e.dropRepository(webRepoURL)
+	e.passUntil(name, func() bool { return e.get(name).Status.Phase == v1alpha1.IntentFailed })
+	e.clock.Advance(time.Minute)
+	e.gh.label(1, "patchy:target", approver)
+	e.reconcileProject()
+	for range 3 {
+		if err := e.reconcileIntent(name); err == nil {
+			t.Fatal("an ended pass succeeded while app's rate budget could not be read")
+		}
+		e.clock.Advance(time.Minute)
+	}
+	if body := e.statusBody(); !strings.Contains(body, "`Failed`") {
+		t.Errorf("status comment = %q, want it to say Failed while the notice waits", body)
+	}
+	if in := e.get(name); in.Status.Phase != v1alpha1.IntentFailed || len(in.Status.PullRequests) != 1 {
+		t.Fatalf("phase %s with pull requests %+v, want Failed with app's kept for its notice",
+			in.Status.Phase, in.Status.PullRequests)
+	}
+
+	e.gh.mu.Lock()
+	delete(e.gh.repoErrs, "RateRemaining acme/app")
+	e.gh.mu.Unlock()
+	e.passUntil(name, func() bool { return e.get(name).Status.Phase == v1alpha1.IntentPlanning })
+	if notices := e.untrackedNotices(1); len(notices) != 1 {
+		t.Errorf("untracked notices on app's pull request = %d, want one", len(notices))
 	}
 }

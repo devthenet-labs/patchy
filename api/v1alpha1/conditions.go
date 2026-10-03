@@ -113,9 +113,11 @@ const (
 	// ConditionUntrackedPullRequests marks an Intent that ended (Closed or
 	// Failed) while its pull requests were still being opened, leaving the
 	// ones already opened open with nothing tracking them. It is set once
-	// each of them carries the notice saying so (reason Noticed, or
-	// NoticeRefused naming any GitHub refused), and cleared when the Intent
-	// is revived.
+	// each of them carries the notice saying so (reason Noticed), or once
+	// any that could not be told is named (NoticeRefused: GitHub refused the
+	// notice, patchy can no longer reach the repository, or the repository
+	// left the Project, which patchy then writes nothing to), and cleared
+	// when the Intent is revived. A revival waits for it; nothing else does.
 	ConditionUntrackedPullRequests = "UntrackedPullRequests"
 
 	// ConditionPushHeld marks a Running build IntentRun whose Job has

@@ -247,8 +247,10 @@ spec:
   issue closed, or an approved repository removed from the Project (which fails it), perhaps while a block on a later
   one holds it. The ones already opened are left open, and patchy comments on each, once, that the intent ended, that
   the pull request is no longer tracked and not part of a completed change, and which repositories never got theirs; the
-  intent's `UntrackedPullRequests` condition records it. patchy closes none of them. Reviving a failed intent starts its
-  pull requests afresh.
+  intent's `UntrackedPullRequests` condition records it. One whose repository has left the Project is not written to,
+  and one patchy can no longer reach (no Forge covers its repository, the App's installation refuses it, GitHub refuses
+  the comment) is not retried: the condition names each (`NoticeRefused`), and the intent's revival never waits on it.
+  patchy closes none of them. Reviving a failed intent starts its pull requests afresh.
 - **Repository keys name the runs.** Changing a key while an intent builds is safe; giving one repository's key to
   another (a swap) can make a build's name another repository's run, and then the intent is held `Blocked` with
   `UnsupportedRepositories` (`RepositoryKeyChanged`), naming both, until the Project changes again.

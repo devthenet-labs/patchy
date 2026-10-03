@@ -25,7 +25,7 @@ func TestSanitize(t *testing.T) {
 		{"a..b__c--d", "a-b-c-d", ""},
 		{"--x--", "x", ""},
 		{".github", "github", ""},
-		{"ÄBC", "bc", ""},
+		{"\u00c4BC", "bc", ""}, // a letter Sanitize cannot keep
 		{"Web2.0", "web2-0", ""},
 		{strings.Repeat("a", 62) + "-b", strings.Repeat("a", 62), ""},
 		{strings.Repeat("ab", 40), strings.Repeat("ab", 31) + "a", ""},

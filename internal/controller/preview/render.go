@@ -63,6 +63,21 @@ type Settings struct {
 	RolloutTimeout time.Duration
 	PollInterval   time.Duration
 	MaxRetries     int32
+	// TargetHealth makes Ready mean the load balancer's target is healthy.
+	// The load balancer controller injects a target-health readiness gate
+	// into a slot Pod (its namespace opts in by label) only when the Pod is
+	// created after the target group binding exists, which follows the
+	// Ingress. So the Ingress comes first and stays across redeploys and
+	// retries, Deployments wait until the load balancer has admitted it, and
+	// a component is Ready only once its Pod carries a readiness gate and
+	// every gate is True. The controller renders no gate of its own, so the
+	// one a slot Pod carries is the load balancer's (its condition type,
+	// target-health.elbv2.k8s.aws/<binding> from the upstream controller, is
+	// not relied on, since EKS Auto Mode's is not documented). Off, the
+	// Ingress is created only once every component is
+	// Ready, as in slice 2, and the host can answer 404 for a few seconds
+	// after Ready while the target registers.
+	TargetHealth bool
 }
 
 func (s Settings) Validate() error {

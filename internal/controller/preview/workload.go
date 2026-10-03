@@ -173,8 +173,10 @@ func (r *Reconciler) prune(ctx context.Context, p *v1alpha1.Preview, slot int32)
 }
 
 // readyImage reports component i's ready image ID: its Deployment has rolled
-// out and a Pod running the component's exact image is Ready.
-func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, i int, slot int32) (string, bool, error) {
+// out and a Pod running the component's exact image is Ready — and, when
+// gated, its load balancer target is healthy too (targetHealthy).
+func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, i int, slot int32,
+	gated bool) (string, bool, error) {
 	c := p.Spec.Components[i]
 	var dep appsv1.Deployment
 	key := types.NamespacedName{Namespace: r.Settings.slotName(slot), Name: componentName(p, i)}
@@ -194,13 +196,10 @@ func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, i int,
 			pod.Spec.Containers[0].Image != image(c) {
 			continue
 		}
-		ready := false
-		for _, condition := range pod.Status.Conditions {
-			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
-				ready = true
-			}
+		if !podCondition(&pod, corev1.PodReady) {
+			continue
 		}
-		if !ready {
+		if gated && !targetHealthy(&pod) {
 			continue
 		}
 		for _, status := range pod.Status.ContainerStatuses {
@@ -210,6 +209,51 @@ func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, i int,
 		}
 	}
 	return "", false, nil
+}
+
+// podCondition reports whether the Pod's condition of type t is True.
+func podCondition(pod *corev1.Pod, t corev1.PodConditionType) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == t {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
+// targetHealthy reports whether the load balancer has found the Pod's target
+// healthy: the Pod carries a readiness gate, which only the load balancer
+// controller injects into a slot Pod, and every gate's condition is True. A
+// Pod created before its target group binding existed has no gate, and so
+// never counts.
+func targetHealthy(pod *corev1.Pod) bool {
+	if len(pod.Spec.ReadinessGates) == 0 {
+		return false
+	}
+	for _, gate := range pod.Spec.ReadinessGates {
+		if !podCondition(pod, gate.ConditionType) {
+			return false
+		}
+	}
+	return true
+}
+
+// ingressAdmitted reports whether the load balancer controller has reconciled
+// the Preview's Ingress (it publishes the load balancer's address only after
+// building its target group bindings), which a Pod must follow to have its
+// target-health readiness gate injected.
+func (r *Reconciler) ingressAdmitted(ctx context.Context, p *v1alpha1.Preview, slot int32) (bool, error) {
+	var live networkingv1.Ingress
+	key := types.NamespacedName{Namespace: r.Settings.slotName(slot), Name: resourceName(p)}
+	if err := r.Get(ctx, key, &live); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	for _, lb := range live.Status.LoadBalancer.Ingress {
+		if lb.Hostname != "" || lb.IP != "" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // cleanup never deletes a foreign object, even one squatting on a rendered

@@ -83,6 +83,21 @@ Pods/ReplicaSets are gone. A periodic sweep deletes owned orphans left by a lost
 slot that still contains owned resources. Reducing `slotCount` while a Preview owns a removed slot deliberately blocks
 finalizer removal: restore the count and drain first.
 
+With `previewController.config.targetHealth: true` (the chart default, `--preview-target-health` on the binary), `Ready`
+also means the load balancer's target is healthy, so the host does not answer 404 or nothing for the seconds after
+`Ready` while a new target registers. The slot namespaces carry `eks.amazonaws.com/pod-readiness-gate-inject: enabled`,
+EKS Auto Mode's opt-in to inject a target-health readiness gate into the slot's Pods (the upstream AWS Load Balancer
+Controller's label is `elbv2.k8s.aws/pod-readiness-gate-inject`, but the `alb-preview` class is Auto Mode's). The gate
+is injected only into a Pod created after its target group binding exists, which follows the Ingress, so in this mode
+the Ingress is created with the Services, before any Deployment; the Deployments wait until the load balancer has
+published the Ingress's address; and a component is Ready only once its Pod carries a readiness gate and every gate is
+True. The Ingress stays across a PR-head redeploy and a retry (the new Pods need its binding): the Recreate rollout
+stops the old revision before the new one starts, and the load balancer routes nothing to a target until it is healthy.
+A Preview already `Ready` when the mode is switched on keeps serving on its Pods rather than being restarted to grow a
+gate. The Auto Mode label comes from AWS (an EKS Auto Mode blog post and a maintainer's answer on
+aws/containers-roadmap#2511), not from the EKS user guide, and has not yet been checked on a live preview: if Auto Mode
+injects no gate, every rollout times out and retries, and setting `targetHealth: false` restores the previous behaviour.
+
 Before enabling any Project preview, complete the separate ALB, placeholder Ingress and wildcard DNS check-in, then run
 the cold-start isolation gate in `hack/preview-isolation-probe/README.md` with a disposable PR image. Repeat that gate
 after any EKS, Auto Mode or VPC CNI upgrade and before relying on previews again. The direct Auto Mode network-policy

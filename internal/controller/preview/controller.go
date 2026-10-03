@@ -109,7 +109,12 @@ func matchesApprovedPreview(p *v1alpha1.Preview, in *v1alpha1.Intent, project *v
 
 func (r *Reconciler) reconcileActive(ctx context.Context, p *v1alpha1.Preview) (ctrl.Result, error) {
 	if p.Status.ObservedGeneration != p.Generation {
-		if p.Status.Slot != nil {
+		// A new spec withdraws the host until it is Ready again — unless
+		// Ready waits for target health, which needs the Ingress (and so the
+		// target group binding) in place before the new Pods start. The
+		// Recreate rollout stops the old revision before the new one runs,
+		// and the host answers no old code past it.
+		if p.Status.Slot != nil && !r.Settings.TargetHealth {
 			if err := r.deleteIngress(ctx, p, *p.Status.Slot); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -260,21 +265,46 @@ func (r *Reconciler) slotHasManagedObjects(ctx context.Context, slot int32) (boo
 	return len(ingresses.Items) > 0, nil
 }
 
-// deploy renders every component into the slot: it prunes the objects of
-// components no longer rendered, ensures each component's Service and
-// Deployment (a Deployment whose spec did not change is not touched, so it is
-// not rolled), and exposes the host only once every component is Ready.
+// deploy renders every component into the slot: it ensures each component's
+// Service and Deployment (a Deployment whose spec did not change is not
+// touched, so it is not rolled), prunes the objects of components no longer
+// rendered, and marks the Preview Ready once every component is. The host is
+// exposed only then too — unless Ready waits for target health, when the
+// Ingress precedes the Pods (Settings.TargetHealth).
 func (r *Reconciler) deploy(ctx context.Context, p *v1alpha1.Preview) (ctrl.Result, error) {
 	slot := *p.Status.Slot
-	if err := r.prune(ctx, p, slot); err != nil {
-		return ctrl.Result{}, err
-	}
 	for i := range p.Spec.Components {
 		if err := r.ensureService(ctx, p, i, slot); err != nil {
 			if errors.Is(err, errDeleting) {
 				return r.wait(), nil
 			}
 			return r.retryError(ctx, p, err)
+		}
+	}
+	if r.Settings.TargetHealth {
+		// The Pods must start after their target group bindings exist, or
+		// the load balancer never injects the gate Ready waits for.
+		if err := r.ensureIngress(ctx, p, slot); err != nil {
+			if errors.Is(err, errDeleting) {
+				return r.wait(), nil
+			}
+			return r.retryError(ctx, p, err)
+		}
+	}
+	// Pruned only once a kept Ingress no longer routes to what is pruned.
+	if err := r.prune(ctx, p, slot); err != nil {
+		return ctrl.Result{}, err
+	}
+	if r.Settings.TargetHealth {
+		// A Preview already Ready has its Pods; it does not wait again.
+		if p.Status.Phase != v1alpha1.PreviewReady {
+			admitted, err := r.ingressAdmitted(ctx, p, slot)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if !admitted {
+				return r.notYet(ctx, p, "the load balancer did not admit the Ingress")
+			}
 		}
 	}
 	for i := range p.Spec.Components {
@@ -306,19 +336,18 @@ func (r *Reconciler) deploy(ctx context.Context, p *v1alpha1.Preview) (ctrl.Resu
 }
 
 func (r *Reconciler) completeDeployment(ctx context.Context, p *v1alpha1.Preview, slot int32) (ctrl.Result, error) {
+	// Reaching Ready waits for target health. A Preview already Ready at
+	// this generation stays Ready on its serving Pods, so one deployed
+	// before the gate existed is not restarted to grow one.
+	gated := r.Settings.TargetHealth && p.Status.Phase != v1alpha1.PreviewReady
 	components := make([]v1alpha1.PreviewComponentStatus, 0, len(p.Spec.Components))
 	for i, c := range p.Spec.Components {
-		imageID, ready, err := r.readyImage(ctx, p, i, slot)
+		imageID, ready, err := r.readyImage(ctx, p, i, slot, gated)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 		if !ready {
-			if p.Status.AttemptStartedAt != nil &&
-				r.now().Sub(p.Status.AttemptStartedAt.Time) >= r.Settings.RolloutTimeout {
-				return r.retryError(ctx, p, fmt.Errorf("component %s did not become Ready within %s", c.Name,
-					r.Settings.RolloutTimeout))
-			}
-			return r.wait(), nil
+			return r.notYet(ctx, p, fmt.Sprintf("component %s did not become Ready", c.Name))
 		}
 		components = append(components, v1alpha1.PreviewComponentStatus{
 			Name: c.Name, Revision: c.Revision, ImageID: imageID,
@@ -346,6 +375,16 @@ func (r *Reconciler) completeDeployment(ctx context.Context, p *v1alpha1.Preview
 	return r.wait(), nil
 }
 
+// notYet waits for the attempt to progress, and retries it once the rollout
+// deadline has passed with `what` still true.
+func (r *Reconciler) notYet(ctx context.Context, p *v1alpha1.Preview, what string) (ctrl.Result, error) {
+	if p.Status.AttemptStartedAt != nil &&
+		r.now().Sub(p.Status.AttemptStartedAt.Time) >= r.Settings.RolloutTimeout {
+		return r.retryError(ctx, p, fmt.Errorf("%s within %s", what, r.Settings.RolloutTimeout))
+	}
+	return r.wait(), nil
+}
+
 // childrenRemain reports whether component i still has Pods or ReplicaSets.
 func (r *Reconciler) childrenRemain(ctx context.Context, p *v1alpha1.Preview, i int, slot int32) (bool, error) {
 	ns := r.Settings.slotName(slot)
@@ -367,8 +406,14 @@ func (r *Reconciler) retryError(ctx context.Context, p *v1alpha1.Preview, cause 
 			slog.String("preview", p.Name), slog.Any("error", cause))
 	}
 	if p.Status.Slot != nil {
-		if err := r.deleteIngress(ctx, p, *p.Status.Slot); err != nil {
-			return ctrl.Result{}, err
+		// The host is withdrawn for the retry, except when Ready waits for
+		// target health: the retried Pods need the Ingress's target group
+		// bindings in place to get their gates, and until a target is
+		// healthy the load balancer routes nothing to it.
+		if !r.Settings.TargetHealth {
+			if err := r.deleteIngress(ctx, p, *p.Status.Slot); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 		// Every component restarts: a retry deletes each one's Deployment.
 		for i := range p.Spec.Components {

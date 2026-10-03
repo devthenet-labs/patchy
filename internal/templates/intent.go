@@ -123,6 +123,10 @@ type IntentStatusComment struct {
 	Repositories []string
 	// PullRequests are the pull requests patchy opened.
 	PullRequests []IntentPullRequest
+	// FixingChecks reports a Revising intent whose round failed checks
+	// started rather than review feedback: the phase's sentence then says
+	// so.
+	FixingChecks bool
 	// Revisions and MaxRevisions count the revision rounds against the
 	// Project's limit; MaxRevisions 0 omits the line.
 	Revisions    int32
@@ -165,9 +169,17 @@ var phaseSentences = map[v1alpha1.IntentPhase]string{
 	v1alpha1.IntentFailed:           "patchy could not complete the work.",
 }
 
+// fixingChecksSentence is the Revising sentence while the round fixes failed
+// checks.
+const fixingChecksSentence = "patchy is fixing a pull request's failed checks."
+
 // RenderIntentStatusComment renders the sticky status comment, headed by
 // IntentStatusMarker.
 func RenderIntentStatusComment(c IntentStatusComment) (string, error) {
+	sentence := phaseSentences[v1alpha1.IntentPhase(c.Phase)]
+	if c.FixingChecks && v1alpha1.IntentPhase(c.Phase) == v1alpha1.IntentRevising {
+		sentence = fixingChecksSentence
+	}
 	prs := make([]statusPR, len(c.PullRequests))
 	for i, pr := range c.PullRequests {
 		prs[i] = statusPR{
@@ -196,7 +208,7 @@ func RenderIntentStatusComment(c IntentStatusComment) (string, error) {
 	}{
 		Marker:           IntentStatusMarker(c.Namespace, c.Intent),
 		Phase:            oneLine(c.Phase),
-		Sentence:         phaseSentences[v1alpha1.IntentPhase(c.Phase)],
+		Sentence:         sentence,
 		PlanRevision:     c.PlanRevision,
 		PlanURL:          oneLine(c.PlanURL),
 		Summary:          SanitizeInline(c.Summary),

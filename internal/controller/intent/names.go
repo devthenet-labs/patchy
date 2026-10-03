@@ -48,8 +48,12 @@ const (
 	// keyApprovedPlan keeps the exact approved prefix of a revise handoff.
 	keyApprovedPlan   = "approved-plan.md"
 	keyCheckSignature = "check-signature"
-	keyInputRefusal   = "input-refusal"
-	keyNoFeedback     = "no-usable-feedback"
+	// keyCheckNames are the names of the failed checks a check-fix round
+	// fixes, one per line: what its pull request notice names. Never part of
+	// the Job's input.
+	keyCheckNames   = "check-names"
+	keyInputRefusal = "input-refusal"
+	keyNoFeedback   = "no-usable-feedback"
 	// keyPlan is the plan report exactly as the planner wrote it.
 	keyPlan = "plan.md"
 	// The input snapshot's parts, kept beside the rendered request so an

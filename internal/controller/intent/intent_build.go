@@ -518,7 +518,7 @@ func (p *pass) merged(ctx context.Context, prs []v1alpha1.IntentPullRequest, mer
 	}
 	summary := templates.IntentSummaryComment{
 		Namespace: p.in.Namespace, Intent: p.in.Name, Revisions: p.in.Status.Revisions,
-		CostMicroUSD: p.in.Status.Usage.CostMicroUSD,
+		CheckFixes: p.in.Status.CheckFixes, CostMicroUSD: p.in.Status.Usage.CostMicroUSD,
 	}
 	for _, pr := range prs {
 		summary.PullRequests = append(summary.PullRequests, templates.IntentPullRequest{

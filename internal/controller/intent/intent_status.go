@@ -99,6 +99,9 @@ func (p *pass) statusComment() templates.IntentStatusComment {
 		})
 	}
 	switch st.Phase {
+	case v1alpha1.IntentRevising:
+		run := p.round(v1alpha1.IntentStageRevise, st.Rounds, anyRepository).latest()
+		c.FixingChecks = run != nil && run.Spec.Trigger == v1alpha1.IntentRunTriggerChecks
 	case v1alpha1.IntentBlocked:
 		var reasons []string
 		for _, typ := range blockingConditions {

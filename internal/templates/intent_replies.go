@@ -186,6 +186,26 @@ type IntentSummaryComment struct {
 // SummaryKey is the notice key of an intent's summary comment.
 const SummaryKey = "summary"
 
+// CIFixRound is how a pull request notice names a round failed checks
+// started, rather than review feedback: "CI-fix round for `test`", the
+// checks joined "`a`, `b` and `c`", or "CI-fix round" when none is known.
+// Each name is a code span it cannot close early, on one line.
+func CIFixRound(checks []string) string {
+	var names []string
+	for _, c := range checks {
+		if c = oneLine(c); c != "" {
+			names = append(names, code(c))
+		}
+	}
+	switch len(names) {
+	case 0:
+		return "CI-fix round"
+	case 1:
+		return "CI-fix round for " + names[0]
+	}
+	return "CI-fix round for " + strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+}
+
 // RenderIntentSummaryComment renders an IntentSummaryComment.
 func RenderIntentSummaryComment(c IntentSummaryComment) (string, error) {
 	return render("intent_summary.md.tmpl", struct {

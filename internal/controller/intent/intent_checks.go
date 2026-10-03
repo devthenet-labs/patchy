@@ -58,11 +58,11 @@ func (p *pass) checkRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (
 	if p.checksConsumed(failed) {
 		return false, nil
 	}
-	_, signature, err := p.checkDiagnostics(ctx, pr.Repository, pr.HeadSHA, failed)
+	diagnosis, err := p.checkDiagnostics(ctx, pr.Repository, pr.HeadSHA, failed)
 	if err != nil {
 		return false, err
 	}
-	return p.startCheckFix(ctx, pr, failed, signature)
+	return p.startCheckFix(ctx, pr, failed, diagnosis.signature)
 }
 
 func (p *pass) startCheckFix(ctx context.Context, pr *v1alpha1.IntentPullRequest,
@@ -221,6 +221,18 @@ func (p *pass) checkFixRounds() int32 {
 	return int32(len(seen))
 }
 
+// checkDiagnosis is what a check-fix round reads of its failed checks.
+type checkDiagnosis struct {
+	// feedback is the diagnostics the agent is handed.
+	feedback string
+	// signature fingerprints the failures, compared with an earlier
+	// check-fix round's to stop a repeated failure.
+	signature string
+	// names are the failed checks' names and status contexts, sorted, as
+	// the round's pull request notice names them.
+	names []string
+}
+
 // checkDiagnostics collects only the failed named checks recorded in a run
 // spec. Output, annotations and Actions log tails are untrusted GitHub data:
 // each goes through visible escaping and a dynamic fence, with a 48-KiB
@@ -229,14 +241,14 @@ func (p *pass) checkFixRounds() int32 {
 // bytes: it leaves out GitHub's ids, commits, times and every other token one
 // run of a check differs from the next by, so the same failure after a
 // pushed fix is recognised across commits and job runs.
-func (p *pass) checkDiagnostics(ctx context.Context, repo, sha string, f failedChecks) (string, string, error) {
+func (p *pass) checkDiagnostics(ctx context.Context, repo, sha string, f failedChecks) (checkDiagnosis, error) {
 	runs, err := p.r.GitHub.ListCheckRuns(ctx, repo, sha)
 	if err != nil {
-		return "", "", err
+		return checkDiagnosis{}, err
 	}
 	statuses, err := p.r.GitHub.ListCommitStatuses(ctx, repo, sha)
 	if err != nil {
-		return "", "", err
+		return checkDiagnosis{}, err
 	}
 	selectedChecks := map[int64]bool{}
 	selectedStatuses := map[int64]bool{}
@@ -246,17 +258,18 @@ func (p *pass) checkDiagnostics(ctx context.Context, repo, sha string, f failedC
 	for _, id := range f.statusIDs {
 		selectedStatuses[id] = true
 	}
-	var parts, prints []string
+	var parts, prints, names []string
 	for _, r := range runs {
 		if !selectedChecks[r.ID] || r.HeadSHA != sha || !failedConclusion(r.Conclusion) {
 			continue
 		}
 		part, print, err := p.checkRunDiagnostic(ctx, repo, sha, r)
 		if err != nil {
-			return "", "", err
+			return checkDiagnosis{}, err
 		}
 		parts = append(parts, part)
 		prints = append(prints, print)
+		names = append(names, r.Name)
 	}
 	for _, s := range statuses {
 		if !selectedStatuses[s.ID] || (s.State != "failure" && s.State != "error") {
@@ -266,11 +279,13 @@ func (p *pass) checkDiagnostics(ctx context.Context, repo, sha string, f failedC
 			visibleDiagnostic(s.Context, 2<<10), visibleDiagnostic(s.State, 256),
 			visibleDiagnostic(s.Description, 8<<10)), 48<<10))
 		prints = append(prints, statusPrint(s))
+		names = append(names, s.Context)
 	}
 	if len(parts) == 0 {
-		return "", "", fmt.Errorf("%w: the failed checks recorded for %s vanished before the round's handoff",
+		return checkDiagnosis{}, fmt.Errorf("%w: the failed checks recorded for %s vanished before the round's handoff",
 			errInputUnavailable, sha)
 	}
+	slices.Sort(names)
 	slices.Sort(parts)
 	var b strings.Builder
 	for _, item := range parts {
@@ -282,7 +297,8 @@ func (p *pass) checkDiagnostics(ctx context.Context, repo, sha string, f failedC
 		b.WriteString(fence)
 		b.WriteString("\n\n")
 	}
-	return capVisible(b.String(), 48<<10), failureSignature(prints), nil
+	return checkDiagnosis{feedback: capVisible(b.String(), 48<<10), signature: failureSignature(prints),
+		names: slices.Compact(names)}, nil
 }
 
 // A field is cut before visible escaping, and again after it. This keeps a

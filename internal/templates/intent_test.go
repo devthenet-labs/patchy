@@ -156,6 +156,18 @@ func TestIntentGoldens(t *testing.T) {
 				Commands: []string{"cancel"},
 			})
 		}},
+		// A round failed checks started is not a revision from review.
+		{"intent_status_fixing_checks.md", func() (string, error) {
+			return RenderIntentStatusComment(IntentStatusComment{
+				Namespace: "patchy", Intent: "preview-demo-5", Phase: "Revising", FixingChecks: true,
+				PlanRevision: 1, ApprovedBy: "peter", ApprovedRevision: 1,
+				PullRequests: []IntentPullRequest{{
+					Repository: "devthenet-labs/patchy-preview-demo", Number: 9,
+					URL: "https://github.com/devthenet-labs/patchy-preview-demo/pull/9", State: "open",
+				}},
+				Commands: []string{"cancel"},
+			})
+		}},
 		// The reason quotes a refused changeset path, which the agent chose.
 		{"intent_status_blocked.md", func() (string, error) {
 			return RenderIntentStatusComment(IntentStatusComment{

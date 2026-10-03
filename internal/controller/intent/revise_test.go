@@ -541,11 +541,12 @@ func TestCheckDiagnosticsBoundsAndFencesMaliciousLog(t *testing.T) {
 	e.gh.workflowJobs[991] = []ghclient.WorkflowJob{{ID: 992, CheckRunID: 990, HeadSHA: baseSHA,
 		Name: "go test", Conclusion: "failure"}}
 	e.gh.jobLogs[992] = strings.Repeat("`", 32<<10) + "\u202e"
-	visible, _, err := p.checkDiagnostics(context.Background(), appRepoURL, baseSHA,
+	d, err := p.checkDiagnostics(context.Background(), appRepoURL, baseSHA,
 		failedChecks{checkIDs: []int64{990}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	visible := d.feedback
 	if len(visible) > 48<<10 || !strings.Contains(visible, "<U+0060>") ||
 		strings.ContainsRune(visible, '\u202e') {
 		t.Fatalf("diagnostics were not bounded and visibly fenced: %d bytes", len(visible))

@@ -294,20 +294,30 @@ expect_fail 'preview missing cert' 'preview.certificateARN' -f "$fixtures/previe
 # for byte, so an install that never sets them never changes.
 pf=$fixtures/preview-foundation.yaml
 am=$fixtures/auto-mode.yaml
+unswitched=$fixtures/auto-mode-unswitched.yaml
 dnsnp='select(.kind == "NetworkPolicy") | .spec.egress[] | select(.ports | map(.port) | contains([53])) | .to[] | select(has("ipBlock")) | .ipBlock.cidr'
 expect default "$dnsnp" ""
 expect default 'select(.kind == "NodeClass" or .kind == "NodePool" or .kind == "IngressClass" or .kind == "IngressClassParams") | .kind' ""
-render toggles-off \
-  --set preview.nodeIsolation.role=example-preview-node \
-  --set-json 'preview.nodeIsolation.subnetIDs=["subnet-0123456789abcdef0"]' \
-  --set-json 'preview.nodeIsolation.securityGroupIDs=["sg-0123456789abcdef0"]' \
-  --set-json 'preview.nodeIsolation.instanceTypes=["m7g.large"]' --set preview.nodeIsolation.arch=arm64 \
-  --set preview.nodeIsolation.cpuLimit=8 --set preview.nodeIsolation.nodeLimit=4 \
-  --set edgeIngressClass.name=edge --set edgeIngressClass.loadBalancerName=example-patchy \
-  --set-json 'edgeIngressClass.certificateARNs=["arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"]'
-if ! cmp -s "$out/default.yaml" "$out/toggles-off.yaml"; then
-  fail "toggles-off: values under preview.nodeIsolation and edgeIngressClass changed the render without their create switch"
-fi
+# same BASE OTHER: the two renders are byte-identical.
+same() {
+  if ! cmp -s "$out/$1.yaml" "$out/$2.yaml"; then
+    fail "$2: values under preview.nodeIsolation and edgeIngressClass changed the $1 render without their create switch"
+  fi
+}
+render toggles-off -f "$unswitched"
+same default toggles-off
+# With previews on too, the live shape of an install whose NodePool and
+# NodeClass were applied by hand: the chart must not start rendering its own
+# (an ownership conflict on upgrade) because a sub-value such as subnetIDs got
+# filled in before create. The edge class must not appear beside alb-preview.
+nodesoredge='select(.kind == "NodeClass" or .kind == "NodePool" or ((.kind == "IngressClass" or .kind == "IngressClassParams") and .metadata.name != "alb-preview")) | .kind + "/" + .metadata.name'
+render preview-toggles-off -f "$pf" -f "$unswitched"
+same preview preview-toggles-off
+expect preview "$nodesoredge" ""
+render preview-runtime-toggles-off -f "$pf" -f "$fixtures/intent-controller.yaml" -f "$fixtures/preview-controller.yaml" \
+  -f "$unswitched"
+same preview-runtime preview-runtime-toggles-off
+expect preview-runtime "$nodesoredge" ""
 render toggles-off-ingress --set webhook.host=patchy.example.com --set webhook.ingress.enabled=true \
   --set statusServer.host=status.patchy.example.com --set statusServer.ingress.enabled=true \
   --set edgeIngressClass.loadBalancerName=example-patchy

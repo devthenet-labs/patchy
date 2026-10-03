@@ -218,14 +218,24 @@ func (p *pass) run(ctx context.Context) (ctrl.Result, error) {
 
 // ended is the pass of an ended intent: the round notices still owed, the
 // notice on pull requests it left open while opening them, any hand-off
-// discovery made, and the status comment.
+// discovery made, and the status comment. Each notice asks only the
+// repository it is owed in, so no other pull request's repository, one patchy
+// can no longer reach included, holds an ended intent. A round notice still
+// owed holds back the hand-off, never the status comment.
 func (p *pass) ended(ctx context.Context) (ctrl.Result, error) {
 	if p.in.Status.RoundNoticesThrough < p.in.Status.Rounds {
-		if ok, err := p.rateOKForPullRequests(ctx); err != nil || !ok {
-			return ctrl.Result{RequeueAfter: p.set.PRPollInterval}, err
-		}
-		if changed, err := p.syncPRRoundNotices(ctx); changed || err != nil {
+		changed, wait, err := p.syncEndedRoundNotices(ctx)
+		if changed || errors.Is(err, errConflict) {
 			return ctrl.Result{}, err
+		}
+		if err != nil || wait {
+			if serr := p.syncStatusComment(ctx); serr != nil {
+				return ctrl.Result{}, errors.Join(err, serr)
+			}
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: p.set.PRPollInterval}, nil
 		}
 	}
 	// Before any hand-off: a revival clears the pull requests recorded. The

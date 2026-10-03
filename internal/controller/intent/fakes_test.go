@@ -207,8 +207,10 @@ type fakeGitHub struct {
 	resolveErr   error
 	installedErr error
 	// repoErrs answer "<method> <owner/name lower-cased>" (Resolve,
-	// Installed, RateRemaining, ListPullRequestComments) with an error on
-	// every call.
+	// Installed, RateRemaining, ListPullRequestComments and the other
+	// repository-scoped calls that ask repoErr) with an error on every
+	// call; "* <owner/name lower-cased>" answers every one of them (a
+	// repository no Forge covers any more).
 	repoErrs map[string]error
 	// refused fails the installation check of one permission set: GitHub
 	// refuses a token for a permission the installation was not granted.
@@ -261,6 +263,16 @@ func (f *fakeGitHub) call(name string) error {
 		return q[0]
 	}
 	return nil
+}
+
+// repoErr is the error repoErrs sets for method on the repository at url:
+// the method's own, else the one for every call there.
+func (f *fakeGitHub) repoErr(method, url string) error {
+	slug := strings.ToLower(repoSlug(url))
+	if err := f.repoErrs[method+" "+slug]; err != nil {
+		return err
+	}
+	return f.repoErrs["* "+slug]
 }
 
 func (f *fakeGitHub) failNext(method string, errs ...error) {
@@ -404,11 +416,11 @@ func (f *fakeGitHub) deleteComment(id int64) {
 	f.version++
 }
 
-// humanClose closes issue n as a human would.
-func (f *fakeGitHub) humanClose(n int64, actor string) {
+// humanClose closes issue n as a human (the approver) would.
+func (f *fakeGitHub) humanClose(n int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.closeIssue(n, actor)
+	f.closeIssue(n, approver)
 }
 
 func (f *fakeGitHub) closeIssue(n int64, actor string) {
@@ -484,7 +496,7 @@ func (f *fakeGitHub) Resolve(_ context.Context, repoURL string) error {
 	if err := f.call("Resolve"); err != nil {
 		return err
 	}
-	if err := f.repoErrs["Resolve "+strings.ToLower(repoSlug(repoURL))]; err != nil {
+	if err := f.repoErr("Resolve", repoURL); err != nil {
 		return err
 	}
 	return f.resolveErr
@@ -503,7 +515,7 @@ func (f *fakeGitHub) Installed(_ context.Context, url string, perms ghclient.Tok
 		return err
 	}
 	f.installs = append(f.installs, installCheck{url: url, perms: perms})
-	if err := f.repoErrs["Installed "+strings.ToLower(repoSlug(url))]; err != nil {
+	if err := f.repoErr("Installed", url); err != nil {
 		return err
 	}
 	if err := f.refused[perms]; err != nil {
@@ -512,10 +524,13 @@ func (f *fakeGitHub) Installed(_ context.Context, url string, perms ghclient.Tok
 	return f.installedErr
 }
 
-func (f *fakeGitHub) BotLogin(context.Context, string) (string, error) {
+func (f *fakeGitHub) BotLogin(_ context.Context, repoURL string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.bot, f.call("BotLogin")
+	if err := f.call("BotLogin"); err != nil {
+		return "", err
+	}
+	return f.bot, f.repoErr("BotLogin", repoURL)
 }
 
 func (f *fakeGitHub) Permission(_ context.Context, _, login string) (string, error) {
@@ -537,7 +552,7 @@ func (f *fakeGitHub) Permission(_ context.Context, _, login string) (string, err
 func (f *fakeGitHub) RateRemaining(_ context.Context, repoURL string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if err := f.repoErrs["RateRemaining "+strings.ToLower(repoSlug(repoURL))]; err != nil {
+	if err := f.repoErr("RateRemaining", repoURL); err != nil {
 		return 0, err
 	}
 	if f.appRemaining != nil && sameRepo(repoURL, appRepoURL) {
@@ -635,7 +650,7 @@ func (f *fakeGitHub) ListIssueComments(_ context.Context, repoURL string, number
 	f.sinces = append(f.sinces, since)
 	var comments []*ghclient.Comment
 	if isPRSide(repoURL) {
-		if err := f.repoErrs["ListPullRequestComments "+strings.ToLower(repoSlug(repoURL))]; err != nil {
+		if err := f.repoErr("ListPullRequestComments", repoURL); err != nil {
 			return nil, err
 		}
 		if pr, ok := f.prs[number]; !ok || !pr.in(repoURL) {
@@ -721,6 +736,9 @@ func (f *fakeGitHub) CreateIssueComment(_ context.Context, repoURL string, numbe
 		return nil, err
 	}
 	if isPRSide(repoURL) {
+		if err := f.repoErr("CreatePullRequestComment", repoURL); err != nil {
+			return nil, err
+		}
 		if pr, ok := f.prs[number]; !ok || !pr.in(repoURL) {
 			return nil, ghError(http.StatusNotFound, "Not Found")
 		}
@@ -833,6 +851,9 @@ func (f *fakeGitHub) HeadSHA(_ context.Context, repoURL, branch string) (string,
 	if err := f.call("HeadSHA"); err != nil {
 		return "", err
 	}
+	if err := f.repoErr("HeadSHA", repoURL); err != nil {
+		return "", err
+	}
 	ref := fakeRef(repoURL, branch)
 	if sha, ok := f.heads[ref]; ok {
 		return sha, nil
@@ -853,6 +874,9 @@ func (f *fakeGitHub) CreateCommit(_ context.Context, repoURL string, req ghclien
 	if err := f.call("CreateCommit"); err != nil {
 		return "", err
 	}
+	if err := f.repoErr("CreateCommit", repoURL); err != nil {
+		return "", err
+	}
 	f.commits = append(f.commits, req)
 	f.commitRepos = append(f.commitRepos, repoSlug(repoURL))
 	sha := fmt.Sprintf("%040x", 0xc0ffee00+len(f.commits))
@@ -864,6 +888,9 @@ func (f *fakeGitHub) CreateBranchRef(_ context.Context, repoURL, branch, sha str
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("CreateBranchRef"); err != nil {
+		return err
+	}
+	if err := f.repoErr("CreateBranchRef", repoURL); err != nil {
 		return err
 	}
 	ref := fakeRef(repoURL, branch)
@@ -878,6 +905,9 @@ func (f *fakeGitHub) FastForwardRef(_ context.Context, repoURL, branch, sha stri
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("FastForwardRef"); err != nil {
+		return err
+	}
+	if err := f.repoErr("FastForwardRef", repoURL); err != nil {
 		return err
 	}
 	ref := fakeRef(repoURL, branch)
@@ -937,6 +967,9 @@ func (f *fakeGitHub) GetPullRequest(_ context.Context, repoURL string, number in
 	if err := f.call("GetPullRequest"); err != nil {
 		return nil, err
 	}
+	if err := f.repoErr("GetPullRequest", repoURL); err != nil {
+		return nil, err
+	}
 	pr, ok := f.prs[number]
 	if !ok || !pr.in(repoURL) {
 		return nil, ghError(http.StatusNotFound, "Not Found")
@@ -945,20 +978,27 @@ func (f *fakeGitHub) GetPullRequest(_ context.Context, repoURL string, number in
 	return &cp, nil
 }
 
-func (f *fakeGitHub) ListPullRequestReviews(_ context.Context, _ string, number int64) ([]ghclient.Review, error) {
+func (f *fakeGitHub) ListPullRequestReviews(_ context.Context, repoURL string, number int64) ([]ghclient.Review,
+	error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("ListPullRequestReviews"); err != nil {
 		return nil, err
 	}
+	if err := f.repoErr("ListPullRequestReviews", repoURL); err != nil {
+		return nil, err
+	}
 	return slices.Clone(f.reviews[number]), nil
 }
 
-func (f *fakeGitHub) ListPullRequestReviewComments(_ context.Context, _ string, number int64) (
+func (f *fakeGitHub) ListPullRequestReviewComments(_ context.Context, repoURL string, number int64) (
 	[]ghclient.ReviewComment, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("ListPullRequestReviewComments"); err != nil {
+		return nil, err
+	}
+	if err := f.repoErr("ListPullRequestReviewComments", repoURL); err != nil {
 		return nil, err
 	}
 	return slices.Clone(f.inline[number]), nil
@@ -982,10 +1022,13 @@ func (f *fakeGitHub) ComparePatch(context.Context, string, string, string) (stri
 	return f.patch, f.call("ComparePatch")
 }
 
-func (f *fakeGitHub) RequestReviewers(_ context.Context, _ string, number int64, logins []string) error {
+func (f *fakeGitHub) RequestReviewers(_ context.Context, repoURL string, number int64, logins []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.call("RequestReviewers"); err != nil {
+		return err
+	}
+	if err := f.repoErr("RequestReviewers", repoURL); err != nil {
 		return err
 	}
 	f.requestedReviewers[number] = append(f.requestedReviewers[number], logins...)

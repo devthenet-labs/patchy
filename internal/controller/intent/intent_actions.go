@@ -133,9 +133,16 @@ func (p *pass) rateOK(ctx context.Context, repoURL string) (bool, error) {
 }
 
 // rateOKForPullRequests is rateOK for every repository the Intent's pull
-// requests are in.
+// requests are in that the Project still holds. One that left the Project is
+// not asked: patchy writes nothing more there, reads its pull request only
+// when it can (readDepartedPullRequest), and may no longer reach it at all (no
+// Forge covers it, the App was uninstalled), so it never holds the other pull
+// requests' rounds, an issue close or an ending.
 func (p *pass) rateOKForPullRequests(ctx context.Context) (bool, error) {
 	for _, pr := range p.in.Status.PullRequests {
+		if p.leftProject(pr.Repository) {
+			continue
+		}
 		if ok, err := p.rateOK(ctx, pr.Repository); err != nil || !ok {
 			return false, err
 		}

@@ -34,10 +34,10 @@ func (e *env) roundNoticeCount(name string, n int64, round int32) int {
 	return count
 }
 
-// holdJob keeps the Job of name's revise round on repository key running
-// (not done) until releaseJob.
-func (e *env) holdJob(name string, round int32, key string) string {
-	job := jobs.NameFor(v1alpha1.IntentRunName(name, v1alpha1.IntentStageRevise, round, key, 1), KindIntent, 1)
+// holdJob keeps the Job of name's first revise round, on repository key,
+// running (not done) until releaseJob.
+func (e *env) holdJob(name, key string) string {
+	job := jobs.NameFor(v1alpha1.IntentRunName(name, v1alpha1.IntentStageRevise, 1, key, 1), KindIntent, 1)
 	e.jobs.mu.Lock()
 	e.jobs.status[job] = jobs.Status{}
 	e.jobs.mu.Unlock()
@@ -96,7 +96,7 @@ func heldMidRound(t *testing.T, e *env) (name string, commits int) {
 	name = e.inReviewLinked()
 	e.reviewOn(2, 901, "Web: show the sha.")
 	e.clock.Advance(3 * time.Minute)
-	job := e.holdJob(name, 1, "web")
+	job := e.holdJob(name, "web")
 	e.driveUntil(name, func(*v1alpha1.Intent) bool {
 		r := e.reviseRun(name, 1)
 		return r != nil && r.Status.JobRef != nil

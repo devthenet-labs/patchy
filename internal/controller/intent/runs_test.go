@@ -1745,7 +1745,7 @@ func TestAppRepositoryRateFloor(t *testing.T) {
 			e.drive(name, v1alpha1.IntentInReview, repoImage)
 			e.gh.closePR(true)
 			if closed {
-				e.gh.humanClose(1, approver)
+				e.gh.humanClose(1)
 			}
 			low := 10
 			e.gh.appRemaining = &low

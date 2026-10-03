@@ -88,9 +88,10 @@ func (p *pass) revising(ctx context.Context) (bool, error) {
 	case v1alpha1.RunFailed:
 		return p.failedRevise(ctx, run, rs)
 	default:
-		if !p.roundOpen(run) {
-			// Its pull request ended under it: the run reconciler aborts the
-			// run, and nothing is created or launched for it meanwhile.
+		if !p.roundOpen(run) || p.leftProject(run.Spec.Repository.URL) {
+			// Its pull request ended under it, or its repository left the
+			// Project: the run reconciler aborts the run, and nothing is
+			// created, launched or read there for it meanwhile.
 			return false, nil
 		}
 		if blocked, err := p.missingPendingReviseBranch(ctx, run); blocked || err != nil {

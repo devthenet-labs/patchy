@@ -415,10 +415,13 @@ func (p *pass) branchHoldCheck(ctx context.Context, reason string, round int32,
 
 // reviseBranchHolds reports a BranchConflict block of a revise round still
 // in force: the branch of the round's own repository still missing. Read
-// only when the poll is due, under that repository's rate floor.
+// only when the poll is due, under that repository's rate floor. A round
+// whose repository has left the Project holds nothing, and nothing is read
+// there: no branch is restored or pushed to there, and the resumed intent ends
+// the round once the run reconciler has aborted its run.
 func (p *pass) reviseBranchHolds(ctx context.Context, reason string) (bool, error) {
 	run := p.round(v1alpha1.IntentStageRevise, p.in.Status.Rounds, anyRepository).latest()
-	if run == nil || reason != ReasonBranchMissing {
+	if run == nil || reason != ReasonBranchMissing || p.leftProject(run.Spec.Repository.URL) {
 		return false, nil
 	}
 	if !p.polled {

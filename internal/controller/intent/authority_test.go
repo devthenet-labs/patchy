@@ -377,7 +377,7 @@ func TestCancelAfterCrash(t *testing.T) {
 func TestHumanClose(t *testing.T) {
 	e := newEnv(t, testProject())
 	name := e.awaiting()
-	e.gh.humanClose(1, approver)
+	e.gh.humanClose(1)
 	e.settleActions(name)
 	if in := e.get(name); in.Status.Phase != v1alpha1.IntentClosed {
 		t.Fatalf("phase = %s, want Closed", in.Status.Phase)

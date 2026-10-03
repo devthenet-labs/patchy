@@ -27,7 +27,7 @@ func TestFailedRoundWhoseRepositoryLeftEndsTheRound(t *testing.T) {
 	name := e.inReviewLinked()
 	e.reviewOn(2, 961, "Web: show the sha.")
 	e.clock.Advance(3 * time.Minute)
-	job := e.holdJob(name, 1, "web")
+	job := e.holdJob(name, "web")
 	e.driveUntil(name, func(*v1alpha1.Intent) bool {
 		r := e.reviseRun(name, 1)
 		return r != nil && r.Status.JobRef != nil
@@ -82,7 +82,7 @@ func TestRoundInRemovedRepositoryPushesNothing(t *testing.T) {
 	name := e.inReviewLinked()
 	e.reviewOn(2, 971, "Web: show the sha.")
 	e.clock.Advance(3 * time.Minute)
-	job := e.holdJob(name, 1, "web")
+	job := e.holdJob(name, "web")
 	e.driveUntil(name, func(*v1alpha1.Intent) bool {
 		r := e.reviseRun(name, 1)
 		return r != nil && r.Status.JobRef != nil

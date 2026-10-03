@@ -233,7 +233,7 @@ func TestDiscovery(t *testing.T) {
 	e := newEnv(t, testProject())
 	e.gh.openIssue(1, "One", "body", "alice")
 	e.gh.openIssue(2, "Two", "body", approver)
-	e.gh.humanClose(2, approver)
+	e.gh.humanClose(2)
 	e.gh.mu.Lock()
 	e.gh.issues[2].state = "open" // reopened without the label applied again
 	e.gh.mu.Unlock()

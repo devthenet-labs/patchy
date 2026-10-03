@@ -589,12 +589,18 @@ func (p *pass) buildsFinished() time.Time {
 	return at
 }
 
+// readReviewPRStates reads every recorded pull request into prs and counts
+// the merged and closed ones. One the Intent cannot read stops the read
+// (readable false, or the error), unless its repository left the Project: that
+// one is read only when it can be, and otherwise counts as it was last read
+// (readDepartedPullRequest).
 func (p *pass) readReviewPRStates(ctx context.Context, prs []v1alpha1.IntentPullRequest) (
 	merged, closed int, mergedAt time.Time, readable bool, err error) {
 	for i := range prs {
 		rec := &prs[i]
-		ok, err := p.readPullRequest(ctx, rec)
-		if err != nil || !ok {
+		if p.leftProject(rec.Repository) {
+			p.readDepartedPullRequest(ctx, rec)
+		} else if ok, err := p.readPullRequest(ctx, rec); err != nil || !ok {
 			return 0, 0, time.Time{}, false, err
 		}
 		switch rec.State {
@@ -608,6 +614,31 @@ func (p *pass) readReviewPRStates(ctx context.Context, prs []v1alpha1.IntentPull
 		}
 	}
 	return merged, closed, mergedAt, true, nil
+}
+
+// readDepartedPullRequest reads, best effort, a recorded pull request whose
+// repository left the Project: its merge still counts towards the Intent's
+// ending. Under that repository's rate floor, or when it cannot be read for
+// any reason (no Forge covers it any more, the installation refuses it, GitHub
+// will not show it, a failure that may pass), rec keeps the state it was last
+// read in, and the pass goes on. So a departed repository never holds the
+// other pull requests' rounds, an issue close or an ending; while it was last
+// read open, the Intent waits on it as on any open pull request, and a human
+// closing the issue ends it.
+func (p *pass) readDepartedPullRequest(ctx context.Context, rec *v1alpha1.IntentPullRequest) {
+	ok, err := p.rateOK(ctx, rec.Repository)
+	if err == nil && ok {
+		read := *rec
+		var readable bool
+		if readable, err = p.readPullRequest(ctx, &read); err == nil && readable {
+			*rec = read
+			return
+		}
+	}
+	p.r.log().LogAttrs(ctx, slog.LevelInfo,
+		"a pull request whose repository left the project was not read; its last state stands",
+		slog.String("intent", p.in.Name), slog.String("repository", rec.Repository),
+		slog.Int64("number", rec.Number), slog.String("state", rec.State), slog.Any("error", err))
 }
 
 // readPullRequest reads one recorded pull request by its repository and

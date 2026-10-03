@@ -5,67 +5,122 @@
 # Re-run the first-instant EKS Auto Mode isolation gate against an immutable
 # disposable PR image. This never reads a metadata response body or a token.
 #
-# The site is the caller's to name, in the environment (see README.md):
-#   PROBE_REPOSITORY  owner/name of the app repository the disposable PR is
-#                     open on
-#   PROBE_IMAGE       the preview image repository its trusted publisher
-#                     pushes to, <account>.dkr.ecr.<region>.amazonaws.com/
-#                     <preview path prefix>/<app>
-#   PROBE_TAINT_KEY   the preview NodePool's NoExecute taint key (the chart's
-#                     preview.nodeIsolation.taintKey)
-#   PROBE_NODE_POOL, PROBE_NODE_CLASS
-#                     the preview NodePool and NodeClass (the chart's
-#                     preview.nodeIsolation.nodePool/nodeClass; default
-#                     patchy-preview)
-# AWS credentials (AWS_PROFILE and the rest) come from the caller's
-# environment as they are; the script sets none.
+# The site is the caller's to name, as a flag or in the environment (see
+# README.md and --help); nothing about any one site is written in here. AWS
+# credentials (AWS_PROFILE and the rest) come from the caller's environment
+# as they are; the script sets none.
 set -euo pipefail
 
 usage() {
-    echo "usage: PROBE_REPOSITORY=<owner>/<app> PROBE_IMAGE=<account>.dkr.ecr.<region>.amazonaws.com/<prefix>/<app> \\" >&2
-    echo "       PROBE_TAINT_KEY=<taint key> $0 <open disposable PR number>" >&2
+    cat <<EOF
+usage: $0 [options] <open disposable PR number>
+
+Re-run the preview cold-start isolation gate against the image the trusted
+publisher pushed for a disposable test/preview-* PR's head. See README.md.
+
+Each option falls back to the environment variable named beside it.
+  --repository <owner>/<name>   PROBE_REPOSITORY (required): the app
+                                repository the disposable PR is open on
+  --image <host>/<path>         PROBE_IMAGE (required): the ECR repository its
+                                trusted publisher pushes preview images to,
+                                <account>.dkr.ecr.<region>.amazonaws.com/
+                                <preview path prefix>/<app>; the registry
+                                host and region are read from it
+  --taint-key <key>             PROBE_TAINT_KEY (required): the preview
+                                NodePool's NoExecute taint key (the chart's
+                                preview.nodeIsolation.taintKey)
+  --node-pool <name>            PROBE_NODE_POOL: the preview NodePool (the
+                                chart's preview.nodeIsolation.nodePool;
+                                default patchy-preview)
+  --node-class <name>           PROBE_NODE_CLASS: the preview NodeClass (the
+                                chart's preview.nodeIsolation.nodeClass;
+                                default patchy-preview)
+  --dry-run                     check every value and print the site the run
+                                would probe, then exit before gh, aws or
+                                kubectl is called
+  -h, --help                    print this help
+EOF
+}
+
+# fail MESSAGE: a usage error, with the help on stderr.
+fail() {
+    echo "$1" >&2
+    usage >&2
     exit 2
 }
 
-if [[ $# -ne 1 || ! $1 =~ ^[0-9]+$ ]]; then
-    usage
-fi
-for name in PROBE_REPOSITORY PROBE_IMAGE PROBE_TAINT_KEY; do
-    if [[ -z ${!name:-} ]]; then
-        echo "$name is not set" >&2
+repo=${PROBE_REPOSITORY:-}
+image=${PROBE_IMAGE:-}
+taint_key=${PROBE_TAINT_KEY:-}
+node_pool=${PROBE_NODE_POOL:-patchy-preview}
+node_class=${PROBE_NODE_CLASS:-patchy-preview}
+dry_run=0
+pr_number=
+while [[ $# -gt 0 ]]; do
+    case $1 in
+    -h | --help)
         usage
-    fi
+        exit 0
+        ;;
+    --dry-run) dry_run=1 ;;
+    --repository | --image | --taint-key | --node-pool | --node-class)
+        [[ $# -ge 2 ]] || fail "$1 needs a value"
+        case $1 in
+        --repository) repo=$2 ;;
+        --image) image=$2 ;;
+        --taint-key) taint_key=$2 ;;
+        --node-pool) node_pool=$2 ;;
+        --node-class) node_class=$2 ;;
+        esac
+        shift
+        ;;
+    -*) fail "unknown option $1" ;;
+    *)
+        [[ -z $pr_number ]] || fail "one PR number only, not $pr_number and $1"
+        pr_number=$1
+        ;;
+    esac
+    shift
 done
+
+[[ $pr_number =~ ^[0-9]+$ ]] || fail "the open disposable PR's number is required"
+[[ -n $repo ]] || fail "--repository (PROBE_REPOSITORY) is required"
+[[ -n $image ]] || fail "--image (PROBE_IMAGE) is required"
+[[ -n $taint_key ]] || fail "--taint-key (PROBE_TAINT_KEY) is required"
 # Each value lands in a gh, aws or kubectl argument or in the probe's
 # manifest, so each must be exactly the shape it names.
-if [[ ! $PROBE_REPOSITORY =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-    echo "PROBE_REPOSITORY must be <owner>/<name>, not $PROBE_REPOSITORY" >&2
-    exit 2
+if [[ ! $repo =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    fail "--repository must be <owner>/<name>, not $repo"
 fi
-if [[ ! $PROBE_IMAGE =~ ^([0-9]{12}\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com)/([a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*)$ ]]; then
-    echo "PROBE_IMAGE must be an ECR repository, <account>.dkr.ecr.<region>.amazonaws.com/<path>, not $PROBE_IMAGE" >&2
-    exit 2
+if [[ ! $image =~ ^([0-9]{12}\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com)/([a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*)$ ]]; then
+    fail "--image must be an ECR repository, <account>.dkr.ecr.<region>.amazonaws.com/<path>, not $image"
 fi
 registry=${BASH_REMATCH[1]}
 region=${BASH_REMATCH[2]}
 image_repo=${BASH_REMATCH[3]}
 dns_name='[a-z0-9]([-a-z0-9]*[a-z0-9])?'
-if [[ ! $PROBE_TAINT_KEY =~ ^($dns_name(\.$dns_name)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$ ]]; then
-    echo "PROBE_TAINT_KEY must be a taint key, [<dns prefix>/]<name>, not $PROBE_TAINT_KEY" >&2
-    exit 2
+if [[ ! $taint_key =~ ^($dns_name(\.$dns_name)*/)?[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$ ]]; then
+    fail "--taint-key must be a taint key, [<dns prefix>/]<name>, not $taint_key"
 fi
-taint_key=$PROBE_TAINT_KEY
-node_pool=${PROBE_NODE_POOL:-patchy-preview}
-node_class=${PROBE_NODE_CLASS:-patchy-preview}
 for value in "$node_pool" "$node_class"; do
     if [[ ! $value =~ ^$dns_name(\.$dns_name)*$ ]]; then
-        echo "PROBE_NODE_POOL and PROBE_NODE_CLASS must be Kubernetes object names, not $value" >&2
-        exit 2
+        fail "--node-pool and --node-class must be Kubernetes object names, not $value"
     fi
 done
 
-pr_number=$1
-repo=$PROBE_REPOSITORY
+if [[ $dry_run -eq 1 ]]; then
+    cat <<EOF
+repository:  $repo (PR #$pr_number)
+registry:    $registry (region $region)
+image:       $registry/$image_repo:sha-<PR head SHA>
+taint key:   $taint_key
+node pool:   $node_pool
+node class:  $node_class
+assumed:     release patchy in namespace patchy; slots patchy-preview-0 and patchy-preview-1
+dry run: nothing was called
+EOF
+    exit 0
+fi
 deployment=preview-isolation-probe
 probe_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # The sibling stage's targets: another component's Pod and Service in the

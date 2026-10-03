@@ -29,29 +29,33 @@ uncredentialed build and the trusted publisher to succeed. The publisher must pu
 `<preview path prefix>/<app>:sha-<full PR head SHA>`; the script confirms that tag and its digest exist in ECR. Never
 run the probe from a fork PR or from an image tagged from main.
 
-The script takes the site from its environment and sets nothing else: `gh` must be signed in with read access to the app
-repository, `kubectl`'s current context must be the cluster, and the AWS CLI must reach the registry's account with the
-credentials already in your environment (`AWS_PROFILE` or the rest). From this patchy checkout, run:
+The script takes the site as flags or from its environment and sets nothing else: `gh` must be signed in with read
+access to the app repository, `kubectl`'s current context must be the cluster, and the AWS CLI must reach the registry's
+account with the credentials already in your environment (`AWS_PROFILE` or the rest). From this patchy checkout, check
+the values first with `--dry-run`, which validates them and prints the site the run would probe without calling `gh`,
+`aws` or `kubectl`, then run:
 
 ```sh
-PROBE_REPOSITORY=acme/hello-web \
-PROBE_IMAGE=123456789012.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/hello-web \
-PROBE_TAINT_KEY=preview.example.com/preview-only \
-bash hack/preview-isolation-probe/run.sh <disposable-PR-number>
+bash hack/preview-isolation-probe/run.sh \
+  --repository acme/hello-web \
+  --image 123456789012.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/hello-web \
+  --taint-key preview.example.com/preview-only \
+  <disposable-PR-number>
 ```
 
-| Variable           | Required | Meaning                                                                                             |
-| ------------------ | -------- | --------------------------------------------------------------------------------------------------- |
-| `PROBE_REPOSITORY` | yes      | `owner/name` of the app repository the disposable PR is open on                                     |
-| `PROBE_IMAGE`      | yes      | The ECR repository its trusted publisher pushes preview images to; the region is read from its host |
-| `PROBE_TAINT_KEY`  | yes      | The preview NodePool's `NoExecute` taint key, the chart's `preview.nodeIsolation.taintKey`          |
-| `PROBE_NODE_POOL`  | no       | The preview NodePool, the chart's `preview.nodeIsolation.nodePool`; default `patchy-preview`        |
-| `PROBE_NODE_CLASS` | no       | The preview NodeClass, the chart's `preview.nodeIsolation.nodeClass`; default `patchy-preview`      |
+| Flag           | Environment        | Required | Meaning                                                                                                          |
+| -------------- | ------------------ | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `--repository` | `PROBE_REPOSITORY` | yes      | `owner/name` of the app repository the disposable PR is open on                                                  |
+| `--image`      | `PROBE_IMAGE`      | yes      | The ECR repository its trusted publisher pushes preview images to; the registry host and region are read from it |
+| `--taint-key`  | `PROBE_TAINT_KEY`  | yes      | The preview NodePool's `NoExecute` taint key, the chart's `preview.nodeIsolation.taintKey`                       |
+| `--node-pool`  | `PROBE_NODE_POOL`  | no       | The preview NodePool, the chart's `preview.nodeIsolation.nodePool`; default `patchy-preview`                     |
+| `--node-class` | `PROBE_NODE_CLASS` | no       | The preview NodeClass, the chart's `preview.nodeIsolation.nodeClass`; default `patchy-preview`                   |
 
-Each value is checked for its shape before anything runs, because each lands in a command argument or in the probe's
-manifest. The script still assumes a release named `patchy` in the namespace `patchy` (it reads the Services
-`patchy-egress-broker`, `patchy-integration-controller`, `patchy-source-controller` and `patchy-status-server` there),
-and the chart's slot namespaces `patchy-preview-0` and `patchy-preview-1`.
+A flag wins over its environment variable; `--help` prints the same table. Each value is checked for its shape before
+anything runs, because each lands in a command argument or in the probe's manifest. The script still assumes a release
+named `patchy` in the namespace `patchy` (it reads the Services `patchy-egress-broker`, `patchy-integration-controller`,
+`patchy-source-controller` and `patchy-status-server` there), and the chart's slot namespaces `patchy-preview-0` and
+`patchy-preview-1`.
 
 The script discovers the current Kubernetes and patchy Service ClusterIPs (rather than trusting stale IPs), verifies the
 NodeClass is `DefaultDeny` and both slot NetworkPolicies exist, and refuses to overwrite an existing probe Deployment.

@@ -31,10 +31,25 @@ separately, with rollback points recorded before each Helm revision:
 rejected (`events is forbidden … cannot create resource "events"`). Function is unaffected; add `events` create/patch to
 its Role in the chart and release.
 
-**Next:** the live preview demo, driven by the owner (opens the intent with the preview-demo form, approves the plan,
-views the preview from 75.70.97.14, requests changes, merges); the agent watches each stage, verifies the preview is
-deployed at `preview-demo-<issue>.preview.patchy.devthe.net`, updates on the revision, and is torn down after merge with
-the pool back at zero; then a fresh-Finding gate.
+**First live preview demo: PASSED (2026-10-03).** The owner opened intent `devthenet-labs/intents#4` ("Hello from
+patchy", teal card) with the preview-demo form. An approve label added before the plan existed was correctly ignored and
+removed when the plan was posted (80 s,
+$0.26); the owner re-approved after reading it. The build (100 s) opened
+`devthenet-labs/patchy-preview-demo#7`; the PR CI built the runtime image, the trusted publisher pushed it, and the
+Preview reached Ready in ~170 s (cold preview node `t3a.medium` from zero) at
+`https://preview-demo-4.preview.patchy.devthe.net`, serving the PR head SHA. The owner's "Request changes" review
+(purple) started a revision round after the quiet window ($0.24),
+a fast-forward push (`e2256900`, parent `3ffe8b96`), and the Preview redeployed at the new head in ~160 s (one brief
+empty response during the ALB target switch). After the owner merged: Intent Merged (merge `0f6d1a94`), issue closed
+completed, Preview and slot workloads deleted within ~10 s, the preview node terminated ~40 s later (pool resources all
+zero), and the old host returns 404. Total agent cost for the intent: $0.81.
+
+**Fresh-Finding gate after enabling previews: PASSED.** Weak-key alert #38 → `finding-514becf18f-13` → issue #69 →
+`/patchy expedite` → PR #70 (pushedCommit = PR head `1c553a4c`), checks green, merged `4a3dd6f0` → Remediated, issue
+closed completed with the remediated label, one comment per marker, main CodeQL marked #38 fixed, no duplicate Finding.
+
+**Next (owner's choice):** fix the preview-controller `events` RBAC (chart PR + release + gate); exercise the intent
+CI-fix round live; then the "Deployable by others" roadmap (design doc); follow-ups below.
 
 ## Previous checkpoint — 2026-10-02 (Codex stage-1 handover; historical)
 

@@ -1,0 +1,49 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"html"
+	"net/http"
+)
+
+// page is the service's one page.
+const page = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>%[1]s</title>
+</head>
+<body>
+<h1>%[1]s</h1>
+<p>Revision <code>%[2]s</code>.</p>
+</body>
+</html>
+`
+
+// newHandler serves the page at / and the readiness check at <% .ReadinessPath %>.
+func newHandler(revision string) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET <% .ReadinessPath %>", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "revision": revision})
+	})
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprintf(w, page, html.EscapeString("<% .Repo.Name %>"), html.EscapeString(revision))
+	})
+	return withSecurityHeaders(mux)
+}
+
+// withSecurityHeaders sets the headers every response carries.
+func withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
+}

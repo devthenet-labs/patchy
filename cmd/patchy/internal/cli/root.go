@@ -161,6 +161,7 @@ func NewRoot(opts *Options) *cobra.Command {
 		newMirrorCmd(opts),
 		newCheckCmd(opts),
 		newSetupCmd(opts),
+		newInitCmd(opts),
 	)
 	root.AddCommand(newActionCmds(opts)...)
 	return root

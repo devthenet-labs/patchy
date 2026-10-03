@@ -1,0 +1,18 @@
+# The runtime image a patchy preview runs: a static binary on distroless
+# (uid 65532, no shell), listening on <% .Port %>. A preview runs it as uid
+# 65532 with a read-only root filesystem and no writable /tmp, so the
+# service writes nothing to disk.
+FROM <% .Images.Go %> AS build
+WORKDIR /src
+COPY go.mod go.sum* ./
+RUN go mod download
+COPY . .
+ARG BUILD_SHA=dev
+RUN CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -buildvcs=false \
+    -ldflags="-s -w -X main.commitSHA=${BUILD_SHA}" -o /out/<% .Slug %> .
+
+FROM <% .Images.Runtime %>
+COPY --from=build /out/<% .Slug %> /<% .Slug %>
+USER 65532:65532
+EXPOSE <% .Port %>
+ENTRYPOINT ["/<% .Slug %>"]

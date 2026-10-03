@@ -32,6 +32,9 @@ func newRepoFixture(t *testing.T) *repoFixture {
 	f.git("config", "user.email", "test@example.com")
 	f.git("config", "user.name", "test")
 	f.git("config", "commit.gpgsign", "false")
+	// No detached auto-gc or maintenance racing t.TempDir's cleanup.
+	f.git("config", "gc.auto", "0")
+	f.git("config", "maintenance.auto", "false")
 	f.write("keep.txt", "keep\n")
 	f.write("old.txt", "old\n")
 	f.write("change.txt", "before\n")

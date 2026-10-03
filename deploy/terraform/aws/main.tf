@@ -10,7 +10,7 @@
 #                Identity role (ECR read on the agent image prefix)
 #   apps.tf      one modules/app per application repository
 #   previews.tf  the preview node role and access entry, the wildcard
-#                certificate and, in phase 2, the wildcard alias
+#                certificate and, after Helm stage 2, the wildcard alias
 #   edge.tf      the optional webhook/status certificate and aliases
 #   outputs.tf   helm_values, the per-app GitHub variables and the rest
 

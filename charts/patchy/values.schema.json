@@ -286,7 +286,7 @@
         "preview": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["enabled", "slotCount", "placeholder", "nodeIsolation", "imageRegistry", "dnsCIDR", "albSubnetCIDRs", "inboundCIDRs", "certificateARN", "hostSuffix", "albName"],
+            "required": ["enabled", "slotCount", "placeholder", "nodeIsolation", "imageRegistry", "dnsCIDR", "albSubnetCIDRs", "albSubnetIDs", "inboundCIDRs", "certificateARN", "hostSuffix", "albName"],
             "properties": {
                 "enabled": {"type": "boolean"},
                 "slotCount": {"type": "integer", "minimum": 0, "maximum": 4},
@@ -311,6 +311,7 @@
                 "imageRegistry": {"type": "string", "pattern": "^$|^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com$"},
                 "dnsCIDR": {"type": "string", "pattern": "^$|^[0-9]{1,3}(\\.[0-9]{1,3}){3}/32$"},
                 "albSubnetCIDRs": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}/(2[0-9]|3[0-2])$"}},
+                "albSubnetIDs": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"type": "string", "pattern": "^subnet-([0-9a-f]{8}|[0-9a-f]{17})$"}},
                 "inboundCIDRs": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}/32$"}},
                 "certificateARN": {"type": "string", "pattern": "^$|^arn:aws:acm:[a-z0-9-]+:[0-9]{12}:certificate/[0-9a-f-]+$"},
                 "hostSuffix": {"type": "string", "pattern": "^$|^[a-z0-9-]+(\\.[a-z0-9-]+)+$"},

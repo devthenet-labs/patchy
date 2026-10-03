@@ -30,6 +30,8 @@ locals {
         imageRegistry  = local.registry
         dnsCIDR        = local.preview_dns_cidr
         albSubnetCIDRs = [for id in previews.alb_subnet_ids : data.aws_subnet.preview_alb[id].cidr_block]
+        # Pins the ALB to the subnets whose CIDRs the line above admits.
+        albSubnetIDs   = [for id in previews.alb_subnet_ids : data.aws_subnet.preview_alb[id].id]
         inboundCIDRs   = previews.inbound_cidrs
         certificateARN = local.preview_certificate_arn
         hostSuffix     = previews.host_suffix

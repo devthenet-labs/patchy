@@ -78,22 +78,25 @@ mock_provider "aws" {
   }
 }
 
-# The two public ALB subnets, distinct and tagged for internet-facing ALBs.
+# The two public ALB subnets, distinct, in two zones and tagged for
+# internet-facing ALBs.
 override_data {
   target = data.aws_subnet.preview_alb["subnet-alb-a"]
   values = {
-    vpc_id     = "vpc-0acme"
-    cidr_block = "10.40.128.0/24"
-    tags       = { "kubernetes.io/role/elb" = "1" }
+    vpc_id            = "vpc-0acme"
+    availability_zone = "eu-west-2a"
+    cidr_block        = "10.40.128.0/24"
+    tags              = { "kubernetes.io/role/elb" = "1" }
   }
 }
 
 override_data {
   target = data.aws_subnet.preview_alb["subnet-alb-b"]
   values = {
-    vpc_id     = "vpc-0acme"
-    cidr_block = "10.40.129.0/24"
-    tags       = { "kubernetes.io/role/elb" = "1" }
+    vpc_id            = "vpc-0acme"
+    availability_zone = "eu-west-2b"
+    cidr_block        = "10.40.129.0/24"
+    tags              = { "kubernetes.io/role/elb" = "1" }
   }
 }
 
@@ -267,6 +270,7 @@ run "full_install" {
         imageRegistry  = "111122223333.dkr.ecr.eu-west-2.amazonaws.com"
         dnsCIDR        = "172.20.0.10/32"
         albSubnetCIDRs = ["10.40.128.0/24", "10.40.129.0/24"]
+        albSubnetIDs   = ["subnet-alb-a", "subnet-alb-b"]
         inboundCIDRs   = ["203.0.113.7/32"]
         certificateARN = "arn:aws:acm:eu-west-2:111122223333:certificate/11111111-1111-1111-1111-111111111111"
         hostSuffix     = "preview.acme-apps.dev"
@@ -290,7 +294,7 @@ run "full_install" {
         } }
       }
     }
-    error_message = "helm_values carries exactly the infrastructure-derived chart keys, with the DNS and API server /32s derived from the service CIDR."
+    error_message = "helm_values carries exactly the infrastructure-derived chart keys, with the DNS and API server /32s derived from the service CIDR and the preview ALB pinned to the subnets whose CIDRs the slots admit."
   }
 
   assert {
@@ -351,7 +355,7 @@ run "full_install" {
 
   assert {
     condition     = length(data.aws_lb.preview) == 0 && length(data.aws_lb.edge) == 0 && length(aws_route53_record.preview_wildcard) == 0 && length(aws_route53_record.edge) == 0
-    error_message = "Phase 1 (create_alias_records = false) looks up no ALB and creates no alias record."
+    error_message = "Before the alias flags are set, the module looks up no ALB and creates no alias record."
   }
 
   assert {
@@ -406,7 +410,41 @@ run "full_install" {
   }
 }
 
-run "phase_two_alias_records" {
+# After Helm stage 1 only the edge ALB exists. Its aliases must not need the
+# preview ALB, whose lookup would fail the plan with "no matching LB" (the
+# mock always finds one, so the test asserts the lookup is never made).
+run "edge_aliases_before_previews_are_on" {
+  command = apply
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-a"]
+      inbound_cidrs   = ["203.0.113.7/32"]
+    }
+    edge = {
+      zone_id      = "Z0EDGE"
+      webhook_host = "patchy.acme.dev"
+      status_host  = "status.patchy.acme.dev"
+      alb_name     = "acme-prod"
+    }
+    create_edge_alias_records = true
+  }
+
+  assert {
+    condition     = data.aws_lb.edge[0].name == "acme-prod" && sort(keys(aws_route53_record.edge)) == tolist(["patchy.acme.dev", "status.patchy.acme.dev"])
+    error_message = "The edge flag aliases both edge hosts to the edge ALB."
+  }
+
+  assert {
+    condition     = length(data.aws_lb.preview) == 0 && length(aws_route53_record.preview_wildcard) == 0
+    error_message = "The edge aliases never look up the preview ALB, which does not exist before Helm stage 2."
+  }
+}
+
+run "preview_alias_after_previews_are_on" {
   command = apply
 
   variables {
@@ -424,7 +462,8 @@ run "phase_two_alias_records" {
       status_host  = "status.patchy.acme.dev"
       alb_name     = "acme-prod"
     }
-    create_alias_records = true
+    create_edge_alias_records   = true
+    create_preview_alias_record = true
   }
 
   assert {
@@ -434,12 +473,12 @@ run "phase_two_alias_records" {
       aws_route53_record.preview_wildcard[0].zone_id == "Z0PREVIEW" &&
       aws_route53_record.preview_wildcard[0].alias[0].name == "acme-alb-123456789.eu-west-2.elb.amazonaws.com"
     )
-    error_message = "Phase 2 aliases *.<host_suffix> to the preview ALB looked up by its configured name."
+    error_message = "The preview flag aliases *.<host_suffix> to the preview ALB looked up by its configured name."
   }
 
   assert {
     condition     = data.aws_lb.edge[0].name == "acme-prod" && sort(keys(aws_route53_record.edge)) == tolist(["patchy.acme.dev", "status.patchy.acme.dev"])
-    error_message = "Phase 2 aliases both edge hosts to the edge ALB."
+    error_message = "The edge flag aliases both edge hosts to the edge ALB."
   }
 }
 
@@ -469,7 +508,7 @@ run "explicit_service_cidrs_win" {
     previews = {
       host_suffix     = "preview.acme-apps.dev"
       zone_id         = "Z0PREVIEW"
-      alb_subnet_ids  = ["subnet-alb-a"]
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
       node_subnet_ids = ["subnet-node-a"]
       inbound_cidrs   = ["203.0.113.7/32"]
       dns_cidr        = "10.100.0.10/32"
@@ -518,7 +557,7 @@ run "ipv6_cluster_needs_explicit_service_cidrs" {
     previews = {
       host_suffix     = "preview.acme-apps.dev"
       zone_id         = "Z0PREVIEW"
-      alb_subnet_ids  = ["subnet-alb-a"]
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
       node_subnet_ids = ["subnet-node-a"]
       inbound_cidrs   = ["203.0.113.7/32"]
     }
@@ -543,7 +582,7 @@ run "public_node_subnet_is_refused" {
     previews = {
       host_suffix     = "preview.acme-apps.dev"
       zone_id         = "Z0PREVIEW"
-      alb_subnet_ids  = ["subnet-alb-a"]
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
       node_subnet_ids = ["subnet-node-a"]
       inbound_cidrs   = ["203.0.113.7/32"]
     }
@@ -558,9 +597,10 @@ run "untagged_alb_subnet_is_refused" {
   override_data {
     target = data.aws_subnet.preview_alb["subnet-alb-a"]
     values = {
-      vpc_id     = "vpc-0acme"
-      cidr_block = "10.40.128.0/24"
-      tags       = {}
+      vpc_id            = "vpc-0acme"
+      availability_zone = "eu-west-2a"
+      cidr_block        = "10.40.128.0/24"
+      tags              = {}
     }
   }
 
@@ -568,7 +608,7 @@ run "untagged_alb_subnet_is_refused" {
     previews = {
       host_suffix     = "preview.acme-apps.dev"
       zone_id         = "Z0PREVIEW"
-      alb_subnet_ids  = ["subnet-alb-a"]
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
       node_subnet_ids = ["subnet-node-a"]
       inbound_cidrs   = ["203.0.113.7/32"]
     }
@@ -583,9 +623,10 @@ run "alb_subnet_wider_than_slash_20_is_refused" {
   override_data {
     target = data.aws_subnet.preview_alb["subnet-alb-a"]
     values = {
-      vpc_id     = "vpc-0acme"
-      cidr_block = "10.40.0.0/16"
-      tags       = { "kubernetes.io/role/elb" = "1" }
+      vpc_id            = "vpc-0acme"
+      availability_zone = "eu-west-2a"
+      cidr_block        = "10.40.0.0/16"
+      tags              = { "kubernetes.io/role/elb" = "1" }
     }
   }
 
@@ -593,7 +634,7 @@ run "alb_subnet_wider_than_slash_20_is_refused" {
     previews = {
       host_suffix     = "preview.acme-apps.dev"
       zone_id         = "Z0PREVIEW"
-      alb_subnet_ids  = ["subnet-alb-a"]
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
       node_subnet_ids = ["subnet-node-a"]
       inbound_cidrs   = ["203.0.113.7/32"]
     }
@@ -618,7 +659,7 @@ run "subnet_outside_the_cluster_vpc_is_refused" {
     previews = {
       host_suffix     = "preview.acme-apps.dev"
       zone_id         = "Z0PREVIEW"
-      alb_subnet_ids  = ["subnet-alb-a"]
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
       node_subnet_ids = ["subnet-node-a"]
       inbound_cidrs   = ["203.0.113.7/32"]
     }
@@ -782,7 +823,7 @@ run "default_preview_alb_name_must_fit" {
     previews = {
       host_suffix     = "preview.acme-apps.dev"
       zone_id         = "Z0PREVIEW"
-      alb_subnet_ids  = ["subnet-alb-a"]
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
       node_subnet_ids = ["subnet-node-a"]
       inbound_cidrs   = ["203.0.113.7/32"]
     }
@@ -798,7 +839,7 @@ run "previews_are_never_open_to_the_internet" {
     previews = {
       host_suffix     = "preview.acme-apps.dev"
       zone_id         = "Z0PREVIEW"
-      alb_subnet_ids  = ["subnet-alb-a"]
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
       node_subnet_ids = ["subnet-node-a"]
       inbound_cidrs   = ["0.0.0.0/0"]
     }
@@ -814,9 +855,102 @@ run "node_subnets_must_not_be_alb_subnets" {
     previews = {
       host_suffix     = "preview.acme-apps.dev"
       zone_id         = "Z0PREVIEW"
-      alb_subnet_ids  = ["subnet-alb-a"]
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
       node_subnet_ids = ["subnet-alb-a"]
       inbound_cidrs   = ["203.0.113.7/32"]
+    }
+  }
+
+  expect_failures = [var.previews]
+}
+
+# An ALB spans at least two zones: one subnet would plan, then fail when Auto
+# Mode creates the ALB at Helm stage 2.
+run "one_alb_subnet_is_refused" {
+  command = plan
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a"]
+      node_subnet_ids = ["subnet-node-a"]
+      inbound_cidrs   = ["203.0.113.7/32"]
+    }
+  }
+
+  expect_failures = [var.previews]
+}
+
+# An ALB takes one subnet per zone, so two listed subnets in one zone can
+# never all be where the ALB is placed.
+run "alb_subnets_must_be_in_distinct_zones" {
+  command = plan
+
+  override_data {
+    target = data.aws_subnet.preview_alb["subnet-alb-b"]
+    values = {
+      vpc_id            = "vpc-0acme"
+      availability_zone = "eu-west-2a"
+      cidr_block        = "10.40.129.0/24"
+      tags              = { "kubernetes.io/role/elb" = "1" }
+    }
+  }
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-a"]
+      inbound_cidrs   = ["203.0.113.7/32"]
+    }
+  }
+
+  expect_failures = [aws_iam_role.preview_node]
+}
+
+# Previews get an ALB of their own: the preview IngressClassParams limits its
+# ALB to inbound_cidrs, which must never cover the GitHub webhook.
+run "preview_alb_must_not_be_the_edge_alb" {
+  command = plan
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_name        = "acme-prod"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-a"]
+      inbound_cidrs   = ["203.0.113.7/32"]
+    }
+    edge = {
+      zone_id      = "Z0EDGE"
+      webhook_host = "patchy.acme.dev"
+      alb_name     = "acme-prod"
+    }
+  }
+
+  expect_failures = [var.previews]
+}
+
+# The default preview name, "<cluster_name>-preview", collides too, whatever
+# the case of the edge name.
+run "default_preview_alb_name_must_not_be_the_edge_alb" {
+  command = plan
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-a"]
+      inbound_cidrs   = ["203.0.113.7/32"]
+    }
+    edge = {
+      zone_id      = "Z0EDGE"
+      webhook_host = "patchy.acme.dev"
+      alb_name     = "Acme-Prod-Preview"
     }
   }
 

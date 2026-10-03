@@ -6,8 +6,9 @@
 #     which can join only this cluster and pull only patchy/previews/*;
 #   - the subnets the preview NodeClass and the preview ALB use, checked;
 #   - the *.<host_suffix> certificate the preview ALB terminates TLS with;
-#   - phase 2: the wildcard alias to the preview ALB, which Auto Mode creates
-#     from the chart's placeholder Ingress, so Terraform only looks it up.
+#   - after Helm stage 2: the wildcard alias to the preview ALB, which Auto
+#     Mode creates from the chart's placeholder Ingress, so Terraform only
+#     looks it up.
 
 locals {
   previews_enabled = var.previews != null
@@ -31,9 +32,12 @@ locals {
   )
 }
 
-# The preview ALB's subnets: their CIDRs are the only sources preview pods
-# admit (preview.albSubnetCIDRs). The chart's IngressClassParams names no
-# subnets, so Auto Mode places the ALB by the kubernetes.io/role/elb tag.
+# The preview ALB's subnets. helm_values pins the ALB to exactly these
+# (preview.albSubnetIDs, the IngressClassParams subnets.ids), and their CIDRs
+# are the only sources preview pods admit (preview.albSubnetCIDRs). Left to
+# discovery, Auto Mode would place the ALB in a kubernetes.io/role/elb subnet
+# of every zone it finds one in, and the slot NetworkPolicy would drop
+# traffic through any of them the list leaves out.
 data "aws_subnet" "preview_alb" {
   for_each = toset(local.previews_enabled ? var.previews.alb_subnet_ids : [])
 
@@ -46,7 +50,7 @@ data "aws_subnet" "preview_alb" {
     }
     postcondition {
       condition     = contains(keys(self.tags), "kubernetes.io/role/elb")
-      error_message = "Preview ALB subnet ${self.id} is not tagged kubernetes.io/role/elb, so Auto Mode would not place the internet-facing preview ALB in it."
+      error_message = "Preview ALB subnet ${self.id} is not tagged kubernetes.io/role/elb, which Auto Mode requires of an internet-facing load balancer's subnets."
     }
     postcondition {
       # The chart admits /20 to /32 source ranges only.
@@ -95,6 +99,14 @@ resource "aws_iam_role" "preview_node" {
     precondition {
       condition     = local.preview_dns_cidr != null && local.preview_api_server_cidr != null
       error_message = "The cluster has no IPv4 service CIDR to derive the DNS and API server /32s from: set previews.dns_cidr and previews.api_server_cidr."
+    }
+    precondition {
+      # An ALB takes one subnet per Availability Zone. Two listed subnets in
+      # one zone would otherwise fail only at Helm stage 2, when Auto Mode
+      # creates the ALB. (A data source's postcondition cannot compare its
+      # own instances, so the check sits on the preview anchor resource.)
+      condition     = length(distinct([for id in var.previews.alb_subnet_ids : data.aws_subnet.preview_alb[id].availability_zone])) == length(var.previews.alb_subnet_ids)
+      error_message = "previews.alb_subnet_ids must be in distinct Availability Zones: an ALB takes one subnet per zone."
     }
   }
 }
@@ -204,16 +216,17 @@ resource "aws_acm_certificate_validation" "preview" {
   validation_record_fqdns = [for record in aws_route53_record.preview_validation : record.fqdn]
 }
 
-# Phase 2. The lookup fails the plan with "no matching LB" until Helm has
-# created the preview ALB (preview.enabled with the placeholder Ingress on).
+# After Helm stage 2. The lookup fails the plan with "no matching LB" until
+# Helm has created the preview ALB (preview.enabled with the placeholder
+# Ingress on), so it has a flag of its own, apart from the edge aliases.
 data "aws_lb" "preview" {
-  count = local.previews_enabled && var.create_alias_records ? 1 : 0
+  count = local.previews_enabled && var.create_preview_alias_record ? 1 : 0
 
   name = local.preview_alb_name
 }
 
 resource "aws_route53_record" "preview_wildcard" {
-  count = local.previews_enabled && var.create_alias_records ? 1 : 0
+  count = local.previews_enabled && var.create_preview_alias_record ? 1 : 0
 
   zone_id = var.previews.zone_id
   name    = local.preview_domain

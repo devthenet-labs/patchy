@@ -1,9 +1,10 @@
 # Copyright 2026 Bitwise Media Group Ltd.
 # SPDX-License-Identifier: MIT
 #
-# Optional: an ACM certificate and, in phase 2, alias records for patchy's own
-# public edge on an ALB (the GitHub webhook and the status page). Any other
-# ingress and certificate source works as well; leave var.edge null then.
+# Optional: an ACM certificate and, after Helm stage 1, alias records for
+# patchy's own public edge on an ALB (the GitHub webhook and the status page).
+# Any other ingress and certificate source works as well; leave var.edge null
+# then.
 
 locals {
   edge_enabled = var.edge != null
@@ -53,15 +54,17 @@ resource "aws_acm_certificate_validation" "edge" {
   validation_record_fqdns = [for record in aws_route53_record.edge_validation : record.fqdn]
 }
 
-# Phase 2: the edge ALB exists once Helm has created the edge Ingresses.
+# After Helm stage 1: the edge ALB exists once Helm has created the edge
+# Ingresses. Gated on its own flag, never on the preview ALB, so the webhook
+# host resolves before previews are turned on.
 data "aws_lb" "edge" {
-  count = local.edge_enabled && var.create_alias_records ? 1 : 0
+  count = local.edge_enabled && var.create_edge_alias_records ? 1 : 0
 
   name = var.edge.alb_name
 }
 
 resource "aws_route53_record" "edge" {
-  for_each = toset(local.edge_enabled && var.create_alias_records ? local.edge_hosts : [])
+  for_each = toset(local.edge_enabled && var.create_edge_alias_records ? local.edge_hosts : [])
 
   zone_id = var.edge.zone_id
   name    = each.value

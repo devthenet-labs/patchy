@@ -75,6 +75,11 @@ preview:
     imageRegistry: "" # ECR registry host only; images must be patchy/previews/<app>:sha-<full SHA>
     dnsCIDR: "" # Node-local CoreDNS service /32, not a broad service CIDR.
     albSubnetCIDRs: [] # Public ALB source subnets, not 0.0.0.0/0.
+    # The subnet IDs of albSubnetCIDRs, one per CIDR: pins the preview ALB to
+    # exactly those subnets. Empty leaves placement to Auto Mode, which uses a
+    # kubernetes.io/role/elb subnet in every zone that has one; albSubnetCIDRs
+    # must then cover every such subnet, or the slots drop that zone's traffic.
+    albSubnetIDs: []
     inboundCIDRs: [] # Reviewer IPs, each a /32 (the schema refuses wider), at most 8.
     certificateARN: "" # Issued wildcard certificate for preview hosts.
     hostSuffix: "" # e.g. preview.example.com, without leading dot.

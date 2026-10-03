@@ -99,7 +99,6 @@ variable "apps" {
       repository_id, owner_id and default_branch come from `gh api repos/<owner>/<name>`; sub_claim_prefix,
       which is required, from `gh api repos/<owner>/<name>/actions/oidc/customization/sub --jq .sub_claim_prefix`.
       It must be GitHub's immutable form, repo:<owner>@<owner_id>/<name>@<repository_id>.
-    `patchy init app --print-terraform` prints an entry.
   EOT
   type = map(object({
     github = object({
@@ -154,9 +153,11 @@ variable "previews" {
     EKS access entry, and a wildcard certificate for *.<host_suffix> validated in zone_id.
     - host_suffix: preview hosts are <project>-<issue>.<host_suffix>. A separate registrable domain is recommended.
     - zone_id: the Route53 hosted zone that holds host_suffix.
-    - alb_name: the preview ALB, at most 32 characters. Null means "<cluster_name>-preview".
-    - alb_subnet_ids: the public subnets the preview ALB sits in (tagged kubernetes.io/role/elb), 1 to 4. Their
-      CIDRs become preview.albSubnetCIDRs, the only sources preview pods admit.
+    - alb_name: the preview ALB, at most 32 characters. Null means "<cluster_name>-preview". It must differ from
+      edge.alb_name: previews get an ALB of their own.
+    - alb_subnet_ids: the public subnets the preview ALB is placed in: 2 to 4, one per Availability Zone, each in the
+      cluster's VPC and tagged kubernetes.io/role/elb. helm_values pins the ALB to exactly these subnets
+      (preview.albSubnetIDs), and their CIDRs become preview.albSubnetCIDRs, the only sources preview pods admit.
     - node_subnet_ids: the private subnets preview nodes run in (the NodeClass subnetSelectorTerms). Untrusted
       preview workloads must never get public IPs, so a subnet that assigns them fails the plan.
     - inbound_cidrs: who may reach previews: 1 to 8 IPv4 /32s.
@@ -185,11 +186,25 @@ variable "previews" {
     error_message = "previews.alb_name (default \"<cluster_name>-preview\") must be a lowercase ALB name of at most 32 characters starting with a letter; set it explicitly when the cluster name does not fit."
   }
   validation {
+    # The preview IngressClassParams uses the name as both loadBalancerName
+    # and group.name and limits the ALB to inbound_cidrs, so sharing the
+    # edge's ALB would either clash with the edge Ingresses or put the
+    # webhook behind the preview /32s. Compared without case, so the check
+    # does not depend on how AWS folds names.
+    condition = var.previews == null || var.edge == null ? true : (
+      lower(var.previews.alb_name != null ? var.previews.alb_name : "${var.cluster_name}-preview") != lower(var.edge.alb_name)
+    )
+    error_message = "previews.alb_name (default \"<cluster_name>-preview\") must differ from edge.alb_name: previews need an ALB of their own, separate from patchy's edge ALB."
+  }
+  validation {
+    # An ALB spans at least two Availability Zones, and the chart's
+    # albSubnetCIDRs takes at most four. One subnet per zone is checked
+    # against the subnets themselves, in previews.tf.
     condition = var.previews == null ? true : (
-      length(var.previews.alb_subnet_ids) >= 1 && length(var.previews.alb_subnet_ids) <= 4 &&
+      length(var.previews.alb_subnet_ids) >= 2 && length(var.previews.alb_subnet_ids) <= 4 &&
       length(distinct(var.previews.alb_subnet_ids)) == length(var.previews.alb_subnet_ids)
     )
-    error_message = "previews.alb_subnet_ids must list 1 to 4 distinct subnets (the chart's albSubnetCIDRs limit)."
+    error_message = "previews.alb_subnet_ids must list 2 to 4 distinct subnets: an ALB needs at least two Availability Zones, and the chart's albSubnetCIDRs takes at most four."
   }
   validation {
     condition = var.previews == null ? true : (
@@ -216,9 +231,9 @@ variable "previews" {
 
 variable "edge" {
   description = <<-EOT
-    An ACM certificate, and in phase 2 alias records, for patchy's own public edge on an ALB: the GitHub webhook
-    and the status page. Null (the default) creates none; the edge then works with any ingress and certificate
-    source, cert-manager included.
+    An ACM certificate, and after Helm stage 1 alias records, for patchy's own public edge on an ALB: the GitHub
+    webhook and the status page. Null (the default) creates none; the edge then works with any ingress and
+    certificate source, cert-manager included.
     - zone_id: the Route53 hosted zone that holds the hosts.
     - webhook_host, status_host: the two hostnames; status_host is optional.
     - certificate_domains: the names the certificate covers, which must cover both hosts. Null means the hosts.
@@ -260,8 +275,16 @@ variable "edge" {
   }
 }
 
-variable "create_alias_records" {
-  description = "Phase 2: create the Route53 alias records (*.<previews.host_suffix> and the edge hosts) pointing at the ALBs, which are looked up by name. Leave false until Helm has created the ALBs: the lookup fails the plan while one is missing."
+# One flag per ALB: the edge ALB exists after Helm stage 1, the preview ALB
+# only after stage 2, and each lookup fails the plan while its ALB is missing.
+variable "create_edge_alias_records" {
+  description = "Create the Route53 alias records for edge.webhook_host and edge.status_host, pointing at the edge ALB looked up by edge.alb_name. Set it once Helm stage 1 has created the edge Ingresses and so the ALB: the lookup fails the plan while the ALB is missing. It is independent of the preview alias, so the webhook resolves before previews are turned on."
+  type        = bool
+  default     = false
+}
+
+variable "create_preview_alias_record" {
+  description = "Create the *.<previews.host_suffix> Route53 alias record, pointing at the preview ALB looked up by its name. Set it once Helm stage 2 (previews on, with the placeholder Ingress) has created the preview ALB: the lookup fails the plan while the ALB is missing."
   type        = bool
   default     = false
 }

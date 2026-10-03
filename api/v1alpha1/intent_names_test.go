@@ -218,3 +218,39 @@ func TestIntentRunNameProperty(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// TestIntentRunTreeRepositoryNameProperty extends the name budget to a plan
+// run's extra trees, <run>-src-<key>: for any plan run and tree key inside the
+// budget, the name is a valid object name (Repository names are never label
+// values, so 63 characters does not bind it), two keys of one run never share
+// a name, and no tree's name is any run's own <run>-src Repository — so a
+// tree's create can never adopt another run's Repository, or another tree's.
+// Seeded, so the gate is deterministic.
+func TestIntentRunTreeRepositoryNameProperty(t *testing.T) {
+	if got, want := IntentRunTreeRepositoryName("target-1-plan-r2-a1", "api"), "target-1-plan-r2-a1-src-api"; got != want {
+		t.Errorf("tree repository name = %q, want %q", got, want)
+	}
+	cfg := &quick.Config{MaxCount: 2000, Rand: rand.New(rand.NewSource(20261003))}
+	treeNames := func(a, b runParts) bool {
+		a.Stage = IntentStagePlan
+		name := IntentRunTreeRepositoryName(a.name(), a.Key)
+		if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+			t.Logf("%+v: tree repository %q is not an object name: %s", a, name, strings.Join(errs, "; "))
+			return false
+		}
+		// b is any run of the same Intent, or a's own run with another key.
+		b.Project, b.Issue = a.Project, a.Issue
+		if other := IntentRunTreeRepositoryName(a.name(), b.Key); (other == name) != (b.Key == a.Key) {
+			t.Logf("%+v: keys %q and %q give tree repositories %q and %q", a, a.Key, b.Key, name, other)
+			return false
+		}
+		if own := b.name() + "-src"; own == name {
+			t.Logf("%+v: tree repository %q is run %q's own Repository", a, name, b.name())
+			return false
+		}
+		return true
+	}
+	if err := quick.Check(treeNames, cfg); err != nil {
+		t.Error(err)
+	}
+}

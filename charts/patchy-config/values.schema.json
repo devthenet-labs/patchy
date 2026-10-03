@@ -639,7 +639,7 @@
             "additionalProperties": false
         },
         "projectSpec": {
-            "description": "ProjectSpec is operator configuration: where intents are filed, who may\nauthorise them, which repositories they build in, and what they may spend.\nThe operator writes it (through the patchy-config chart); intent-controller\nonly reads it. Writing projects is admin-only in RBAC, because a Project is\nthe power to point agents at repositories.",
+            "description": "ProjectSpec is operator configuration: where intents are filed, who may\nauthorise them, which repositories they build in, and what they may spend.\nThe operator writes it (through the patchy-config chart); intent-controller\nonly reads it. Writing projects is admin-only in RBAC, because a Project is\nthe power to point agents at repositories.\n\nPreviews are configured per repository (repositories[].preview) or, for a\none-repository Project, by the spec.preview shorthand, never both. The\nrules below hold the per-repository form to at most MaxPreviewComponents\npreviewed repositories at distinct paths. An omitted path means \"/\" (the\nfield's default), and the rules read it that way too.",
             "properties": {
                 "approvers": {
                     "description": "Approvers is the allowlist whose actions count.",
@@ -817,7 +817,7 @@
                     "additionalProperties": false
                 },
                 "preview": {
-                    "description": "Preview opts this Project into the slice-2 preview flow. Omitted means\nits PRs are never deployed, even if the preview-controller is enabled.\nOnly operator-authored Project configuration can supply the runtime\nimage repository and serving port; issue and agent text cannot.",
+                    "description": "Preview is the one-repository shorthand for previews: the runtime\ncontract of repositories[0], served at \"/\", exactly as if it were\nrepositories[0].preview with the default path. It needs exactly one\nrepository and is refused beside any repositories[].preview\n(CEL-enforced on the spec). With neither set, the Project's PRs are never\ndeployed, even if the preview-controller is enabled. Only\noperator-authored Project configuration can supply the runtime image\nrepository and serving port; issue and agent text cannot.",
                     "properties": {
                         "imageRepository": {
                             "description": "ImageRepository is an immutable-tag runtime repository under the\noperator's preview registry, such as <registry>/patchy/previews/demo.\nThe preview-controller also checks its configured image prefix.",
@@ -845,7 +845,7 @@
                     "additionalProperties": false
                 },
                 "repositories": {
-                    "description": "Repositories are the application repositories intents build in; the\nfirst entry is also the planning repository. The schema admits up to\n8 — the multi-repo shape — but slice 1 builds in exactly one:\nintent-controller reports a Project with more as not Ready rather\nthan the schema refusing it, so the CRD does not change when\nmulti-repo intents land. Each entry names a different repository:\nthe Intent records its pull requests by repository URL, and every\nrepository's branch is the same patchy-intent/<intent>, so two\nentries for one repository would fan two builds into one branch. URLs\nare compared the way forges compare them — case-insensitively, with\nany .git suffix dropped.",
+                    "description": "Repositories are the application repositories intents build in; the\nfirst entry is also the planning repository. The schema admits up to\n8. Building in more than one is opt-in on intent-controller: without\nthe opt-in it reports a Project with more than one as not Ready\n(UnsupportedRepositories) rather than the schema refusing it, so\nturning multi-repository intents on or off never needs a CRD change.\nEach entry names a different repository:\nthe Intent records its pull requests by repository URL, and every\nrepository's branch is the same patchy-intent/<intent>, so two\nentries for one repository would fan two builds into one branch. URLs\nare compared the way forges compare them — case-insensitively, with\nany .git suffix dropped.",
                     "items": {
                         "description": "ProjectRepository is one application repository the Project's intents may\nbuild in.",
                         "properties": {
@@ -855,6 +855,41 @@
                                 "minLength": 1,
                                 "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
                                 "type": "string"
+                            },
+                            "preview": {
+                                "description": "Preview opts this repository into the Project's previews: its fixed\nruntime contract, and the path its component is served under on the\nintent's one preview host. Unset means the repository is never\npreviewed (a library, say); its pull request is still part of the\nintent. At most MaxPreviewComponents of a Project's repositories are\npreviewed, each at its own path, and spec.preview, the one-repository\nshorthand, is refused beside any of them (CEL-enforced on the spec).",
+                                "properties": {
+                                    "imageRepository": {
+                                        "description": "ImageRepository is an immutable-tag runtime repository under the\noperator's preview registry, such as <registry>/patchy/previews/demo.\nThe preview-controller also checks its configured image prefix.",
+                                        "maxLength": 255,
+                                        "minLength": 1,
+                                        "pattern": "^[a-z0-9][a-z0-9.:-]*/patchy/previews/[a-z0-9-]+$",
+                                        "type": "string"
+                                    },
+                                    "path": {
+                                        "default": "/",
+                                        "description": "Path is the URL path prefix the component is served under on the\nintent's preview host, \"/\" by default. The load balancer routes the\nlongest matching prefix and does not rewrite it, so the application\nserves under its path (an API at /api answers /api/...), and a page\ncalls a sibling component same-origin, from the browser. Lowercase\nsegments only, so it is safe as an Ingress path. Paths are distinct\nacross the Project (CEL-enforced on the spec).",
+                                        "maxLength": 128,
+                                        "pattern": "^/([a-z0-9-]+(/[a-z0-9-]+)*)?$",
+                                        "type": "string"
+                                    },
+                                    "port": {
+                                        "description": "Port is the one HTTP container/service port.",
+                                        "format": "int32",
+                                        "maximum": 65535,
+                                        "minimum": 1,
+                                        "type": "integer"
+                                    },
+                                    "readinessPath": {
+                                        "description": "ReadinessPath is a safe HTTP path, also used by the ALB health check.",
+                                        "maxLength": 128,
+                                        "pattern": "^/[a-zA-Z0-9/_-]*$",
+                                        "type": "string"
+                                    }
+                                },
+                                "required": ["imageRepository", "port", "readinessPath"],
+                                "type": "object",
+                                "additionalProperties": false
                             },
                             "url": {
                                 "description": "URL is the repository's https URL (https://github.com/<owner>/<name>).\nIt must resolve to exactly one Forge, and the App must be installed on\nit, or the Project is not Ready. No credentials in the URL.",

@@ -1,0 +1,35 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Not read live: no Preview existed when the other fixtures were read (preview-demo-5 had merged and
+# its Preview was deleted). This is the Preview the slice-2 writer and controller kept for it while
+# Ready at its last head, built from intent_preview-demo-5.yaml and project_preview-demo.yaml exactly
+# as the writer builds it: one component, no path. The image ID's digest is a stand-in.
+apiVersion: patchy.bitwisemedia.uk/v1alpha1
+kind: Preview
+metadata:
+  name: preview-demo-5
+  namespace: patchy
+spec:
+  intentRef:
+    name: preview-demo-5
+    uid: 42db5434-5c1c-4ea5-825a-62baf5e53e44
+  hostLabel: preview-demo-5
+  components:
+    - name: preview-demo
+      imageRepository: 377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/patchy-preview-demo
+      revision: ff75476100fc6ca8f0a2f64723cebf713fa58022
+      port: 8080
+      readinessPath: /healthz
+  ttl: 72h0m0s
+status:
+  phase: Ready
+  observedGeneration: 2
+  slot: 0
+  url: https://preview-demo-5.preview.patchy.devthe.net
+  observedRevision: ff75476100fc6ca8f0a2f64723cebf713fa58022
+  attemptStartedAt: "2026-10-03T07:04:00Z"
+  lastDeployedAt: "2026-10-03T07:06:38Z"
+  components:
+    - name: preview-demo
+      imageID: 377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/patchy-preview-demo@sha256:1111111111111111111111111111111111111111111111111111111111111111

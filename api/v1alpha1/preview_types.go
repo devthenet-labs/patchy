@@ -23,9 +23,13 @@ const (
 )
 
 // PreviewComponent is the fixed application shape copied from an operator's
-// Project, with only Revision taken from the live, recorded PR head.
+// Project, with only Revision taken from the Intent's recorded state: the PR
+// head of its repository, or the default-branch head recorded once for a
+// previewed repository the intent did not change. DesiredPreviewComponents
+// derives the whole list; the writer and the preview-controller both use it.
 type PreviewComponent struct {
-	// Name identifies the component and its rendered resources.
+	// Name identifies the component and its rendered resources: the Project
+	// repository's key.
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +kubebuilder:validation:MaxLength=16
 	Name string `json:"name"`
@@ -33,7 +37,8 @@ type PreviewComponent struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9.:-]*/patchy/previews/[a-z0-9-]+$`
 	// +kubebuilder:validation:MaxLength=255
 	ImageRepository string `json:"imageRepository"`
-	// Revision is the full GitHub pull-request head SHA, never a branch name.
+	// Revision is a full commit SHA, never a branch name: the PR head, or a
+	// recorded default-branch head (Intent status.previewBases).
 	// +kubebuilder:validation:Pattern=`^[0-9a-f]{40}$`
 	Revision string `json:"revision"`
 	// Port and ReadinessPath are operator configuration, not agent input.
@@ -43,6 +48,25 @@ type PreviewComponent struct {
 	// +kubebuilder:validation:Pattern=`^/[a-zA-Z0-9/_-]*$`
 	// +kubebuilder:validation:MaxLength=128
 	ReadinessPath string `json:"readinessPath"`
+	// Path is the URL path prefix the component is served under on the
+	// preview host. Omitted means "/", the form every single-repository
+	// Preview has always been written in: it is deliberately not a schema
+	// default, so a writer comparing specs never finds a defaulted "/" it
+	// did not write and rewrites a live Preview. PreviewComponentPath reads
+	// it.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^/([a-z0-9-]+(/[a-z0-9-]+)*)?$`
+	Path string `json:"path,omitempty"`
+}
+
+// PreviewComponentPath is the path a component is served under: its Path, or
+// "/" when omitted.
+func PreviewComponentPath(c PreviewComponent) string {
+	if c.Path == "" {
+		return "/"
+	}
+	return c.Path
 }
 
 // PreviewSpec is authored by intent-controller in the release namespace.
@@ -57,9 +81,15 @@ type PreviewSpec struct {
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="hostLabel is immutable"
 	HostLabel string `json:"hostLabel"`
-	// Slice 2 has one application repository and one runtime component.
+	// Components are the runtime components the one preview host routes
+	// to, one per previewed Project repository, in Project order, each
+	// under its own path (at most MaxPreviewComponents). A one-repository
+	// Project has exactly one, at "/".
 	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=1
+	// +kubebuilder:validation:MaxItems=4
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:XValidation:rule="self.all(c, self.exists_one(d, (has(d.path) ? d.path : '/') == (has(c.path) ? c.path : '/')))",message="two components have the same path (an omitted path is /)"
 	Components []PreviewComponent `json:"components"`
 	// TTL is at most 72 hours since the last successful deployment. It is
 	// also a cap on queued/deploying previews, so they cannot hold a slot
@@ -71,6 +101,11 @@ type PreviewSpec struct {
 // PreviewComponentStatus records the image the kubelet actually ran.
 type PreviewComponentStatus struct {
 	Name string `json:"name"`
+	// Revision is the commit the component serves: the spec revision its
+	// Ready Pod runs.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{40}$`
+	Revision string `json:"revision,omitempty"`
 	// ImageID is the runtime's digest-bearing image ID once a Pod is Ready.
 	// +optional
 	ImageID string `json:"imageID,omitempty"`
@@ -89,7 +124,8 @@ type PreviewStatus struct {
 	Slot *int32 `json:"slot,omitempty"`
 	// +optional
 	URL string `json:"url,omitempty"`
-	// ObservedRevision is the revision this slot currently serves or tried.
+	// ObservedRevision is the revision this slot currently serves or tried:
+	// the first component's (each component's own is in Components).
 	// +optional
 	ObservedRevision string `json:"observedRevision,omitempty"`
 	// +optional
@@ -99,8 +135,10 @@ type PreviewStatus struct {
 	AttemptStartedAt *metav1.Time `json:"attemptStartedAt,omitempty"`
 	// +optional
 	LastDeployedAt *metav1.Time `json:"lastDeployedAt,omitempty"`
+	// Components records, once the Preview is Ready, what each component
+	// serves, in spec order.
 	// +optional
-	// +kubebuilder:validation:MaxItems=1
+	// +kubebuilder:validation:MaxItems=4
 	Components []PreviewComponentStatus `json:"components,omitempty"`
 	// +optional
 	Message string `json:"message,omitempty"`

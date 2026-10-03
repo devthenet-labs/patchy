@@ -79,6 +79,12 @@ spec:
               The operator writes it (through the patchy-config chart); intent-controller
               only reads it. Writing projects is admin-only in RBAC, because a Project is
               the power to point agents at repositories.
+
+              Previews are configured per repository (repositories[].preview) or, for a
+              one-repository Project, by the spec.preview shorthand, never both. The
+              rules below hold the per-repository form to at most MaxPreviewComponents
+              previewed repositories at distinct paths. An omitted path means "/" (the
+              field's default), and the rules read it that way too.
             properties:
               approvers:
                 description: Approvers is the allowlist whose actions count.
@@ -301,10 +307,14 @@ spec:
                 type: object
               preview:
                 description: |-
-                  Preview opts this Project into the slice-2 preview flow. Omitted means
-                  its PRs are never deployed, even if the preview-controller is enabled.
-                  Only operator-authored Project configuration can supply the runtime
-                  image repository and serving port; issue and agent text cannot.
+                  Preview is the one-repository shorthand for previews: the runtime
+                  contract of repositories[0], served at "/", exactly as if it were
+                  repositories[0].preview with the default path. It needs exactly one
+                  repository and is refused beside any repositories[].preview
+                  (CEL-enforced on the spec). With neither set, the Project's PRs are never
+                  deployed, even if the preview-controller is enabled. Only
+                  operator-authored Project configuration can supply the runtime image
+                  repository and serving port; issue and agent text cannot.
                 properties:
                   imageRepository:
                     description: |-
@@ -336,10 +346,11 @@ spec:
                 description: |-
                   Repositories are the application repositories intents build in; the
                   first entry is also the planning repository. The schema admits up to
-                  8 — the multi-repo shape — but slice 1 builds in exactly one:
-                  intent-controller reports a Project with more as not Ready rather
-                  than the schema refusing it, so the CRD does not change when
-                  multi-repo intents land. Each entry names a different repository:
+                  8. Building in more than one is opt-in on intent-controller: without
+                  the opt-in it reports a Project with more than one as not Ready
+                  (UnsupportedRepositories) rather than the schema refusing it, so
+                  turning multi-repository intents on or off never needs a CRD change.
+                  Each entry names a different repository:
                   the Intent records its pull requests by repository URL, and every
                   repository's branch is the same patchy-intent/<intent>, so two
                   entries for one repository would fan two builds into one branch. URLs
@@ -360,6 +371,55 @@ spec:
                       minLength: 1
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
+                    preview:
+                      description: |-
+                        Preview opts this repository into the Project's previews: its fixed
+                        runtime contract, and the path its component is served under on the
+                        intent's one preview host. Unset means the repository is never
+                        previewed (a library, say); its pull request is still part of the
+                        intent. At most MaxPreviewComponents of a Project's repositories are
+                        previewed, each at its own path, and spec.preview, the one-repository
+                        shorthand, is refused beside any of them (CEL-enforced on the spec).
+                      properties:
+                        imageRepository:
+                          description: |-
+                            ImageRepository is an immutable-tag runtime repository under the
+                            operator's preview registry, such as <registry>/patchy/previews/demo.
+                            The preview-controller also checks its configured image prefix.
+                          maxLength: 255
+                          minLength: 1
+                          pattern: ^[a-z0-9][a-z0-9.:-]*/patchy/previews/[a-z0-9-]+$
+                          type: string
+                        path:
+                          default: /
+                          description: |-
+                            Path is the URL path prefix the component is served under on the
+                            intent's preview host, "/" by default. The load balancer routes the
+                            longest matching prefix and does not rewrite it, so the application
+                            serves under its path (an API at /api answers /api/...), and a page
+                            calls a sibling component same-origin, from the browser. Lowercase
+                            segments only, so it is safe as an Ingress path. Paths are distinct
+                            across the Project (CEL-enforced on the spec).
+                          maxLength: 128
+                          pattern: ^/([a-z0-9-]+(/[a-z0-9-]+)*)?$
+                          type: string
+                        port:
+                          description: Port is the one HTTP container/service port.
+                          format: int32
+                          maximum: 65535
+                          minimum: 1
+                          type: integer
+                        readinessPath:
+                          description: ReadinessPath is a safe HTTP path, also used
+                            by the ALB health check.
+                          maxLength: 128
+                          pattern: ^/[a-zA-Z0-9/_-]*$
+                          type: string
+                      required:
+                      - imageRepository
+                      - port
+                      - readinessPath
+                      type: object
                     url:
                       description: |-
                         URL is the repository's https URL (https://github.com/<owner>/<name>).
@@ -405,6 +465,18 @@ spec:
             - intentRepository
             - repositories
             type: object
+            x-kubernetes-validations:
+            - message: at most 4 repositories are previewed (repositories[].preview)
+              rule: self.repositories.filter(r, has(r.preview)).size() <= 4
+            - message: two previewed repositories have the same path (repositories[].preview.path,
+                default /)
+              rule: 'self.repositories.all(r, !has(r.preview) || self.repositories.exists_one(s,
+                has(s.preview) && (has(s.preview.path) ? s.preview.path : ''/'') ==
+                (has(r.preview.path) ? r.preview.path : ''/'')))'
+            - message: 'spec.preview is the one-repository shorthand: it needs exactly
+                one repository and no repositories[].preview'
+              rule: '!has(self.preview) || (size(self.repositories) == 1 && !self.repositories.exists(r,
+                has(r.preview)))'
           status:
             description: |-
               ProjectStatus is the Project's observed state. Written only by

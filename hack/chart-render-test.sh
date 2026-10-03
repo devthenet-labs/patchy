@@ -868,6 +868,17 @@ expect_fail_cfg "credentials in a repository url" "projects/0/spec/repositories/
   --set-json "projects=[$(project '.spec.repositories[0].url = "https://x:token@github.com/acme/t"')]"
 expect_fail_cfg "cost ceiling past its cap" "projects/0/spec/limits/maxCostMicroUSD" \
   --set-json "projects=[$(project '.spec.limits.maxCostMicroUSD = 1000000001')]"
+# Per-repository previews (slice 3): rendered verbatim, their fields
+# checked client-side. The CEL rules (at most four, distinct paths, no
+# shorthand beside them) are the API server's; the schema envtest covers them.
+webpreview='{"imageRepository":"registry.example/patchy/previews/acme-web","port":8080,"readinessPath":"/healthz"}'
+render_cfg cfg-repo-preview --set-json "projects=[$(project ".spec.repositories[0].preview = $webpreview | .spec.repositories[0].preview.path = \"/api\"")]"
+expect cfg-repo-preview 'select(.kind == "Project") | .spec.repositories[0].preview.path + " " + .spec.repositories[0].preview.imageRepository' \
+  "/api registry.example/patchy/previews/acme-web"
+expect_fail_cfg "a preview path outside the grammar" "projects/0/spec/repositories/0/preview/path" \
+  --set-json "projects=[$(project ".spec.repositories[0].preview = $webpreview | .spec.repositories[0].preview.path = \"/API\"")]"
+expect_fail_cfg "an unknown repository preview field" "projects/0/spec/repositories/0/preview" \
+  --set-json "projects=[$(project ".spec.repositories[0].preview = $webpreview | .spec.repositories[0].preview.dockerfile = \"x\"")]"
 
 if [ "$failures" -gt 0 ]; then
   echo "chart-render-test: $failures assertion(s) failed" >&2

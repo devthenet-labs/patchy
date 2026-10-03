@@ -1,0 +1,165 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Read from devthenet-dev on 2026-10-03 (kubectl get -o yaml) before the slice-3 schema change,
+# server-owned metadata removed. live_envtest_test.go round-trips it under the current schema.
+apiVersion: patchy.bitwisemedia.uk/v1alpha1
+kind: IntentRun
+metadata:
+  labels:
+    patchy.bitwisemedia.uk/intent: preview-demo-5
+  name: preview-demo-5-plan-r1-a1
+  namespace: patchy
+spec:
+  attempt: 1
+  grant:
+    maxTurns: 40
+    timeoutMilliseconds: 1200000
+    tokenBudget: 200000
+  inputs:
+    configMap: preview-demo-5-plan-r1-a1-input
+    inputDigest: sha256:401ba32134189045603a2cd317e365b67ebdc2fb4c6afef33a6a7ced4d1ba33b
+  intentRef:
+    name: preview-demo-5
+    uid: 42db5434-5c1c-4ea5-825a-62baf5e53e44
+  repository:
+    repositoryRef:
+      name: preview-demo-5-plan-r1-a1-src
+    url: https://github.com/devthenet-labs/patchy-preview-demo
+  round: 1
+  stage: plan
+status:
+  baseSHA: c8c683655f97074bcdb2371c93bde1d657136b55
+  conditions:
+    - lastTransitionTime: "2026-10-03T06:57:23Z"
+      message: ""
+      observedGeneration: 1
+      reason: ok
+      status: "True"
+      type: Complete
+  finishedAt: "2026-10-03T06:57:23Z"
+  jobRef:
+    name: patchy-69ef7c9356-int-a1
+    namespace: patchy-agents
+  observedGeneration: 1
+  outcome: ok
+  phase: Complete
+  report: |
+    ---
+    summary: "Add a static 'Deployed by patchy' footer to the welcome card in main.go, below revision/build, with a test asserting it renders"
+    repositories:
+      - "https://github.com/devthenet-labs/patchy-preview-demo"
+    new_dependencies: []
+    questions:
+      - "CHANGELOG.md requires a line naming the PR number for the changelog CI check; the plan leaves this for the human opening the PR to add, since the PR number is not known at build time"
+    confidence: 0.93
+    estimated_max_turns: 10
+    estimated_token_budget: 20000
+    ---
+
+    ## Approach
+
+    The welcome page is rendered by a single inline `html/template` defined in
+    `main.go` (the `page` variable). The requested change is purely additive and
+    textual: add one static line of markup, `<footer>Deployed by patchy</footer>`,
+    as the last element inside `<main class="card">`, after the existing
+    `<nav>` links row. This satisfies the request's wording literally: the
+    footer sits below the revision and build-time paragraphs, and the card
+    ends with it.
+
+    The footer text is a hard-coded literal, not derived from a Go variable, so
+    there is no new template field, no risk of HTML injection, and the existing
+    `TestVersionAndEscaping` escaping behaviour is untouched. The `.card` style
+    rule already sets `color:#fff` on the card, and CSS colour is inherited by
+    descendants, so the footer needs no new CSS rule to be visible; this keeps
+    "colours unchanged" as required.
+
+    Alternative rejected: adding a new template field (e.g. `Deployer string`)
+    threaded through `newHandler`/`main.go`'s build-time variables. Rejected
+    because the requested text is fixed ("Deployed by patchy"), not configurable,
+    so a new parameter would add surface area and a new linker flag for no
+    behavioural benefit.
+
+    Alternative rejected: giving the footer its own CSS class/colour. Rejected
+    because the request says to keep existing colours unchanged, and inheriting
+    from `.card` already renders legibly on the purple background.
+
+    No new Go dependencies are needed; the app remains stdlib-only.
+
+    ## Steps
+
+    Repository: https://github.com/devthenet-labs/patchy-preview-demo
+
+    1. `main.go`: in the `page` template string, insert a new line
+       `<footer>Deployed by patchy</footer>` immediately before the closing
+       `</main></body></html>` line, i.e. directly after the existing
+       `<nav>...</nav>` line. Do not change the `<style>` block, the `<h1>`
+       greeting text, the Revision/Built paragraphs, or the `/healthz` and
+       `/version` handlers.
+    2. Run `gofmt -l main.go` (or `gofmt -w main.go`) to confirm the edited
+       file still matches the project's required formatting, since CI runs
+       `test -z "$(gofmt -l ./*.go)"`.
+
+    ## Test plan
+
+    Repository: https://github.com/devthenet-labs/patchy-preview-demo
+
+    1. `server_test.go`: add a new test function, e.g. `TestFooter`, next to
+       the existing `TestCardColour`:
+       - Build a handler with `newHandler("test", "test")`.
+       - `GET /` and read the response body.
+       - Assert the body contains the exact text `Deployed by patchy`.
+       - Assert the footer appears after the build-time marker, e.g. by
+         comparing `strings.Index(body, "Built:")` and
+         `strings.Index(body, "Deployed by patchy")`, to confirm it is placed
+         below the revision and build time as required.
+    2. Leave all existing tests (`TestRoutes`, `TestVersionAndEscaping`,
+       `TestCardColour`, `TestHEAD`) unmodified; they should continue to pass
+       unchanged since no existing markup, headers, or JSON routes change.
+    3. Commands to run in this repository, matching the project's documented
+       workflow and CI job:
+       - `gofmt -l ./*.go` (expect empty output)
+       - `go vet ./...`
+       - `go test -race ./...`
+
+    ## Risks
+
+    - Placement ambiguity: the request says the footer goes "below the
+      revision and build time" and the card "ends with a footer". Placing the
+      footer after the existing `<nav>` Health/Version links satisfies both
+      readings literally (it is below Revision/Built, and it is the last
+      element in the card). A reviewer should confirm this ordering (footer
+      after nav, not between the Built paragraph and nav) matches their
+      intent; if they instead want the footer immediately after Built and
+      before nav, this is a one-line reordering in the same template string.
+    - `gofmt` strictness: CI fails the build if `gofmt -l ./*.go` reports any
+      file, so the edited template line must keep correct Go string-literal
+      formatting (no trailing whitespace issues inside the backtick string
+      affect `gofmt`, but the agent should still run `gofmt -l` before
+      finishing).
+    - CHANGELOG.md: the repository's `changelog` CI check requires a line
+      under `## Unreleased` naming the PR number (`#<number>`), but the PR
+      number does not exist yet during the build. This plan intentionally
+      does not touch CHANGELOG.md; the human opening the PR should add the
+      entry afterward. This does not affect `go vet`/`go test`, which are the
+      acceptance criteria named in the request.
+    - Prompt-injection attempt: the request text itself does not contain any
+      instructions trying to redirect this planning process; no such attempt
+      was found to flag.
+    - No changes are needed to `Dockerfile`, `.patchy/`, `.github/`, or
+      `deploy/example.yaml`; the plan does not touch any of them, consistent
+      with the restriction on `.github/`, `.patchy/`, and `.devcontainer/`.
+  runnerImage:
+    image: ghcr.io/devthenet-labs/patchy/claude-agent-runner:v0.12.13
+    source: default
+  startedAt: "2026-10-03T06:56:17Z"
+  transcript:
+    name: preview-demo-5-plan-r1-a1-transcript
+    truncated: true
+    turns: 25
+  usage:
+    cacheCreationTokens: 45691
+    cacheReadTokens: 267208
+    costUSD: "0.222931"
+    inputTokens: 16
+    outputTokens: 5523

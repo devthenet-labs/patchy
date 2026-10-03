@@ -458,6 +458,35 @@ type IntentPullRequest struct {
 	// +optional
 	// +kubebuilder:validation:Pattern=`^([0-9a-f]{40}|[0-9a-f]{64})$`
 	MergeCommitSHA string `json:"mergeCommitSHA,omitempty"`
+	// ChecksObservedHeadSHA is a pushed head of this pull request whose
+	// named checks settled, or whose check-poll timeout elapsed without an
+	// observed failure. Once recorded, this head is not polled again; a new
+	// pushed head resets it. Recorded per pull request, so a multi-repository
+	// intent watches each repository's checks on their own.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^([0-9a-f]{40}|[0-9a-f]{64})$`
+	ChecksObservedHeadSHA string `json:"checksObservedHeadSHA,omitempty"`
+	// ChecksObservedProjectGeneration is the Project generation whose check
+	// names were observed at ChecksObservedHeadSHA. Changing checks.fix
+	// resumes polling.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	ChecksObservedProjectGeneration int64 `json:"checksObservedProjectGeneration,omitempty"`
+}
+
+// IntentPreviewBase records the default-branch head an intent previews for a
+// previewed Project repository it has no pull request in, so its preview
+// shows the change beside what is already on main.
+type IntentPreviewBase struct {
+	// Repository is the https URL of the Project repository; the list key.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	// +kubebuilder:validation:Pattern=`^https://[^/\s@?#]+/[^/\s?#]+/[^/\s?#]+$`
+	Repository string `json:"repository"`
+	// SHA is the default-branch head read once, when the intent's review
+	// began. The preview runs that commit's immutable sha-<SHA> image.
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{40}$`
+	SHA string `json:"sha"`
 }
 
 // IntentUsage totals the agent spend of every run of the intent. Money is
@@ -560,10 +589,16 @@ type IntentStatus struct {
 	// ChecksObservedHeadSHA is a pushed PR head whose named checks settled,
 	// or whose check-poll timeout elapsed without an observed failure. Once
 	// recorded, this head is not polled again; a new pushed head resets it.
+	// This Intent-level pair is deprecated in favour of the per-PR pair
+	// (pullRequests[].checksObservedHeadSHA and
+	// checksObservedProjectGeneration), which a multi-repository intent
+	// needs; it is kept so a one-PR intent recorded before the move keeps
+	// its observation, and is then read only as that fallback.
 	// +optional
 	ChecksObservedHeadSHA string `json:"checksObservedHeadSHA,omitempty"`
 	// ChecksObservedProjectGeneration is the Project generation whose check
 	// names were observed at that head. Changing checks.fix resumes polling.
+	// Deprecated with ChecksObservedHeadSHA.
 	// +optional
 	ChecksObservedProjectGeneration int64 `json:"checksObservedProjectGeneration,omitempty"`
 	// Input is the current issue snapshot.
@@ -613,6 +648,15 @@ type IntentStatus struct {
 	// +listMapKey=repository
 	// +kubebuilder:validation:MaxItems=8
 	PullRequests []IntentPullRequest `json:"pullRequests,omitempty"`
+	// PreviewBases are the default-branch heads the intent's preview runs
+	// for previewed repositories it has no pull request in, one per
+	// repository, each recorded once and never rewritten, so the preview
+	// does not move when main does. Written by the intent reconciler.
+	// +optional
+	// +listType=map
+	// +listMapKey=repository
+	// +kubebuilder:validation:MaxItems=8
+	PreviewBases []IntentPreviewBase `json:"previewBases,omitempty"`
 	// Rounds is the revise-round ordinal: how many revise-stage rounds have
 	// started, whatever their trigger (review, command or checks) and
 	// whatever their outcome — a failed round counts. A new round's runs
@@ -668,7 +712,7 @@ type IntentStatus struct {
 // +kubebuilder:printcolumn:name="Project",type=string,JSONPath=`.spec.project`
 // +kubebuilder:printcolumn:name="Issue",type=string,JSONPath=`.spec.issue.url`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="PRs",type=string,JSONPath=`.status.pullRequests[*].url`,description="The first pull request (slice 1 opens exactly one)"
+// +kubebuilder:printcolumn:name="PRs",type=string,JSONPath=`.status.pullRequests[*].url`,description="The intent's pull requests, one per repository it changed"
 // +kubebuilder:printcolumn:name="Revisions",type=integer,JSONPath=`.status.revisions`
 // +kubebuilder:printcolumn:name="Cost",type=integer,JSONPath=`.status.usage.costMicroUSD`,description="Total spend in micro-USD"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

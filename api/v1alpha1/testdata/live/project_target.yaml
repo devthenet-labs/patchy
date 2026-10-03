@@ -1,0 +1,57 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Read from devthenet-dev on 2026-10-03 (kubectl get -o yaml) before the slice-3 schema change,
+# server-owned metadata removed. live_envtest_test.go round-trips it under the current schema.
+apiVersion: patchy.bitwisemedia.uk/v1alpha1
+kind: Project
+metadata:
+  annotations:
+    meta.helm.sh/release-name: patchy-config
+    meta.helm.sh/release-namespace: patchy
+  labels:
+    app: intent-controller
+    app.kubernetes.io/instance: patchy-config
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: intent-controller
+    app.kubernetes.io/part-of: patchy
+    app.kubernetes.io/version: 0.12.13
+    helm.sh/chart: patchy-config-0.12.13
+  name: target
+  namespace: patchy
+spec:
+  approvers:
+    logins:
+      - brvtl
+  checks:
+    fix:
+      - test
+    timeout: 30m
+  intentRepository: https://github.com/devthenet-labs/intents
+  labels:
+    approve: patchy:approved
+  limits:
+    maxActiveIntents: 2
+    maxCheckFixes: 2
+    maxCostMicroUSD: 10000000
+    maxRevisions: 3
+  repositories:
+    - name: target
+      url: https://github.com/devthenet-labs/patchy-target
+  requireRepositoryImage: true
+status:
+  conditions:
+    - lastTransitionTime: "2026-09-24T21:04:44Z"
+      message: the repositories resolve, the App is installed on them, and the labels exist
+      observedGeneration: 2
+      reason: Validated
+      status: "True"
+      type: Ready
+    - lastTransitionTime: "2026-09-24T21:04:45Z"
+      message: no trigger-labelled issue's intent name is held elsewhere
+      observedGeneration: 2
+      reason: NoConflict
+      status: "False"
+      type: IntentNameConflict
+  lastPolledAt: "2026-10-03T07:41:16Z"
+  observedGeneration: 2

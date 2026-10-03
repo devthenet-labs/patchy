@@ -17,8 +17,10 @@ region=us-east-1
 registry=377946145366.dkr.ecr.us-east-1.amazonaws.com
 image_repo=patchy/previews/patchy-preview-demo
 deployment=preview-isolation-probe
+probe_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # The sibling stage's targets: another component's Pod and Service in the
-# probe's slot, and a Pod in the other slot.
+# probe's slot, and a Pod in the other slot. The Service is
+# sibling-service.yaml, which names it this too.
 sibling=preview-isolation-sibling
 other=preview-isolation-other
 created=0
@@ -97,13 +99,15 @@ wait_zero() {
     return 1
 }
 
-# apply_probe NAMESPACE NAME [EXTRA_ENV_LINES]: a Deployment-managed netprobe
+# create_probe NAMESPACE NAME [EXTRA_ENV_LINES]: a Deployment-managed netprobe
 # Pod, in the exact preview Pod shape, labelled app=NAME. EXTRA_ENV_LINES are
-# further env entries, already indented.
-apply_probe() {
+# further env entries, already indented. Every probe object is created, never
+# client-side applied: apply adds a last-applied annotation, which the slot
+# Service policy refuses (it admits only a health-check path).
+create_probe() {
     local ns=$1 name=$2 extra_env=${3:-}
     created=1
-    kubectl apply -n "$ns" -f - <<EOF
+    kubectl create -n "$ns" -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -161,7 +165,7 @@ run_slot() {
     local slot=$1 extra_env=${2:-} targets=${3:-8} ns="patchy-preview-$1" pod logs summary tries=0 blocked
     blocked=$((targets * 16))
     echo "Starting Deployment-managed probe in $ns ($targets forbidden targets)" >&2
-    apply_probe "$ns" "$deployment" "$extra_env"
+    create_probe "$ns" "$deployment" "$extra_env"
     while (( tries < 120 )); do
         pod=$(kubectl get pods -n "$ns" -l "app=$deployment" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
         if [[ -n $pod ]]; then
@@ -222,20 +226,9 @@ pod_ip() {
 run_siblings() {
     local sibling_ip service_ip other_ip extra_env
     echo "Starting sibling targets in patchy-preview-0 and patchy-preview-1" >&2
-    apply_probe patchy-preview-0 "$sibling"
-    apply_probe patchy-preview-1 "$other"
-    kubectl apply -n patchy-preview-0 -f - <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  name: $sibling
-  namespace: patchy-preview-0
-spec:
-  type: ClusterIP
-  selector: {app: $sibling}
-  ports:
-    - {name: http, port: 80, targetPort: 8080, protocol: TCP}
-EOF
+    create_probe patchy-preview-0 "$sibling"
+    create_probe patchy-preview-1 "$other"
+    kubectl create -n patchy-preview-0 -f "$probe_dir/sibling-service.yaml"
     sibling_ip=$(pod_ip patchy-preview-0 "$sibling")
     other_ip=$(pod_ip patchy-preview-1 "$other")
     service_ip=$(service_ip patchy-preview-0 "$sibling")

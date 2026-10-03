@@ -14,6 +14,12 @@ connections must be blocked. The stand-ins listen on nothing, so a policy that l
 refused, inconclusive attempt, which fails the run too. The pool is warm by then: the sibling run checks the slot policy
 between Pods, while the three runs before it check the cold start.
 
+The script **creates** every probe object (`kubectl create`) and never client-side applies one: `kubectl apply` adds a
+`kubectl.kubernetes.io/last-applied-configuration` annotation, and a slot Service may carry no annotation but a safe
+health-check path, so admission would refuse the sibling's Service. The sibling Service is `sibling-service.yaml`, and
+the chart's preview policy envtest (`charts/patchy/preview_probe_envtest_test.go`) runs the script's own command on it
+against the rendered policies.
+
 The probe is **never merged into `devthenet-labs/patchy-preview-demo` main**. Prepare a disposable same-repo PR on a
 `test/preview-*` branch based on current main. Copy this directory's `cmd/netprobe/` to the demo repo's `cmd/netprobe/`,
 and replace the demo repo's runtime `Dockerfile` and `.dockerignore` with the two files here. Do not alter its

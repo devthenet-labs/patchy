@@ -38,14 +38,15 @@ func TestPreviewAdmissionAgainstAPIServer(t *testing.T) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Skip("KUBEBUILDER_ASSETS not set; run via mise run envtest")
 	}
-	admin := startPreviewPolicyEnv(t)
+	env, admin := startPreviewPolicyEnv(t)
 	testPreviewDenials(t, admin)
 	testPreviewAllowed(t, admin)
 	testMultiComponentAdmission(t, admin)
 	testPlaceholderStaysAdmissible(t, admin)
+	testIsolationProbeService(t, env)
 }
 
-func startPreviewPolicyEnv(t *testing.T) client.Client {
+func startPreviewPolicyEnv(t *testing.T) (*envtest.Environment, client.Client) {
 	t.Helper()
 	env := &envtest.Environment{}
 	cfg, err := env.Start()
@@ -83,7 +84,7 @@ func startPreviewPolicyEnv(t *testing.T) client.Client {
 	}
 	installPreviewPolicy(t, admin)
 	waitForPreviewPolicy(t, admin)
-	return admin
+	return env, admin
 }
 
 func installPreviewPolicy(t *testing.T, admin client.Client) {

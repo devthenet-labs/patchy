@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/bitwise-media-group/patchy/cmd/patchy/internal/browser"
@@ -70,6 +71,8 @@ type setupDeps struct {
 	client *http.Client
 	// tempDir holds the --no-browser start page; "" is the system's.
 	tempDir string
+	// terminal reports whether a stream is a terminal: -o - refuses one.
+	terminal func(io.Writer) bool
 }
 
 // newSetupGitHubAppCmd creates the GitHub App through the manifest flow.
@@ -108,11 +111,12 @@ func newSetupGitHubAppCmd(opts *Options) *cobra.Command {
 			"It is written to -o, default <secret-name>.secret.yaml, with mode 0600 (not\n" +
 			"enforced on Windows), and an existing file is never replaced without --force.\n" +
 			"-o - writes it to stdout instead, to pipe into an encryption tool such as\n" +
-			"sops. The private key is printed nowhere else and GitHub keeps no copy: apply\n" +
-			"or encrypt the file, then delete it. Everything else, including the install\n" +
-			"link, goes to stderr. Install the App on the repositories patchy works on\n" +
-			"(\"Only select repositories\" is enough): for intents, the intent repository\n" +
-			"and every application repository.\n\n" +
+			"sops, and refuses a stdout that is a terminal. The private key is printed\n" +
+			"nowhere else and GitHub keeps no copy: apply or encrypt the file, then\n" +
+			"delete it. Everything else, including the install link, goes to stderr.\n" +
+			"Install the App on the repositories patchy works on (\"Only select\n" +
+			"repositories\" is enough): for intents, the intent repository and every\n" +
+			"application repository.\n\n" +
 			"--dry-run prints the manifest as JSON and creates nothing. github.com only.",
 		Example: "  patchy setup github-app --org acme --intents --checks\n" +
 			"  patchy setup github-app --org acme --security --webhook-url https://patchy.acme.dev/github/webhooks\n" +
@@ -123,13 +127,18 @@ func newSetupGitHubAppCmd(opts *Options) *cobra.Command {
 		Args:              cobra.NoArgs,
 		ValidArgsFunction: noFileCompletion,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runSetupGitHubApp(cmd.Context(), opts, f, setupDeps{
-				webURL: ghapp.DefaultWebURL,
-				apiURL: ghapp.DefaultAPIURL,
-				open:   browser.Open,
-				stdin:  cmd.InOrStdin(),
-				client: &http.Client{Timeout: opts.RequestTimeout},
-			})
+			deps := setupDeps{
+				webURL:   ghapp.DefaultWebURL,
+				apiURL:   ghapp.DefaultAPIURL,
+				open:     browser.Open,
+				stdin:    cmd.InOrStdin(),
+				client:   &http.Client{Timeout: opts.RequestTimeout},
+				terminal: isTerminal,
+			}
+			if opts.setupDeps != nil {
+				deps = *opts.setupDeps
+			}
+			return runSetupGitHubApp(cmd.Context(), opts, f, deps)
 		},
 	}
 	fl := cmd.Flags()
@@ -228,10 +237,13 @@ func runSetupGitHubApp(ctx context.Context, opts *Options, f *setupGitHubAppFlag
 	}
 	// Before anything exists on GitHub: an App whose credentials have nowhere
 	// to go is an App to delete by hand.
-	if plan.output != "-" {
-		if err := ghapp.CheckWritable(plan.output, f.force); err != nil {
-			return err
+	if plan.output == "-" {
+		if deps.terminal(opts.Out) {
+			return errUsage(errors.New("-o - writes the Secret, private key included, to stdout, which is a " +
+				"terminal: pipe it into the tool that keeps it (sops, kubectl apply -f -), or name a file"))
 		}
+	} else if err := ghapp.CheckWritable(plan.output, f.force); err != nil {
+		return err
 	}
 	state, err := ghapp.NewState()
 	if err != nil {
@@ -411,7 +423,7 @@ func writeSecret(opts *Options, plan setupPlan, deps setupDeps, app *ghapp.App, 
 	}
 	notef(opts.ErrOut, "patchy: install the App: %s\n", ghapp.InstallURL(deps.webURL, app.Slug))
 	if plan.config.Features.Intents {
-		notef(opts.ErrOut, "patchy: for intents, install it on the intent repository and every application " +
+		notef(opts.ErrOut, "patchy: for intents, install it on the intent repository and every application "+
 			"repository.\n")
 	}
 	if plan.secretName != ghapp.DefaultSecretName {
@@ -419,4 +431,11 @@ func writeSecret(opts *Options, plan setupPlan, deps setupDeps, app *ghapp.App, 
 			"intentController.forgeSecrets.\n", plan.secretName)
 	}
 	return nil
+}
+
+// isTerminal reports whether w is a terminal, where a private key would
+// land in the scrollback.
+func isTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
 }

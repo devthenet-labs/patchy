@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.17](https://github.com/devthenet-labs/patchy/compare/v0.12.16...v0.12.17) (2026-10-03)
+
+
+### Features
+
+* **preview:** configurable preview image path prefix with enforced agent/preview disjointness (W1) ([#113](https://github.com/devthenet-labs/patchy/issues/113)) ([e32fd67](https://github.com/devthenet-labs/patchy/commit/e32fd67d0b69d2524df7140f37f262f62d5cad72))
+
+
+### Bug Fixes
+
+* **intent:** departed-repository and deleted-Project follow-ups to slice 3 ([#109](https://github.com/devthenet-labs/patchy/issues/109)) ([12c2fde](https://github.com/devthenet-labs/patchy/commit/12c2fde6dff073315b471744ac46f40a6d1a0d77))
+
 ## [0.12.16](https://github.com/devthenet-labs/patchy/compare/v0.12.15...v0.12.16) (2026-10-03)
 
 

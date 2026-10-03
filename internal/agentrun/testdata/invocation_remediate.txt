@@ -18,6 +18,10 @@ Read these first:
   the code tells you it is wrong — then do the right thing and say so in your report.
 - The fix must be backwards compatible: no breaking changes to external callers.
 - Match the surrounding code's style and conventions. Keep the change as small as a correct fix allows.
+- Add a regression test that fails without the fix and passes with it, wherever the repository has tests for this
+  code. It is part of the fix, not scaffolding for checking it: keep every test you write in the working tree, and
+  have `commit.sh` commit it with the code. Never delete or revert a test you wrote — not after it passes, and not to
+  leave a clean tree.
 - Verify your work as well as the repository lets you: run the relevant tests or builds if they are runnable here.
   You have no network access — do not attempt to fetch dependencies or reach external services.
 
@@ -47,9 +51,9 @@ it did not work. This report is posted to the tracking issue and the pull reques
   `fix(security): sanitize user input in render path`.
 - No other commands: no push, no branch/checkout/config/remote/network operations, no file mutations.
 - After it runs, `git status --porcelain` must print nothing and the branch must carry at least one new commit, or
-  the fix is rejected. So stage every file that is part of the fix, and before you finish, restore
-  (`git checkout -- <path>`) or delete anything else your verification created or changed — build output, caches, a
-  binary the repository tracks that a build overwrote. Never commit those.
+  the fix is rejected. So stage every file that is part of the fix — the code and every test you wrote for it — and
+  before you finish, restore (`git checkout -- <path>`) or delete anything else your verification created or
+  changed: build output, caches, a binary the repository tracks that a build overwrote. Never commit those.
 
 --- argv[3]
 --model

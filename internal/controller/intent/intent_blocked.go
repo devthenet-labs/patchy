@@ -79,8 +79,9 @@ func (p *pass) unsupportedFor(reason string) bool {
 // held, and what lifts it.
 func multiRepoOffMessage(p *v1alpha1.Project) string {
 	return fmt.Sprintf("project %s lists %d repositories, and intent-controller runs intents over more than one "+
-		"only with --intent-multi-repo (intentController.config.multiRepo); nothing is planned, built, pushed "+
-		"or revised until it is on again or the project lists one repository", p.Name, len(p.Spec.Repositories))
+		"only with --intent-multi-repo (intentController.config.multiRepo); no run is launched and nothing is "+
+		"pushed until it is on again or the project lists one repository (a Job already running finishes, and "+
+		"its push waits)", p.Name, len(p.Spec.Repositories))
 }
 
 // holdMultiRepo blocks an Intent whose Project the controller runs no intent

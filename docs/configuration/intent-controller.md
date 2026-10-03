@@ -203,8 +203,10 @@ request's head, in the same image as its build, pushed as a fast-forward of the 
 - **CI-fix rounds** from a failed check: when a check the Project names in `checks.fix` (`[test]`, say) fails on the
   head patchy last pushed, the round reads that check's output, annotations and the tail of its Actions job log.
   `limits.maxCheckFixes` bounds them. A CI-fix round that does not fix the failure stops automatic fixing: the same
-  failure again (compared without the log's times, runner names, ids and durations) holds the intent `Blocked` with
-  `ChecksFailing` (`RepeatedFailure`) for a human, until the Project changes.
+  failure again holds the intent `Blocked` with `ChecksFailing` (`RepeatedFailure`) for a human, until the Project
+  changes. Two failures are compared without the log's times, durations, commit hashes, long ids (runner, job and
+  process numbers), addresses, and the line numbers after a file name; every other number counts, so a failure whose
+  values moved (coverage from 71.3% to 76.1%, a test from `got 3` to `got 4`) is progress, and gets another round.
 
 Each round posts one comment on the pull request saying what kind of round it was ("Revision round", or "CI-fix round
 for `test`") and what it pushed, and when it pushed, asks the approvers to review again. The summary patchy posts when
@@ -237,9 +239,19 @@ spec:
 - **Before any build is spent**, every branch is read: a `patchy-intent/<intent>` that an earlier round of the same
   intent left behind holds the intent `Blocked` with `BranchConflict` (`StaleRoundBranch`), naming the repository, until
   a human deletes it. Every block names the repository it is about.
-- **Pull requests open only once every build has pushed**, so a failed intent leaves no pull request behind. Each one
+- **Pull requests open only once every build has pushed**, so a build that fails leaves no pull request behind. Each one
   says it is one of several, and patchy then comments on each with links to the others (best effort: a refused comment
-  is retried and reported as `SiblingsLinked` False, and holds nothing back).
+  is reported as `SiblingsLinked` False, retried only once the Project or a pull request's head changes, and holds
+  nothing back).
+- **The pull requests open one per pass**, so an intent can end while they are being opened: a `/patchy cancel` or the
+  issue closed, or an approved repository removed from the Project (which fails it), perhaps while a block on a later
+  one holds it. The ones already opened are left open, and patchy comments on each, once, that the intent ended, that
+  the pull request is no longer tracked and not part of a completed change, and which repositories never got theirs;
+  the intent's `UntrackedPullRequests` condition records it. patchy closes none of them. Reviving a failed intent starts
+  its pull requests afresh.
+- **Repository keys name the runs.** Changing a key while an intent builds is safe; giving one repository's key to
+  another (a swap) can make a build's name another repository's run, and then the intent is held `Blocked` with
+  `UnsupportedRepositories` (`RepositoryKeyChanged`), naming both, until the Project changes again.
 - **Rounds run one at a time per intent**, each on one pull request's repository: a review or `/patchy revise` on a pull
   request revises its own repository, a failed check fixes its own. Pull requests with feedback waiting take turns, and
   feedback that arrives while another pull request's round runs is read by its own next round. The revision and CI-fix
@@ -250,9 +262,16 @@ spec:
   pull request because another closed.
 
 Off, which is the default, a Project listing several repositories is not Ready (`UnsupportedRepositories`), and every
-intent of one is held `Blocked` with `UnsupportedRepositories` wherever it stands: nothing is planned, built, pushed or
-revised. Turning the flag off is therefore a rollback; turning it on again resumes each intent where it was held (an
-approve label applied meanwhile is then honoured). One-repository Projects behave the same either way.
+intent of one is held `Blocked` with `UnsupportedRepositories` wherever it stands: no run is launched and nothing is
+pushed. A Job already running when the flag goes off finishes, and spends, all the same, and its push waits: turning the
+flag on again resumes each intent where it was held, its held push made (an approve label applied meanwhile is then
+honoured). A wait longer than the Job TTL (`agent.jobTTL`, `--job-ttl`) loses the finished Job, and with it the
+unpushed work, which is then run again (the attempt does not count). One-repository Projects behave the same either way.
+
+Turning the flag off is the supported rollback. Do not roll intent-controller back to a release before multi-repository
+intents while an intent of a multi-repository Project is open: the older controller does not hold them, and would lose
+their sibling pull requests' records. Cancel each such intent first, or suspend it (`spec.suspend: true`) until the
+controller is rolled forward again.
 
 ## Permissions
 

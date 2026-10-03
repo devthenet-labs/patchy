@@ -54,7 +54,9 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 			"preview-controller")
 	f.Bool("intent-multi-repo", false,
 		"run intents of Projects that list more than one repository; off, such a Project is not Ready and its "+
-			"intents are held Blocked (UnsupportedRepositories), so turning it off stops them where they stand")
+			"intents are held Blocked (UnsupportedRepositories) where they stand: no run is launched and nothing "+
+			"is pushed, a Job already running finishes and its push waits, and a wait longer than --job-ttl "+
+			"discards that finished work, which is then run again")
 	f.Int("intent-max-concurrent-runs", 1, "intent agent Jobs running at once (a pool separate from remediation's)")
 	f.Int("intent-rate-limit-floor", intent.DefaultRateLimitFloor,
 		"pause intent polling while the installation has fewer core GitHub requests left than this (0 disables)")

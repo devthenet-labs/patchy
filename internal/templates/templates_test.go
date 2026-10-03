@@ -312,6 +312,37 @@ func TestEnrichmentProjection(t *testing.T) {
 // behind. Live, attempt 1 of a finding was never told, let `go build`
 // overwrite a binary the repository tracks, and failed commit_failed; only
 // its retry learned why.
+// TestRemediatePromptKeepsTests pins that a remediation's tests are part of
+// the fix: a live run once wrote a regression test, ran it, then deleted it to
+// leave the clean tree the commit.sh contract asks for.
+func TestRemediatePromptKeepsTests(t *testing.T) {
+	for _, prev := range []*PreviousAttempt{
+		nil,
+		{Attempt: 1, Outcome: "commit_failed", Detail: "working tree not clean after commit.sh:\nM main_test.go"},
+	} {
+		got, err := RenderRemediatePrompt(RemediatePrompt{
+			IssuePath:         "/workspace/input/issue.md",
+			InvestigationPath: "/workspace/input/investigation.md",
+			ReportPath:        "/workspace/reports/remediation.md",
+			CommitScriptPath:  "/workspace/commit.sh",
+			PreviousAttempt:   prev,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{
+			"Add a regression test that fails without the fix and passes with it",
+			"keep every test you write in the working tree",
+			"Never delete or revert a test you wrote",
+			"the code and every test you wrote for it",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("previous attempt %+v: remediation prompt lacks %q", prev, want)
+			}
+		}
+	}
+}
+
 func TestRemediatePromptStatesCleanTree(t *testing.T) {
 	for _, prev := range []*PreviousAttempt{
 		nil,

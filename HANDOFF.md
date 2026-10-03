@@ -152,15 +152,47 @@ controller at start-up and stayed Ready, so the App's new read grants are proven
   preview NodeClass/NodePool and the edge IngressClass, all default off and byte-identical when off; a read-only
   server-side diff against devthenet's hand-applied objects showed no spec change;
   `previewController.config.targetHealth` now defaults to true — devthenet already sets it). Do not flip
-  `nodeIsolation.create` or `edgeIngressClass.create` on devthenet: Helm does not adopt the hand-applied objects.
-- **In flight:** slice 3 wave B (#95, multi-repo intents) in review round 2; W10 live onboarding (template repo
-  `devthenet-labs/app-template` and app `devthenet-labs/Hello.Web` from the released CLI and the reference module,
-  stopping at a reviewed, additive-only terraform plan).
+  `nodeIsolation.create` or `edgeIngressClass.create` on devthenet: Helm does not adopt the hand-applied objects. **Live
+  onboarding of a freely named app (W10): PASSED (2026-10-03, 18:05–18:31 UTC).** With only released tools (CLI
+  v0.12.15, cosign-verified): `patchy init app` scaffolded the template `devthenet-labs/app-template` (agent base
+  resolved and digest-pinned by the CLI itself), and `devthenet-labs/Hello.Web` (mixed case and a dot on purpose;
+  image/slug `hello-web`) was made from it. terraform-devthenet #32 (`patchy-hello-web.tf`, the reference `modules/app`
+  at `?ref=v0.12.15`): plan reviewed (strict immutable-subject trust, push to its own repository only) and applied, 10
+  added, 0 changed, 0 destroyed. Variables set per repository from the module's dotenv; `AGENT_PUBLISH_ENABLED`,
+  dispatch, then `PREVIEW_PUBLISH_ENABLED`; both images published (the agent publish proved the trust with the
+  mixed-case name). terraform-devthenet #33 added Project `hello-web` → patchy-config **rev 31**;
+  `patchy check project hello-web` all PASS. Intent `intents#8` → plan 62 s → approved → build 2 min → `Hello.Web#1`
+  (`test` green) → preview `hello-web-8` Ready (30/30 requests 200) → merged → Merged 20 s later, preview gone 19 s
+  after, issue closed completed. 8 minutes, $0.55. The docs bugs it found go into W11 (PR 108).
 
-**Next:** merge wave B, release, gate, then T-02 (`marigold` Project, `intentController.config.multiRepo: true`) and the
-live multi-repo demo; finish W10, then W11 (operator guide); W1 (configurable preview image prefix with disjointness)
-after wave B. Owner decisions pending: external-dns support (W4), and the home IP / account ID in this public repo
-(current files and history).
+**Slice 3 wave B merged; 0.12.16 released and deployed; gate PASSED; multi-repo live demo PASSED (2026-10-03,
+19:00–20:19 UTC).** PR 95 (multi-repo intents, three review rounds plus a final verification of the last fixes) and PR
+105 (W3 chart toggles) shipped in 0.12.16 (release PR 106: stamps and CHANGELOG only; CI approved at the verified head).
+PR 109 (low follow-ups: a deleted Project's granted run hands its slot back; PushHeld names the current cause;
+departed-repository reads documented and backed off; a transient read never ends an intent) merged after it, for the
+next release. Render 0.12.15→0.12.16 with live values: only `PATCHY_INTENT_MULTI_REPO: "false"`, versions and checksums.
+patchy **rev 51**, patchy-config **rev 32** (rollback **50 / 31**); nine Deployments on v0.12.16, zero restarts.
+
+- **Gate:** weak-key alert → `finding-514becf18f-17` → issue #77 → `/patchy expedite` 19:58:56 → InReview 20:02:04 → PR
+  #78 (with `multirepogatekey_test.go`) → merged 20:03:24 → Remediated 4 s later, no duplicate.
+- **T-02 applied:** terraform-devthenet #34: `intentController.config.multiRepo: true`, `maxConcurrentRuns: 2`, Project
+  `marigold` (`web` = marigold-web at `/`, `api` = marigold-api at `/api`, `checks.fix: [test]`). patchy **rev 52**,
+  patchy-config **rev 33** (rollback **51 / 32**; turning the flag off is the supported rollback). All four Projects
+  Ready; `patchy check project marigold` all PASS.
+- **Multi-repo demo:** `intents#9` ("Greet the visitor by name") → one plan over both trees (4 min; 3 planner questions
+  with sensible defaults) → approved 20:10:09 → both builds in parallel (api 2.5 min, web 3.5 min) → sibling PRs
+  `marigold-api#2` and `marigold-web#2` with cross-link comments and the "one of 2" footer → one two-component Preview
+  `marigold-9` Ready 20:16:31 (web at `/`, api at `/api`; valid, Unicode and rejected names behaved as planned; the page
+  inserts with `textContent` only; 40/40 requests 200) → api merged first: the intent stayed InReview → web merged →
+  Merged 38 s later, preview gone 12 s after, issue closed completed, summary listing both PRs. $1.51.
+- **In review:** W11 operator guide (PR 108: "Deploying intents and previews", onboarding page, module reference, the
+  W10 docs bugs, a fresh-eyes validation against a fictional org whose gaps were fixed); being rebased onto main.
+
+**Next:** merge PR 108; W1 (configurable preview image prefix with enforced agent/preview disjointness); release 0.12.17
+(PR 109, the W11 CLI text) and gate. Owner decisions pending: external-dns support (W4); the home IP / account ID in
+this public repository (current files and history); whether a permanently unreachable but still-listed repository should
+stop blocking an ended intent's hand-off (today it retries forever, by design); whether a removed repository's
+unreadable, last-seen-open pull request should keep an intent in review until a human closes the issue (today it does).
 
 ## Previous checkpoint — 2026-10-02 (Codex stage-1 handover; historical)
 

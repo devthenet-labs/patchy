@@ -210,3 +210,45 @@ func TestSwappedKeysNeverAdoptAnotherRepositorysBuild(t *testing.T) {
 		t.Errorf("pull requests = %+v, want both", in.Status.PullRequests)
 	}
 }
+
+// TestRemovedRepositoryStopsNoOtherRound: the operator removes app from the
+// Project, its pull request merged or still open. A review on web's pull
+// request still gets its round, in web, to the end: a round resolves only its
+// own repository against the Project. Feedback left on app's pull request,
+// whose repository left the Project, starts nothing there, and never holds up
+// web's (it is offered a round first, in plan order).
+func TestRemovedRepositoryStopsNoOtherRound(t *testing.T) {
+	for _, merged := range []bool{true, false} {
+		t.Run(fmt.Sprintf("app merged %v", merged), func(t *testing.T) {
+			e := newMultiEnv(t)
+			name := e.inReviewLinked()
+			if merged {
+				e.gh.closePRn(1, true)
+				e.settleActions(name)
+			}
+			p := e.getProject()
+			p.Spec.Repositories = p.Spec.Repositories[1:]
+			p.Generation++
+			if err := e.c.Update(context.Background(), p); err != nil {
+				t.Fatal(err)
+			}
+			if !merged {
+				e.reviewOn(1, 952, "App: rename the handler.")
+			}
+			e.reviewOn(2, 951, "Web: show the sha.")
+			e.clock.Advance(3 * time.Minute)
+			e.drive(name, v1alpha1.IntentRevising, repoImage)
+			if run := e.reviseRun(name, 1); run == nil || !sameRepo(run.Spec.Repository.URL, webRepoURL) {
+				t.Fatalf("round 1 = %+v, want web's", run)
+			}
+			in := e.drive(name, v1alpha1.IntentInReview, repoImage)
+			if run := e.reviseRun(name, 1); run.Status.Phase != v1alpha1.RunComplete || in.Status.Revisions != 1 {
+				t.Fatalf("round %s, revisions %d; want web's round complete", run.Status.Phase, in.Status.Revisions)
+			}
+			e.settleActions(name)
+			if n := len(e.revisesIn(name, appRepoURL)); n != 0 {
+				t.Errorf("%d rounds in app, which left the project; want none", n)
+			}
+		})
+	}
+}

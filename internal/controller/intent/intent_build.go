@@ -457,6 +457,13 @@ func (p *pass) startRound(ctx context.Context, prs []v1alpha1.IntentPullRequest)
 		if pr.State != prOpen {
 			continue
 		}
+		if _, ok := p.approvedRepository(pr.Repository); !ok {
+			// Its repository left the Project: nothing is revised there, and
+			// its feedback never holds up the others' rounds.
+			p.r.log().LogAttrs(ctx, slog.LevelInfo, "a pull request's repository left the project; no round there",
+				slog.String("intent", p.in.Name), slog.String("repository", pr.Repository))
+			continue
+		}
 		if started, err := p.reviewRound(ctx, pr); started || err != nil {
 			return started, err
 		}

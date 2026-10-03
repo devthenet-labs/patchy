@@ -382,19 +382,18 @@ func (p *pass) approvedRepositories() (repos []v1alpha1.ProjectRepository, gone 
 	return repos, len(repos) == 0
 }
 
-// approvedRepository is the approved repository at url: a revise round
-// works only in a repository the approved plan built.
+// approvedRepository is the Project's repository at url when the approved
+// plan names it: a revise round works only in a repository the approved
+// plan built. Only url itself is looked up in the Project. A round needs its
+// own repository and nothing of its siblings', so one that has left the
+// Project since (its pull request merged, say) stops no round on the others,
+// as approvedRepositories, which builds need whole, would.
 func (p *pass) approvedRepository(url string) (v1alpha1.ProjectRepository, bool) {
-	repos, gone := p.approvedRepositories()
-	if gone {
+	pl := p.in.Status.Plan
+	if pl == nil || !slices.ContainsFunc(pl.Repositories, func(named string) bool { return sameRepo(named, url) }) {
 		return v1alpha1.ProjectRepository{}, false
 	}
-	for _, r := range repos {
-		if sameRepo(r.URL, url) {
-			return r, true
-		}
-	}
-	return v1alpha1.ProjectRepository{}, false
+	return p.projectRepository(url)
 }
 
 // repositorySlugs are the "owner/name" of repos, in their order, as the

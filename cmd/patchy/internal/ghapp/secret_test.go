@@ -43,7 +43,7 @@ func TestSecretManifestReadsAsAForgeCredential(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			app := &App{ID: 123456, Slug: "patchy-acme",
-				Credentials: Credentials{privateKey: []byte(key), webhookSecret: tt.webhook}}
+				Credentials: newCredentials([]byte(key), tt.webhook)}
 			out, err := SecretManifest(app, "patchy-github", "patchy")
 			if err != nil {
 				t.Fatal(err)
@@ -89,6 +89,9 @@ func TestCheckWritable(t *testing.T) {
 	if err := CheckWritable(path, false); err != nil {
 		t.Fatalf("CheckWritable(new) = %v", err)
 	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("CheckWritable left %v behind", entries)
+	}
 	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -103,6 +106,32 @@ func TestCheckWritable(t *testing.T) {
 	}
 	if err := CheckWritable(dir, true); err == nil || !strings.Contains(err.Error(), "is a directory") {
 		t.Errorf("CheckWritable(a directory, force) = %v, want a refusal", err)
+	}
+}
+
+// TestCheckWritableReadOnlyDirectory: a directory this process cannot
+// create a file in is refused, with or without force, as WriteFile would
+// refuse it after GitHub had created the App.
+func TestCheckWritableReadOnlyDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows ignores a directory's mode bits")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root writes to a 0555 directory")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "patchy-github.secret.yaml")
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	for _, force := range []bool{false, true} {
+		if err := CheckWritable(path, force); err == nil || !strings.Contains(err.Error(), "cannot be written to") {
+			t.Errorf("CheckWritable(read-only directory, force=%v) = %v, want a refusal", force, err)
+		}
+		if err := WriteFile(path, []byte("x"), force); err == nil {
+			t.Errorf("WriteFile(read-only directory, force=%v) succeeded: CheckWritable's premise is wrong", force)
+		}
 	}
 }
 

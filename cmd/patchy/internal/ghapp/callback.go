@@ -77,6 +77,13 @@ const donePage = `<!doctype html>
 <body><p>GitHub created the App. Return to your terminal: patchy is collecting its credentials.</p></body></html>
 `
 
+// startServedAgain answers every request for the start page after the
+// first: the page carries the state, so whoever fetched it first could
+// answer the flow.
+const startServedAgain = "patchy served this page once already. If you did not open it before, in another tab or " +
+	"browser, another program on this computer read it: stop patchy in the terminal (Ctrl-C), do not create the " +
+	"App, and run patchy again."
+
 // ErrNoCode reports a wait that ended without a code: GitHub never sent the
 // browser back before the deadline, the caller gave up, or the terminal a
 // code was to be pasted into closed.
@@ -86,7 +93,10 @@ var ErrNoCode = errors.New("no code from GitHub")
 // serves the start page at an unguessable path (StartURL) and takes the
 // code GitHub sends the browser back with at /callback. The start page
 // carries the state, so another local process that could fetch it could
-// forge the callback; the random path keeps it from the port alone. It
+// forge the callback; the random path keeps it from the port alone, and the
+// page is served once only, so a process that read the path (from the
+// browser opener's arguments) and fetched it first leaves the person's own
+// browser with an error page instead of a flow that quietly goes on. It
 // listens on 127.0.0.1 only and answers only requests addressed to that
 // exact host and port, so a web page that rebinds a DNS name to the
 // loopback address cannot reach it. A callback whose state differs from
@@ -104,8 +114,10 @@ type Callback struct {
 	page  []byte
 	codes chan string
 
-	mu    sync.Mutex
-	taken bool
+	mu sync.Mutex
+	// served is set once the start page has been sent.
+	served bool
+	taken  bool
 }
 
 // Listen opens the callback's listener on a random loopback port. The
@@ -130,8 +142,8 @@ func (c *Callback) StartURL() string { return "http://" + c.host + c.start }
 // RedirectURL is the manifest's redirect_url.
 func (c *Callback) RedirectURL() string { return "http://" + c.host + "/callback" }
 
-// Serve starts answering: page at the start path, and codes carrying state
-// at /callback.
+// Serve starts answering: page at the start path, once, and codes carrying
+// state at /callback.
 func (c *Callback) Serve(state string, page []byte) {
 	c.state, c.page = state, page
 	c.srv = &http.Server{Handler: c, ReadHeaderTimeout: 10 * time.Second}
@@ -177,6 +189,14 @@ func (c *Callback) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.URL.Path {
 	case c.start:
+		c.mu.Lock()
+		served := c.served
+		c.served = true
+		c.mu.Unlock()
+		if served {
+			http.Error(w, startServedAgain, http.StatusGone)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(c.page)
 	case "/callback":
@@ -214,30 +234,31 @@ func (c *Callback) callback(w http.ResponseWriter, r *http.Request) {
 
 // ParseCode takes the code out of what a person pasted: the address GitHub
 // sent the browser to (its state must then be this flow's), or the bare
-// code.
-func ParseCode(input, state string) (string, error) {
+// code, which bare reports. Nothing ties a bare code to this flow: it is
+// whatever was typed, as long as it is shaped like a code.
+func ParseCode(input, state string) (code string, bare bool, err error) {
 	input = strings.TrimSpace(input)
 	if !strings.HasPrefix(input, "https://") && !strings.HasPrefix(input, "http://") {
 		if validCode(input) {
-			return input, nil
+			return input, true, nil
 		}
 		if !strings.Contains(input, "?") {
-			return "", errors.New("that is neither the address GitHub sent you to nor a code")
+			return "", false, errors.New("that is neither the address GitHub sent you to nor a code")
 		}
 		// An address copied without its scheme.
 		input = "https://" + input
 	}
 	u, err := url.Parse(input)
 	if err != nil {
-		return "", fmt.Errorf("the address: %w", err)
+		return "", false, fmt.Errorf("the address: %w", err)
 	}
 	q := u.Query()
 	if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
-		return "", errors.New("the address does not carry the state this run started the flow with: " +
+		return "", false, errors.New("the address does not carry the state this run started the flow with: " +
 			"it belongs to another attempt")
 	}
 	if code := q.Get("code"); validCode(code) {
-		return code, nil
+		return code, false, nil
 	}
-	return "", errors.New("the address carries no code")
+	return "", false, errors.New("the address carries no code")
 }

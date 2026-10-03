@@ -38,10 +38,10 @@ func get(t *testing.T, u string, host string) (int, string) {
 }
 
 // TestCallbackTakesOneCode: the start page is served at its random path
-// only; a request addressed to another host, a callback with the wrong
-// state or without a code are refused and the wait goes on; the first
-// right callback's code is the one Wait returns, a second is told it is
-// too late, and then the server is gone.
+// only, and once only; a request addressed to another host, a callback
+// with the wrong state or without a code are refused and the wait goes on;
+// the first right callback's code is the one Wait returns, a second is told
+// it is too late, and then the server is gone.
 func TestCallbackTakesOneCode(t *testing.T) {
 	cb, err := Listen()
 	if err != nil {
@@ -65,6 +65,7 @@ func TestCallbackTakesOneCode(t *testing.T) {
 		want            int
 	}{
 		{"a request for another host", cb.StartURL(), "rebound.attacker.test", http.StatusMisdirectedRequest},
+		{"the start page again", cb.StartURL(), "", http.StatusGone},
 		{"wrong state", cb.RedirectURL() + "?code=evil&state=other", "", http.StatusBadRequest},
 		{"no state", cb.RedirectURL() + "?code=evil", "", http.StatusBadRequest},
 		{"no code", cb.RedirectURL() + "?state=the-state", "", http.StatusBadRequest},
@@ -77,6 +78,9 @@ func TestCallbackTakesOneCode(t *testing.T) {
 			strings.Contains(body, "<p>start</p>") {
 			t.Errorf("%s = %d %q, want %d without the start page", refused.what, code, body, refused.want)
 		}
+	}
+	if code, body := get(t, cb.StartURL(), ""); code != http.StatusGone || !strings.Contains(body, "Ctrl-C") {
+		t.Errorf("the start page a third time = %d %q, want 410 telling the person to stop patchy", code, body)
 	}
 	if code, body := get(t, cb.RedirectURL()+"?code=good123&state=the-state", ""); code != http.StatusOK ||
 		!strings.Contains(body, "Return to your terminal") {
@@ -161,23 +165,25 @@ func TestParseCode(t *testing.T) {
 	}
 	tests := []struct {
 		name, input, want, err string
+		bare                   bool
 	}{
-		{"bare code", "  a1b2c3\n", "a1b2c3", ""},
-		{"landing address", landing(url.Values{"code": {"a1b2"}, "state": {state}}), "a1b2", ""},
+		{"bare code", "  a1b2c3\n", "a1b2c3", "", true},
+		{"a word, shaped like a code", "yes", "yes", "", true},
+		{"landing address", landing(url.Values{"code": {"a1b2"}, "state": {state}}), "a1b2", "", false},
 		{"another attempt's address", landing(url.Values{"code": {"a1b2"}, "state": {"zzz"}}), "",
-			"another attempt"},
-		{"address without state", landing(url.Values{"code": {"a1b2"}}), "", "another attempt"},
-		{"address without code", landing(url.Values{"state": {state}}), "", "no code"},
+			"another attempt", false},
+		{"address without state", landing(url.Values{"code": {"a1b2"}}), "", "another attempt", false},
+		{"address without code", landing(url.Values{"state": {state}}), "", "no code", false},
 		{"address without its scheme", strings.TrimPrefix(landing(url.Values{"code": {"a1b2"}, "state": {state}}),
-			"https://"), "a1b2", ""},
-		{"junk", "not a code!", "", "neither"},
-		{"empty", "", "", "neither"},
+			"https://"), "a1b2", "", false},
+		{"junk", "not a code!", "", "neither", false},
+		{"empty", "", "", "neither", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ParseCode(tt.input, state)
-			if tt.err == "" && (err != nil || got != tt.want) {
-				t.Errorf("ParseCode() = %q, %v; want %q", got, err, tt.want)
+			got, bare, err := ParseCode(tt.input, state)
+			if tt.err == "" && (err != nil || got != tt.want || bare != tt.bare) {
+				t.Errorf("ParseCode() = %q, bare %v, %v; want %q, bare %v", got, bare, err, tt.want, tt.bare)
 			}
 			if tt.err != "" && (err == nil || !strings.Contains(err.Error(), tt.err)) {
 				t.Errorf("ParseCode() = %q, %v; want an error containing %q", got, err, tt.err)

@@ -48,10 +48,10 @@ type secretMetadata struct {
 func SecretManifest(app *App, name, namespace string) ([]byte, error) {
 	data := map[string][]byte{
 		KeyAppID:      []byte(strconv.FormatInt(app.ID, 10)),
-		KeyPrivateKey: app.Credentials.privateKey,
+		KeyPrivateKey: app.Credentials.privateKey(),
 	}
 	if app.Credentials.HasWebhookSecret() {
-		data[KeyWebhookSecret] = []byte(app.Credentials.webhookSecret)
+		data[KeyWebhookSecret] = []byte(app.Credentials.webhookSecret())
 	}
 	out, err := yaml.Marshal(secretManifest{
 		APIVersion: "v1",
@@ -71,8 +71,9 @@ var ErrExists = errors.New("the file exists")
 
 // CheckWritable reports, before anything is created, a path WriteFile would
 // refuse: one that exists, unless force; a directory, even with force; or
-// one whose directory is missing. The flow checks it first, so a GitHub App
-// is never created only for its credentials to have nowhere to go.
+// one whose directory is missing or cannot be written to. The flow checks it
+// first, so a GitHub App is never created only for its credentials to have
+// nowhere to go.
 func CheckWritable(path string, force bool) error {
 	if info, err := os.Lstat(path); err == nil {
 		if info.IsDir() {
@@ -90,6 +91,15 @@ func CheckWritable(path string, force bool) error {
 	if !info.IsDir() {
 		return fmt.Errorf("the directory for %s: %s is not a directory", path, dir)
 	}
+	// Its mode bits do not settle whether this process may create a file in
+	// it (ACLs, a read-only mount, root): creating one does. WriteFile needs
+	// exactly that, with or without force.
+	probe, err := os.CreateTemp(dir, ".patchy-probe-*")
+	if err != nil {
+		return fmt.Errorf("the directory for %s cannot be written to: %w", path, err)
+	}
+	_ = probe.Close()
+	_ = os.Remove(probe.Name())
 	return nil
 }
 

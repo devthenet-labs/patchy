@@ -43,10 +43,43 @@ type App struct {
 }
 
 // Credentials hold an App's secrets. Formatting one with any verb prints
-// nothing of them, so an App can be logged or put in an error safely.
+// nothing of them, so an App can be logged or put in an error safely, even
+// where fmt cannot call Format: a value reached through an unexported field
+// is printed field by field by reflection. The secrets are therefore held
+// by a function, which reflection prints only as an address. A pointer
+// would not do: under a verb it does not fit (%s, %q, %t, ...) fmt reports
+// the value again from the top, where it follows a pointer to a struct.
 type Credentials struct {
+	open func() secrets
+}
+
+// secrets are the values Credentials guards.
+type secrets struct {
 	privateKey    []byte
 	webhookSecret string
+}
+
+// newCredentials holds privateKey and webhookSecret ("" for an App without
+// a webhook).
+func newCredentials(privateKey []byte, webhookSecret string) Credentials {
+	s := secrets{privateKey: privateKey, webhookSecret: webhookSecret}
+	return Credentials{open: func() secrets { return s }}
+}
+
+// privateKey is the PEM private key; nil for the zero Credentials.
+func (c Credentials) privateKey() []byte {
+	if c.open == nil {
+		return nil
+	}
+	return c.open().privateKey
+}
+
+// webhookSecret is the webhook secret; "" when GitHub issued none.
+func (c Credentials) webhookSecret() string {
+	if c.open == nil {
+		return ""
+	}
+	return c.open().webhookSecret
 }
 
 // redacted is all a formatted Credentials ever shows.
@@ -62,7 +95,7 @@ func (Credentials) String() string { return redacted }
 
 // HasWebhookSecret reports whether GitHub issued a webhook secret: only an
 // App with a webhook has one.
-func (c Credentials) HasWebhookSecret() bool { return c.webhookSecret != "" }
+func (c Credentials) HasWebhookSecret() bool { return c.webhookSecret() != "" }
 
 // conversion is GitHub's answer to a manifest code. The OAuth client_id and
 // client_secret it also carries are left undecoded: patchy authenticates as
@@ -141,15 +174,15 @@ func Convert(ctx context.Context, client *http.Client, apiURL, code string) (*Ap
 	if !slugPattern.MatchString(slug) {
 		slug = ""
 	}
-	app := &App{
+	var webhookSecret string
+	if c.WebhookSecret != nil {
+		webhookSecret = *c.WebhookSecret
+	}
+	return &App{
 		ID: c.ID, Slug: slug, Name: c.Name, HTMLURL: c.HTMLURL, Owner: c.Owner.Login,
 		Permissions: c.Permissions, Events: c.Events,
-		Credentials: Credentials{privateKey: []byte(c.PEM)},
-	}
-	if c.WebhookSecret != nil {
-		app.Credentials.webhookSecret = *c.WebhookSecret
-	}
-	return app, nil
+		Credentials: newCredentials([]byte(c.PEM), webhookSecret),
+	}, nil
 }
 
 // Drift lists how what GitHub created differs from manifest m: the person

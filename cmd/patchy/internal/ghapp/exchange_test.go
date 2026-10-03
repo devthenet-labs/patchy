@@ -87,7 +87,7 @@ func TestConvert(t *testing.T) {
 		app.HTMLURL != "https://github.com/apps/patchy-acme" || app.Permissions["issues"] != "write" {
 		t.Errorf("app = %+v", app)
 	}
-	if string(app.Credentials.privateKey) != key || app.Credentials.webhookSecret != "whsec" {
+	if string(app.Credentials.privateKey()) != key || app.Credentials.webhookSecret() != "whsec" {
 		t.Error("the credentials were not kept")
 	}
 	if _, err := Convert(context.Background(), srv.Client(), srv.URL, "c0de"); !errors.Is(err, ErrCodeRejected) {
@@ -146,15 +146,26 @@ func TestConvertKeepsTheKeyOverAnOddSlug(t *testing.T) {
 		if err != nil {
 			t.Fatalf("slug %q: Convert: %v", tt.slug, err)
 		}
-		if app.Slug != tt.want || string(app.Credentials.privateKey) != key {
+		if app.Slug != tt.want || string(app.Credentials.privateKey()) != key {
 			t.Errorf("slug %q: Slug = %q (want %q), key kept: %v", tt.slug, app.Slug, tt.want,
-				string(app.Credentials.privateKey) == key)
+				string(app.Credentials.privateKey()) == key)
 		}
 	}
 }
 
+// credentialsHolder keeps an App and its Credentials where fmt cannot call
+// Format: in unexported fields, which it prints by reflection.
+type credentialsHolder struct {
+	app   App
+	ptr   *App
+	creds Credentials
+	apps  []App
+	byKey map[string]App
+}
+
 // TestCredentialsNeverFormat: printing an App with any verb shows neither
-// the private key nor the webhook secret.
+// the private key nor the webhook secret, also when it is reached through
+// an unexported field, where fmt prints it by reflection.
 func TestCredentialsNeverFormat(t *testing.T) {
 	key := testKeyPEM(t)
 	srv := fakeConversions(t, http.StatusCreated, conversionBody(key, "whsec-value"))
@@ -162,9 +173,14 @@ func TestCredentialsNeverFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	h := credentialsHolder{app: *app, ptr: app, creds: app.Credentials, apps: []App{*app},
+		byKey: map[string]App{"app": *app}}
 	var out string
-	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%d", "%x", "%X", "%c", "%o", "%b", "%U", "%t"} {
-		out += fmt.Sprintf(verb+" "+verb+" "+verb+"\n", app, *app, app.Credentials)
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%d", "%x", "%X", "%c", "%o", "%b", "%U", "%t",
+		"%e", "%p"} {
+		for _, v := range []any{app, *app, app.Credentials, h, &h} {
+			out += fmt.Sprintf(verb, v) + "\n"
+		}
 	}
 	pemBytes := make([]string, 0, 12) // the key's first bytes as %d prints a byte slice
 	for _, b := range []byte(key[:12]) {

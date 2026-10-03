@@ -63,7 +63,8 @@ type fakeAppGitHub struct {
 	mu       sync.Mutex
 	manifest ghapp.Manifest
 	created  []string // the form paths posted to, with their query
-	converts int
+	converts int      // every conversion asked for, accepted or not
+	spent    bool     // setupCode has been converted
 	// refuse answers every conversion with this status instead of an App.
 	refuse int
 	// noWebhookSecret leaves the webhook secret out of a conversion, as if
@@ -137,7 +138,7 @@ func (g *fakeAppGitHub) convert(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Authorization") != "" {
 		g.t.Error("the conversion sent credentials: the endpoint needs none")
 	}
-	if r.PathValue("code") != setupCode || g.converts > 1 || g.refuse != 0 {
+	if r.PathValue("code") != setupCode || g.spent || g.refuse != 0 {
 		status := g.refuse
 		if status == 0 {
 			status = http.StatusNotFound
@@ -146,6 +147,7 @@ func (g *fakeAppGitHub) convert(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 		return
 	}
+	g.spent = true
 	var webhookSecret any
 	if g.manifest.HookAttributes != nil && !g.noWebhookSecret {
 		webhookSecret = setupWebhookSecret
@@ -481,6 +483,63 @@ func TestSetupGitHubAppStdout(t *testing.T) {
 	}
 }
 
+// runSetupToFile runs `setup github-app ... -o -` with stdout a new file of
+// mode perm, as a shell's `> file` makes one, and answers its path.
+func runSetupToFile(t *testing.T, deps *setupDeps, perm os.FileMode) (string, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "patchy-github.yaml")
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := f.Chmod(perm); err != nil { // perm exactly, whatever the umask
+		t.Fatal(err)
+	}
+	errOut := &bytes.Buffer{}
+	root := NewRoot(&Options{Out: f, ErrOut: errOut, Output: "table", NoColor: true, setupDeps: deps})
+	root.SetOut(f)
+	root.SetErr(errOut)
+	root.SetArgs([]string{"setup", "github-app", "--org", "acme", "--intents", "-o", "-", "--timeout", "20s"})
+	return path, root.ExecuteContext(context.Background())
+}
+
+// TestSetupGitHubAppStdoutFile: -o - with stdout redirected to a file other
+// users can read (a shell's `> file` under the usual umask) is refused
+// before GitHub hears of anything, leaving the file empty; a file only its
+// owner can open takes the Secret.
+func TestSetupGitHubAppStdoutFile(t *testing.T) {
+	g := newFakeAppGitHub(t)
+	path, err := runSetupToFile(t, g.deps(neverOpen(t), nil), 0o644)
+	if exitCode(err) != ExitUsage || !strings.Contains(fmtErr(err), "other users can read") ||
+		!strings.Contains(fmtErr(err), "-o <file>") {
+		t.Errorf("-o - to a 0644 file = %v (exit %d), want a usage refusal", err, exitCode(err))
+	}
+	if _, created := g.received(); len(created) != 0 {
+		t.Errorf("GitHub was asked to create an App: %v", created)
+	}
+	if raw, _ := os.ReadFile(path); len(raw) != 0 {
+		t.Errorf("the refused file holds %q", raw)
+	}
+
+	if runtime.GOOS == "windows" {
+		return // no owner-only mode to give the file
+	}
+	g = newFakeAppGitHub(t)
+	var started string
+	path, err = runSetupToFile(t, g.deps(g.browser(false, &started), nil), 0o600)
+	if err != nil {
+		t.Fatalf("-o - to a 0600 file: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := readSecret(t, raw); string(s.Data[ghapp.KeyPrivateKey]) != g.key {
+		t.Error("the file's Secret does not carry the private key")
+	}
+}
+
 // TestSetupGitHubAppPaste: --no-browser opens nothing and listens on no
 // port; the person pastes the address GitHub sent them to, the code in it
 // is exchanged, the start page is removed, and a user-owned App's Secret is
@@ -527,6 +586,44 @@ func TestSetupGitHubAppPaste(t *testing.T) {
 	}
 	if g.conversions() != 0 {
 		t.Error("a code from another attempt was exchanged")
+	}
+}
+
+// TestSetupGitHubAppPasteRejectedBareCode: a bare paste GitHub does not
+// accept (a word typed at the prompt) asks again instead of ending the run,
+// since this run's own code is still unspent; the address pasted next is
+// exchanged and the Secret written. Ended there instead, the run says to
+// delete the App only as the ErrNoCode fallback, never over the junk.
+func TestSetupGitHubAppPasteRejectedBareCode(t *testing.T) {
+	g := newFakeAppGitHub(t)
+	deps := g.deps(neverOpen(t), nil)
+	deps.stdin = &pasteReader{g: g, dir: deps.tempDir, first: "yes\n"}
+	out := filepath.Join(t.TempDir(), "patchy-github.secret.yaml")
+	_, stderr, err := execSetup(t, deps, "setup", "github-app", "--org", "acme", "--intents", "--no-browser",
+		"-o", out)
+	if err != nil {
+		t.Fatalf("a rejected bare paste, then the address: %v\n%s", err, stderr)
+	}
+	if !strings.Contains(stderr, "GitHub did not accept the code") ||
+		!strings.Contains(stderr, "paste that address") {
+		t.Errorf("stderr does not ask again after the rejected paste:\n%s", stderr)
+	}
+	if g.conversions() != 2 {
+		t.Errorf("%d conversions, want 2: the junk, then the code", g.conversions())
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readSecret(t, raw)
+
+	g = newFakeAppGitHub(t)
+	deps = g.deps(neverOpen(t), strings.NewReader("acme\n"))
+	_, stderr, err = execSetup(t, deps, "setup", "github-app", "--org", "acme", "--intents", "--no-browser",
+		"-o", filepath.Join(t.TempDir(), "x.yaml"))
+	if !errors.Is(err, ghapp.ErrNoCode) || errors.Is(err, ghapp.ErrCodeRejected) ||
+		!strings.Contains(err.Error(), "--no-browser") {
+		t.Errorf("a rejected bare paste, then EOF = %v\n%s", err, stderr)
 	}
 }
 

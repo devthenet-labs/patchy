@@ -27,19 +27,23 @@ browser; the page posts the manifest to GitHub's "create a GitHub App" form for
 the form and click "Create GitHub App": GitHub sends the browser back to the
 local page with a one-time code, which patchy accepts only with the state it
 started the flow with, exchanges for the App's credentials, and then stops
-listening. With --no-browser nothing listens: patchy writes the page to a file
-you open in any browser, GitHub sends you back to your GitHub Apps settings,
-and you paste that page's address (or just its code) into the terminal. A code
-works once, within an hour.
+listening. The page is served once: if your browser says it was served
+already, something else read it first, so stop patchy and run it again.
+With --no-browser nothing listens: patchy writes the page to a file you open
+in any browser, GitHub sends you back to your GitHub Apps settings, and you
+paste that page's address (or just its code) into the terminal. A code works
+once, within an hour.
 
 The Secret manifest (--secret-name, default patchy-github, in -n, default
 patchy) holds appID, privateKey and, for an App with a webhook, webhookSecret.
 It is written to -o, default <secret-name>.secret.yaml, with mode 0600 (not
 enforced on Windows), and an existing file is never replaced without --force.
 -o - writes it to stdout instead, to pipe into an encryption tool such as
-sops, and refuses a stdout that is a terminal. The private key is printed
-nowhere else and GitHub keeps no copy: apply or encrypt the file, then
-delete it. Everything else, including the install link, goes to stderr.
+sops, and refuses a stdout that is a terminal or a file other users can
+read (as a shell's > file is under the usual umask: use -o <file>). The
+private key is printed nowhere else and GitHub keeps no copy: apply or
+encrypt the file, then delete it. Everything else, including the install
+link, goes to stderr.
 Install the App on the repositories patchy works on ("Only select
 repositories" is enough): for intents, the intent repository and every
 application repository.

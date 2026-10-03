@@ -95,10 +95,10 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   `cmd/patchy/internal/imagecheck`) and `setup github-app` (creates the GitHub App through the manifest flow with
   exactly `intentperm.ForApp`'s permissions and events for `--security`/`--intents`/`--checks`, then writes its
   ghsecret-keyed Secret manifest to a 0600 file or a pipe, never to the cluster and never the private key to a
-  terminal; engine in `cmd/patchy/internal/ghapp`, plain net/http, no GitHub client). Builds for windows too, and
-  ships a `kubectl-patchy` alias. Ships no container image: it is distributed as its own `patchy-cli` release
-  archive (separate from the cluster binaries' `patchy` archive) and as a Homebrew cask in
-  bitwise-media-group/homebrew-tap.
+  terminal or a file other users can read; engine in `cmd/patchy/internal/ghapp`, plain net/http, no GitHub
+  client). Builds for windows too, and ships a `kubectl-patchy` alias. Ships no container image: it is distributed
+  as its own `patchy-cli` release archive (separate from the cluster binaries' `patchy` archive) and as a Homebrew
+  cask in bitwise-media-group/homebrew-tap.
 
 ## Layout
 

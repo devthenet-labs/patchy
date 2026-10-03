@@ -104,18 +104,22 @@ func newSetupGitHubAppCmd(opts *Options) *cobra.Command {
 			"the form and click \"Create GitHub App\": GitHub sends the browser back to the\n" +
 			"local page with a one-time code, which patchy accepts only with the state it\n" +
 			"started the flow with, exchanges for the App's credentials, and then stops\n" +
-			"listening. With --no-browser nothing listens: patchy writes the page to a file\n" +
-			"you open in any browser, GitHub sends you back to your GitHub Apps settings,\n" +
-			"and you paste that page's address (or just its code) into the terminal. A code\n" +
-			"works once, within an hour.\n\n" +
+			"listening. The page is served once: if your browser says it was served\n" +
+			"already, something else read it first, so stop patchy and run it again.\n" +
+			"With --no-browser nothing listens: patchy writes the page to a file you open\n" +
+			"in any browser, GitHub sends you back to your GitHub Apps settings, and you\n" +
+			"paste that page's address (or just its code) into the terminal. A code works\n" +
+			"once, within an hour.\n\n" +
 			"The Secret manifest (--secret-name, default patchy-github, in -n, default\n" +
 			"patchy) holds appID, privateKey and, for an App with a webhook, webhookSecret.\n" +
 			"It is written to -o, default <secret-name>.secret.yaml, with mode 0600 (not\n" +
 			"enforced on Windows), and an existing file is never replaced without --force.\n" +
 			"-o - writes it to stdout instead, to pipe into an encryption tool such as\n" +
-			"sops, and refuses a stdout that is a terminal. The private key is printed\n" +
-			"nowhere else and GitHub keeps no copy: apply or encrypt the file, then\n" +
-			"delete it. Everything else, including the install link, goes to stderr.\n" +
+			"sops, and refuses a stdout that is a terminal or a file other users can\n" +
+			"read (as a shell's > file is under the usual umask: use -o <file>). The\n" +
+			"private key is printed nowhere else and GitHub keeps no copy: apply or\n" +
+			"encrypt the file, then delete it. Everything else, including the install\n" +
+			"link, goes to stderr.\n" +
 			"Install the App on the repositories patchy works on (\"Only select\n" +
 			"repositories\" is enough): for intents, the intent repository and every\n" +
 			"application repository.\n\n" +
@@ -240,9 +244,8 @@ func runSetupGitHubApp(ctx context.Context, opts *Options, f *setupGitHubAppFlag
 	// Before anything exists on GitHub: an App whose credentials have nowhere
 	// to go is an App to delete by hand.
 	if plan.output == "-" {
-		if deps.terminal(opts.Out) {
-			return errUsage(errors.New("-o - writes the Secret, private key included, to stdout, which is a " +
-				"terminal: pipe it into the tool that keeps it (sops, kubectl apply -f -), or name a file"))
+		if err := checkStdout(opts.Out, deps.terminal); err != nil {
+			return err
 		}
 	} else if err := ghapp.CheckWritable(plan.output, f.force); err != nil {
 		return err
@@ -252,11 +255,15 @@ func runSetupGitHubApp(ctx context.Context, opts *Options, f *setupGitHubAppFlag
 		return err
 	}
 	createURL := ghapp.CreateURL(deps.webURL, plan.owner, state)
-	var code string
+	var app *ghapp.App
 	if f.noBrowser {
-		code, err = pasteCode(ctx, opts, plan, deps, createURL, state)
+		app, err = pasteApp(ctx, opts, plan, deps, createURL, state)
 	} else {
-		code, err = browserCode(ctx, opts, plan, deps, createURL, state, f.timeout)
+		var code string
+		if code, err = browserCode(ctx, opts, plan, deps, createURL, state, f.timeout); err == nil {
+			app, err = ghapp.Convert(ctx, deps.client, deps.apiURL, code)
+			err = convertFailed(err, plan, deps)
+		}
 	}
 	if errors.Is(err, ghapp.ErrNoCode) {
 		// The App may exist although its code never arrived: a browser on
@@ -269,12 +276,6 @@ func runSetupGitHubApp(ctx context.Context, opts *Options, f *setupGitHubAppFlag
 	if err != nil {
 		return err
 	}
-
-	app, err := ghapp.Convert(ctx, deps.client, deps.apiURL, code)
-	if err != nil {
-		return fmt.Errorf("%w; if GitHub created the App, delete it or generate a new private key at %s",
-			err, ghapp.AppsURL(deps.webURL, plan.owner))
-	}
 	// The code proves only that it carried this run's state, which a local
 	// process could have read: an App another account owns is someone
 	// else's, and its key must not become this Forge's credential. A user
@@ -285,6 +286,43 @@ func runSetupGitHubApp(ctx context.Context, opts *Options, f *setupGitHubAppFlag
 			app.Name, app.Owner, plan.owner.Org, ghapp.AppsURL(deps.webURL, plan.owner))
 	}
 	return writeSecret(opts, plan, deps, app, f.force)
+}
+
+// checkStdout refuses, before anything is created, a stdout -o - must not
+// write the private key to: a terminal, or a regular file other users can
+// read. The shell creates `> file` before patchy runs, with its umask
+// (typically 0644), and a reader that opens it then keeps reading after any
+// chmod, so the file cannot be made private in time; -o <file> creates it
+// 0600. A pipe, or a file only its owner can open, is fine.
+func checkStdout(w io.Writer, terminal func(io.Writer) bool) error {
+	if terminal(w) {
+		return errUsage(errors.New("-o - writes the Secret, private key included, to stdout, which is a " +
+			"terminal: pipe it into the tool that keeps it (sops, kubectl apply -f -), or name a file"))
+	}
+	f, ok := w.(*os.File)
+	if !ok {
+		return nil
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("-o -: stdout: %w", err)
+	}
+	if info.Mode().IsRegular() && info.Mode().Perm()&0o077 != 0 {
+		return errUsage(fmt.Errorf("-o - writes the Secret, private key included, to stdout, which is a file "+
+			"other users can read (mode %04o): name the file with -o <file> instead, which patchy creates with "+
+			"mode 0600", info.Mode().Perm()))
+	}
+	return nil
+}
+
+// convertFailed is err, from exchanging a code, with where to clean up:
+// GitHub may have created the App all the same. nil stays nil.
+func convertFailed(err error, plan setupPlan, deps setupDeps) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w; if GitHub created the App, delete it or generate a new private key at %s",
+		err, ghapp.AppsURL(deps.webURL, plan.owner))
 }
 
 // printManifest is --dry-run: the manifest on stdout, where it would go on
@@ -329,20 +367,22 @@ func browserCode(ctx context.Context, opts *Options, plan setupPlan, deps setupD
 	return cb.Wait(wait)
 }
 
-// pasteCode runs the flow without a listener: the start page goes to a
+// pasteApp runs the flow without a listener: the start page goes to a
 // file, GitHub lands the browser on the owner's App settings, and the
-// person pastes that address back. A paste that holds no code for this run
-// asks again; the terminal closing or the run being cancelled is
-// ErrNoCode.
-func pasteCode(ctx context.Context, opts *Options, plan setupPlan, deps setupDeps, createURL,
-	state string) (string, error) {
+// person pastes that address back; its code is exchanged for the App. A
+// paste that holds no code for this run asks again, and so does a bare
+// code GitHub does not accept: nothing tied it to this run, so it may be
+// anything typed at the prompt, while this run's own code is still unspent.
+// The terminal closing or the run being cancelled is ErrNoCode.
+func pasteApp(ctx context.Context, opts *Options, plan setupPlan, deps setupDeps, createURL,
+	state string) (*ghapp.App, error) {
 	page, err := startPage(plan, ghapp.AppsURL(deps.webURL, plan.owner), createURL)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	file, err := os.CreateTemp(deps.tempDir, "patchy-github-app-*.html")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer func() { _ = os.Remove(file.Name()) }()
 	_, err = file.Write(page)
@@ -350,7 +390,7 @@ func pasteCode(ctx context.Context, opts *Options, plan setupPlan, deps setupDep
 		err = cerr
 	}
 	if err != nil {
-		return "", fmt.Errorf("write the start page: %w", err)
+		return nil, fmt.Errorf("write the start page: %w", err)
 	}
 	notef(opts.ErrOut, "patchy: open %s in a browser signed in to GitHub (copy it to that machine if need be).\n"+
 		"patchy: it sends the App manifest to GitHub; check the form and click \"Create GitHub App\".\n"+
@@ -362,17 +402,24 @@ func pasteCode(ctx context.Context, opts *Options, plan setupPlan, deps setupDep
 		select {
 		case l, ok := <-lines:
 			if !ok {
-				return "", fmt.Errorf("%w: the terminal closed before a code was pasted", ghapp.ErrNoCode)
+				return nil, fmt.Errorf("%w: the terminal closed before a code was pasted", ghapp.ErrNoCode)
 			}
 			line = l
 		case <-ctx.Done():
-			return "", fmt.Errorf("%w: %w", ghapp.ErrNoCode, context.Cause(ctx))
+			return nil, fmt.Errorf("%w: %w", ghapp.ErrNoCode, context.Cause(ctx))
 		}
-		code, err := ghapp.ParseCode(line, state)
-		if err == nil {
-			return code, nil
+		code, bare, err := ghapp.ParseCode(line, state)
+		if err != nil {
+			notef(opts.ErrOut, "patchy: %v. Paste the address again (or just its code=... value):\n", err)
+			continue
 		}
-		notef(opts.ErrOut, "patchy: %v. Paste the address again (or just its code=... value):\n", err)
+		app, err := ghapp.Convert(ctx, deps.client, deps.apiURL, code)
+		if bare && errors.Is(err, ghapp.ErrCodeRejected) {
+			notef(opts.ErrOut, "patchy: %v. If that was not the code from the address GitHub sent you to, "+
+				"paste that address (or just its code=... value):\n", err)
+			continue
+		}
+		return app, convertFailed(err, plan, deps)
 	}
 }
 

@@ -72,6 +72,29 @@ redeployed at `ff754761` (Ready 07:06:38, then about 15 s of an empty response a
 Squash-merged `8604f200` → Merged in 12 s, issue closed completed, Preview deleted within 30 s, preview pool at 0 nodes
 about 57 s later. Intent cost: `$0.75` (748594 µUSD).
 
+**Slice-3 demo apps and their infrastructure: ready (2026-10-03, ~08:15 UTC; no patchy-config or Helm change).** Done
+overnight under the owner's authorisation (new repositories, merges, additive terraform apply):
+
+- **Repositories** (public, Go stdlib only): `devthenet-labs/marigold-api` (ID `1402832070`) and
+  `devthenet-labs/marigold-web` (ID `1402832143`); bootstrap PRs #1 squash-merged (`6255a073`, `4bb88ca4`). The API
+  serves only under `/api` (`GET /api/greeting` → `{message, servedAt, revision}`) plus `/healthz`; the web app embeds
+  its page and `app.js` calls `/api/greeting` from the browser, same-origin. CI `test` is uncredentialed, and main runs
+  are grouped per commit and never cancelled. The trusted `workflow_run` publishers read every constant from repository
+  variables and are gated separately (`AGENT_PUBLISH_ENABLED`, `PREVIEW_PUBLISH_ENABLED`, both `true`). Main runtime
+  images also get `main-<sha>`.
+- **terraform-devthenet #30** (`patchy-apps.tf`, merge `67db71a1`): a per-app map keyed by slug. Variable validation
+  fails the plan on a bad or reserved slug, a bad name or ID, or duplicates, and a precondition keeps the agent and
+  preview prefixes disjoint. Roles `devthenet-labs-app-<slug>-{agent,runtime}-push` trust the immutable subject, the
+  repository and owner IDs, main and the kind's `job_workflow_ref`. Applied 20 added, 0 changed, 0 destroyed; a fresh
+  plan shows no changes. Output `patchy_apps` holds each app's repository variables.
+- **Images:** the merge pushes published `patchy/previews/marigold-api:{sha,main}-6255a073…` (`sha256:ef40c834…`) and
+  `patchy/previews/marigold-web:{sha,main}-4bb88ca4…` (`sha256:c05c0978…`). The dispatched `agent image` runs published
+  `patchy/app-envs/marigold-api:toolchain-v1` (`sha256:541b642e…`) and `marigold-web:toolchain-v1` (`sha256:9e79ccb4…`),
+  which each `.patchy/agent.yaml` names. `patchy check image --run` at v0.12.13 passes on both.
+- **Intents:** devthenet-labs/intents #6 added the `marigold` form, which applies `patchy:marigold` (label created). The
+  README marks the project as not active yet.
+- **Not done; waits for the slice-3 release:** the `marigold` Project and the Helm values (T-02).
+
 **Next (owner's choice):** the "Deployable by others" roadmap (design doc); follow-ups below.
 
 ## Previous checkpoint — 2026-10-02 (Codex stage-1 handover; historical)
@@ -603,7 +626,7 @@ already-pushed commits (or nothing) and can be removed once #51 is merged.
 ## Gotchas
 
 - The shell is zsh: unquoted variables are **not** word-split (use `${=VAR}` or arrays); `cp` is aliased to `cp -i` (use
-  `command cp -f`).
+  `command cp -f`). `$app:tag` applies zsh's `:t` modifier (it became `marigold-apioolchain-v1`): write `${app}:tag`.
 - The owner's `gh` login has the `workflow` scope now; workflow-file pushes can use the normal SSH git path.
 - CodeQL occasionally uploads a zero-rule Go analysis; push an empty commit to re-run it.
 - `kubectl get … -w` stops when a Helm upgrade replaces a CRD; re-arm watches after upgrades.

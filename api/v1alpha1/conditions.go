@@ -127,7 +127,8 @@ const (
 	// MultiRepositoryOff, while its Project lists more than one repository
 	// and intent-controller runs without --intent-multi-repo; reason
 	// ProjectGone, while its Project is gone): the push waits for that to be
-	// lifted. Its agent no longer runs, so it holds no
+	// lifted. The reason is the cause it waits on now, rewritten when that
+	// changes while it waits. Its agent no longer runs, so it holds no
 	// slot of the run pool, and while it waits its Job is not read again. Set
 	// by intent-controller's run reconciler, and False once the run settles.
 	ConditionPushHeld = "PushHeld"

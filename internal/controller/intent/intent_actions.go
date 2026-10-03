@@ -137,7 +137,8 @@ func (p *pass) rateOK(ctx context.Context, repoURL string) (bool, error) {
 // not asked: patchy writes nothing more there, reads its pull request only
 // when it can (readDepartedPullRequest), and may no longer reach it at all (no
 // Forge covers it, the App was uninstalled), so it never holds the other pull
-// requests' rounds, an issue close or an ending.
+// requests' rounds. Its own rate floor is asked by that read, and holds only
+// the ending it would decide (readReviewPRStates).
 func (p *pass) rateOKForPullRequests(ctx context.Context) (bool, error) {
 	for _, pr := range p.in.Status.PullRequests {
 		if p.leftProject(pr.Repository) {
@@ -231,7 +232,10 @@ func (p *pass) newestSettled() *ghclient.Comment {
 // decide first: patchy closes the issue itself when every one merged, before
 // it writes Merged, and a lost write must not turn that close into a human's.
 // Under a pull request repository's floor nothing is decided: the close waits
-// for the pull requests to be read.
+// for the pull requests to be read. So it does while a pull request whose
+// record could still decide the ending is in a repository that left the
+// Project and could not be read for a reason that may pass (endingWaits): the
+// pass goes on as before the close, and the next poll asks again.
 func (p *pass) issueClosed(ctx context.Context) (bool, error) {
 	if len(p.in.Status.PullRequests) > 0 {
 		if ok, err := p.rateOKForPullRequests(ctx); err != nil || !ok {
@@ -239,6 +243,11 @@ func (p *pass) issueClosed(ctx context.Context) (bool, error) {
 		}
 		if ended, err := p.reviewNow(ctx); ended || err != nil {
 			return true, err
+		}
+		if p.endingWaits {
+			p.r.log().LogAttrs(ctx, slog.LevelInfo, "the issue is closed; its ending waits for a pull request "+
+				"whose repository left the project", slog.String("intent", p.in.Name))
+			return false, nil
 		}
 	}
 	// A human closed the issue: that needs nothing more from patchy.

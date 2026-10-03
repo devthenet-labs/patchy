@@ -92,7 +92,10 @@ type GitHub interface {
 // token must still request something, so those two request issues read, on
 // an application repository too: intentperm.RepositoryReads lists it there,
 // and Ready proves it. Every token is a grant of the intentperm table for
-// the repository it is used on (TestEveryTokenIsInTheTable).
+// the repository it is used on (TestEveryTokenIsInTheTable), but for one
+// read-only exception: an open intent's pull request in a repository its
+// Project no longer lists, read with pullsRead and its rate budget with
+// issuesRead (readDepartedPullRequest).
 var (
 	issuesRead    = ghclient.TokenPerms{Issues: ghclient.PermRead}
 	issuesWrite   = ghclient.TokenPerms{Issues: ghclient.PermWrite}

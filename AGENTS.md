@@ -285,7 +285,10 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   and nothing more. Pure (stdlib + `api/v1alpha1`, a test pins that), so the CLI can read it without linking a GitHub
   client; intent-controller's Ready mints a token per grant of `For`, and an App manifest is built from `ForApp`, so
   the App holds exactly what a Project is checked for. Every token intent-controller mints must be a grant of `For` for
-  its repository (`TestEveryTokenIsInTheTable`), so a new GitHub call cannot widen what Ready proves.
+  its repository (`TestEveryTokenIsInTheTable`), so a new GitHub call cannot widen what Ready proves. One read-only
+  exception is deliberate: an open intent's pull request in a repository the Project no longer lists is still read
+  (pull requests read, plus issues read for the rate check) where the installation allows, so its merge counts; nothing
+  is written there, and once refused there it is not asked again for a while (`readDepartedPullRequest`).
 - `runnerimage` (+ `runnerimage/resolve`) — repository-declared agent runner images. The parent is the pure
   core (declaration files out of a tar.gz stream, `.patchy/agent.yaml` and the devcontainer.json fallback with
   precedence, reference grammar and strict digests, the allowlist `Policy`, PATH/ENV/VOLUME checks, the

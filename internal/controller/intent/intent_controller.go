@@ -68,6 +68,12 @@ type IntentReconciler struct {
 	// restart lists each pull request once more, which costs requests and
 	// nothing else.
 	siblings map[string]*siblingLinks
+	// departed is when each Intent last found the pull request of a
+	// repository that left its Project out of reach, by normalized
+	// repository URL: readDepartedPullRequest does not ask again until
+	// departedRetry has passed. A restart asks once more, which costs a
+	// request and nothing else.
+	departed map[string]map[string]time.Time
 }
 
 func (r *IntentReconciler) now() time.Time {
@@ -94,6 +100,9 @@ func (r *IntentReconciler) memo(f func()) {
 	if r.siblings == nil {
 		r.siblings = map[string]*siblingLinks{}
 	}
+	if r.departed == nil {
+		r.departed = map[string]map[string]time.Time{}
+	}
 	f()
 }
 
@@ -103,6 +112,7 @@ func (r *IntentReconciler) forget(name string) {
 		delete(r.prPolled, name)
 		delete(r.blockedAt, name)
 		delete(r.siblings, name)
+		delete(r.departed, name)
 	})
 }
 
@@ -126,6 +136,12 @@ type pass struct {
 	// rates are the pass's one reading of the rate floor per repository
 	// polled (rateOK), by normalized URL.
 	rates map[string]bool
+	// endingWaits reports that the pass's read of the pull requests could
+	// not end the Intent on their records: one whose repository left the
+	// Project, last read unmerged, could not be read for a reason that may
+	// pass, and every other one has settled (readReviewPRStates). A closed
+	// issue then waits for it too (issueClosed).
+	endingWaits bool
 	// comments are the issue's comments listed since commentsSince this
 	// pass (nil: none listed); own indexes patchy's own among them by their
 	// marker line.

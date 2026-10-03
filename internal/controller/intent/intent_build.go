@@ -592,14 +592,23 @@ func (p *pass) buildsFinished() time.Time {
 // readReviewPRStates reads every recorded pull request into prs and counts
 // the merged and closed ones. One the Intent cannot read stops the read
 // (readable false, or the error), unless its repository left the Project: that
-// one is read only when it can be, and otherwise counts as it was last read
-// (readDepartedPullRequest).
+// one is read only when it can be (readDepartedPullRequest), and otherwise
+// counts as it was last read, unless it could not be read for a reason that
+// may pass. Then its record may be stale (a lost status write leaves it behind
+// what an ending already did on GitHub), and it counts as neither merged nor
+// closed, so endReview ends nothing on it; and once every other pull request
+// has settled, the ending it would decide waits for it (endingWaits), an issue
+// close included.
 func (p *pass) readReviewPRStates(ctx context.Context, prs []v1alpha1.IntentPullRequest) (
 	merged, closed int, mergedAt time.Time, readable bool, err error) {
+	stale, open := 0, 0
 	for i := range prs {
 		rec := &prs[i]
 		if p.leftProject(rec.Repository) {
-			p.readDepartedPullRequest(ctx, rec)
+			if p.readDepartedPullRequest(ctx, rec) {
+				stale++
+				continue
+			}
 		} else if ok, err := p.readPullRequest(ctx, rec); err != nil || !ok {
 			return 0, 0, time.Time{}, false, err
 		}
@@ -611,34 +620,77 @@ func (p *pass) readReviewPRStates(ctx context.Context, prs []v1alpha1.IntentPull
 			}
 		case prClosed:
 			closed++
+		default:
+			open++
 		}
 	}
+	p.endingWaits = stale > 0 && open == 0 && p.pullRequestsOpened()
 	return merged, closed, mergedAt, true, nil
 }
 
-// readDepartedPullRequest reads, best effort, a recorded pull request whose
+// departedRetry is how long readDepartedPullRequest leaves a pull request it
+// found out of reach unread: GitHub refusing it, or no Forge covering its
+// repository, is not a failure that passes from one poll to the next, and
+// asking on every poll would ask for a token every time.
+const departedRetry = 15 * time.Minute
+
+// readDepartedPullRequest reads, where it can, a recorded pull request whose
 // repository left the Project: its merge still counts towards the Intent's
-// ending. Under that repository's rate floor, or when it cannot be read for
-// any reason (no Forge covers it any more, the installation refuses it, GitHub
-// will not show it, a failure that may pass), rec keeps the state it was last
-// read in, and the pass goes on. So a departed repository never holds the
-// other pull requests' rounds, an issue close or an ending; while it was last
-// read open, the Intent waits on it as on any open pull request, and a human
-// closing the issue ends it.
-func (p *pass) readDepartedPullRequest(ctx context.Context, rec *v1alpha1.IntentPullRequest) {
+// ending. The read is read-only, and the one GitHub read intent-controller
+// makes outside what its Project's Ready proved (intentperm.For): the Project
+// no longer lists the repository. One last read merged is not read again: a
+// merge is final. One out of reach (no Forge covers it any more, the
+// installation refuses it, GitHub will not show it) keeps the state it was
+// last read in, and is not asked again for departedRetry, so the pass goes on
+// with it as it was: a departed repository never holds the other pull
+// requests' rounds, and while it was last read open the Intent waits on it as
+// on any open pull request, until a human closing the issue ends it. stale is
+// true when it could not be read for a reason that may pass (its repository's
+// rate floor, a server error, a timeout): its record is then not to be ended
+// on (readReviewPRStates), and the next poll asks again.
+func (p *pass) readDepartedPullRequest(ctx context.Context, rec *v1alpha1.IntentPullRequest) (stale bool) {
+	if rec.State == prMerged {
+		return false
+	}
+	key := normalizeRepoURL(rec.Repository)
+	var refused time.Time
+	p.r.memo(func() { refused = p.r.departed[p.in.Name][key] })
+	if !refused.IsZero() && p.now.Sub(refused) < departedRetry {
+		return false
+	}
+	attrs := make([]slog.Attr, 0, 5)
+	attrs = append(attrs, slog.String("intent", p.in.Name), slog.String("repository", rec.Repository),
+		slog.Int64("number", rec.Number), slog.String("state", rec.State))
 	ok, err := p.rateOK(ctx, rec.Repository)
-	if err == nil && ok {
+	if err == nil && !ok {
+		p.r.log().LogAttrs(ctx, slog.LevelInfo, "a pull request whose repository left the project was not "+
+			"read under its rate floor; the ending waits for it", attrs...)
+		return true
+	}
+	if err == nil {
 		read := *rec
 		var readable bool
 		if readable, err = p.readPullRequest(ctx, &read); err == nil && readable {
 			*rec = read
-			return
+			p.r.memo(func() { delete(p.r.departed[p.in.Name], key) })
+			return false
 		}
 	}
-	p.r.log().LogAttrs(ctx, slog.LevelInfo,
-		"a pull request whose repository left the project was not read; its last state stands",
-		slog.String("intent", p.in.Name), slog.String("repository", rec.Repository),
-		slog.Int64("number", rec.Number), slog.String("state", rec.State), slog.Any("error", err))
+	attrs = append(attrs, slog.Any("error", err))
+	if err != nil && !unreachable(err) {
+		p.r.log().LogAttrs(ctx, slog.LevelInfo, "a pull request whose repository left the project could not "+
+			"be read; the ending waits for it", attrs...)
+		return true
+	}
+	p.r.memo(func() {
+		if p.r.departed[p.in.Name] == nil {
+			p.r.departed[p.in.Name] = map[string]time.Time{}
+		}
+		p.r.departed[p.in.Name][key] = p.now
+	})
+	p.r.log().LogAttrs(ctx, slog.LevelInfo, "a pull request whose repository left the project is out of reach; "+
+		"its last state stands", attrs...)
+	return false
 }
 
 // readPullRequest reads one recorded pull request by its repository and

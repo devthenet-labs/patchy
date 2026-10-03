@@ -158,6 +158,13 @@ previewController:
         # false is that ungated Ready (Pod Ready, then the Ingress): set it
         # if Auto Mode ever stops injecting the gate, since without the gate
         # every rollout times out.
+        # Upgrading from 0.12.14 or earlier, whose default was false: an
+        # install that never set this turns it on. A Preview already Ready
+        # is not regated, but one deploying during the upgrade has Pods
+        # created before the label, so they carry no gate; that attempt
+        # waits out rolloutTimeout and spends one of maxRetries (a Preview on
+        # its last retry fails). Set false explicitly to keep the old
+        # behaviour, or upgrade while no Preview is deploying.
         targetHealth: true
         extra: {}
     resources:

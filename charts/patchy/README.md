@@ -113,7 +113,9 @@ components: five Services (one each, plus slot 0's placeholder) and eight Pods. 
 seen injecting the gate on a live preview) the slot namespaces are labelled
 `eks.amazonaws.com/pod-readiness-gate-inject: enabled`, so EKS Auto Mode's load balancer injects a target-health
 readiness gate into each slot Pod, and the preview-controller marks a Preview Ready only once its targets are healthy;
-`false` restores the ungated Ready. See `docs/configuration/preview-controller.md`.
+`false` restores the ungated Ready. See `docs/configuration/preview-controller.md`. The default was `false` up to
+0.12.14, so an upgrade from there that never set it turns it on, and a Preview deploying during that upgrade may spend
+one retry (the upgrade note in `docs/deployment/helm.md`).
 
 Slot Pods and Deployment templates must also select the configured NodePool and NodeClass, tolerate the exact
 `NoExecute` taint, use the default scheduler, and leave `nodeName` unset. A second fail-closed policy on **all other

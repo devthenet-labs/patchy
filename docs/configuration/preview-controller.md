@@ -104,10 +104,13 @@ blog post and a maintainer's answer on aws/containers-roadmap#2511), not from th
 a live preview (patchy 0.12.14): Auto Mode injected the gate, and the host answered 200 to all 60 requests made once a
 second from the moment the Preview was `Ready`, where the ungated `Ready` gave about 15 seconds of 404s and empty
 replies. Previews require EKS Auto Mode, and a preview whose host does not answer yet is not ready to review, so the
-chart turns the mode on by default. If Auto Mode ever injects no gate, every rollout times out and retries, the retry's
-message naming the missing gate, and `targetHealth: false` restores the ungated behaviour. A Pod that has the gate but
-whose target never turns healthy (a readiness path the component does not serve, or a security group or network policy
-keeping the load balancer's health checks out) is retried with a message naming the unhealthy target instead.
+chart turns the mode on by default. That default was off up to 0.12.14, so an upgrade from there that never set the
+value turns it on, and a Preview deploying during that upgrade may spend one retry: its Pods predate the label and carry
+no gate (see [the upgrade note](../deployment/helm.md#eks-auto-mode-and-previews)). If Auto Mode ever injects no gate,
+every rollout times out and retries, the retry's message naming the missing gate, and `targetHealth: false` restores the
+ungated behaviour. A Pod that has the gate but whose target never turns healthy (a readiness path the component does not
+serve, or a security group or network policy keeping the load balancer's health checks out) is retried with a message
+naming the unhealthy target instead.
 
 Before enabling any Project preview, complete the separate ALB, placeholder Ingress and wildcard DNS check-in, then run
 the cold-start isolation gate in `hack/preview-isolation-probe/README.md` with a disposable PR image. Repeat that gate

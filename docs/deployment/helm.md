@@ -123,6 +123,13 @@ require Auto Mode, which was seen injecting the gate on a live preview, and with
 nothing for several seconds after an ungated `Ready`. Set it to `false` only if Auto Mode stops injecting the gate
 (every rollout then times out, naming the missing gate).
 
+**Upgrading from 0.12.14 or earlier**, where the default was `false`: an install with previews on that never set
+`targetHealth` turns it on. The slot namespaces gain the gate-injection label and the preview-controller restarts with
+the new setting. A Preview already `Ready` is not regated. A Preview deploying during the upgrade has Pods created
+before the label, so they carry no gate: that attempt waits out `rolloutTimeout` (10 minutes by default) and spends one
+of `maxRetries`, and a Preview on its last retry ends `Failed`. To avoid that, upgrade while no Preview is deploying, or
+set `targetHealth` explicitly (`false` keeps the old behaviour).
+
 The rest of the preview values (`preview.*` and `previewController.*`) and the security model are in the
 [chart README](https://github.com/devthenet-labs/patchy/blob/main/charts/patchy/README.md#preview-security-foundation-opt-in)
 and [Preview controller](../configuration/preview-controller.md). With `preview.enabled` the install NOTES list what is

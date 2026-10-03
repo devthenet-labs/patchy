@@ -339,11 +339,15 @@ func tokenPerms(g intentperm.Grant) (ghclient.TokenPerms, error) {
 	return p, nil
 }
 
-// grantPurpose names the Project setting a grant follows from, when one
-// does: the check-fix reads exist only for spec.checks.fix.
+// grantPurpose says what a grant is for when its name alone does not: the
+// check-fix reads exist only for spec.checks.fix, and the repository reads
+// are what approver permissions and the rate budget are read with.
 func grantPurpose(g intentperm.Grant) string {
-	if slices.Contains(intentperm.CheckFix(), g) {
+	switch {
+	case slices.Contains(intentperm.CheckFix(), g):
 		return " (spec.checks.fix reads failing checks)"
+	case slices.Contains(intentperm.RepositoryReads(), g):
+		return " (a reviewer's permission and the rate budget are read with it)"
 	}
 	return ""
 }

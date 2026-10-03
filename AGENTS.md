@@ -256,12 +256,14 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   changesets to `Rules` without a deny list, intent-controller an intent's to `IntentRules` (plus `.github`,
   `.patchy`, `.devcontainer` refused). Imports only the stdlib and `envelope` (a test pins that).
 - `intentperm` — the one table of the GitHub App permissions patchy needs, in two views of the same rows. `For`: what
-  a Project needs per repository (issues write on the intent repository; contents and pull requests write on each app
-  repository; checks, statuses and actions read there too when `spec.checks.fix` is set). `ForApp`: the permissions
-  and webhook events an App registered for a set of features (`security`, `intents`, `checks`) must hold, metadata
-  read included, and nothing more. Pure (stdlib + `api/v1alpha1`, a test pins that), so the CLI can read it without
-  linking a GitHub client; intent-controller's Ready mints a token per grant of `For`, and an App manifest is built
-  from `ForApp`, so the App holds exactly what a Project is checked for.
+  a Project needs per repository (issues write on the intent repository; contents and pull requests write and issues
+  read on each app repository, the last being the token reviewer permissions and the rate budget are read with;
+  checks, statuses and actions read there too when `spec.checks.fix` is set). `ForApp`: the permissions and webhook
+  events an App registered for a set of features (`security`, `intents`, `checks`) must hold, metadata read included,
+  and nothing more. Pure (stdlib + `api/v1alpha1`, a test pins that), so the CLI can read it without linking a GitHub
+  client; intent-controller's Ready mints a token per grant of `For`, and an App manifest is built from `ForApp`, so
+  the App holds exactly what a Project is checked for. Every token intent-controller mints must be a grant of `For` for
+  its repository (`TestEveryTokenIsInTheTable`), so a new GitHub call cannot widen what Ready proves.
 - `runnerimage` (+ `runnerimage/resolve`) — repository-declared agent runner images. The parent is the pure
   core (declaration files out of a tar.gz stream, `.patchy/agent.yaml` and the devcontainer.json fallback with
   precedence, reference grammar and strict digests, the allowlist `Policy`, PATH/ENV/VOLUME checks, the

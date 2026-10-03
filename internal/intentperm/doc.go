@@ -8,9 +8,11 @@
 //
 //   - the intent repository: issues write (read the issues, comment, label,
 //     close);
-//   - every application repository: contents write (push the intent branch)
-//     and pull requests write (open the pull request, read its reviews and
-//     conversation);
+//   - every application repository: contents write (push the intent branch),
+//     pull requests write (open the pull request, read its reviews and
+//     conversation), and issues read, the token a reviewer's collaborator
+//     permission and the installation's rate budget are read with
+//     (RepositoryReads);
 //   - every application repository, when spec.checks.fix names a check:
 //     checks, statuses and actions read, which a check-fix round needs to
 //     find the failed checks and read their annotations and job log tails.

@@ -21,10 +21,12 @@ const (
 )
 
 // TestFor: the intent repository needs issues write; every application
-// repository contents and pull requests write, plus the check-fix reads
-// when spec.checks.fix names a check, and never otherwise.
+// repository contents and pull requests write and issues read (the
+// repository reads), plus the check-fix reads when spec.checks.fix names a
+// check, and never otherwise.
 func TestFor(t *testing.T) {
 	issuesW := Grant{Permission: Issues, Access: Write}
+	issuesR := Grant{Permission: Issues, Access: Read}
 	contentsW := Grant{Permission: Contents, Access: Write}
 	pullsW := Grant{Permission: PullRequests, Access: Write}
 	checksR := Grant{Permission: Checks, Access: Read}
@@ -42,7 +44,7 @@ func TestFor(t *testing.T) {
 				Repositories: []v1alpha1.ProjectRepository{{Name: "web", URL: webURL}}},
 			want: []Requirement{
 				{Role: RoleIntent, URL: intentURL, Grants: []Grant{issuesW}},
-				{Role: RoleApp, Key: "web", URL: webURL, Grants: []Grant{contentsW, pullsW}},
+				{Role: RoleApp, Key: "web", URL: webURL, Grants: []Grant{contentsW, pullsW, issuesR}},
 			},
 		},
 		{
@@ -53,7 +55,7 @@ func TestFor(t *testing.T) {
 			want: []Requirement{
 				{Role: RoleIntent, URL: intentURL, Grants: []Grant{issuesW}},
 				{Role: RoleApp, Key: "web", URL: webURL,
-					Grants: []Grant{contentsW, pullsW, checksR, statusesR, actionsR}},
+					Grants: []Grant{contentsW, pullsW, issuesR, checksR, statusesR, actionsR}},
 			},
 		},
 		{
@@ -64,9 +66,9 @@ func TestFor(t *testing.T) {
 			want: []Requirement{
 				{Role: RoleIntent, URL: intentURL, Grants: []Grant{issuesW}},
 				{Role: RoleApp, Key: "web", URL: webURL,
-					Grants: []Grant{contentsW, pullsW, checksR, statusesR, actionsR}},
+					Grants: []Grant{contentsW, pullsW, issuesR, checksR, statusesR, actionsR}},
 				{Role: RoleApp, Key: "api", URL: apiURL,
-					Grants: []Grant{contentsW, pullsW, checksR, statusesR, actionsR}},
+					Grants: []Grant{contentsW, pullsW, issuesR, checksR, statusesR, actionsR}},
 			},
 		},
 		{
@@ -75,7 +77,7 @@ func TestFor(t *testing.T) {
 				Repositories: []v1alpha1.ProjectRepository{{Name: "web", URL: webURL}}},
 			want: []Requirement{
 				{Role: RoleIntent, URL: webURL, Grants: []Grant{issuesW}},
-				{Role: RoleApp, Key: "web", URL: webURL, Grants: []Grant{contentsW, pullsW}},
+				{Role: RoleApp, Key: "web", URL: webURL, Grants: []Grant{contentsW, pullsW, issuesR}},
 			},
 		},
 	}

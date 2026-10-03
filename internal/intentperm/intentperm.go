@@ -63,15 +63,29 @@ func Intent() []Grant {
 	return []Grant{{Issues, Write}}
 }
 
-// App is what intents need on an application repository. checkFix adds the
+// App is what intents need on an application repository: contents write
+// (push the intent branch), pull requests write (open the pull request, read
+// its reviews and conversation), and the RepositoryReads. checkFix adds the
 // reads a check-fix round makes: the check runs and their annotations, the
 // commit statuses, and the Actions jobs and log tails behind a failed run.
 func App(checkFix bool) []Grant {
 	out := []Grant{{Contents, Write}, {PullRequests, Write}}
+	out = append(out, RepositoryReads()...)
 	if checkFix {
 		out = append(out, CheckFix()...)
 	}
 	return out
+}
+
+// RepositoryReads is the grant intent-controller reads a repository's own
+// facts with, on every repository it polls: a reviewer's or commenter's
+// collaborator permission (who may approve) and the installation's rate
+// budget. Both need only the metadata read every token carries, but a token
+// must request some permission, and intent-controller requests issues read.
+// Intent covers it on the intent repository (write includes read); an
+// application repository lists it on its own.
+func RepositoryReads() []Grant {
+	return []Grant{{Issues, Read}}
 }
 
 // CheckFix are the reads a check-fix round adds on an application

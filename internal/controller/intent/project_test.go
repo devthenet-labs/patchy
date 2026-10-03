@@ -133,14 +133,39 @@ func TestProjectValidationProvesCheckFixReads(t *testing.T) {
 	}
 }
 
+// TestProjectValidationProvesTheRepositoryReads is the regression test for
+// an application repository whose App holds contents and pull requests
+// write but no issues read: it used to report Ready, then fail every pass
+// once the intent had a pull request, because a reviewer's permission and
+// the rate budget are read there with an issues-read token. Ready now
+// proves issues read on the application repository, and names it.
+func TestProjectValidationProvesTheRepositoryReads(t *testing.T) {
+	e := newEnv(t, testProject())
+	e.gh.refused = map[ghclient.TokenPerms]error{
+		{Issues: ghclient.PermRead}: ghError(http.StatusUnprocessableEntity,
+			"The permissions requested are not granted to this installation."),
+	}
+	e.reconcileProject()
+	c := meta.FindStatusCondition(e.getProject().Status.Conditions, v1alpha1.ConditionReady)
+	if c == nil || c.Status != metav1.ConditionFalse || c.Reason != v1alpha1.ReasonAppNotInstalled {
+		t.Fatalf("Ready = %+v, want False/%s", c, v1alpha1.ReasonAppNotInstalled)
+	}
+	if !strings.Contains(c.Message, appRepoURL+" with issues: read") || !strings.Contains(c.Message, "rate budget") {
+		t.Errorf("message %q does not name issues: read on %s and why", c.Message, appRepoURL)
+	}
+}
+
 // TestProjectValidationMintsTheTable: Ready mints one token per grant of
 // the intentperm table, each with that one permission on its repository;
 // the check-fix reads only when spec.checks.fix names a check.
+// TestEveryTokenIsInTheTable is the other half: every token an intent asks
+// for is a grant of that table.
 func TestProjectValidationMintsTheTable(t *testing.T) {
 	base := []installCheck{
 		{intentRepoURL, ghclient.TokenPerms{Issues: ghclient.PermWrite}},
 		{appRepoURL, ghclient.TokenPerms{Contents: ghclient.PermWrite}},
 		{appRepoURL, ghclient.TokenPerms{PullRequests: ghclient.PermWrite}},
+		{appRepoURL, ghclient.TokenPerms{Issues: ghclient.PermRead}},
 	}
 	checkFix := append(slices.Clone(base),
 		installCheck{appRepoURL, ghclient.TokenPerms{Checks: ghclient.PermRead}},

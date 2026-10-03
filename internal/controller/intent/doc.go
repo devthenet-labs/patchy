@@ -60,7 +60,10 @@
 // when every pull request has merged; once every one has settled with any
 // closed unmerged it is Closed, the issue closed as not planned after a
 // notice naming what merged and what did not. patchy never closes one pull
-// request because another closed. Without the flag, an Intent of a Project listing
+// request because another closed. With the preview projection on, the first
+// review pass records the default-branch head of each previewed repository
+// without a pull request (status.previewBases), once: its preview component
+// runs that commit's image. Without the flag, an Intent of a Project listing
 // more than one repository is held Blocked (UnsupportedRepositories): no run
 // is launched or created and no push made for it, so turning the flag off is
 // a real rollback. A one-repository Project takes the same path either way.

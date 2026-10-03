@@ -427,6 +427,9 @@ func (p *pass) reviewNow(ctx context.Context) (bool, error) {
 			return nil
 		})
 	}
+	if changed, err := p.recordPreviewBases(ctx); changed || err != nil {
+		return changed, err
+	}
 	if changed, err := p.linkSiblings(ctx); changed || err != nil {
 		return changed, err
 	}

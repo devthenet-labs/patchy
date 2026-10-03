@@ -154,6 +154,12 @@ type Settings struct {
 	// the Project lists one repository, so turning the flag off is a real
 	// rollback. A one-repository Project behaves the same either way.
 	MultiRepo bool
+	// Previews is --intent-previews-enabled: the preview projection
+	// (PreviewSourceReconciler) runs. The intent reconciler then records, at
+	// review start, the default-branch head each previewed repository the
+	// intent has no pull request in runs in its preview
+	// (status.previewBases); off, it reads nothing for previews.
+	Previews bool
 }
 
 // multiRepoOff reports a Project these settings run no intent of: one that

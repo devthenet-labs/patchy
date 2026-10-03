@@ -49,7 +49,9 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.Duration("intent-pr-poll-interval", intent.DefaultPRPollInterval,
 		"how often an intent in review polls its pull requests")
 	f.Bool("intent-previews-enabled", false,
-		"project opted-in, open intent PRs into Preview resources; requires a separately enabled preview-controller")
+		"project opted-in, open intent PRs into Preview resources, beside the default-branch head (read once at "+
+			"review start) of each previewed repository an intent did not change; requires a separately enabled "+
+			"preview-controller")
 	f.Bool("intent-multi-repo", false,
 		"run intents of Projects that list more than one repository; off, such a Project is not Ready and its "+
 			"intents are held Blocked (UnsupportedRepositories), so turning it off stops them where they stand")
@@ -93,6 +95,7 @@ func settings(opts *cli.Options, namespace, agentNS string) (intent.Settings, er
 		RateLimitFloor:       opts.Int("intent-rate-limit-floor"),
 		MaxAttempts:          intent.DefaultMaxAttempts,
 		MultiRepo:            opts.Bool("intent-multi-repo"),
+		Previews:             opts.Bool("intent-previews-enabled"),
 		Plan: intent.StageCeiling{
 			MaxTurns:    int32(opts.Int("intent-plan-max-turns")),
 			TokenBudget: int64(opts.Int("intent-plan-token-budget")),

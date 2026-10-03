@@ -464,14 +464,18 @@ func (p *pass) startRound(ctx context.Context, prs []v1alpha1.IntentPullRequest)
 				slog.String("intent", p.in.Name), slog.String("repository", pr.Repository))
 			continue
 		}
-		if started, err := p.reviewRound(ctx, pr); started || err != nil {
-			return started, err
-		}
-		if started, err := p.commandRound(ctx, pr); started || err != nil {
-			return started, err
-		}
-		if started, err := p.checkRound(ctx, pr); started || err != nil {
-			return started, err
+		for _, start := range []func(context.Context, *v1alpha1.IntentPullRequest) (bool, error){
+			p.reviewRound, p.commandRound, p.checkRound,
+		} {
+			started, err := start(ctx, pr)
+			if adopted, adoptErr := p.adoptLeased(ctx, err); adopted || adoptErr != nil {
+				// The round was leased already, on whichever pull request
+				// (the cache lagged the lease): that round is the one entered.
+				return adopted, adoptErr
+			}
+			if started || err != nil {
+				return started, err
+			}
 		}
 	}
 	return false, nil

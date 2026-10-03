@@ -840,17 +840,67 @@ func fencedBounded(s string, maxBytes int) string {
 // pull request never stands in the way of another's round: a round whose
 // pull request has since been merged or closed is entered all the same, and
 // ends there without a push (revising), freeing the Intent for the next.
+// The runs it reads are the cache's; createReviseRun checks the API server
+// itself before it leases a round (errRoundLeased).
 func (p *pass) adoptPendingRound(ctx context.Context) (bool, error) {
 	pending := p.round(v1alpha1.IntentStageRevise, p.in.Status.Rounds+1, anyRepository).latest()
 	if pending == nil {
 		return false, nil
 	}
-	if pending.Spec.Trigger == v1alpha1.IntentRunTriggerCommand {
-		if err := p.ackPRCommand(ctx, pending); err != nil {
-			return false, err
+	return true, p.adoptRound(ctx, pending)
+}
+
+// adoptRound enters Revising on run, a round already leased, acknowledging
+// its command first when a command started it.
+func (p *pass) adoptRound(ctx context.Context, run *v1alpha1.IntentRun) error {
+	if run.Spec.Trigger == v1alpha1.IntentRunTriggerCommand {
+		if err := p.ackPRCommand(ctx, run); err != nil {
+			return err
 		}
 	}
-	return true, p.enterRevising(ctx, pending)
+	return p.enterRevising(ctx, run)
+}
+
+// errRoundLeased is createReviseRun's refusal to lease a round the API
+// server already holds a run of: its run, whatever its repository, is the
+// round, and the caller adopts it (adoptRound).
+type errRoundLeased struct{ run *v1alpha1.IntentRun }
+
+func (e *errRoundLeased) Error() string {
+	return fmt.Sprintf("revise round %d is already leased by run %s", e.run.Spec.Round, e.run.Name)
+}
+
+// adoptLeased adopts the round err says is already leased; adopted is false
+// for any other err, which the caller returns as it is.
+func (p *pass) adoptLeased(ctx context.Context, err error) (adopted bool, _ error) {
+	var leased *errRoundLeased
+	if !errors.As(err, &leased) {
+		return false, nil
+	}
+	return true, p.adoptRound(ctx, leased.run)
+}
+
+// leasedRound is this Intent's run of revise round round as the API server
+// holds it, whatever its repository (its latest attempt), or nil. A round's
+// number is its lease across repositories, and the run names that make the
+// lease differ by repository, so only a live read can tell a round leased a
+// moment ago, under another repository's name, from a free one: the cache
+// the pass listed its runs from can lag that create.
+func (p *pass) leasedRound(ctx context.Context, round int32) (*v1alpha1.IntentRun, error) {
+	var list v1alpha1.IntentRunList
+	if err := p.r.APIReader.List(ctx, &list, client.InNamespace(p.in.Namespace),
+		client.MatchingLabels{v1alpha1.LabelIntent: p.in.Name}); err != nil {
+		return nil, fmt.Errorf("list the intent's runs: %w", err)
+	}
+	var leased *v1alpha1.IntentRun
+	for i := range list.Items {
+		run := &list.Items[i]
+		if run.Spec.IntentRef.UID == p.in.UID && run.Spec.Stage == v1alpha1.IntentStageRevise &&
+			run.Spec.Round == round && (leased == nil || run.Spec.Attempt > leased.Spec.Attempt) {
+			leased = run
+		}
+	}
+	return leased, nil
 }
 
 // reviewRound starts one review-driven round on pr after approvers' reviews
@@ -1061,6 +1111,19 @@ func (p *pass) createReviseRun(ctx context.Context, pr *v1alpha1.IntentPullReque
 		Finalizers:      []string{v1alpha1.FinalizerJobs},
 		OwnerReferences: []metav1.OwnerReference{intentOwner(p.in)},
 	}, Spec: spec}
+	if len(p.in.Status.PullRequests) > 1 {
+		// Rounds span repositories, and the run name (the lease) is the
+		// repository's: a round leased under another repository's name a
+		// moment ago is found only live. With one pull request every round
+		// takes the same name, whose create below is the lease.
+		leased, err := p.leasedRound(ctx, round)
+		if err != nil {
+			return nil, err
+		}
+		if leased != nil {
+			return nil, &errRoundLeased{run: leased}
+		}
+	}
 	if err := p.r.Create(ctx, run); err == nil {
 		p.runs = append(p.runs, run)
 		return run, nil

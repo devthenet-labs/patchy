@@ -6,12 +6,14 @@ package intent
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
@@ -250,5 +252,83 @@ func TestRemovedRepositoryStopsNoOtherRound(t *testing.T) {
 				t.Errorf("%d rounds in app, which left the project; want none", n)
 			}
 		})
+	}
+}
+
+// laggingCache is the intent reconciler's cache before it has seen the runs
+// in hidden: its IntentRun listings leave them out, as an informer that has
+// not caught up with a create does. The API server (the env's APIReader)
+// holds them.
+type laggingCache struct {
+	client.Client
+	hidden map[string]bool
+}
+
+func (c laggingCache) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if err := c.Client.List(ctx, list, opts...); err != nil {
+		return err
+	}
+	if runs, ok := list.(*v1alpha1.IntentRunList); ok {
+		runs.Items = slices.DeleteFunc(runs.Items, func(r v1alpha1.IntentRun) bool { return c.hidden[r.Name] })
+	}
+	return nil
+}
+
+// TestRoundLeaseSeenThroughALaggingCache: app's round 2 is leased (its run
+// created) and the write entering Revising fails; the next pass lists its
+// runs from a cache that has not seen that run yet. web is next in round
+// order with a review due, and its round 2 would take another name, so no
+// create collides: before the round is leased again it is read live, and
+// app's lease is adopted. No round number is used twice; web's review gets
+// round 3.
+func TestRoundLeaseSeenThroughALaggingCache(t *testing.T) {
+	e := newMultiEnv(t)
+	name := e.inReviewLinked()
+	e.reviewOn(1, 961, "App: rename the handler.")
+	e.clock.Advance(3 * time.Minute)
+	e.drive(name, v1alpha1.IntentRevising, repoImage)
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	e.settleActions(name)
+
+	e.reviewOn(1, 962, "App: and the route.")
+	e.clock.Advance(3 * time.Minute)
+	e.failStatusIf = func(in *v1alpha1.Intent) bool { return in.Status.Phase == v1alpha1.IntentRevising }
+	for e.reviseRun(name, 2) == nil {
+		_ = e.reconcileIntent(name)
+		e.clock.Advance(time.Minute)
+	}
+	lease := e.reviseRun(name, 2)
+	if in := e.get(name); in.Status.Phase != v1alpha1.IntentInReview || in.Status.Rounds != 1 ||
+		!sameRepo(lease.Spec.Repository.URL, appRepoURL) {
+		t.Fatalf("after the lost write: phase %s, rounds %d, lease in %s", in.Status.Phase, in.Status.Rounds,
+			lease.Spec.Repository.URL)
+	}
+	e.intent.Client = laggingCache{Client: e.c, hidden: map[string]bool{lease.Name: true}}
+	e.reviewOn(2, 963, "Web: show the sha.")
+	e.clock.Advance(3 * time.Minute)
+	e.mustIntent(name)
+	in := e.get(name)
+	if n := len(e.runsOf(name, v1alpha1.IntentStageRevise)); n != 2 || in.Status.Phase != v1alpha1.IntentRevising ||
+		in.Status.Rounds != 2 || in.Status.ActiveRun == nil || in.Status.ActiveRun.Name != lease.Name {
+		t.Fatalf("revise runs %d, phase %s, rounds %d, activeRun %+v; want app's lease of round 2 entered", n,
+			in.Status.Phase, in.Status.Rounds, in.Status.ActiveRun)
+	}
+
+	e.intent.Client = e.c
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	e.driveUntil(name, func(in *v1alpha1.Intent) bool {
+		r := e.reviseRun(name, 3)
+		return in.Status.Phase == v1alpha1.IntentInReview && r != nil && r.Status.Phase == v1alpha1.RunComplete
+	})
+	if web := e.reviseRun(name, 3); !sameRepo(web.Spec.Repository.URL, webRepoURL) ||
+		!slices.Equal(web.Spec.Inputs.ReviewIDs, []int64{963}) {
+		t.Errorf("round 3 = %+v, want web's review round", web.Spec)
+	}
+	seen := map[int32]bool{}
+	for _, r := range e.runsOf(name, v1alpha1.IntentStageRevise) {
+		if r.Spec.Attempt == 1 && seen[r.Spec.Round] {
+			t.Errorf("round %d leased twice", r.Spec.Round)
+		}
+		seen[r.Spec.Round] = true
 	}
 }

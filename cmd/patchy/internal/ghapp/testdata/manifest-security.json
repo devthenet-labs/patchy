@@ -1,0 +1,23 @@
+{
+  "name": "patchy-acme",
+  "url": "https://github.com/bitwise-media-group/patchy",
+  "description": "patchy: security findings",
+  "hook_attributes": {
+    "url": "https://patchy.acme.test/github/webhooks",
+    "active": true
+  },
+  "public": false,
+  "default_permissions": {
+    "contents": "write",
+    "issues": "write",
+    "metadata": "read",
+    "pull_requests": "write",
+    "security_events": "write"
+  },
+  "default_events": [
+    "code_scanning_alert",
+    "issue_comment",
+    "issues",
+    "pull_request"
+  ]
+}

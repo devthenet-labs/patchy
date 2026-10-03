@@ -5,6 +5,12 @@ operation instead of holding a long-lived personal access token. One App serves 
 read and write identities across two Apps — one per custom resource — later; the `Integration`'s App then still needs
 Contents read, see [its credentials](../integrations/sources/github.md#credentials)).
 
+!!! tip "Let the CLI register it"
+
+    `patchy setup github-app` registers the App from a manifest holding exactly the permissions and events below for
+    the features you choose, and writes the `patchy-github` Secret manifest with its credentials. See
+    [Creating the GitHub App](../cli.md#creating-the-github-app); the steps below are the same thing by hand.
+
 ## Register the App
 
 Go to **Settings → Developer settings → GitHub Apps → New GitHub App** (on your organization, not your user account) and

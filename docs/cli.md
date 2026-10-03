@@ -307,6 +307,55 @@ it; on Linux, binfmt_misc with QEMU), and a platform the host cannot emulate is 
 over. Each check prints one line (PASS, FAIL or SKIP, the platform for a `--run` check, then the reason); `-o json`
 prints the report as data, and the exit status is non-zero when any check fails.
 
+## Creating the GitHub App
+
+`patchy setup github-app` is the fourth cluster-free command. It creates the GitHub App patchy authenticates as through
+GitHub's
+[App manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest), and
+writes its credentials as the Secret manifest a `Forge` and an `Integration` read
+([what the App needs, and why](getting-started/github-app.md)):
+
+```sh
+patchy setup github-app --org acme --intents --checks                    # intents, with check-fix rounds
+patchy setup github-app --org acme --security --webhook-url https://patchy.acme.dev/github/webhooks
+patchy setup github-app --org acme --intents --dry-run                   # print the manifest; create nothing
+patchy setup github-app --org acme --intents -o - | sops --encrypt --input-type yaml --output-type yaml /dev/stdin
+```
+
+Choose what the App is for. It asks for the least each chosen feature uses, and nothing else:
+
+| Flag                          | Permissions                                                         | Webhook events                                                   |
+| ----------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `--security`                  | Code scanning alerts, Issues, Contents, Pull requests: read & write | `code_scanning_alert`, `issues`, `issue_comment`, `pull_request` |
+| `--intents`                   | Issues, Contents, Pull requests: read & write                       | none: intent-controller polls GitHub                             |
+| `--checks` (with `--intents`) | Checks, Commit statuses, Actions: read                              | none                                                             |
+
+Metadata read comes with every App. The table is `internal/intentperm`, the one intent-controller proves a `Project`'s
+grants against before it is Ready, so an App created with `--intents` (and `--checks` for a Project with
+`spec.checks.fix`) passes that check once it is installed. `--security` needs `--webhook-url`, the
+integration-controller's `https://<host>/github/webhooks`; an App without it has no webhook.
+
+The flow: patchy listens on a random `127.0.0.1` port and opens a page in your browser that posts the manifest to
+GitHub's "create a GitHub App" form, for `--org` (you must be an owner of it) or, with `--user`, your own account. Check
+the form and click **Create GitHub App**. GitHub sends the browser back with a one-time code, which patchy accepts only
+with the random state it started the flow with; it exchanges the code for the App's ID, private key and webhook secret
+(`POST /app-manifests/{code}/conversions`, which needs no credential) and stops listening. The page carries that state,
+so it is served once: if your browser says it was served already, something else on the machine read it first, so stop
+patchy and run it again. A code for an App that an account other than `--org` owns is refused, and nothing is written.
+On a machine without a browser, `--no-browser` writes the page to a file you open anywhere, and you paste back the
+address GitHub sends you to (it asks again until it gets one from this run, and after a bare code GitHub does not
+accept). A code works once, within an hour; if the run ends without one, the error says where to delete the App or how
+to finish it.
+
+The Secret (`appID`, `privateKey`, and `webhookSecret` for an App with a webhook; `--secret-name`, default
+`patchy-github`, in `-n`, default `patchy`) is written to `<secret-name>.secret.yaml` with mode 0600, and an existing
+file is never replaced without `--force`; a file patchy could not write, in a directory it cannot write to, is refused
+before anything is created. `-o -` writes it to stdout for a pipe, and refuses a stdout that is a terminal or a file
+other users can read, as a shell's `> file` is under the usual umask: name the file with `-o <file>` instead. The
+private key appears nowhere else, and GitHub keeps no copy: apply or encrypt the file, then delete it. Finally, install
+the App with the link printed on stderr, on the repositories patchy works on: for intents, the intent repository and
+every application repository. Only github.com is supported, and nothing here talks to a cluster.
+
 ## Permissions
 
 Each action is a **custom RBAC verb**, granted independently: holding `approve` says nothing about `suspend`. The

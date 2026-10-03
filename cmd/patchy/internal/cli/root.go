@@ -47,6 +47,9 @@ type Options struct {
 	// authorizer and no authenticated identity), so tests supply them.
 	accessFn   func(context.Context, *kubecfg.Env, string, string) (bool, error)
 	identityFn func() string
+	// setupDeps stands in for what `setup github-app` reaches beyond its
+	// flags (GitHub, the browser, the terminal), which tests fake.
+	setupDeps *setupDeps
 }
 
 // WithEnv pins a pre-built environment, bypassing kubeconfig resolution.
@@ -157,6 +160,7 @@ func NewRoot(opts *Options) *cobra.Command {
 		newDevCmd(opts),
 		newMirrorCmd(opts),
 		newCheckCmd(opts),
+		newSetupCmd(opts),
 	)
 	root.AddCommand(newActionCmds(opts)...)
 	return root

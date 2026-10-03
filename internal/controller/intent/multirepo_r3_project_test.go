@@ -85,7 +85,10 @@ func TestProjectDeletedMidRoundHoldsThePush(t *testing.T) {
 // multi-repository Project is then deleted (a patchy-config uninstall during
 // a rollback, say). Before the fix the missing Project released it: the
 // commit was made and the patchy-intent branch created with the flag still
-// off, against the documented rollback guarantee that nothing is pushed.
+// off, against the documented rollback guarantee that nothing is pushed. The
+// hold's reason is the cause it waits on now (round 4): ProjectGone while the
+// Project is gone, MultiRepositoryOff again once it is back with the flag
+// still off.
 func TestFlagOffHeldBuildStaysHeldWhenItsProjectIsDeleted(t *testing.T) {
 	e := newMultiEnv(t)
 	name := e.awaiting()
@@ -120,11 +123,28 @@ func TestFlagOffHeldBuildStaysHeldWhenItsProjectIsDeleted(t *testing.T) {
 		e.clock.Advance(time.Minute)
 		e.runRuns()
 	}
-	if run := e.irun(launched.Name); !heldOn(run, ReasonMultiRepositoryOff) {
-		t.Errorf("build %s, conditions %+v; want it still held", run.Status.Phase, run.Status.Conditions)
+	if run := e.irun(launched.Name); !heldOn(run, ReasonProjectGone) {
+		t.Errorf("build %s, conditions %+v; want it still held, on the project being gone", run.Status.Phase,
+			run.Status.Conditions)
 	}
 	if len(e.gh.commits) != 0 || e.branchIn(name, launched.Spec.Repository.URL) != "" {
 		t.Errorf("%d commits, branch %q; want nothing pushed with the flag off and the project gone",
+			len(e.gh.commits), e.branchIn(name, launched.Spec.Repository.URL))
+	}
+
+	if err := e.c.Create(context.Background(), testMultiProject()); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		e.clock.Advance(time.Minute)
+		e.runRuns()
+	}
+	if run := e.irun(launched.Name); !heldOn(run, ReasonMultiRepositoryOff) {
+		t.Errorf("build %s, conditions %+v; want it still held, on the flag, once the project is back",
+			run.Status.Phase, run.Status.Conditions)
+	}
+	if len(e.gh.commits) != 0 || e.branchIn(name, launched.Spec.Repository.URL) != "" {
+		t.Errorf("%d commits, branch %q; want nothing pushed with the flag still off",
 			len(e.gh.commits), e.branchIn(name, launched.Spec.Repository.URL))
 	}
 }

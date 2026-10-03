@@ -155,6 +155,14 @@ var tokenUses = map[string][]string{
 // intents will ask for. Each method is called on each repository tokenUses
 // declares, against a Forge whose API answers everything with 404, and the
 // tokens it took are read off its credential cache.
+//
+// One read is outside the table by design, and so outside this test: while an
+// intent is open, the pull request it opened in a repository its Project no
+// longer lists is still read, read-only (GetPullRequest with pulls read, and
+// RateRemaining with issues read for that installation's floor), so its merge
+// counts towards the ending (readDepartedPullRequest). The Project has no row
+// for that repository to hold it to, nothing is written there, and once
+// refused there it is not asked again for departedRetry.
 func TestEveryTokenIsInTheTable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

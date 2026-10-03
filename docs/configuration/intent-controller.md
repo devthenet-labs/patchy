@@ -37,8 +37,10 @@ that outlasts it loses the unpushed changeset, and the run ends `hold_expired`. 
 of the build's attempts, and clearing the suspension starts the next one.
 
 Deleting a Project (a `patchy-config` uninstall, or a rename) holds its intents the same way: they wait, nothing is
-written to GitHub for them, and a Job that finishes meanwhile has its push held (`PushHeld`, reason `ProjectGone`) until
-a Project of that name exists again. The push is then checked against what that Project lists.
+written to GitHub for them, a run granted a slot but not yet launched hands the slot back, and a Job that finishes
+meanwhile has its push held (`PushHeld`, reason `ProjectGone`) until a Project of that name exists again. The push is
+then checked against what that Project lists. A held push's reason is always what it waits on now: one held for a
+suspension that is lifted while its Project is gone says `ProjectGone`.
 
 ## Flags
 
@@ -269,9 +271,12 @@ spec:
   not launched, or is aborted with nothing pushed (`the repository ... left the project`), a failed round there is not
   retried, and its pull request gets no further round, notice or comment. The other pull requests' rounds go on, even
   once patchy can no longer reach the removed repository at all (no Forge covers it, the App was uninstalled from it):
-  patchy still reads its pull request where it can, so its merge counts, and one it cannot read keeps the state it was
-  last read in. While that state is open, the intent waits on it as on any open pull request; closing the issue ends the
-  intent.
+  patchy still reads its pull request where it can, read-only, so its merge counts. This is the one read patchy makes
+  outside what the Project's `Ready` proved. One it can no longer reach keeps the state it was last read in, and is
+  asked again only every 15 minutes; while that state is open, the intent waits on it as on any open pull request, and
+  closing the issue ends the intent. One it cannot read for a reason that may pass (that installation's rate floor, a
+  GitHub error) holds only the intent's ending, once every other pull request has settled: patchy waits to read it
+  rather than end the intent on a state that may be stale.
 - **Endings.** The intent is `Merged` once every pull request has merged. If one is closed without merging, the intent
   stays in review while any other is open, then ends `Closed`: patchy posts a notice of what merged (already on its
   default branch; patchy reverts nothing) and what did not, and closes the issue as not planned. patchy never closes a

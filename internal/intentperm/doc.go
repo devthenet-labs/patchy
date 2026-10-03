@@ -29,8 +29,17 @@
 // Every reader takes it from here: intent-controller proves each grant For
 // lists by minting a token with it before a Project is Ready, and an App
 // manifest is built from ForApp, so the App holds exactly what a Project
-// will be checked for. Permissions and events are plain strings in GitHub's
-// own spelling, so the package stays free of any GitHub client and the CLI
-// can read it too. It is pure: the standard library and api/v1alpha1 only (a
-// test pins that).
+// will be checked for. Every token intent-controller mints is a grant of For
+// for the repository it is minted on, with one deliberate exception, and it
+// is read-only: while an intent is open, the pull request it opened in a
+// repository its Project has since stopped listing is still read where the
+// installation allows (pull requests read, and issues read for the
+// installation's rate budget), so that pull request's merge still counts
+// towards the intent's ending. For has no row for that repository any more,
+// so Ready proves nothing there: nothing is written there, and once refused
+// there the read is not asked again for a while.
+//
+// Permissions and events are plain strings in GitHub's own spelling, so the
+// package stays free of any GitHub client and the CLI can read it too. It is
+// pure: the standard library and api/v1alpha1 only (a test pins that).
 package intentperm

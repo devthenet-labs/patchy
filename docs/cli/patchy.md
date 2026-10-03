@@ -41,5 +41,6 @@ Run `patchy can-i` to see your grants.
 * [patchy resume](patchy_resume.md)	 - Resume a suspended finding
 * [patchy retry](patchy_retry.md)	 - Retry a failed finding from the state it failed in
 * [patchy review](patchy_review.md)	 - Read an agent's report on a finding
+* [patchy setup](patchy_setup.md)	 - Create what patchy needs outside the cluster
 * [patchy suspend](patchy_suspend.md)	 - Suspend a finding, pausing its progress through the pipeline
 

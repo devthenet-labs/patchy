@@ -31,7 +31,8 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.String("kubeconfig", "", "kubeconfig path (default: in-cluster config)")
 	f.String("health-addr", ":8081", "healthz/readyz probe listen address")
 	f.Int("preview-slot-count", 2, "number of chart-created preview slots")
-	f.String("preview-image-prefix", "", "exact <registry>/patchy/previews/ prefix")
+	f.String("preview-image-prefix", "", "exact <registry>/<path>/ prefix every preview image repository sits "+
+		"directly under, one DNS-label leaf deep (the chart's <preview.imageRegistry>/<preview.imagePathPrefix>/)")
 	f.String("preview-host-suffix", "", "DNS suffix after <project>-<issue>")
 	f.String("preview-node-pool", "", "dedicated DefaultDeny NodePool")
 	f.String("preview-node-class", "", "dedicated DefaultDeny NodeClass")

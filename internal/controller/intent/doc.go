@@ -65,7 +65,11 @@
 // observed checks and repeated-failure signature are its own repository's;
 // its counters and limits, and the blocks they raise (naming the
 // repository), stay the Intent's. A round whose pull request is merged or
-// closed under it ends unpushed and is not retried. The Intent is Merged only
+// closed under it ends unpushed and is not retried. Nothing more is written
+// to a repository that leaves the Project (repositoryLeft): a build or round
+// there is not launched, is aborted, or has its push refused (pushGate reads
+// the Project uncached), a failed one is not retried, and no round or
+// untracked notice is posted there. The Intent is Merged only
 // when every pull request has merged; once every one has settled with any
 // closed unmerged it is Closed, the issue closed as not planned after a
 // notice naming what merged and what did not. patchy never closes one pull

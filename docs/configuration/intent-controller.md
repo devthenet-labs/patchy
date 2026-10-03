@@ -258,6 +258,9 @@ spec:
   request revises its own repository, a failed check fixes its own. Pull requests with feedback waiting take turns, and
   feedback that arrives while another pull request's round runs is read by its own next round. The revision and CI-fix
   limits are per intent.
+- **A repository removed from the Project is left alone.** patchy writes nothing more to it: a build or round there is
+  not launched, or is aborted with nothing pushed (`the repository ... left the project`), a failed round there is not
+  retried, and its pull request gets no further round or notice. The other pull requests' rounds go on.
 - **Endings.** The intent is `Merged` once every pull request has merged. If one is closed without merging, the intent
   stays in review while any other is open, then ends `Closed`: patchy posts a notice of what merged (already on its
   default branch; patchy reverts nothing) and what did not, and closes the issue as not planned. patchy never closes a

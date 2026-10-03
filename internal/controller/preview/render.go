@@ -46,6 +46,14 @@ var (
 	// repositories[].preview.path and the slot admission policy's Ingress
 	// paths.
 	routePattern = regexp.MustCompile(`^/([a-z0-9-]+(/[a-z0-9-]+)*)?$`)
+	// prefixPattern is the shape of the operator's image prefix
+	// (<preview.imageRegistry>/<preview.imagePathPrefix>/ in the chart): a
+	// lowercase registry host with an optional port, one or more lowercase
+	// repository path segments in ECR's grammar, and the trailing slash an
+	// image repository continues from. The prefix plus one namePattern leaf
+	// always fits the CRD's imageRepository pattern, and the slot admission
+	// policy's leaf ([a-z0-9-]+) admits every namePattern leaf.
+	prefixPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)+/$`)
 )
 
 func ptr[T any](value T) *T { return &value }
@@ -55,7 +63,7 @@ func ptr[T any](value T) *T { return &value }
 type Settings struct {
 	Namespace      string
 	SlotCount      int
-	ImagePrefix    string // <registry>/patchy/previews/
+	ImagePrefix    string // exact <registry>/<path>/ every image repository is one leaf under
 	HostSuffix     string
 	NodePool       string
 	NodeClass      string
@@ -82,9 +90,16 @@ type Settings struct {
 	TargetHealth bool
 }
 
+// Validate refuses settings the controller must not run with. The image
+// prefix is checked for its shape only, never for a fixed path: which path
+// is the operator's (preview.imagePathPrefix), and the chart keeps it
+// disjoint from the agent-image allowlist.
 func (s Settings) Validate() error {
+	if !prefixPattern.MatchString(s.ImagePrefix) {
+		return fmt.Errorf("invalid preview-controller settings: image prefix %q is not <registry>/<path>/ "+
+			"(a lowercase registry host, one or more lowercase path segments and a trailing slash)", s.ImagePrefix)
+	}
 	if s.Namespace == "" || s.SlotCount < 1 || s.SlotCount > 4 ||
-		s.ImagePrefix == "" || !strings.HasSuffix(s.ImagePrefix, "/patchy/previews/") ||
 		s.HostSuffix == "" || s.NodePool == "" || s.NodeClass == "" || s.TaintKey == "" ||
 		s.RolloutTimeout <= 0 || s.PollInterval <= 0 || s.MaxRetries < 1 || s.MaxRetries > 3 {
 		return fmt.Errorf("invalid preview-controller settings")
@@ -155,8 +170,9 @@ func (s Settings) validatePreview(p *v1alpha1.Preview) error {
 
 // validComponent checks component i on its own: a DNS-label name whose
 // rendered object name fits a Service name, a route path in the component
-// grammar, an image repository under the operator's prefix, a full SHA, and
-// a safe port and readiness path.
+// grammar, an image repository exactly one DNS-label leaf under the
+// operator's prefix (no other registry, no nested path, no tag), a full SHA,
+// and a safe port and readiness path.
 func (s Settings) validComponent(p *v1alpha1.Preview, i int) bool {
 	c := p.Spec.Components[i]
 	return namePattern.MatchString(c.Name) && routePattern.MatchString(v1alpha1.PreviewComponentPath(c)) &&

@@ -142,6 +142,59 @@ func TestRunnerImagesOnReject(t *testing.T) {
 	}
 }
 
+// TestRunnerImagesDeniedRegistries pins --repository-image-denied-registries,
+// which the chart fills with the preview image prefix: a declared image under
+// it is a DeniedRegistry rejection even inside an allowlisted path, from the
+// flag or from the PATCHY_* variable the chart renders; unset denies
+// nothing; a malformed entry fails startup.
+func TestRunnerImagesDeniedRegistries(t *testing.T) {
+	const ecr = "123456789012.dkr.ecr.us-east-1.amazonaws.com"
+	on := []string{"--repository-images", "--repository-image-registries", ecr + "/patchy/",
+		"--repository-image-allow-unsigned"}
+	allowed := func(t *testing.T, ri *source.RunnerImages, image string) error {
+		t.Helper()
+		ref, err := runnerimage.ParseDeclared(image)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ri.Policy.Allow(ref)
+	}
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		env    string
+		denied bool
+	}{
+		{name: "unset"},
+		{name: "flag", args: []string{"--repository-image-denied-registries", ecr + "/patchy/previews/"},
+			denied: true},
+		{name: "env", env: ecr + "/patchy/previews/", denied: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.env != "" {
+				t.Setenv("PATCHY_REPOSITORY_IMAGE_DENIED_REGISTRIES", tc.env)
+			}
+			ri, err := runnerImages(serveOpts(t, slices.Concat(on, tc.args)...))
+			if err != nil || ri == nil {
+				t.Fatalf("runnerImages = %v, %v", ri, err)
+			}
+			if err := allowed(t, ri, ecr+"/patchy/app-envs/web:toolchain-v1"); err != nil {
+				t.Errorf("agent image refused: %v", err)
+			}
+			err = allowed(t, ri, ecr+"/patchy/previews/web:sha-"+strings.Repeat("a", 40))
+			var rej *runnerimage.Rejection
+			if got := errors.As(err, &rej) && rej.Reason == "DeniedRegistry"; got != tc.denied {
+				t.Errorf("preview image as an agent image: %v, want denied=%v", err, tc.denied)
+			}
+		})
+	}
+	_, err := runnerImages(serveOpts(t, slices.Concat(on,
+		[]string{"--repository-image-denied-registries", ecr})...))
+	if err == nil || !strings.Contains(err.Error(), "repository-image-denied-registries: denied registry path") {
+		t.Errorf("runnerImages with a host-only denied path = %v, want a startup error naming the flag", err)
+	}
+}
+
 // chartRegistryPattern reads the pattern the chart's values schema puts on
 // each agent.repositoryImages.registries entry.
 func chartRegistryPattern(t *testing.T) *regexp.Regexp {

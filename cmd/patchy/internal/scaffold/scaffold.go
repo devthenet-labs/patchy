@@ -33,9 +33,10 @@ func Langs() []string { return []string{string(LangGo)} }
 
 const (
 	// PreviewPrefix is the registry path every runtime (preview) image sits
-	// under, fixed by the Project CRD's imageRepository pattern, the
-	// preview-controller and its admission policy. The agent prefix must
-	// stay disjoint from it.
+	// under: the chart's default preview.imagePathPrefix and the terraform
+	// modules' default preview_path_prefix. The agent prefix must stay
+	// disjoint from it. An install with another preview path edits the
+	// generated RUNTIME_IMAGE_REPOSITORY and imageRepository to match.
 	PreviewPrefix = "patchy/previews"
 	// DefaultAgentPrefix is the registry path agent images sit under by
 	// default: what the operator's --repository-image-registries allows.

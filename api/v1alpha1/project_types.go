@@ -344,12 +344,16 @@ type ProjectSpec struct {
 // Dockerfile, image name, port or path comes from issue text or from the
 // build agent.
 type ProjectPreview struct {
-	// ImageRepository is an immutable-tag runtime repository under the
-	// operator's preview registry, such as <registry>/patchy/previews/demo.
-	// The preview-controller also checks its configured image prefix.
+	// ImageRepository is an immutable-tag runtime repository directly under
+	// the operator's preview image prefix, such as
+	// <registry>/patchy/previews/demo with the default prefix: a registry
+	// host, one or more lowercase path segments and a leaf that is a DNS
+	// label. The schema checks only that shape. The prefix itself is
+	// enforced where it is configured, by the preview-controller and the
+	// slot admission policy.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
-	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9.:-]*/patchy/previews/[a-z0-9-]+$`
+	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9.:-]*(/[a-z0-9]+([._-][a-z0-9]+)*)+/[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	ImageRepository string `json:"imageRepository"`
 	// Port is the one HTTP container/service port.
 	// +kubebuilder:validation:Minimum=1

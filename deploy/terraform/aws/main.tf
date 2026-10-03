@@ -35,14 +35,11 @@ locals {
   region     = data.aws_region.current.region
   registry   = "${local.account_id}.dkr.ecr.${local.region}.${data.aws_partition.current.dns_suffix}"
 
-  # Fixed until the chart makes the preview image prefix configurable: its
-  # admission policy and the preview-controller pin
-  # <preview.imageRegistry>/patchy/previews/.
-  preview_path_prefix = "patchy/previews"
-
-  # Every repository under each prefix, including ones added later.
+  # Every repository under each prefix, including ones added later. The two
+  # prefixes are disjoint (variable validation), so neither grant covers the
+  # other's images.
   agent_repository_arns   = "arn:${local.partition}:ecr:${local.region}:${local.account_id}:repository/${var.agent_path_prefix}/*"
-  preview_repository_arns = "arn:${local.partition}:ecr:${local.region}:${local.account_id}:repository/${local.preview_path_prefix}/*"
+  preview_repository_arns = "arn:${local.partition}:ecr:${local.region}:${local.account_id}:repository/${var.preview_path_prefix}/*"
 
   cluster_arn               = data.aws_eks_cluster.this.arn
   vpc_id                    = data.aws_eks_cluster.this.vpc_config[0].vpc_id

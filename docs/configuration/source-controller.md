@@ -13,18 +13,19 @@ source-controller serve --namespace patchy --artifact-addr :9790
 
 The [shared flags](index.md#shared-flags-every-controller), plus:
 
-| Flag                                 | Env                                       | Default              | Purpose                                                                                                |
-| ------------------------------------ | ----------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------ |
-| `--artifact-addr`                    | `PATCHY_ARTIFACT_ADDR`                    | `:9790`              | Listen address of the artifact server                                                                  |
-| `--artifact-base-url`                | `PATCHY_ARTIFACT_BASE_URL`                | in-cluster Service   | Base URL minted into Repository statuses for agent fetches                                             |
-| `--artifact-dir`                     | `PATCHY_ARTIFACT_DIR`                     | `/data/artifacts`    | Directory the artifact tarballs are stored in                                                          |
-| `--max-artifact-bytes`               | `PATCHY_MAX_ARTIFACT_BYTES`               | `1073741824` (1 GiB) | Largest repository tarball stored; larger repositories stall (`Stalled` condition)                     |
-| `--repository-images`                | `PATCHY_REPOSITORY_IMAGES`                | `false`              | Read each tree's runner-image declaration and pin the image; the kill switch                           |
-| `--repository-image-registries`      | `PATCHY_REPOSITORY_IMAGE_REGISTRIES`      | —                    | Comma-separated `host/path/` prefixes a declared image must sit under; required with the feature on    |
-| `--repository-image-max-bytes`       | `PATCHY_REPOSITORY_IMAGE_MAX_BYTES`       | `4294967296` (4 GiB) | Largest compressed layer total per platform of a declared image                                        |
-| `--repository-image-cosign-key-file` | `PATCHY_REPOSITORY_IMAGE_COSIGN_KEY_FILE` | —                    | PEM cosign public key every declared image must be signed with; required unless unsigned is allowed    |
-| `--repository-image-allow-unsigned`  | `PATCHY_REPOSITORY_IMAGE_ALLOW_UNSIGNED`  | `false`              | Admit declared images without a signature (an explicit opt-out)                                        |
-| `--repository-image-on-reject`       | `PATCHY_REPOSITORY_IMAGE_ON_REJECT`       | `default`            | What a rejected declaration does: `default` runs the default runner image, `handoff` parks the finding |
+| Flag                                   | Env                                         | Default              | Purpose                                                                                                                                         |
+| -------------------------------------- | ------------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--artifact-addr`                      | `PATCHY_ARTIFACT_ADDR`                      | `:9790`              | Listen address of the artifact server                                                                                                           |
+| `--artifact-base-url`                  | `PATCHY_ARTIFACT_BASE_URL`                  | in-cluster Service   | Base URL minted into Repository statuses for agent fetches                                                                                      |
+| `--artifact-dir`                       | `PATCHY_ARTIFACT_DIR`                       | `/data/artifacts`    | Directory the artifact tarballs are stored in                                                                                                   |
+| `--max-artifact-bytes`                 | `PATCHY_MAX_ARTIFACT_BYTES`                 | `1073741824` (1 GiB) | Largest repository tarball stored; larger repositories stall (`Stalled` condition)                                                              |
+| `--repository-images`                  | `PATCHY_REPOSITORY_IMAGES`                  | `false`              | Read each tree's runner-image declaration and pin the image; the kill switch                                                                    |
+| `--repository-image-registries`        | `PATCHY_REPOSITORY_IMAGE_REGISTRIES`        | —                    | Comma-separated `host/path/` prefixes a declared image must sit under; required with the feature on                                             |
+| `--repository-image-denied-registries` | `PATCHY_REPOSITORY_IMAGE_DENIED_REGISTRIES` | —                    | Comma-separated `host/path/` prefixes a declared image may never sit under, even inside an allowed one; the chart sets the preview image prefix |
+| `--repository-image-max-bytes`         | `PATCHY_REPOSITORY_IMAGE_MAX_BYTES`         | `4294967296` (4 GiB) | Largest compressed layer total per platform of a declared image                                                                                 |
+| `--repository-image-cosign-key-file`   | `PATCHY_REPOSITORY_IMAGE_COSIGN_KEY_FILE`   | —                    | PEM cosign public key every declared image must be signed with; required unless unsigned is allowed                                             |
+| `--repository-image-allow-unsigned`    | `PATCHY_REPOSITORY_IMAGE_ALLOW_UNSIGNED`    | `false`              | Admit declared images without a signature (an explicit opt-out)                                                                                 |
+| `--repository-image-on-reject`         | `PATCHY_REPOSITORY_IMAGE_ON_REJECT`         | `default`            | What a rejected declaration does: `default` runs the default runner image, `handoff` parks the finding                                          |
 
 `--artifact-base-url` only needs setting when the Service name differs from the default
 `http://patchy-source-controller.<namespace>.svc.cluster.local:<port>` — the deployments leave it unset.
@@ -69,8 +70,13 @@ with `--repository-images` on the [investigation](investigation-controller.md#ag
   and no Fulcio or Rekor traffic.
 - **Allowlist entries** are `host/path` prefixes with at least one path segment, matched on segment boundaries
   (`ghcr.io/acme/` never matches `ghcr.io/acme-evil/`), without globs, `index.docker.io` read as `docker.io`; a bad
-  entry fails startup. Never allowlist a pull-through-cache namespace (`.../docker-hub/`, `.../ecr-public/`, an Artifact
-  Registry `*-remote` repository): anyone can populate those paths.
+  entry fails startup. A `--repository-image-denied-registries` entry takes the same form and wins over the allowlist:
+  an image under it is refused (`DeniedRegistry`) whatever entry admits it, matched on the registry it is pulled from
+  (case, an explicit `:443` and ECR's dual-stack and FIPS endpoint names folded). With previews on, the chart denies the
+  preview image prefix there: preview runtime images are built from unreviewed pull requests and must never become an
+  agent sandbox. The chart already refuses to render an allowlist that overlaps that prefix; the denial holds
+  source-controller to the rule whatever reaches its allowlist. Never allowlist a pull-through-cache namespace
+  (`.../docker-hub/`, `.../ecr-public/`, an Artifact Registry `*-remote` repository): anyone can populate those paths.
 - **Registry credentials** are chosen by host: ECR through the AWS default credential chain (IRSA or EKS Pod Identity),
   Artifact Registry and GCR through Application Default Credentials, everything else through the docker config under
   `DOCKER_CONFIG` (a mounted `dockerconfigjson` Secret), falling back to anonymous. A cloud credential failure is

@@ -33,8 +33,10 @@ type PreviewComponent struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +kubebuilder:validation:MaxLength=16
 	Name string `json:"name"`
-	// ImageRepository is the operator-configured repository, without a tag.
-	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9.:-]*/patchy/previews/[a-z0-9-]+$`
+	// ImageRepository is the operator-configured repository, without a tag:
+	// ProjectPreview's shape. The preview-controller and the slot admission
+	// policy hold it to the configured image prefix.
+	// +kubebuilder:validation:Pattern=`^[a-z0-9][a-z0-9.:-]*(/[a-z0-9]+([._-][a-z0-9]+)*)+/[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +kubebuilder:validation:MaxLength=255
 	ImageRepository string `json:"imageRepository"`
 	// Revision is a full commit SHA, never a branch name: the PR head, or a

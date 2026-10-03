@@ -76,10 +76,12 @@ spec:
                     derives the whole list; the writer and the preview-controller both use it.
                   properties:
                     imageRepository:
-                      description: ImageRepository is the operator-configured repository,
-                        without a tag.
+                      description: |-
+                        ImageRepository is the operator-configured repository, without a tag:
+                        ProjectPreview's shape. The preview-controller and the slot admission
+                        policy hold it to the configured image prefix.
                       maxLength: 255
-                      pattern: ^[a-z0-9][a-z0-9.:-]*/patchy/previews/[a-z0-9-]+$
+                      pattern: ^[a-z0-9][a-z0-9.:-]*(/[a-z0-9]+([._-][a-z0-9]+)*)+/[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
                     name:
                       description: |-

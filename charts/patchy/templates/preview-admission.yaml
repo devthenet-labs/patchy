@@ -18,7 +18,7 @@
 {{- range $i := until (int $p.slotCount) }}{{ $slots = append $slots (printf "patchy-preview-%d" $i) }}{{ end }}
 {{- $guardSlots := list }}
 {{- range $i := until 4 }}{{ $guardSlots = append $guardSlots (printf "patchy-preview-%d" $i) }}{{ end }}
-{{- $prefix := printf "%s/patchy/previews/" $p.imageRegistry }}
+{{- $prefix := include "patchy.previewImagePrefix" . }}
 {{- range $kind := list (dict "name" "pods" "resource" "pods" "pod" "object.spec") (dict "name" "deployments" "resource" "deployments" "pod" "object.spec.template.spec") }}
 ---
 apiVersion: admissionregistration.k8s.io/v1

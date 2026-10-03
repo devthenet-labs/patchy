@@ -60,8 +60,10 @@ output "preview_node_class" {
   and owner IDs and GitHub's immutable OIDC subject), on its default branch, and may push to one ECR repository, with no
   delete. A repository on the classic `repo:<owner>/<name>` subject fails the plan.
 - **Disjoint prefixes.** Agent images live under `agent_path_prefix` (default `patchy/app-envs`), runtime images under
-  `patchy/previews`. A runtime image is built from an unreviewed pull request, so it must never be admissible as an
-  agent image, and the module refuses overlapping prefixes.
+  `preview_path_prefix` (default `patchy/previews`), which reaches the chart as `preview.imagePathPrefix` through
+  `helm_values`. A runtime image is built from an unreviewed pull request, so it must never be admissible as an agent
+  image: the module refuses overlapping prefixes, compared on path segment boundaries, and the chart refuses an agent
+  allowlist that overlaps the preview prefix.
 - **Preview subnets.** The preview load balancer is pinned to `alb_subnet_ids`, whose CIDRs are the only sources preview
   Pods admit; a node subnet that assigns public IPs fails the plan, and so does one in a zone no load balancer subnet
   covers, where the load balancer would never send a preview traffic.

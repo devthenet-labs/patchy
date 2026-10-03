@@ -1,0 +1,549 @@
+---
+# Source: patchy/templates/preview-admission.yaml
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Fail-closed, exact-slot admission. No exempt user or controller: even patchy
+# must create only a Pod/Deployment/Service/Ingress fitting the slot contract.
+# Paired with the kept namespace/network/quota resources so rollback or
+# uninstall cannot leave a live workload in an unguarded slot.
+# Helm adds ownership annotations to chart resources. Admit them only on the
+# fixed selectorless placeholder Service/Ingress in slot 0, never on a
+# preview-controller or other user-created resource.
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-pods
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [""]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [pods, pods/ephemeralcontainers]
+    # Match the actual namespace name; do not rely on a label selector alone
+    # for this security decision.
+    matchConditions:
+        - name: exact-preview-slot
+          expression: 'request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]'
+    variables:
+        - name: pod
+          expression: "object.spec"
+    validations:
+        - expression: >-
+              variables.pod.containers.all(c,
+                c.image.startsWith('377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/') &&
+                c.image.substring(61).matches('^[a-z0-9-]+:sha-[0-9a-f]{40}$'))
+          message: only immutable patchy preview ECR images are allowed
+        - expression: size(variables.pod.containers) == 1
+          message: preview pods run exactly one container
+        - expression: >-
+              has(variables.pod.automountServiceAccountToken) &&
+              variables.pod.automountServiceAccountToken == false &&
+              has(variables.pod.serviceAccountName) &&
+              variables.pod.serviceAccountName == 'default'
+          message: preview pods must explicitly disable API token mounting and use the default ServiceAccount
+        - expression: >-
+              (!has(variables.pod.initContainers) || size(variables.pod.initContainers) == 0) &&
+              (!has(variables.pod.ephemeralContainers) || size(variables.pod.ephemeralContainers) == 0) &&
+              (!has(variables.pod.volumes) || variables.pod.volumes.all(v, has(v.emptyDir)))
+          message: preview pods may use only emptyDir volumes and no init or ephemeral containers
+        - expression: >-
+              (!has(variables.pod.hostNetwork) || !variables.pod.hostNetwork) &&
+              (!has(variables.pod.hostPID) || !variables.pod.hostPID) &&
+              (!has(variables.pod.hostIPC) || !variables.pod.hostIPC)
+          message: preview pods may not use host namespaces
+        - expression: >-
+              has(variables.pod.nodeSelector) &&
+              'karpenter.sh/nodepool' in variables.pod.nodeSelector &&
+              variables.pod.nodeSelector['karpenter.sh/nodepool'] == "patchy-preview" &&
+              'eks.amazonaws.com/nodeclass' in variables.pod.nodeSelector &&
+              variables.pod.nodeSelector['eks.amazonaws.com/nodeclass'] == "patchy-preview"
+          message: preview pods must select the dedicated preview node pool and class
+        - expression: >-
+              has(variables.pod.tolerations) &&
+              variables.pod.tolerations.exists(t,
+                has(t.key) && t.key == "patchy.devthe.net/preview-only" &&
+                has(t.operator) && t.operator == 'Equal' &&
+                has(t.value) && t.value == 'true' &&
+                has(t.effect) && t.effect == 'NoExecute' &&
+                !has(t.tolerationSeconds))
+          message: preview pods must tolerate the exact preview-only taint
+        - expression: >-
+              (!has(variables.pod.nodeName) || variables.pod.nodeName == '' ||
+                (request.operation == 'UPDATE' && oldObject != null &&
+                  has(oldObject.spec.nodeName) &&
+                  variables.pod.nodeName == oldObject.spec.nodeName)) &&
+              (!has(variables.pod.schedulerName) || variables.pod.schedulerName == '' ||
+                variables.pod.schedulerName == 'default-scheduler')
+          message: preview pods may not bypass the default scheduler
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-outside-pods
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [""]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [pods, pods/ephemeralcontainers]
+    matchConditions:
+        - name: outside-preview-slots
+          expression: '!(request.namespace in ["patchy-preview-0","patchy-preview-1"])'
+    variables:
+        - name: pod
+          expression: "object.spec"
+    validations:
+        - expression: >-
+              !has(variables.pod.tolerations) ||
+              variables.pod.tolerations.all(t,
+                (!has(t.key) || t.key != "patchy.devthe.net/preview-only") &&
+                !(has(t.operator) && t.operator == 'Exists' &&
+                  (!has(t.key) || t.key == '')))
+          message: preview-only toleration and tolerate-all are forbidden outside preview slots
+        - expression: >-
+              !has(variables.pod.nodeName) || variables.pod.nodeName == '' ||
+              (request.operation == 'UPDATE' && oldObject != null &&
+                has(oldObject.spec.nodeName) &&
+                variables.pod.nodeName == oldObject.spec.nodeName)
+          message: direct node placement is forbidden outside preview slots
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-deployments
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [apps]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [deployments]
+    # Match the actual namespace name; do not rely on a label selector alone
+    # for this security decision.
+    matchConditions:
+        - name: exact-preview-slot
+          expression: 'request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]'
+    variables:
+        - name: pod
+          expression: "object.spec.template.spec"
+    validations:
+        - expression: >-
+              variables.pod.containers.all(c,
+                c.image.startsWith('377946145366.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/') &&
+                c.image.substring(61).matches('^[a-z0-9-]+:sha-[0-9a-f]{40}$'))
+          message: only immutable patchy preview ECR images are allowed
+        - expression: size(variables.pod.containers) == 1
+          message: preview pods run exactly one container
+        - expression: >-
+              has(variables.pod.automountServiceAccountToken) &&
+              variables.pod.automountServiceAccountToken == false &&
+              has(variables.pod.serviceAccountName) &&
+              variables.pod.serviceAccountName == 'default'
+          message: preview pods must explicitly disable API token mounting and use the default ServiceAccount
+        - expression: >-
+              (!has(variables.pod.initContainers) || size(variables.pod.initContainers) == 0) &&
+              (!has(variables.pod.ephemeralContainers) || size(variables.pod.ephemeralContainers) == 0) &&
+              (!has(variables.pod.volumes) || variables.pod.volumes.all(v, has(v.emptyDir)))
+          message: preview pods may use only emptyDir volumes and no init or ephemeral containers
+        - expression: >-
+              (!has(variables.pod.hostNetwork) || !variables.pod.hostNetwork) &&
+              (!has(variables.pod.hostPID) || !variables.pod.hostPID) &&
+              (!has(variables.pod.hostIPC) || !variables.pod.hostIPC)
+          message: preview pods may not use host namespaces
+        - expression: >-
+              has(variables.pod.nodeSelector) &&
+              'karpenter.sh/nodepool' in variables.pod.nodeSelector &&
+              variables.pod.nodeSelector['karpenter.sh/nodepool'] == "patchy-preview" &&
+              'eks.amazonaws.com/nodeclass' in variables.pod.nodeSelector &&
+              variables.pod.nodeSelector['eks.amazonaws.com/nodeclass'] == "patchy-preview"
+          message: preview pods must select the dedicated preview node pool and class
+        - expression: >-
+              has(variables.pod.tolerations) &&
+              variables.pod.tolerations.exists(t,
+                has(t.key) && t.key == "patchy.devthe.net/preview-only" &&
+                has(t.operator) && t.operator == 'Equal' &&
+                has(t.value) && t.value == 'true' &&
+                has(t.effect) && t.effect == 'NoExecute' &&
+                !has(t.tolerationSeconds))
+          message: preview pods must tolerate the exact preview-only taint
+        - expression: >-
+              (!has(variables.pod.nodeName) || variables.pod.nodeName == '') &&
+              (!has(variables.pod.schedulerName) || variables.pod.schedulerName == '' ||
+                variables.pod.schedulerName == 'default-scheduler')
+          message: preview pods may not bypass the default scheduler
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-outside-deployments
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [apps]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [deployments]
+    matchConditions:
+        - name: outside-preview-slots
+          expression: '!(request.namespace in ["patchy-preview-0","patchy-preview-1"])'
+    variables:
+        - name: pod
+          expression: "object.spec.template.spec"
+    validations:
+        - expression: >-
+              !has(variables.pod.tolerations) ||
+              variables.pod.tolerations.all(t,
+                (!has(t.key) || t.key != "patchy.devthe.net/preview-only") &&
+                !(has(t.operator) && t.operator == 'Exists' &&
+                  (!has(t.key) || t.key == '')))
+          message: preview-only toleration and tolerate-all are forbidden outside preview slots
+        - expression: >-
+              !has(variables.pod.nodeName) || variables.pod.nodeName == ''
+          message: direct node placement is forbidden outside preview slots
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-services
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [""]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [services]
+    matchConditions:
+        - name: exact-preview-slot
+          expression: 'request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]'
+    variables:
+        - name: helmPlaceholder
+          expression: "request.namespace == 'patchy-preview-0' && object.metadata.name == 'patchy-preview-placeholder'"
+    validations:
+        - expression: >-
+              object.spec.type == 'ClusterIP' &&
+              (!has(object.spec.externalIPs) || size(object.spec.externalIPs) == 0) &&
+              (!has(object.spec.loadBalancerClass)) &&
+              object.spec.ports.all(p, !has(p.nodePort) || p.nodePort == 0)
+          message: preview Services must be internal ClusterIP with no external IP or node port
+        # A preview component's Service may carry only its own health-check
+        # path, which the load balancer applies to that Service's targets.
+        - expression: >-
+              !has(object.metadata.annotations) ||
+              object.metadata.annotations.all(k, v,
+                (variables.helmPlaceholder && (
+                  (k == 'helm.sh/resource-policy' && v == 'keep') ||
+                  (k == 'meta.helm.sh/release-name' && v == "patchy") ||
+                  (k == 'meta.helm.sh/release-namespace' && v == "patchy"))) ||
+                (!variables.helmPlaceholder &&
+                  k == 'alb.ingress.kubernetes.io/healthcheck-path' &&
+                  v.matches('^/[a-zA-Z0-9/_-]*$')))
+          message: preview Service annotations are restricted to a safe healthcheck path; Helm ownership and keep annotations are reserved for the placeholder Service
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-ingresses
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [networking.k8s.io]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [ingresses]
+    matchConditions:
+        - name: exact-preview-slot
+          expression: 'request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]'
+    variables:
+        - name: helmPlaceholder
+          expression: "request.namespace == 'patchy-preview-0' && object.metadata.name == 'patchy-preview-placeholder'"
+    validations:
+        - expression: >-
+              object.spec.ingressClassName == 'alb-preview' &&
+              !has(object.spec.defaultBackend) &&
+              (!has(object.spec.tls) || size(object.spec.tls) == 0)
+          message: preview Ingresses must use alb-preview and class-level TLS only
+        - expression: >-
+              has(object.spec.rules) && size(object.spec.rules) > 0 &&
+              object.spec.rules.all(r, has(r.host) &&
+                r.host.matches('^[a-z0-9-]+[.]preview[.]patchy[.]devthe[.]net$'))
+          message: preview Ingress hosts must be single-label subdomains of the configured preview suffix
+        # One host, one rule: a Prefix path per component in the component
+        # path grammar, each to a preview Service on port 80. The kept
+        # placeholder routes / to its own selectorless Service instead.
+        - expression: >-
+              has(object.spec.rules) && size(object.spec.rules) == 1 &&
+              object.spec.rules.all(r, has(r.http) && size(r.http.paths) >= 1 && size(r.http.paths) <= 4 &&
+                r.http.paths.all(p,
+                  has(p.pathType) && p.pathType == 'Prefix' &&
+                  has(p.path) && p.path.matches('^/([a-z0-9-]+(/[a-z0-9-]+)*)?$') &&
+                  has(p.backend.service) && has(p.backend.service.port.number) &&
+                  p.backend.service.port.number == 80 &&
+                  (variables.helmPlaceholder ?
+                    p.backend.service.name == 'patchy-preview-placeholder' :
+                    p.backend.service.name.startsWith('preview-'))))
+          message: preview Ingresses have one rule of at most 4 Prefix paths in the component path grammar, each backed by a preview- Service on port 80
+        - expression: >-
+              !has(object.metadata.annotations) ||
+              object.metadata.annotations.all(k, v,
+                (!variables.helmPlaceholder &&
+                  k == 'alb.ingress.kubernetes.io/healthcheck-path' &&
+                  v.matches('^/[a-zA-Z0-9/_-]*$')) ||
+                (variables.helmPlaceholder && (
+                  (k == 'helm.sh/resource-policy' && v == 'keep') ||
+                  (k == 'meta.helm.sh/release-name' && v == "patchy") ||
+                  (k == 'meta.helm.sh/release-namespace' && v == "patchy"))))
+          message: preview Ingress annotations are restricted to a safe healthcheck path or the named placeholder's Helm ownership
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-outside-ingresses
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [networking.k8s.io]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [ingresses]
+    matchConditions:
+        - name: outside-preview-slots
+          expression: '!(request.namespace in ["patchy-preview-0","patchy-preview-1"])'
+    validations:
+        - expression: >-
+              !has(object.spec.ingressClassName) ||
+              object.spec.ingressClassName != 'alb-preview'
+          message: alb-preview is reserved for the exact preview slot namespaces
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-all-slots-pods
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-pods
+    validationActions: [Deny]
+# Keep the older per-slot bindings below for a safe upgrade of retained
+# policies. This global binding protects a slot even if its label is changed.
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-0-pods
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-pods
+    validationActions: [Deny]
+    matchResources:
+        namespaceSelector:
+            matchLabels:
+                kubernetes.io/metadata.name: patchy-preview-0
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-1-pods
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-pods
+    validationActions: [Deny]
+    matchResources:
+        namespaceSelector:
+            matchLabels:
+                kubernetes.io/metadata.name: patchy-preview-1
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-outside-pods
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-outside-pods
+    validationActions: [Deny]
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-all-slots-deployments
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-deployments
+    validationActions: [Deny]
+# Keep the older per-slot bindings below for a safe upgrade of retained
+# policies. This global binding protects a slot even if its label is changed.
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-0-deployments
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-deployments
+    validationActions: [Deny]
+    matchResources:
+        namespaceSelector:
+            matchLabels:
+                kubernetes.io/metadata.name: patchy-preview-0
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-1-deployments
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-deployments
+    validationActions: [Deny]
+    matchResources:
+        namespaceSelector:
+            matchLabels:
+                kubernetes.io/metadata.name: patchy-preview-1
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-outside-deployments
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-outside-deployments
+    validationActions: [Deny]
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-all-slots-services
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-services
+    validationActions: [Deny]
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-0-services
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-services
+    validationActions: [Deny]
+    matchResources:
+        namespaceSelector:
+            matchLabels:
+                kubernetes.io/metadata.name: patchy-preview-0
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-1-services
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-services
+    validationActions: [Deny]
+    matchResources:
+        namespaceSelector:
+            matchLabels:
+                kubernetes.io/metadata.name: patchy-preview-1
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-all-slots-ingresses
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-ingresses
+    validationActions: [Deny]
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-0-ingresses
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-ingresses
+    validationActions: [Deny]
+    matchResources:
+        namespaceSelector:
+            matchLabels:
+                kubernetes.io/metadata.name: patchy-preview-0
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-1-ingresses
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-ingresses
+    validationActions: [Deny]
+    matchResources:
+        namespaceSelector:
+            matchLabels:
+                kubernetes.io/metadata.name: patchy-preview-1
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-outside-ingresses
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-outside-ingresses
+    validationActions: [Deny]
+

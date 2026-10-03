@@ -6,8 +6,8 @@
 #   - an agent toolchain repository, <agent_path_prefix>/<slug>. The app's
 #     .patchy/agent.yaml names it, and source-controller may read it (the
 #     platform module grants read on the whole agent prefix);
-#   - with previews, a runtime repository, patchy/previews/<slug>. Only the
-#     isolated preview nodes pull from it;
+#   - with previews, a runtime repository, <preview_path_prefix>/<slug>. Only
+#     the isolated preview nodes pull from it;
 #   - one trusted publisher role per repository. Each trusts only the app's
 #     own default-branch publisher workflow for that kind, so the runtime
 #     publisher can never write an agent image, and no app can write another
@@ -16,10 +16,6 @@
 data "aws_region" "current" {}
 
 locals {
-  # Fixed in this release: the chart's preview admission policy and the
-  # preview-controller require exactly this path under preview.imageRegistry.
-  preview_path_prefix = "patchy/previews"
-
   # One image repository and one publisher per kind. Each kind has its own
   # trusted reusable workflow in the app repository, named in the role's
   # trust as job_workflow_ref. That workflow is a workflow_call callee of the
@@ -34,7 +30,7 @@ locals {
     },
     var.preview ? {
       runtime = {
-        repository = "${local.preview_path_prefix}/${var.slug}"
+        repository = "${var.preview_path_prefix}/${var.slug}"
         workflow   = "publish-runtime.yml"
       }
     } : {},

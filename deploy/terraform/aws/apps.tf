@@ -13,6 +13,7 @@ module "app" {
   preview                  = each.value.preview
   github_oidc_provider_arn = local.github_oidc_provider_arn
   agent_path_prefix        = var.agent_path_prefix
+  preview_path_prefix      = var.preview_path_prefix
   role_name_prefix         = local.app_role_name_prefix
   tags                     = var.tags
 }

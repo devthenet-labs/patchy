@@ -28,6 +28,16 @@ spec:
     readinessPath: /healthz
 ```
 
+The image repository sits exactly one leaf under the operator's preview image prefix,
+`<preview.imageRegistry>/<preview.imagePathPrefix>/` in the chart (`--preview-image-prefix` on the binary), which is
+`<registry>/patchy/previews/` unless the operator sets `preview.imagePathPrefix`. The leaf is a lowercase DNS label
+(letters, digits and inner hyphens, so not `app-` or `-app`). The `Project` schema checks only that shape, a registry
+host, one or more lowercase path segments and the leaf; the preview-controller refuses any component whose repository is
+not the configured prefix plus one leaf (another registry, a nested path, a tag, the agent image path), and the slot
+admission policy denies a Pod whose image is outside the prefix. The controller refuses to start with a prefix that is
+not `<registry>/<path>/`. The chart keeps the prefix disjoint from `agent.repositoryImages.registries` (see
+[Helm](../deployment/helm.md)), so an image built from a pull request can never run as an agent sandbox.
+
 `spec.preview` is the one-repository shorthand: it needs exactly one application repository. Do **not** add this block
 to a Project whose application must never be exposed, such as a deliberately vulnerable test target. The runtime
 publisher must publish the immutable `sha-<full PR head SHA>` image before the preview can become Ready.

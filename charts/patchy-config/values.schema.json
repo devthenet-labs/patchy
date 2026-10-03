@@ -820,10 +820,10 @@
                     "description": "Preview is the one-repository shorthand for previews: the runtime\ncontract of repositories[0], served at \"/\", exactly as if it were\nrepositories[0].preview with the default path. It needs exactly one\nrepository and is refused beside any repositories[].preview\n(CEL-enforced on the spec). With neither set, the Project's PRs are never\ndeployed, even if the preview-controller is enabled. Only\noperator-authored Project configuration can supply the runtime image\nrepository and serving port; issue and agent text cannot.",
                     "properties": {
                         "imageRepository": {
-                            "description": "ImageRepository is an immutable-tag runtime repository under the\noperator's preview registry, such as <registry>/patchy/previews/demo.\nThe preview-controller also checks its configured image prefix.",
+                            "description": "ImageRepository is an immutable-tag runtime repository directly under\nthe operator's preview image prefix, such as\n<registry>/patchy/previews/demo with the default prefix: a registry\nhost, one or more lowercase path segments and a leaf that is a DNS\nlabel. The schema checks only that shape. The prefix itself is\nenforced where it is configured, by the preview-controller and the\nslot admission policy.",
                             "maxLength": 255,
                             "minLength": 1,
-                            "pattern": "^[a-z0-9][a-z0-9.:-]*/patchy/previews/[a-z0-9-]+$",
+                            "pattern": "^[a-z0-9][a-z0-9.:-]*(/[a-z0-9]+([._-][a-z0-9]+)*)+/[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
                             "type": "string"
                         },
                         "port": {
@@ -860,10 +860,10 @@
                                 "description": "Preview opts this repository into the Project's previews: its fixed\nruntime contract, and the path its component is served under on the\nintent's one preview host. Unset means the repository is never\npreviewed (a library, say); its pull request is still part of the\nintent. At most MaxPreviewComponents of a Project's repositories are\npreviewed, each at its own path, and spec.preview, the one-repository\nshorthand, is refused beside any of them (CEL-enforced on the spec).",
                                 "properties": {
                                     "imageRepository": {
-                                        "description": "ImageRepository is an immutable-tag runtime repository under the\noperator's preview registry, such as <registry>/patchy/previews/demo.\nThe preview-controller also checks its configured image prefix.",
+                                        "description": "ImageRepository is an immutable-tag runtime repository directly under\nthe operator's preview image prefix, such as\n<registry>/patchy/previews/demo with the default prefix: a registry\nhost, one or more lowercase path segments and a leaf that is a DNS\nlabel. The schema checks only that shape. The prefix itself is\nenforced where it is configured, by the preview-controller and the\nslot admission policy.",
                                         "maxLength": 255,
                                         "minLength": 1,
-                                        "pattern": "^[a-z0-9][a-z0-9.:-]*/patchy/previews/[a-z0-9-]+$",
+                                        "pattern": "^[a-z0-9][a-z0-9.:-]*(/[a-z0-9]+([._-][a-z0-9]+)*)+/[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
                                         "type": "string"
                                     },
                                     "path": {

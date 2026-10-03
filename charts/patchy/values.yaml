@@ -108,7 +108,7 @@ preview:
         create: false
         # IAM role NAME (not an ARN) the preview nodes run as, with an EKS
         # access entry of type EC2 and ECR pull on the preview images only
-        # (<imageRegistry>/patchy/previews/*). Required with create.
+        # (<imageRegistry>/<imagePathPrefix>/*). Required with create.
         role: ""
         # Private subnets for the nodes, never public ones. Required with
         # create.
@@ -128,7 +128,22 @@ preview:
             size: 20Gi
             iops: 3000
             throughput: 125
-    imageRegistry: "" # ECR registry host only; images must be patchy/previews/<app>:sha-<full SHA>
+    imageRegistry: "" # ECR registry host only; images must be <imagePathPrefix>/<app>:sha-<full SHA>
+    # The registry path every preview runtime image sits directly under:
+    # <imageRegistry>/<imagePathPrefix>/<app>, one lowercase DNS-label leaf
+    # deep. Lowercase ECR path segments joined by "/", with no leading or
+    # trailing slash; empty is refused. The slot admission policy and the
+    # preview-controller hold every preview image to it, and with
+    # agent.repositoryImages enabled source-controller refuses agent images
+    # from it. It must be disjoint from every
+    # agent.repositoryImages.registries entry, neither equal to nor under
+    # the other, or the render fails: a runtime image is built from an
+    # unreviewed pull request head and must never run as an agent sandbox.
+    # The reference terraform module's preview_path_prefix is the same value.
+    # Changing it on a live install moves the admission policy's prefix: a
+    # Preview whose Project still names an image under the old path then
+    # fails to render until the Project names one under the new path.
+    imagePathPrefix: patchy/previews
     dnsCIDR: "" # Node-local CoreDNS service /32, not a broad service CIDR; empty means clusterDNSCIDR.
     albSubnetCIDRs: [] # Public ALB source subnets, not 0.0.0.0/0.
     # The subnet IDs of albSubnetCIDRs, one per CIDR: pins the preview ALB to

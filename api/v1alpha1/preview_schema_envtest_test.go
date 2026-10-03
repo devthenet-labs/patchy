@@ -55,11 +55,30 @@ func testPreviewSchema(ctx context.Context, t *testing.T, c client.Client) {
 			p.Spec.Components = append(p.Spec.Components, p.Spec.Components[0])
 		}},
 		{"unsafe-path", func(p *patchyv1.Preview) { p.Spec.Components[0].ReadinessPath = "/health?token=1" }},
-		// The preview image prefix is still <registry>/patchy/previews/ (the
-		// configurable prefix is deferred), so the schema keeps refusing an
-		// agent-environment repository.
-		{"wrong-image-repository", func(p *patchyv1.Preview) {
-			p.Spec.Components[0].ImageRepository = "registry.example/patchy/app-envs/demo"
+		// The image prefix is the operator's (preview.imagePathPrefix), so the
+		// schema checks the repository's shape and its leaf, and the
+		// preview-controller and the slot admission policy refuse a
+		// repository off the configured prefix, an agent-environment one
+		// included (TestSettingsValidate, TestMultiComponentValidation and
+		// the chart's preview policy envtests). The leaf is a DNS label: the
+		// schema refused neither of the first two before it said so.
+		{"image-leaf-trailing-hyphen", func(p *patchyv1.Preview) {
+			p.Spec.Components[0].ImageRepository = "registry.example/acme/previews/demo-"
+		}},
+		{"image-leaf-leading-hyphen", func(p *patchyv1.Preview) {
+			p.Spec.Components[0].ImageRepository = "registry.example/patchy/previews/-demo"
+		}},
+		{"image-without-path", func(p *patchyv1.Preview) {
+			p.Spec.Components[0].ImageRepository = "registry.example/demo"
+		}},
+		{"image-with-tag", func(p *patchyv1.Preview) {
+			p.Spec.Components[0].ImageRepository = "registry.example/patchy/previews/demo:latest"
+		}},
+		{"image-uppercase-segment", func(p *patchyv1.Preview) {
+			p.Spec.Components[0].ImageRepository = "registry.example/Acme/previews/demo"
+		}},
+		{"image-empty-segment", func(p *patchyv1.Preview) {
+			p.Spec.Components[0].ImageRepository = "registry.example/acme//demo"
 		}},
 		// Slice 3: up to four components, each under its own path.
 		{"five-components", func(p *patchyv1.Preview) { p.Spec.Components = components(5) }},
@@ -88,6 +107,19 @@ func testPreviewSchema(ctx context.Context, t *testing.T, c client.Client) {
 	p := valid("preview-valid")
 	if err := c.Create(ctx, p); err != nil {
 		t.Fatalf("valid Preview rejected: %v", err)
+	}
+	// An operator's own image prefix, nested segments with ECR's separators
+	// included: the schema has no fixed patchy/previews/ path.
+	for i, repo := range []string{
+		"registry.example/acme/previews/demo",
+		"123456789012.dkr.ecr.us-east-1.amazonaws.com/team_a/runtime.images/web-app",
+		"registry.example:5000/x/a",
+	} {
+		custom := valid(fmt.Sprintf("preview-prefix-%d", i))
+		custom.Spec.Components[0].ImageRepository = repo
+		if err := c.Create(ctx, custom); err != nil {
+			t.Errorf("Preview with image repository %s rejected: %v", repo, err)
+		}
 	}
 	p.Spec.Components[0].Revision = strings.Repeat("b", 40)
 	if err := c.Update(ctx, p); err != nil {

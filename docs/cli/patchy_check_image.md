@@ -9,13 +9,14 @@ Check an image before declaring it in .patchy/agent.yaml or as the image of
 
 Without --run, the checks are source-controller's own, run by the same code: the
 reference is canonicalised, checked against --allow (the operator's
---repository-image-registries) when given, pinned to a digest, and every
-linux/amd64 and linux/arm64 manifest is judged for platform, compressed size,
-VOLUME, reserved ENV and PATH; with --cosign-key the signature is verified as
-well. Registry credentials are your local docker credentials
-(~/.docker/config.json and its credential helpers), so an image you can pull
-is an image this can check. Every check is reported, not just the first
-failure.
+--repository-image-registries) when given, less any --deny (the operator's
+--repository-image-denied-registries, which the chart sets to the preview image
+prefix), pinned to a digest, and every linux/amd64 and linux/arm64 manifest is
+judged for platform, compressed size, VOLUME, reserved ENV and PATH; with
+--cosign-key the signature is verified as well. Registry credentials are your
+local docker credentials (~/.docker/config.json and its credential helpers), so
+an image you can pull is an image this can check. Every check is reported, not
+just the first failure.
 
 With --run, the image is also run the way the agent pod runs it, on your local
 docker: agent-runner and the claude CLI are copied out of the claude runner
@@ -58,6 +59,7 @@ patchy check image <reference> [flags]
 ```
   patchy check image ghcr.io/acme/shop-agent:1
   patchy check image ghcr.io/acme/shop-agent:1 --allow ghcr.io/acme/ --cosign-key cosign.pub
+  patchy check image ghcr.io/acme/shop-agent:1 --allow ghcr.io/acme/ --deny ghcr.io/acme/previews/
   patchy check image ghcr.io/acme/shop-agent:1 --run
   patchy check image ghcr.io/acme/shop-agent:1 --run -o json | jq '.checks[] | select(.status == "FAIL")'
 ```
@@ -67,6 +69,7 @@ patchy check image <reference> [flags]
 ```
       --allow stringArray     registry path prefix the image must sit under, as the operator's --repository-image-registries entries (repeatable)
       --cosign-key string     operator's PEM cosign public key; verify the image's signature with it
+      --deny stringArray      registry path prefix the image may never sit under, even inside an --allow entry, as the operator's --repository-image-denied-registries entries: the chart's preview image prefix (repeatable; needs --allow)
   -h, --help                  help for image
       --max-bytes int         largest compressed layer total per platform, as the operator's --repository-image-max-bytes (default 4294967296)
       --run                   also run the image the way the agent pod does, on the local docker

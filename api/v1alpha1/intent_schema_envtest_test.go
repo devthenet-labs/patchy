@@ -167,9 +167,35 @@ func testProjectPreviews(ctx context.Context, t *testing.T, c client.Client) {
 			p.Spec.Repositories = previewedRepos(2)
 			p.Spec.Repositories[1].Preview.Path = "/api?x=1"
 		}, true},
-		{"a per-repository image outside the preview registry path", func(p *patchyv1.Project) {
+		// The image prefix is the operator's: the schema checks the shape
+		// and the leaf, and the preview-controller and the slot admission
+		// policy hold the repository to the configured prefix (an
+		// agent-environment repository included). The leaf is a DNS label,
+		// which the schema did not require before.
+		{"a per-repository image under an operator's own prefix", func(p *patchyv1.Project) {
 			p.Spec.Repositories = previewedRepos(1)
-			p.Spec.Repositories[0].Preview.ImageRepository = "registry.example/patchy/app-envs/app0"
+			p.Spec.Repositories[0].Preview.ImageRepository = "registry.example/acme/previews/app0"
+		}, false},
+		{"a per-repository image leaf ending in a hyphen", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(1)
+			p.Spec.Repositories[0].Preview.ImageRepository = "registry.example/patchy/previews/app-"
+		}, true},
+		{"a per-repository image leaf starting with a hyphen", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(1)
+			p.Spec.Repositories[0].Preview.ImageRepository = "registry.example/patchy/previews/-app"
+		}, true},
+		{"a per-repository image with no path segment", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(1)
+			p.Spec.Repositories[0].Preview.ImageRepository = "registry.example/app0"
+		}, true},
+		{"a per-repository image with a tag", func(p *patchyv1.Project) {
+			p.Spec.Repositories = previewedRepos(1)
+			p.Spec.Repositories[0].Preview.ImageRepository = "registry.example/patchy/previews/app0:latest"
+		}, true},
+		{"the shorthand with a leaf ending in a hyphen", func(p *patchyv1.Project) {
+			bad := *shorthand
+			bad.ImageRepository = "registry.example/acme/previews/demo-"
+			p.Spec.Preview = &bad
 		}, true},
 		{"the shorthand beside a per-repository preview", func(p *patchyv1.Project) {
 			p.Spec.Repositories = previewedRepos(1)

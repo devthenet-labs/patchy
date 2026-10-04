@@ -41,6 +41,19 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
 
 ## Running intents
 
+- **A report-format slip throws away a whole build** (overdub-10, 2026-10-04). The build ran 110 turns and 31 minutes
+  ($2.20) and then failed `report_invalid`: one of its report's notes was 574 characters, over the 500 the build report
+  allows. patchy discarded the changeset with it and started a second attempt from scratch in a fresh pod. Patchy: a
+  report problem should never cost the work. Validate the report in the pod and let the agent fix it in the same
+  session, or trim an over-long note. Docs: until then, `report_invalid` retries are full reruns and cost as much again.
+- **The egress broker's token limits were never set on devthenet** (2026-10-04). The broker counts every pod's tokens
+  (`pod_tokens` in its audit line) but enforces a limit only when `egressBroker.limits` is configured, and it was not,
+  although helm.md says to size it before enabling repository images. The grant's 800k token budget evidently does not
+  count cached re-reads: overdub-10's build passed 5 million tokens through the broker (almost all cache reads) without
+  tripping it. Patchy/docs: say plainly which limit bounds spend; set broker limits from observed runs.
+- **Spend on a real app, for scale** (overdub-10, Sonnet 5): plan $1.45 (~7 min), first build attempt $2.20 (31 min on 2
+  vCPU, about 20 of them waiting on browser tests). Hello.Web's whole intent was
+  $0.55; marigold's two-repo intent $1.51.
 - **Agent Jobs request no CPU or memory, so heavy builds starve** (overdub-10, 2026-10-04). Pods set only
   ephemeral-storage, so EKS Auto Mode placed an overdub build (Chromium + audio rendering) on a `c6a.large`: 2 vCPU,
   ~3.7 GiB, shared. Builds are slow and risk OOM. In progress: CPU/memory for agent Jobs with a per-Project override.

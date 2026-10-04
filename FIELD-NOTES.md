@@ -1,0 +1,75 @@
+# Field notes
+
+Raw material for the docs: what running intents on real applications taught us, written down as it happens. Each note
+says what happened, why, and what the docs (or patchy) should say or do about it. Not part of the docs site; when a note
+becomes documentation or a fix, link the PR beside it. Newest first within each section.
+
+## Onboarding an application
+
+- **Apps with a Host allowlist get a Ready preview that refuses every request** (overdub, 2026-10-04). overdub's
+  `server/serve.js` answers 403 to any Host that isn't `localhost` or an IP (its DNS-rebinding guard). The ALB health
+  check reaches the pod by IP and passes, then every real request by name gets 403. Fixed in overdub's runtime image
+  with a small entry that runs the server on loopback and forwards as `localhost` (the image holds only public files).
+  Docs: the runtime contract should say a preview is reached by name through the ALB; dev servers, Django
+  `ALLOWED_HOSTS`, Rails host authorization and the like need the preview host suffix allowed. Patchy:
+  `patchy check project` could probe a preview with the real Host header.
+- **A preview readiness path cannot contain a dot** (overdub). `/llms.txt` failed the patchy-config schema
+  (`^/[a-zA-Z0-9/_-]*$`), so overdub uses `/app/`. `/health.json` would fail the same way. Either relax the pattern
+  (dots are harmless in a path) or document it.
+- **`patchy init app` is Go-only** (overdub, Node). No `--lang node`, `--port`, `--readiness-path` or `--test-cmd`, and
+  `--existing` writes no `test` CI check, so an app without CI writes `ci.yml` and adapts `.patchy/Dockerfile` by hand.
+  Docs: an "adapting the scaffold" page; patchy: language templates beyond Go.
+- **Agent images for browser-tested apps** (overdub). The agent image bakes Node, playwright-core and a headless
+  Chromium, each pinned and checksummed, and the 49 OS packages the browser needs, with env vars pointing the tests at
+  them, because the agent pod has no network. Builds must be reproducible: the publisher refuses a changed image at an
+  already-published tag (`toolchain-v1`), so unpinned packages break the next publish.
+- **Test suites tuned on a Mac fail on Linux** (overdub). 8 of 63 suites failed on linux/amd64 for reasons that are not
+  regressions: font metrics overflowing layout budgets, `⌘Z` vs `Ctrl+Z`, wall-clock and GC budgets. The golden render
+  hashes did match. The fix was a Linux-safe subset (`npm run test:ci`) used by both CI and the build agent, and a
+  paragraph in the app's CLAUDE.md telling the agent which suites to leave alone. Docs: "choose the gate your agent
+  runs", with this example.
+- **Characterising a full browser suite on Apple Silicon is slow** (overdub onboarding took ~2 h). A linux/amd64 image
+  runs under QEMU emulation; Chromium under emulation took 31 minutes for one full run. A GitHub runner probe of the
+  full suite ran 38 minutes before it was cancelled. Docs: onboard with a conservative, measured subset first;
+  characterise later on native hardware.
+- **Private repositories on GitHub Free have ~2,000 Actions minutes a month.** overdub's CI subset takes about 2 minutes
+  per run; the full suite would not fit a busy month. Docs: measure CI before enabling it on private repos.
+- **An app outside the App's org was mirrored** (overdub: a private repository under a personal account, mirrored as a
+  private repository in the org). Onboarding in place needs the repo owner to install a GitHub App, set Actions
+  variables (admin) and merge the scaffold PR. Docs: both routes, with the mirror's cost (changes go back to the
+  original by hand).
+
+## Running intents
+
+- **A report-format slip throws away a whole build** (overdub-10, 2026-10-04). The build ran 110 turns and 31 minutes
+  ($2.20) and then failed `report_invalid`: one of its report's notes was 574 characters, over the 500 the build report
+  allows. patchy discarded the changeset with it and started a second attempt from scratch in a fresh pod. Patchy: a
+  report problem should never cost the work. Validate the report in the pod and let the agent fix it in the same
+  session, or trim an over-long note. Docs: until then, `report_invalid` retries are full reruns and cost as much again.
+- **The egress broker's token limits were never set on devthenet** (2026-10-04). The broker counts every pod's tokens
+  (`pod_tokens` in its audit line) but enforces a limit only when `egressBroker.limits` is configured, and it was not,
+  although helm.md says to size it before enabling repository images. The grant's 800k token budget evidently does not
+  count cached re-reads: overdub-10's build passed 5 million tokens through the broker (almost all cache reads) without
+  tripping it. Patchy/docs: say plainly which limit bounds spend; set broker limits from observed runs.
+- **Spend on a real app, for scale** (overdub-10, Sonnet 5): plan $1.45 (~7 min), first build attempt $2.20 (31 min on 2
+  vCPU, about 20 of them waiting on browser tests). Hello.Web's whole intent was
+  $0.55; marigold's two-repo intent $1.51.
+- **Agent Jobs request no CPU or memory, so heavy builds starve** (overdub-10, 2026-10-04). Pods set only
+  ephemeral-storage, so EKS Auto Mode placed an overdub build (Chromium + audio rendering) on a `c6a.large`: 2 vCPU,
+  ~3.7 GiB, shared. Builds are slow and risk OOM. In progress: CPU/memory for agent Jobs with a per-Project override.
+- **The planner can ignore the repository's own test guidance** (overdub-10). Its plan named `tools/shell-test.js` as
+  "should run cleanly in the build image", although the app's CLAUDE.md lists `shell` among the Mac-tuned suites.
+  Patchy: the plan prompt should tell the planner to read the repository's test guidance and prefer its CI test command.
+- **The planner caught that the request already existed** (overdub-10). "Add a count-in toggle": the toggle was already
+  on the transport; the plan said so and reduced the change to the one missing behaviour (locking during a take). Good
+  behaviour to show in the docs. Issue authors should check the app before filing.
+- **A flaky check plus `checks.fix` can start a needless CI-fix round** (overdub). `studio-test.js` failed once on main
+  under runner load and passed on re-run. Docs: keep flaky checks out of `checks.fix`, or expect a fix round to look at
+  them.
+- **An interrupted `gh issue create` may already have run** (operator). A stopped command had created intents#10; filing
+  again made a duplicate (#11, cancelled and closed before it planned). Check for an existing issue before re-filing.
+
+## Earlier onboardings
+
+- Hello.Web (W10, 2026-10-03): the onboarding path with released tools, and the docs bugs it found (all fixed in PR
+  108). Details in HANDOFF.md and gbrain page `patchy-w10-live-onboarding-phase1`.

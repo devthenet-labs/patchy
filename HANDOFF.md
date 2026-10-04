@@ -1,5 +1,8 @@
 # Handoff: intent-driven development in patchy
 
+> **Field notes:** [FIELD-NOTES.md](FIELD-NOTES.md) collects what running intents on real applications taught us, as raw
+> material for the docs. Add to it as things happen.
+>
 > **Site values:** this file is public, so the AWS account ID and the owner's preview IP are written as the
 > documentation values `111122223333` and `203.0.113.10/32`. The real ones are in terraform-devthenet's `k8s/` values
 > (private).

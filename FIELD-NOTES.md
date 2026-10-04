@@ -41,6 +41,24 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
 
 ## Running intents
 
+- **A timed-out run records no usage, so the cost ceiling cannot see it** (overdub-10, 2026-10-04). The second build
+  attempt timed out after an hour; its run status has no usage, so the intent reports
+  $3.65 while the broker counted
+  another 2.9 million tokens for that pod (about $1.50 to
+  $2.00 more; the real total is about $5.50). The ceiling is checked against the reported usage, so spend in killed runs
+  is invisible to it. Patchy: record usage for every outcome (from the stream read so far, or the broker's per-pod
+  count).
+- **An agent can wait on one command until the stage times out** (overdub-10 attempt 2). After ten minutes of work it
+  ran `npm run test:ci` (11 browser suites, three at a time) on the 2 vCPU, 3.7 GiB node; the command never returned and
+  the agent sat idle for 50 minutes until the one-hour timeout. The same subset takes under two minutes on a 2 vCPU CI
+  runner with two at a time. Patchy: a no-progress watchdog (no model request for N minutes ends the run with "a command
+  ran N minutes") and right-sized agents (agent resource classes).
+- **The agent handled pre-existing failures well** (overdub-10 attempt 2). It saw `shell-test.js` fail, ran it again on
+  the untouched tree with `git stash` to prove the failures were there before its change, then moved on to the CI
+  subset. Worth showing in the docs as the behaviour a repository's CLAUDE.md test note makes possible.
+- **overdub-10's outcome:** plan $1.45; build attempt 1 failed `report_invalid` ($2.20); attempt 2 timed out (about
+  $1.80, unrecorded). Both attempts used, so the intent ended Failed and nothing more ran: the attempt cap and timeout
+  held.
 - **A report-format slip throws away a whole build** (overdub-10, 2026-10-04). The build ran 110 turns and 31 minutes
   ($2.20) and then failed `report_invalid`: one of its report's notes was 574 characters, over the 500 the build report
   allows. patchy discarded the changeset with it and started a second attempt from scratch in a fresh pod. Patchy: a

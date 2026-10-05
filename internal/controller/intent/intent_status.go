@@ -116,6 +116,20 @@ func (p *pass) statusComment() templates.IntentStatusComment {
 	return c
 }
 
+// failedRunReason is a failed run's outcome and detail as the issue shows
+// them. An unschedulable run's detail quotes the scheduler, whose words
+// describe the cluster's nodes: it stays on the run, which is named instead.
+func failedRunReason(run *v1alpha1.IntentRun) string {
+	switch {
+	case run.Status.Outcome == OutcomeUnschedulable:
+		return run.Status.Outcome + ": no node in the cluster could fit its agent (run " + run.Name +
+			" records why)"
+	case run.Status.Detail == "":
+		return run.Status.Outcome
+	}
+	return run.Status.Outcome + ": " + run.Status.Detail
+}
+
 // failureReason is the latest failed run's outcome and detail, as the
 // Failed status explains itself.
 func (p *pass) failureReason() string {
@@ -123,10 +137,7 @@ func (p *pass) failureReason() string {
 		run := p.runs[i]
 		switch {
 		case run.Status.Phase == v1alpha1.RunFailed:
-			if run.Status.Detail == "" {
-				return run.Status.Outcome
-			}
-			return run.Status.Outcome + ": " + run.Status.Detail
+			return failedRunReason(run)
 		case p.planRefused(run):
 			reason, _ := p.planRefusal(run)
 			return "the plan could not be offered for approval: " + reason

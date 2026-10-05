@@ -692,3 +692,28 @@ func TestProjectResourceClassesCondition(t *testing.T) {
 		})
 	}
 }
+
+// TestFailedRunReasonKeepsTheSchedulerOffGitHub: an intent that ends Failed
+// on an unschedulable run says so on its issue without the scheduler's
+// words, which describe the cluster's nodes; every other failure shows its
+// detail as before.
+func TestFailedRunReasonKeepsTheSchedulerOffGitHub(t *testing.T) {
+	run := func(outcome, detail string) *v1alpha1.IntentRun {
+		r := &v1alpha1.IntentRun{Status: v1alpha1.IntentRunStatus{Phase: v1alpha1.RunFailed, Outcome: outcome,
+			Detail: detail}}
+		r.Name = "target-8-bld-r1-app-a3"
+		return r
+	}
+	got := failedRunReason(run(OutcomeUnschedulable, "no node could fit the agent pod for 10m0s: "+
+		"0/3 nodes are available: 3 Insufficient cpu."))
+	if strings.Contains(got, "Insufficient") || !strings.Contains(got, "target-8-bld-r1-app-a3") {
+		t.Errorf("unschedulable reason = %q, want the run named and no scheduler words", got)
+	}
+	if got := failedRunReason(run(OutcomeAborted, "agent job produced no build event")); got !=
+		"aborted: agent job produced no build event" {
+		t.Errorf("aborted reason = %q", got)
+	}
+	if got := failedRunReason(run("timeout", "")); got != "timeout" {
+		t.Errorf("bare reason = %q", got)
+	}
+}

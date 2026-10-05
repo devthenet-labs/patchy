@@ -288,6 +288,10 @@ The genuinely shared settings stay global:
   `modelAllowlist` (canonical, provider-qualified model ids), `investigate.*` (absolute), `remediate.*` (`auto.*` is
   what an unattended fix gets and the line past which an estimate needs approval, `manual.*` the most an approval can
   grant; `model` is the fallback when the report's choice is off the allowlist).
+- `agent.resources.*` — CPU and memory for the agent Jobs: `default` (every Job without a class; `{}`, the default, sets
+  none) and `classes` (named sizes a Project picks per repository with `agentResourceClass`, for its intent builds,
+  revise and check-fix rounds; the largest is the most any agent Job can request). Each key renders only when set. See
+  [Sizing agents](../../docs/intents/deploying.md#sizing-agents) in the docs.
 - `agent.runners.<harness>` — the per-harness runner fleet: `enabled`, the runner `image` (default
   `<prefix>/<harness>-agent-runner`; pinning its digest is one knob, unlike kustomize's two), and — for the non-brokered
   codex/copilot — the credential `secret`/`secretKey`/`secretEnv` and egress `hosts`/`dnsPatterns`. The claude runner is

@@ -86,6 +86,7 @@ projects:
       repositories:
         - name: target
           url: https://github.com/acme/target
+          # agentResourceClass: large  # one of the patchy chart's agent.resources.classes
 ```
 
 Prefer applying the CRs yourself? Skip this chart and `kubectl apply` the same objects — the chart is a convenience, not

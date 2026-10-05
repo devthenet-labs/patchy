@@ -1356,6 +1356,62 @@ context:
 A deploy triggered by `pull_request` cannot be gated by an Environment branch rule, because GitHub checks
 `refs/pull/N/merge`.
 
+## Agent resource classes
+
+**Why.** Agent Jobs requested no CPU or memory, so EKS Auto Mode placed them as BestEffort pods on whatever node had
+room. overdub-10's build ran its Chromium test subset on a shared 2-vCPU `c6a.large` and waited out its one-hour timeout
+on a command that takes two minutes on a CI runner (FIELD-NOTES.md).
+
+**Decision.** Operator-defined classes, picked per repository by name (option C of three):
+
+- The patchy chart defines `agent.resources.default`, which every agent Job gets (`{}`, the default, is the previous Job
+  exactly), and `agent.resources.classes`, name to requests (CPU and memory) and limits (memory, and optionally CPU).
+  The classes reach intent-controller as `--intent-resource-classes` JSON, validated whole at startup by
+  `internal/resourceclass`, which is pure (the standard library and apimachinery's quantity) so the CLI can read the
+  same menu later.
+- `spec.repositories[].agentResourceClass`, a DNS-label string, picks one for that repository's build, revise and
+  check-fix runs. Plans, Findings and evaluations stay on the default.
+- The class list is the spend ceiling: the largest class is the most any agent Job can request.
+
+**Alternatives.** (A) CPU and memory numbers on the Project, capped by operator ceiling flags: direct, but the first
+int-or-string quantity in these CRDs, with quantity CEL pushed through the generated patchy-config schema, and a ceiling
+reasoned from two scalars rather than read off a list. Its request-above-limit risk came from merging the Project's
+numbers into the default key by key; replacing the default as a whole, as a class does, would remove it. (B) The
+repository declares its needs in `.patchy/agent.yaml`: sizing travels with the toolchain, but it hands cluster spend to
+repository content, including repositories no Project lists (Findings arrive for any repository a Forge covers), and the
+fail-closed parser would reject the image of a repository that adopts the key before the controllers know it. B can
+return in a safe form: a repository naming a class from the same list.
+
+**Rules the implementation holds.**
+
+- A class is validated whole at startup: positive quantities within sanity bounds (10m to 64 CPUs, 128Mi to 512Gi), each
+  request at or below its limit, a memory limit required (it may exceed the request, never forced equal to it), at most
+  16 classes with DNS-label names. A bad class stops the controller from starting; it never becomes a Job the API server
+  refuses, which would spend an attempt.
+- An unknown class (a typo, a removal, the two releases upgraded out of order) neither loops the scheduler nor spends
+  attempts. `launchable()` refuses the run, as it does a run whose repository left the Project, so it is never granted a
+  slot; without that, grant and hand-back would repeat every pass at the head of the queue and starve the runs that can
+  launch. `launch()` keeps a backstop before any GitHub read. The run waits `Pending`; its Intent is `Blocked`
+  (`ResourcesUnavailable`, `UnknownResourceClass`) and resumes by itself; the Project keeps `Ready` beside a
+  non-blocking `ResourceClassesResolved: False`, so discovery and plans go on. Falling back to the default was rejected:
+  a build that needs 4 CPUs on a BestEffort pod reproduces the original failure while looking healthy.
+- The classes are a field of each reconciler, like `Images`, never part of `Settings`, which serve_test compares by
+  value.
+- A pod `Unschedulable` for 10 minutes is stopped: its Job is deleted and the run settles `unschedulable`, not counted
+  (the agent never ran) and not retried (a retry would wait the same way). A plan or build blocks its Intent until the
+  Project changes or the controller restarts; a revise round ends. Attempt numbers stay capped by `MaxIntentRunAttempt`,
+  so restarts cannot retry forever.
+- A run whose agent reported nothing says why when the Job does: OOM-killed (naming the limit and the class), evicted,
+  or past its deadline.
+- Every agent pod carries `karpenter.sh/do-not-disrupt: "true"`. Agent Jobs run once (`backoffLimit: 0`), so a
+  consolidation eviction would end a run with nothing to show. This is the one deliberate change to the default Job;
+  with `agent.resources` unset, no other byte of any Job or ConfigMap changes.
+
+**Later.** A less-trusted selector of a class (an evaluation submission, a repository's `agent.yaml`, a Finding's
+Integration) needs a per-selector allowlist first: the menu bounds how large one Job can be, not who may pick the
+largest. Placement per class (a node selector, tolerations, a NodePool whose `spec.limits` caps the total) can join the
+class JSON later; its strict decoder makes a new field an additive change.
+
 ## Security posture changes
 
 1. **A second code path writes to forges.** DESIGN.md and forgewriter.go:16-20 say remediation-controller is the only

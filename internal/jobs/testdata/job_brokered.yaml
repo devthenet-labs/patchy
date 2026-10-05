@@ -17,6 +17,7 @@ spec:
   template:
     metadata:
       annotations:
+        karpenter.sh/do-not-disrupt: "true"
         patchy.bitwisemedia.uk/repo: octo/repo
       labels:
         app.kubernetes.io/managed-by: patchy

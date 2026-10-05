@@ -1,15 +1,16 @@
 metadata:
   annotations:
     patchy.bitwisemedia.uk/repo: octo/repo
+    patchy.bitwisemedia.uk/resource-class: large
   labels:
     app.kubernetes.io/managed-by: patchy
     app.kubernetes.io/name: patchy-agent
     patchy.bitwisemedia.uk/attempt: "1"
-    patchy.bitwisemedia.uk/finding: finding-abc123def0-1
-    patchy.bitwisemedia.uk/harness: codex
-    patchy.bitwisemedia.uk/kind: remediation
-    patchy.bitwisemedia.uk/owner: finding-abc123def0-1-rem-1
-  name: patchy-f41d59eea6-rem-a1
+    patchy.bitwisemedia.uk/finding: target-1-b1-web-a1
+    patchy.bitwisemedia.uk/harness: claude
+    patchy.bitwisemedia.uk/kind: intent
+    patchy.bitwisemedia.uk/owner: target-1-b1-web-a1
+  name: patchy-123f0ca55a-int-a1
   namespace: patchy-agents
 spec:
   activeDeadlineSeconds: 3600
@@ -19,14 +20,15 @@ spec:
       annotations:
         karpenter.sh/do-not-disrupt: "true"
         patchy.bitwisemedia.uk/repo: octo/repo
+        patchy.bitwisemedia.uk/resource-class: large
       labels:
         app.kubernetes.io/managed-by: patchy
         app.kubernetes.io/name: patchy-agent
         patchy.bitwisemedia.uk/attempt: "1"
-        patchy.bitwisemedia.uk/finding: finding-abc123def0-1
-        patchy.bitwisemedia.uk/harness: codex
-        patchy.bitwisemedia.uk/kind: remediation
-        patchy.bitwisemedia.uk/owner: finding-abc123def0-1-rem-1
+        patchy.bitwisemedia.uk/finding: target-1-b1-web-a1
+        patchy.bitwisemedia.uk/harness: claude
+        patchy.bitwisemedia.uk/kind: intent
+        patchy.bitwisemedia.uk/owner: target-1-b1-web-a1
     spec:
       containers:
       - command:
@@ -39,35 +41,34 @@ spec:
         - name: PATCHY_REPO
           value: octo/repo
         - name: PATCHY_PHASE
-          value: remediate
+          value: build
         - name: PATCHY_FINDING
-          value: finding-abc123def0-1
+          value: target-1-b1-web-a1
         - name: PATCHY_BASE_SHA
           value: 0123456789abcdef0123456789abcdef01234567
         - name: PATCHY_REMEDIATE_HARNESS
-          value: codex
+          value: claude
         - name: PATCHY_REMEDIATE_MODEL
-          value: openai/gpt-5-codex
+          value: anthropic/claude-sonnet-5
         - name: PATCHY_GRANTED_MAX_TURNS
-          value: "120"
+          value: "150"
         - name: PATCHY_GRANTED_TOKEN_BUDGET
-          value: "600000"
+          value: "800000"
         - name: PATCHY_INVESTIGATE_TIMEOUT
           value: 15m
-        - name: OPENAI_API_KEY
+        - name: ANTHROPIC_API_KEY
           valueFrom:
             secretKeyRef:
               key: api-key
-              name: openai
-        image: ghcr.io/bitwise-media-group/patchy/codex-agent-runner:1
+              name: anthropic
+        image: ghcr.io/bitwise-media-group/patchy/claude-agent-runner:1
         name: agent
         resources:
           limits:
-            cpu: "2"
-            memory: 4Gi
+            memory: 10Gi
           requests:
-            cpu: 500m
-            memory: 1Gi
+            cpu: "4"
+            memory: 8Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -113,15 +114,14 @@ spec:
           value: http://patchy-source-controller.patchy.svc.cluster.local:9790/artifacts/deadbeef.tar.gz
         - name: PATCHY_ARTIFACT_DIGEST
           value: aa11bb22cc33dd44ee55ff6600112233445566778899aabbccddeeff00112233
-        image: ghcr.io/bitwise-media-group/patchy/codex-agent-runner:1
+        image: ghcr.io/bitwise-media-group/patchy/claude-agent-runner:1
         name: prepare
         resources:
           limits:
-            cpu: "2"
-            memory: 4Gi
+            memory: 10Gi
           requests:
-            cpu: 500m
-            memory: 1Gi
+            cpu: "4"
+            memory: 8Gi
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -154,6 +154,6 @@ spec:
         name: tmp
       - name: input
         secret:
-          secretName: patchy-f41d59eea6-rem-a1
+          secretName: patchy-123f0ca55a-int-a1
   ttlSecondsAfterFinished: 7200
 status: {}

@@ -986,6 +986,52 @@ agent:
     # Job execution limits (both job controllers).
     jobDeadline: 1h
     jobTTL: 1h
+    # CPU and memory for the agent Jobs, on both containers of each (the
+    # prepare init and the agent). A quantity may be quoted or not (cpu: 4,
+    # cpu: 3500m, memory: 8Gi). Each is checked when a controller starts:
+    # positive, between 10m and 64 CPUs or 128Mi and 512Gi of memory, and each
+    # request at or below its limit, so a size the API server would refuse, or
+    # a typo such as 3500 for 3500m, stops the new controller from starting
+    # with a message naming it, never a run that fails. Ephemeral storage is
+    # not here: it is agent.repositoryImages.ephemeralStorage.
+    resources:
+        # What every agent Job gets: Finding investigate and remediate Jobs,
+        # intent plans, evaluation units, and the intent builds of a
+        # repository that picks no class below. Any of requests.cpu,
+        # requests.memory, limits.cpu and limits.memory may be set. {} sets
+        # none: the Jobs are exactly what patchy ran before this setting
+        # existed (BestEffort pods, placed anywhere and evicted first). Setting
+        # it rolls investigation-, remediation-, intent- and
+        # evaluation-controller.
+        default: {}
+        # Named sizes a Project picks per repository
+        # (spec.repositories[].agentResourceClass in patchy-config) for that
+        # repository's intent build, revise and check-fix runs. Plans, Findings
+        # and evaluations stay on the default. A class replaces the default's
+        # CPU and memory as a whole, and must set requests.cpu, requests.memory
+        # and limits.memory. limits.cpu is optional and best left off, because
+        # a CPU limit throttles browser and Node test suites. Keep limits.memory
+        # somewhat above the request: a container that reaches its memory limit
+        # is OOM-killed whole, agent included, and the run's detail then names
+        # the class to raise.
+        #
+        # This list is the spend ceiling. A Project can pick only a class
+        # defined here, so the largest class is the most any one agent Job can
+        # request. Up to 16 classes, each named by a DNS label of at most 32
+        # characters. Setting it rolls intent-controller only. A Project that
+        # picks a class not defined here holds that repository's builds (its
+        # intent is Blocked with ResourcesUnavailable, no attempt spent) until
+        # the class is defined or the pick changes; upgrade this chart before
+        # patchy-config picks a new class. For example:
+        #
+        # classes:
+        #     large:
+        #         requests:
+        #             cpu: 4
+        #             memory: 8Gi
+        #         limits:
+        #             memory: 10Gi
+        classes: {}
     # The agent stages. The investigate limits are absolute — that stage runs
     # on exactly these.
     #

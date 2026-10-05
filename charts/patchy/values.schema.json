@@ -9,6 +9,37 @@
             "description": "Go duration, e.g. 60s, 2m, 1h30m",
             "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
         },
+        "agentQuantity": {
+            "type": ["string", "number"],
+            "description": "A positive Kubernetes quantity, quoted or not: 4, 0.5, 3500m, 8Gi. intent-controller and the job controllers check it further at startup (between 10m and 64 CPUs or 128Mi and 512Gi of memory, a request at or below its limit).",
+            "pattern": "^([0-9]*[1-9][0-9]*(\\.[0-9]*)?|[0-9]*\\.[0-9]*[1-9][0-9]*)([KMGTPE]i|[numkMGTPE])?$",
+            "exclusiveMinimum": 0
+        },
+        "agentQuantities": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "cpu": {"$ref": "#/definitions/agentQuantity"},
+                "memory": {"$ref": "#/definitions/agentQuantity"}
+            }
+        },
+        "agentResources": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "requests": {"$ref": "#/definitions/agentQuantities"},
+                "limits": {"$ref": "#/definitions/agentQuantities"}
+            }
+        },
+        "agentResourceClass": {
+            "description": "One named size: requests.cpu, requests.memory and limits.memory are required; limits.cpu is optional.",
+            "allOf": [{"$ref": "#/definitions/agentResources"}],
+            "required": ["requests", "limits"],
+            "properties": {
+                "requests": {"required": ["cpu", "memory"]},
+                "limits": {"required": ["memory"]}
+            }
+        },
         "logLevel": {
             "type": "string",
             "description": "slog level for the controller's stderr logger",
@@ -1681,6 +1712,27 @@
                 },
                 "jobTTL": {
                     "$ref": "#/definitions/duration"
+                },
+                "resources": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "CPU and memory for the agent Jobs: the default every one gets, and the named classes a Project picks per repository for its intent builds. Ephemeral storage is agent.repositoryImages.ephemeralStorage, not a key here.",
+                    "properties": {
+                        "default": {
+                            "$ref": "#/definitions/agentResources"
+                        },
+                        "classes": {
+                            "type": "object",
+                            "description": "Class name (a DNS label of at most 32 characters) to its size; at most 16. The largest is the most any one agent Job can request.",
+                            "maxProperties": 16,
+                            "propertyNames": {
+                                "pattern": "^[a-z0-9]([-a-z0-9]{0,30}[a-z0-9])?$"
+                            },
+                            "additionalProperties": {
+                                "$ref": "#/definitions/agentResourceClass"
+                            }
+                        }
+                    }
                 },
                 "modelAllowlist": {
                     "type": "string"

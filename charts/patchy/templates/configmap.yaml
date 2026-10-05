@@ -23,6 +23,12 @@
 # ConfigMap source-controller mounts (last in this file). Its render-time
 # guards run here, because this file always renders.
 #
+# agent.resources.default, when any of it is set, adds the PATCHY_AGENT_* CPU
+# and memory keys to the investigation-, remediation- and intent-controller
+# data (evaluation-controller.yaml adds them to its own); agent.resources.classes
+# adds PATCHY_INTENT_RESOURCE_CLASSES to intent-controller's alone. Unset, they
+# render nothing.
+#
 # The optional intent-controller renders its ConfigMap from the same define
 # below, but from its own template (intent-controller.yaml), so the whole
 # component stays behind intentController.enabled.
@@ -164,6 +170,7 @@ namespace for claude anymore.
 {{- $_ := set $data "PATCHY_REMEDIATE_AUTO_TOKEN_BUDGET" $root.Values.agent.remediate.auto.tokenBudget }}
 {{- $_ := set $data "PATCHY_REMEDIATE_MANUAL_MAX_TURNS" $root.Values.agent.remediate.manual.maxTurns }}
 {{- $_ := set $data "PATCHY_REMEDIATE_MANUAL_TOKEN_BUDGET" $root.Values.agent.remediate.manual.tokenBudget }}
+{{- $_ := include "patchy.agentResourcesData" (dict "root" $root "data" $data) }}
 {{- if eq $c.name "investigation-controller" }}
 {{- $_ := set $data "PATCHY_FINDING_MIN_AGE" $own.findingMinAge }}
 {{- $_ := set $data "PATCHY_GATE_CONCURRENCY" $own.gateConcurrency }}
@@ -237,6 +244,16 @@ is its own: a build stage alone may take an hour.
 {{- $_ := set $data "PATCHY_INTENT_REVISE_TIMEOUT" $own.revise.timeout }}
 {{- with $own.revise.idleTimeout }}
 {{- $_ := set $data "PATCHY_INTENT_REVISE_IDLE_TIMEOUT" . }}
+{{- end }}
+{{- /*
+Plans, and the builds of a repository that picks no class, run on the default
+CPU and memory; the classes a Project picks from per repository are
+intent-controller's alone. Neither renders while unset, so the default
+ConfigMap is unchanged.
+*/}}
+{{- $_ := include "patchy.agentResourcesData" (dict "root" $root "data" $data) }}
+{{- with ($root.Values.agent.resources | default dict).classes }}
+{{- $_ := set $data "PATCHY_INTENT_RESOURCE_CLASSES" (toJson .) }}
 {{- end }}
 {{- $ri := $root.Values.agent.repositoryImages | default dict }}
 {{- if $ri.enabled }}

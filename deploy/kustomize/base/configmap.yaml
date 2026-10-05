@@ -140,6 +140,18 @@ data:
     PATCHY_COPILOT_SECRET_ENV: COPILOT_GITHUB_TOKEN
     PATCHY_JOB_DEADLINE: 1h
     PATCHY_JOB_TTL: 1h
+    # CPU and memory on both containers of every agent Job (both job
+    # controllers, intent-controller's plans and evaluation-controller's units
+    # read them too), each a quantity such as 500m or 2Gi. Unset (as here),
+    # a Job requests and limits none: BestEffort pods, exactly as before these
+    # keys existed. Every one set is checked at startup: positive, between 10m
+    # and 64 CPUs or 128Mi and 512Gi, and each request at or below its limit.
+    # A CPU limit throttles browser and Node test suites; prefer none.
+    #
+    # PATCHY_AGENT_CPU_REQUEST: 500m
+    # PATCHY_AGENT_MEMORY_REQUEST: 1Gi
+    # PATCHY_AGENT_MEMORY_LIMIT: 2Gi
+    # PATCHY_AGENT_CPU_LIMIT: "2"
 
     # ---- the agent stages ---------------------------------------------------
     # The job controllers pass these through to every agent pod, where

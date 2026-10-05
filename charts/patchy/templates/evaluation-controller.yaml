@@ -100,6 +100,8 @@ broker/provider stamps replace the PATCHY_CLAUDE_SECRET* keys.
 {{- fail "evaluationController.enabled requires at least one evaluationController.runners.<harness>.enabled" }}
 {{- end }}
 {{- $_ := set $data "PATCHY_HARNESSES" (join "," $enabled) }}
+{{- /* The agent Jobs' default CPU and memory, rendered only when set. */}}
+{{- $_ := include "patchy.agentResourcesData" (dict "root" $ "data" $data) }}
 {{- range $k, $v := .Values.config.extra }}
 {{- $_ := set $data $k $v }}
 {{- end }}

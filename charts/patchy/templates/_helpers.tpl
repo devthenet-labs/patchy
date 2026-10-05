@@ -213,6 +213,25 @@ the broker, not the agent namespace.
 {{- end }}
 
 {{/*
+The agent Jobs' default CPU and memory (agent.resources.default) as the four
+PATCHY_AGENT_* keys every controller that launches agent Jobs binds
+(investigation, remediation, intent and evaluation): set into .data, each only
+when its quantity is set, so the default {} leaves every ConfigMap, and with it
+every checksum/config, exactly as it was. Context: dict "root" $ "data" <dict>.
+*/}}
+{{- define "patchy.agentResourcesData" -}}
+{{- $d := (.root.Values.agent.resources | default dict).default | default dict -}}
+{{- range $side, $keys := dict "requests" (dict "cpu" "PATCHY_AGENT_CPU_REQUEST" "memory" "PATCHY_AGENT_MEMORY_REQUEST") "limits" (dict "cpu" "PATCHY_AGENT_CPU_LIMIT" "memory" "PATCHY_AGENT_MEMORY_LIMIT") -}}
+{{- $q := index $d $side | default dict -}}
+{{- range $name, $key := $keys -}}
+{{- if hasKey $q $name -}}
+{{- $_ := set $.data $key (index $q $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Render a map as the comma-joined key=value wire form the runnercfg flags
 parse (--claude-model-map, --claude-provider-env). Keys sort deterministically.
 */}}

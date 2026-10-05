@@ -22,6 +22,7 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/kube"
 	"github.com/bitwise-media-group/patchy/internal/model"
+	"github.com/bitwise-media-group/patchy/internal/resourceclass"
 	"github.com/bitwise-media-group/patchy/internal/runnercfg"
 	"github.com/bitwise-media-group/patchy/internal/runnerguard"
 	"github.com/bitwise-media-group/patchy/internal/telemetry"
@@ -81,6 +82,11 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 		"end a revise or check-fix run that makes no progress (no model turn, no tool result) for this long; 0 disables")
 	f.String("intent-plan-model", "anthropic/claude-sonnet-5", "canonical model the plan stage runs")
 	f.String("intent-build-model", "anthropic/claude-sonnet-5", "canonical model the build stage runs")
+	f.String("intent-resource-classes", "",
+		"the operator's agent resource classes as JSON, name to {requests: {cpu, memory}, limits: {memory, cpu}} "+
+			"(a CPU limit is optional); a Project picks one per repository (agentResourceClass) for that "+
+			"repository's build, revise and check-fix runs, and nothing can ask for more than the largest. "+
+			"Empty defines none")
 
 	f.String("agent-namespace", "patchy-agents", "namespace the agent Jobs run in")
 	f.String("agent-service-account", "patchy-agent", "service account for the agent Jobs")
@@ -166,6 +172,18 @@ func settings(opts *cli.Options, namespace, agentNS string) (intent.Settings, er
 	return s, nil
 }
 
+// resourceClasses reads --intent-resource-classes: every class validated as
+// a whole before the controller starts, so a size the API server would
+// refuse, or a typo, is a startup error naming the class rather than a run
+// that fails or waits out its deadline.
+func resourceClasses(opts *cli.Options) (resourceclass.Set, error) {
+	classes, err := resourceclass.Parse(opts.String("intent-resource-classes"))
+	if err != nil {
+		return nil, fmt.Errorf("--intent-resource-classes: %w", err)
+	}
+	return classes, nil
+}
+
 // harness resolves the one harness both intent stages run on: intents run
 // on brokered claude only (no other harness honours the sandbox postures),
 // or on the fake harness in dev and tests.
@@ -236,6 +254,10 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		return err
 	}
 	cpuRequest, memoryRequest, cpuLimit, memoryLimit := agentResources.Strings()
+	classes, err := resourceClasses(opts)
+	if err != nil {
+		return err
+	}
 	if opts.Int("changeset-max-entries") <= 0 {
 		return errors.New("--changeset-max-entries must be positive")
 	}
@@ -295,13 +317,14 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	nudger := intent.NewNudger()
 
 	if err := (&intent.ProjectReconciler{
-		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), GitHub: gh, Settings: set, Nudger: nudger, Log: log,
+		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), GitHub: gh, Settings: set, Classes: classes,
+		Nudger: nudger, Log: log,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
 	if err := (&intent.IntentReconciler{
 		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), GitHub: gh, Settings: set, Images: images,
-		Nudger: nudger, Log: log,
+		Classes: classes, Nudger: nudger, Log: log,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -309,7 +332,7 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Jobs: runner, GitHub: gh, Settings: set,
 		MaxConcurrent: opts.Int("intent-max-concurrent-runs"), Harness: harnessID,
 		PlanModel: opts.String("intent-plan-model"), BuildModel: opts.String("intent-build-model"),
-		Images: images, MaxChangesetEntries: opts.Int("changeset-max-entries"), Log: log,
+		Images: images, Classes: classes, MaxChangesetEntries: opts.Int("changeset-max-entries"), Log: log,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -332,7 +355,9 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		slog.String("harness", harnessID),
 		slog.Int("max_concurrent_runs", opts.Int("intent-max-concurrent-runs")),
 		slog.Bool("multi_repo", set.MultiRepo),
-		slog.Bool("repository_images", repositoryImages))
+		slog.Bool("repository_images", repositoryImages),
+		slog.String("agent_resources", agentResources.String()),
+		slog.String("resource_classes", classes.Describe()))
 
 	if err := mgr.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err

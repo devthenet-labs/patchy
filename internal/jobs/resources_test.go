@@ -210,6 +210,12 @@ func TestStatusReadsResourcesAndScheduling(t *testing.T) {
 	if st.ResourceClass != "large" || st.MemoryLimit != "10Gi" {
 		t.Errorf("class, memory limit = %q, %q; want large, 10Gi", st.ResourceClass, st.MemoryLimit)
 	}
+	if want := "requests cpu 4, memory 8Gi; limits memory 10Gi"; st.Resources != want {
+		t.Errorf("resources = %q, want %q", st.Resources, want)
+	}
+	if st.Scheduled {
+		t.Error("an unschedulable pod reads as scheduled")
+	}
 	if st.Unschedulable != "0/2 nodes are available: 2 Insufficient cpu." || !st.UnschedulableSince.Equal(since) {
 		t.Errorf("unschedulable = %q since %v", st.Unschedulable, st.UnschedulableSince)
 	}
@@ -226,10 +232,16 @@ func TestStatusReadsResourcesAndScheduling(t *testing.T) {
 	if msg, _ := unschedulable(pod); msg != "" {
 		t.Errorf("a scheduled pod reads unschedulable %q", msg)
 	}
+	var scheduled Status
+	podStatus(&scheduled, pod)
+	if !scheduled.Scheduled || scheduled.Unschedulable != "" {
+		t.Errorf("a scheduled pod reads scheduled %v, unschedulable %q", scheduled.Scheduled, scheduled.Unschedulable)
+	}
 	// A default Job: no class, no memory limit.
 	def := statusOf(buildJobForTest(t, noResourcesConfig(), testSpec()))
-	if def.ResourceClass != "" || def.MemoryLimit != "" {
-		t.Errorf("default Job class, memory limit = %q, %q; want none", def.ResourceClass, def.MemoryLimit)
+	if def.ResourceClass != "" || def.MemoryLimit != "" || def.Resources != "no requests or limits" {
+		t.Errorf("default Job class, memory limit, resources = %q, %q, %q; want none", def.ResourceClass,
+			def.MemoryLimit, def.Resources)
 	}
 }
 

@@ -28,6 +28,7 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/forge"
 	"github.com/bitwise-media-group/patchy/internal/ghclient"
 	"github.com/bitwise-media-group/patchy/internal/intentperm"
+	"github.com/bitwise-media-group/patchy/internal/resourceclass"
 )
 
 // Project Ready reasons this controller sets beside the API's own.
@@ -72,6 +73,10 @@ type ProjectReconciler struct {
 	APIReader client.Reader
 	GitHub    GitHub
 	Settings  Settings
+	// Classes are the operator's resource classes, against which the
+	// ResourceClassesResolved condition is judged. Held here rather than in
+	// Settings, which stays comparable.
+	Classes resourceclass.Set
 	// Nudger hands a trigger on an ended Intent's issue to that Intent.
 	Nudger *Nudger
 	Now    func() time.Time
@@ -157,6 +162,9 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.revalidate(ctx, &p, cur, poll, now, settings.PollInterval); err != nil {
 		return ctrl.Result{}, fmt.Errorf("project %s: validate: %w", p.Name, err)
 	}
+	// A warning beside Ready, never part of it: an unknown class holds the
+	// builds of its repository alone, so discovery and plans go on.
+	setResourceClasses(cur, r.Classes)
 	cur.Status.ObservedGeneration = p.Generation
 
 	var intents v1alpha1.IntentList

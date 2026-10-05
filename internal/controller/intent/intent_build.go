@@ -84,10 +84,11 @@ func (p *pass) building(ctx context.Context) (bool, error) {
 		return true, p.fail(ctx)
 	}
 	var (
-		launches []buildLaunch
-		inFlight []*v1alpha1.IntentRun
-		blocked  *v1alpha1.IntentRun
-		complete int
+		launches    []buildLaunch
+		inFlight    []*v1alpha1.IntentRun
+		blocked     *v1alpha1.IntentRun
+		unplaceable *v1alpha1.IntentRun
+		complete    int
 	)
 	for _, repo := range repos {
 		rs := p.round(v1alpha1.IntentStageBuild, ap.PlanRevision, repo.URL)
@@ -111,6 +112,16 @@ func (p *pass) building(ctx context.Context) (bool, error) {
 			if blocked == nil {
 				blocked = latest
 			}
+		case resourcesBlocked(latest):
+			if rs.next() > v1alpha1.MaxIntentRunAttempt {
+				p.r.log().LogAttrs(ctx, slog.LevelWarn,
+					"the build's attempts are spent on unschedulable pods; the intent fails",
+					slog.String("intent", p.in.Name), slog.String("run", latest.Name))
+				return true, p.fail(ctx)
+			}
+			if unplaceable == nil {
+				unplaceable = latest
+			}
 		case rs.counted(nil) >= p.set.MaxAttempts:
 			return true, p.fail(ctx)
 		default:
@@ -121,6 +132,15 @@ func (p *pass) building(ctx context.Context) (bool, error) {
 		return true, p.block(ctx, v1alpha1.ConditionImageRequired, imageReason(blocked),
 			fmt.Sprintf("the build%s could not run on an accepted repository image: %s",
 				p.inRepository(blocked.Spec.Repository.URL), blocked.Status.Detail))
+	}
+	if unplaceable != nil {
+		return true, p.blockUnschedulable(ctx, unplaceable)
+	}
+	// A build waiting on a resource class intent-controller does not define
+	// blocks the Intent once it exists (never before: the other
+	// repositories' builds are created, and run, beside it).
+	if held, err := p.blockOnClass(ctx, inFlight); held || err != nil {
+		return held, err
 	}
 	if complete == len(repos) {
 		return p.openPullRequests(ctx, ap.PlanRevision, repos)

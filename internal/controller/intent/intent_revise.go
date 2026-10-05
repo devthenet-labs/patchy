@@ -97,6 +97,9 @@ func (p *pass) revising(ctx context.Context) (bool, error) {
 		if blocked, err := p.missingPendingReviseBranch(ctx, run); blocked || err != nil {
 			return blocked, err
 		}
+		if held, err := p.blockOnClass(ctx, []*v1alpha1.IntentRun{run}); held || err != nil {
+			return held, err
+		}
 		return p.ensureActive(ctx, run)
 	}
 }
@@ -132,8 +135,12 @@ func (p *pass) missingPendingReviseBranch(ctx context.Context, run *v1alpha1.Int
 // serialised per Intent, a round left waiting would hold up every other pull
 // request's.
 func (p *pass) failedRevise(ctx context.Context, run *v1alpha1.IntentRun, rs roundRuns) (bool, error) {
+	// A round whose pod no node could fit ends, as one with no image to run
+	// on does: another attempt would wait the same way, and the round's
+	// notice says why; a check-fix round's failures are consumed with it.
 	if run.Status.Outcome == OutcomeInputUnavailable || run.Status.Outcome == OutcomeImageRequired ||
-		run.Status.Outcome == OutcomeNoUsableFeedback || !p.roundOpen(run) {
+		run.Status.Outcome == OutcomeNoUsableFeedback || run.Status.Outcome == OutcomeUnschedulable ||
+		!p.roundOpen(run) {
 		return p.endReviseRound(ctx, run)
 	}
 	if p.leftProject(run.Spec.Repository.URL) {
@@ -228,6 +235,12 @@ func (p *pass) finishPRRound(ctx context.Context, run *v1alpha1.IntentRun) error
 		label = templates.CIFixRound(checks)
 	}
 	body := marker + "\n" + label + " ended without a recorded completed push." + tail
+	if run.Status.Outcome == OutcomeUnschedulable {
+		// The scheduler's words name the cluster's nodes: they stay on the
+		// run, for the operator, and never reach the pull request.
+		body = marker + "\n" + label + " stopped: no node in the cluster could fit its agent, so it never ran " +
+			"and nothing was pushed. The operator can see why on the intent's run." + tail
+	}
 	if run.Status.Outcome == OutcomeNoUsableFeedback {
 		body = marker + "\nRevision round stopped: no usable feedback was found after filtering." + tail
 		if run.Status.JobRef == nil {

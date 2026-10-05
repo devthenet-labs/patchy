@@ -6,6 +6,8 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -57,6 +59,13 @@ type Status struct {
 	// set none. A collector names both when the agent was OOM-killed.
 	ResourceClass string
 	MemoryLimit   string
+	// Resources describes the agent container's requests and limits as the
+	// Job asked for them ("requests cpu 4, memory 8Gi; limits memory
+	// 10Gi"), for a collector to name when no node could fit the pod.
+	Resources string
+	// Scheduled means the pod's PodScheduled condition is True: a node took
+	// it, and it can never be unschedulable again.
+	Scheduled bool
 	// Unschedulable is the scheduler's message while the pod's PodScheduled
 	// condition is False with reason Unschedulable (no node fits it, and
 	// none has been added that does yet), empty otherwise;
@@ -136,6 +145,11 @@ func podStatus(s *Status, pod *corev1.Pod) {
 	s.AgentStarted = agentStarted(pod)
 	s.InitExitCode = prepareExitCode(pod)
 	s.Unschedulable, s.UnschedulableSince = unschedulable(pod)
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodScheduled && c.Status == corev1.ConditionTrue {
+			s.Scheduled = true
+		}
+	}
 	if agent := agentStatus(pod); agent != nil && agent.State.Terminated != nil {
 		s.AgentTerminated = agent.State.Terminated.Reason
 		s.AgentExitCode = new(agent.State.Terminated.ExitCode)
@@ -192,9 +206,13 @@ func statusOf(job *batchv1.Job) Status {
 	}
 	s.ResourceClass = job.Annotations[AnnotationResourceClass]
 	for _, ct := range job.Spec.Template.Spec.Containers {
-		if mem, ok := ct.Resources.Limits[corev1.ResourceMemory]; ok && ct.Name == agentContainerName {
+		if ct.Name != agentContainerName {
+			continue
+		}
+		if mem, ok := ct.Resources.Limits[corev1.ResourceMemory]; ok {
 			s.MemoryLimit = mem.String()
 		}
+		s.Resources = describeResources(ct.Resources)
 	}
 	for _, cond := range job.Status.Conditions {
 		terminal := cond.Type == batchv1.JobComplete || cond.Type == batchv1.JobFailed
@@ -206,6 +224,36 @@ func statusOf(job *batchv1.Job) Status {
 		}
 	}
 	return s
+}
+
+// describeResources renders a container's requests and limits for a human,
+// each list by resource name: "requests cpu 4, memory 8Gi; limits memory
+// 10Gi", or "no requests or limits".
+func describeResources(rr corev1.ResourceRequirements) string {
+	list := func(rl corev1.ResourceList) string {
+		names := make([]string, 0, len(rl))
+		for name := range rl {
+			names = append(names, string(name))
+		}
+		slices.Sort(names)
+		parts := make([]string, 0, len(names))
+		for _, name := range names {
+			q := rl[corev1.ResourceName(name)]
+			parts = append(parts, name+" "+q.String())
+		}
+		return strings.Join(parts, ", ")
+	}
+	var out []string
+	if l := list(rr.Requests); l != "" {
+		out = append(out, "requests "+l)
+	}
+	if l := list(rr.Limits); l != "" {
+		out = append(out, "limits "+l)
+	}
+	if len(out) == 0 {
+		return "no requests or limits"
+	}
+	return strings.Join(out, "; ")
 }
 
 // agentWaiting returns the agent container's waiting reason and message, or

@@ -123,6 +123,7 @@ type claudeUsage struct {
 type claudeEvent struct {
 	Type    string `json:"type"`
 	Message struct {
+		ID      string        `json:"id"`
 		Role    string        `json:"role"`
 		Content []claudeBlock `json:"content"`
 		Usage   *claudeUsage  `json:"usage"`
@@ -372,6 +373,55 @@ func scanStreamUsage(line []byte) (int, bool) {
 		return 0, false
 	}
 	return *ev.Message.Usage.OutputTokens, true
+}
+
+// StreamUsage tallies the usage claude's assistant events reported; see
+// streamUsage.
+func (c *Claude) StreamUsage(stdout []byte) *Usage { return streamUsage(stdout) }
+
+// streamUsage tallies the usage claude's assistant events reported, for a run
+// that ended without the result event that totals it. The CLI emits one
+// assistant event per content block, and every event of one API message
+// repeats that message's usage, so the tally counts each message once, keyed
+// by its id, taking each field's largest value across its events; an event
+// with no id has nothing to merge on and counts as its own message.
+//
+// The input side (fresh input, cache reads, cache writes) is what the API
+// reported for each call, so it is exact. The output side is a floor: the CLI
+// stamps a message's usage as its content blocks complete, before the API's
+// final output count arrives, so a stream reports a few output tokens a call
+// where the result event reports the true total. Nil when no assistant event
+// carried usage.
+func streamUsage(stdout []byte) *Usage {
+	type counts struct{ in, read, write, out int }
+	byMessage := map[string]counts{}
+	anonymous := 0
+	for line := range bytes.SplitSeq(stdout, []byte{'\n'}) {
+		var ev claudeEvent
+		if json.Unmarshal(line, &ev) != nil || ev.Type != "assistant" || ev.Message.Usage == nil {
+			continue
+		}
+		id := ev.Message.ID
+		if id == "" {
+			anonymous++
+			id = "\x00" + strconv.Itoa(anonymous)
+		}
+		u, prev := ev.Message.Usage, byMessage[id]
+		byMessage[id] = counts{
+			in:    max(prev.in, u.InputTokens),
+			read:  max(prev.read, u.CacheReadInputTokens),
+			write: max(prev.write, u.CacheCreationInputTokens),
+			out:   max(prev.out, intOrZero(u.OutputTokens)),
+		}
+	}
+	if len(byMessage) == 0 {
+		return nil
+	}
+	var in, read, write, out int
+	for _, c := range byMessage {
+		in, read, write, out = in+c.in, read+c.read, write+c.write, out+c.out
+	}
+	return &Usage{InputTokens: &in, CacheReadTokens: &read, CacheCreationTokens: &write, OutputTokens: &out}
 }
 
 // claudeErrorReason renders the claude error envelope into one diagnostic

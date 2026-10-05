@@ -329,6 +329,13 @@ func (c *Copilot) ScanUsage(line []byte) (int, bool) {
 	return *ev.Data.OutputTokens, true
 }
 
+// StreamUsage sums the assistant.usage events the stream carried, terminal
+// result event or not: copilot reports each model call's tokens as it
+// completes, so a run that timed out or crashed still says what it spent.
+func (c *Copilot) StreamUsage(stdout []byte) *Usage {
+	return scanCopilotEvents(stdout).usage
+}
+
 // intOrZero reads an optional event counter, treating an absent field as zero:
 // copilot omits a token field entirely when a call reports none.
 func intOrZero(p *int) int {

@@ -61,6 +61,11 @@ func (f *Fake) ScanUsage(line []byte) (int, bool) {
 	return scanStreamUsage(line)
 }
 
+// StreamUsage tallies a fixture's usage exactly as Claude tallies live output.
+func (f *Fake) StreamUsage(stdout []byte) *Usage {
+	return streamUsage(stdout)
+}
+
 // ScanTurns projects fixture lines exactly as Claude projects live ones, so a
 // replayed fixture produces a real transcript end to end.
 func (f *Fake) ScanTurns(line []byte) []transcript.Turn {

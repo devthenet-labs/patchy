@@ -599,16 +599,24 @@ func (a *Agent) packageChangeset(ctx context.Context, baseSHA string,
 	return envelope.OutcomeOK, ""
 }
 
-// fillStage copies the harness accounting into the stage payload.
+// fillStage copies the harness accounting into the stage payload, whatever
+// the outcome. The terminal result event's totals win; a run that ended
+// without one (the stage timeout, the budget kill switch, a crash, a
+// cancelled pod) records the usage its stream reported per model call
+// instead, because those calls were billed all the same, and the spend a
+// stage records is all an intent's cost ceiling and the rollups ever see.
 func (a *Agent) fillStage(st *envelope.Stage, h harness.Harness, res runner.Result) {
 	st.ElapsedSeconds = res.Elapsed.Seconds()
 	ar, ok := h.ParseResult(res.Stdout)
-	if !ok {
-		return
+	if ok {
+		st.SessionID = ar.SessionID
+		st.NumTurns = ar.NumTurns
 	}
-	st.SessionID = ar.SessionID
-	st.NumTurns = ar.NumTurns
-	if u := ar.Usage; u != nil {
+	u := ar.Usage // nil when !ok: ParseResult then carries the raw stdout alone
+	if r, streams := h.(harness.StreamUsageReporter); streams && u == nil {
+		u = r.StreamUsage(res.Stdout)
+	}
+	if u != nil {
 		st.Usage = envelope.Usage{
 			InputTokens:         deref(u.InputTokens),
 			OutputTokens:        deref(u.OutputTokens),

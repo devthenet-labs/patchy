@@ -47,7 +47,9 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
   another 2.9 million tokens for that pod (about $1.50 to
   $2.00 more; the real total is about $5.50). The ceiling is checked against the reported usage, so spend in killed runs
   is invisible to it. Patchy: record usage for every outcome (from the stream read so far, or the broker's per-pod
-  count).
+  count). Fixed in [#118](https://github.com/devthenet-labs/patchy/pull/118): every outcome now records the usage its
+  stream reported, input and cache tokens exactly and output tokens as a floor (claude streams each call's output count
+  before it is final), so the broker's count remains the authoritative one.
 - **An agent can wait on one command until the stage times out** (overdub-10 attempt 2). After ten minutes of work it
   ran `npm run test:ci` (11 browser suites, three at a time) on the 2 vCPU, 3.7 GiB node; the command never returned and
   the agent sat idle for 50 minutes until the one-hour timeout. The same subset takes under two minutes on a 2 vCPU CI

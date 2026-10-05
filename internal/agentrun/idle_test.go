@@ -109,9 +109,9 @@ const (
 	wantCommand = ": npm run test:ci 2>&1 | tail -60"
 )
 
-// watchedStages configures each stage with the test idle limit and wall
-// clock, over a workspace the stage accepts.
-var watchedStages = []struct {
+// everyStage configures each stage over a workspace the stage accepts; the
+// idle-watchdog and usage tests both run every stage through it.
+var everyStage = []struct {
 	phase  Phase
 	config func(t *testing.T, out *bytes.Buffer) (Config, string)
 }{
@@ -175,7 +175,7 @@ func stageOf(t *testing.T, ev envelope.Event) envelope.Stage {
 // attempt, like the wall clock's) whose detail names the command and how
 // long it ran, and leaves that detail as the transcript's last turn.
 func TestIdleWatchdogEndsAHungRun(t *testing.T) {
-	for _, st := range watchedStages {
+	for _, st := range everyStage {
 		t.Run(string(st.phase), func(t *testing.T) {
 			var out bytes.Buffer
 			cfg, ws := st.config(t, &out)

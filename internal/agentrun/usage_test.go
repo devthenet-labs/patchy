@@ -67,27 +67,7 @@ func TestUsageSurvivesEveryOutcome(t *testing.T) {
 			want:   envelope.OutcomeRuntimeError,
 		},
 	}
-	stages := []struct {
-		phase  Phase
-		config func(t *testing.T, out *bytes.Buffer) (Config, string)
-	}{
-		{PhaseInvestigate, func(t *testing.T, out *bytes.Buffer) (Config, string) {
-			ws := newWorkspace(t)
-			return newConfig(t, ws, out), ws
-		}},
-		{PhaseRemediate, func(t *testing.T, out *bytes.Buffer) (Config, string) {
-			cfg, ws := remediateConfig(t, goodInvestigation, out)
-			cfg.Phase = PhaseRemediate
-			return cfg, ws
-		}},
-		{PhasePlan, func(t *testing.T, out *bytes.Buffer) (Config, string) {
-			return intentConfig(t, PhasePlan, out)
-		}},
-		{PhaseBuild, func(t *testing.T, out *bytes.Buffer) (Config, string) {
-			return intentConfig(t, PhaseBuild, out)
-		}},
-	}
-	for _, st := range stages {
+	for _, st := range everyStage {
 		for _, oc := range outcomes {
 			t.Run(string(st.phase)+"/"+oc.name, func(t *testing.T) {
 				var out bytes.Buffer

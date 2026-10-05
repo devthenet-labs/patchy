@@ -54,7 +54,8 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
   ran `npm run test:ci` (11 browser suites, three at a time) on the 2 vCPU, 3.7 GiB node; the command never returned and
   the agent sat idle for 50 minutes until the one-hour timeout. The same subset takes under two minutes on a 2 vCPU CI
   runner with two at a time. Patchy: a no-progress watchdog (no model request for N minutes ends the run with "a command
-  ran N minutes") and right-sized agents (agent resource classes). Watchdog in
+  ran N minutes") and right-sized agents (agent resource classes,
+  [#122](https://github.com/devthenet-labs/patchy/pull/122)). Watchdog in
   [#119](https://github.com/devthenet-labs/patchy/pull/119): 20 minutes with no model turn or tool result ends the run
   as a timeout naming the command (`no progress for 20m while running Bash (20m without returning): npm run test:ci …`),
   which counts as an attempt; per-stage `*-idle-timeout` flags and chart values, `0s` disables it.
@@ -79,7 +80,13 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
   $0.55; marigold's two-repo intent $1.51.
 - **Agent Jobs request no CPU or memory, so heavy builds starve** (overdub-10, 2026-10-04). Pods set only
   ephemeral-storage, so EKS Auto Mode placed an overdub build (Chromium + audio rendering) on a `c6a.large`: 2 vCPU,
-  ~3.7 GiB, shared. Builds are slow and risk OOM. In progress: CPU/memory for agent Jobs with a per-Project override.
+  ~3.7 GiB, shared. Builds are slow and risk OOM. Addressed in
+  [#122](https://github.com/devthenet-labs/patchy/pull/122): the operator defines named resource classes in the patchy
+  chart (`agent.resources.classes`) and a Project picks one per repository (`agentResourceClass`) for its builds, revise
+  and check-fix rounds; plans and Findings stay on `agent.resources.default` (none, as before). A pod no node fits is
+  stopped after 10 minutes without spending an attempt, an OOM kill names the class to raise, and every agent pod
+  carries `karpenter.sh/do-not-disrupt`. Docs: "Sizing agents" in docs/intents/deploying.md. Still to measure live:
+  overdub's real peak memory and the node Auto Mode picks for `large`.
 - **The planner can ignore the repository's own test guidance** (overdub-10). Its plan named `tools/shell-test.js` as
   "should run cleanly in the build image", although the app's CLAUDE.md lists `shell` among the Mac-tuned suites.
   Patchy: the plan prompt should tell the planner to read the repository's test guidance and prefer its CI test command.

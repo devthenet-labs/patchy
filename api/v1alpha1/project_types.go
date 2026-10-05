@@ -146,6 +146,23 @@ type ProjectRepository struct {
 	// shorthand, is refused beside any of them (CEL-enforced on the spec).
 	// +optional
 	Preview *ProjectRepositoryPreview `json:"preview,omitempty"`
+	// AgentResourceClass names the operator's resource class this
+	// repository's intent build, revise and check-fix runs get: the CPU and
+	// memory the patchy chart defines under agent.resources.classes
+	// (intent-controller's --intent-resource-classes), in place of the
+	// default every other agent Job gets. Unset, the runs get the default.
+	// Plan runs always get the default, whatever this says. A Project can
+	// only pick a class the operator defined, so the largest class is the
+	// most any one agent Job can request. A class intent-controller does not
+	// define launches nothing: the run waits, holding no slot, its Intent
+	// Blocked with ResourcesUnavailable naming the class, and the Project's
+	// ResourceClassesResolved condition False, until the class is defined or
+	// this is changed. Plans and the other repositories are unaffected.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	AgentResourceClass string `json:"agentResourceClass,omitempty"`
 }
 
 // StageLimits bound one agent stage of an intent. Zero (or omitted) means the

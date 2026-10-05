@@ -481,6 +481,21 @@ func testProjectBounds(ctx context.Context, t *testing.T, c client.Client) {
 		{"check timeout of one hour", func(p *patchyv1.Project) {
 			p.Spec.Checks.Timeout = &metav1.Duration{Duration: time.Hour}
 		}, false},
+		// A repository's resource class names one of the operator's
+		// classes: a DNS label, as resourceclass.ValidName holds it.
+		{"a resource class", func(p *patchyv1.Project) { p.Spec.Repositories[0].AgentResourceClass = "large" }, false},
+		{"a resource class at its length", func(p *patchyv1.Project) {
+			p.Spec.Repositories[0].AgentResourceClass = strings.Repeat("c", 32)
+		}, false},
+		{"a resource class past its length", func(p *patchyv1.Project) {
+			p.Spec.Repositories[0].AgentResourceClass = strings.Repeat("c", 33)
+		}, true},
+		{"a resource class not a DNS label", func(p *patchyv1.Project) {
+			p.Spec.Repositories[0].AgentResourceClass = "Large"
+		}, true},
+		{"a resource class with a dot", func(p *patchyv1.Project) {
+			p.Spec.Repositories[0].AgentResourceClass = "large.2"
+		}, true},
 		// The name budget: every Intent and IntentRun name derived from the
 		// Project's must fit in a label value.
 		{"a name at the name budget", func(p *patchyv1.Project) {
@@ -500,6 +515,19 @@ func testProjectBounds(ctx context.Context, t *testing.T, c client.Client) {
 			}
 		})
 	}
+	t.Run("a repository's resource class round-trips", func(t *testing.T) {
+		p := schemaProject("proj-resource-class")
+		p.Spec.Repositories = append(p.Spec.Repositories,
+			patchyv1.ProjectRepository{Name: "web", URL: "https://github.com/acme/web", AgentResourceClass: "large"})
+		if err := c.Create(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+		var got patchyv1.Project
+		if err := c.Get(ctx, client.ObjectKeyFromObject(p), &got); err != nil {
+			t.Fatal(err)
+		}
+		sameJSON(t, "repositories", got.Spec.Repositories, p.Spec.Repositories)
+	})
 }
 
 // testProjectStatus writes a populated status through the subresource and

@@ -5,6 +5,7 @@ package intent
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -243,6 +244,22 @@ func TestUnknownClassHoldsAReviseRound(t *testing.T) {
 	}
 }
 
+// wantCondition fails t unless conds holds condType with status and reason,
+// its message saying every one of want.
+func wantCondition(t *testing.T, conds []metav1.Condition, condType string, status metav1.ConditionStatus,
+	reason string, want ...string) {
+	t.Helper()
+	c := meta.FindStatusCondition(conds, condType)
+	if c == nil || c.Status != status || c.Reason != reason {
+		t.Fatalf("%s = %+v, want %s with reason %s", condType, c, status, reason)
+	}
+	for _, w := range want {
+		if !strings.Contains(c.Message, w) {
+			t.Fatalf("%s message %q does not say %q", condType, c.Message, w)
+		}
+	}
+}
+
 // TestUnknownClassHoldsOnlyItsRepository: a repository picking a class
 // intent-controller does not define builds nothing: its run waits Pending,
 // never granted a slot (no status write pass after pass), no Job and no
@@ -256,53 +273,18 @@ func TestUnknownClassHoldsOnlyItsRepository(t *testing.T) {
 	name := e.awaiting()
 	e.gh.label(1, "patchy:approved", approver)
 	in := e.drive(name, v1alpha1.IntentBlocked, repoImage)
-	c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionResourcesUnavailable)
-	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != ReasonUnknownResourceClass ||
-		!strings.Contains(c.Message, `"xl"`) || !strings.Contains(c.Message, "in "+webSlug) ||
-		!strings.Contains(c.Message, "defined: large, medium") {
-		t.Fatalf("ResourcesUnavailable = %+v, want the web repository and its class named", c)
-	}
+	wantCondition(t, in.Status.Conditions, v1alpha1.ConditionResourcesUnavailable, metav1.ConditionTrue,
+		ReasonUnknownResourceClass, `"xl"`, "in "+webSlug, "defined: large, medium")
 	if v1alpha1.IntentBlockedFrom(in) != v1alpha1.IntentBuilding {
 		t.Errorf("blocked from %s, want Building", v1alpha1.IntentBlockedFrom(in))
 	}
-
-	// The app build runs and pushes while the intent is Blocked.
-	for range 4 {
-		e.mustIntent(name)
-		e.readyRepositories(repoImage)
-		e.runRuns()
-		e.clock.Advance(time.Minute)
-	}
-	if app := e.buildsIn(name, appRepoURL); len(app) != 1 || app[0].Status.PushedCommit == "" {
-		t.Fatalf("app builds = %+v, want the one pushed beside the waiting web build", app)
-	}
-	web := e.buildsIn(name, webRepoURL)
-	if len(web) != 1 || web[0].Status.JobRef != nil || web[0].Spec.Attempt != 1 ||
-		(web[0].Status.Phase != v1alpha1.RunPending && web[0].Status.Phase != "") {
-		t.Fatalf("web builds = %+v, want one attempt waiting, with no Job", web)
-	}
-	for _, s := range e.jobs.launched() {
-		if s.Phase == "build" && s.Repo == webSlug {
-			t.Fatal("a Job was created for the web build on an unknown class")
-		}
-	}
-	// No scheduler loop: pass after pass writes nothing to the waiting run.
-	version := web[0].ResourceVersion
-	for range 5 {
-		e.runRuns()
-	}
-	if got := e.buildsIn(name, webRepoURL)[0].ResourceVersion; got != version {
-		t.Errorf("the waiting run was written by the scheduler (resourceVersion %s → %s)", version, got)
-	}
+	e.checkClassWait(name)
 
 	// The Project warns, and stays Ready: discovery and plans go on.
 	e.reconcileProject()
 	p := e.getProject()
-	warn := meta.FindStatusCondition(p.Status.Conditions, v1alpha1.ConditionResourceClassesResolved)
-	if warn == nil || warn.Status != metav1.ConditionFalse || warn.Reason != ReasonUnknownResourceClass ||
-		!strings.Contains(warn.Message, `repository web (`+webRepoURL+`) picks "xl"`) {
-		t.Errorf("ResourceClassesResolved = %+v, want the web repository's class named", warn)
-	}
+	wantCondition(t, p.Status.Conditions, v1alpha1.ConditionResourceClassesResolved, metav1.ConditionFalse,
+		ReasonUnknownResourceClass, `repository web (`+webRepoURL+`) picks "xl"`)
 	if !meta.IsStatusConditionTrue(p.Status.Conditions, v1alpha1.ConditionReady) {
 		t.Errorf("the Project is not Ready over an unknown class: %+v", p.Status.Conditions)
 	}
@@ -311,7 +293,7 @@ func TestUnknownClassHoldsOnlyItsRepository(t *testing.T) {
 	// launches on it, its attempt never spent.
 	e.pick("web", "large")
 	in = e.drive(name, v1alpha1.IntentInReview, repoImage)
-	web = e.buildsIn(name, webRepoURL)
+	web := e.buildsIn(name, webRepoURL)
 	if len(web) != 1 || web[0].Spec.Attempt != 1 || web[0].Status.Phase != v1alpha1.RunComplete {
 		t.Fatalf("web builds = %+v, want the one attempt, complete", web)
 	}
@@ -324,6 +306,40 @@ func TestUnknownClassHoldsOnlyItsRepository(t *testing.T) {
 	e.reconcileProject()
 	if !meta.IsStatusConditionTrue(e.getProject().Status.Conditions, v1alpha1.ConditionResourceClassesResolved) {
 		t.Error("ResourceClassesResolved is not True once the class is defined")
+	}
+}
+
+// checkClassWait asserts, of a Blocked multi-repository intent whose web
+// repository picks an unknown class, that the app build runs and pushes
+// while the web build waits: one attempt, Pending, no Job ever created for
+// it, and no scheduler pass writing to it.
+func (e *env) checkClassWait(name string) {
+	e.t.Helper()
+	for range 4 {
+		e.mustIntent(name)
+		e.readyRepositories(repoImage)
+		e.runRuns()
+		e.clock.Advance(time.Minute)
+	}
+	if app := e.buildsIn(name, appRepoURL); len(app) != 1 || app[0].Status.PushedCommit == "" {
+		e.t.Fatalf("app builds = %+v, want the one pushed beside the waiting web build", app)
+	}
+	web := e.buildsIn(name, webRepoURL)
+	waiting := web[0].Status.Phase == v1alpha1.RunPending || web[0].Status.Phase == ""
+	if len(web) != 1 || web[0].Status.JobRef != nil || web[0].Spec.Attempt != 1 || !waiting {
+		e.t.Fatalf("web builds = %+v, want one attempt waiting, with no Job", web)
+	}
+	for _, s := range e.jobs.launched() {
+		if s.Phase == "build" && s.Repo == webSlug {
+			e.t.Fatal("a Job was created for the web build on an unknown class")
+		}
+	}
+	version := web[0].ResourceVersion
+	for range 5 {
+		e.runRuns()
+	}
+	if got := e.buildsIn(name, webRepoURL)[0].ResourceVersion; got != version {
+		e.t.Errorf("the waiting run was written by the scheduler (resourceVersion %s → %s)", version, got)
 	}
 }
 
@@ -430,47 +446,18 @@ func TestUnschedulableBuildStopsOnce(t *testing.T) {
 	e.unschedulableFor("build")
 	name := e.awaiting()
 	e.gh.label(1, "patchy:approved", approver)
-	run := e.buildLaunched(name)
-	ctx := context.Background()
-
-	res, err := e.runs.Reconcile(ctx, req(run.Name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.RequeueAfter <= 0 || res.RequeueAfter > unschedulablePoll {
-		t.Errorf("an unscheduled pod is looked at again after %s, want within %s", res.RequeueAfter,
-			unschedulablePoll)
-	}
-	e.clock.Advance(UnschedulableGrace - time.Second)
-	if _, err := e.runs.Reconcile(ctx, req(run.Name)); err != nil {
-		t.Fatal(err)
-	}
-	if got := e.runsOf(name, v1alpha1.IntentStageBuild)[0]; got.Status.Phase != v1alpha1.RunRunning {
-		t.Fatalf("the build settled %s within the grace", got.Status.Outcome)
-	}
-	e.clock.Advance(2 * time.Second)
-	if _, err := e.runs.Reconcile(ctx, req(run.Name)); err != nil {
-		t.Fatal(err)
-	}
-	got := e.runsOf(name, v1alpha1.IntentStageBuild)[0]
-	if got.Status.Phase != v1alpha1.RunFailed || got.Status.Outcome != OutcomeUnschedulable ||
-		!strings.Contains(got.Status.Detail, "resource class large") ||
+	got := e.stopUnschedulable(name, e.buildLaunched(name))
+	if !strings.Contains(got.Status.Detail, "resource class large") ||
 		!strings.Contains(got.Status.Detail, "Insufficient cpu") {
-		t.Fatalf("the build = %s %s: %s", got.Status.Phase, got.Status.Outcome, got.Status.Detail)
-	}
-	deleted := false
-	for _, d := range e.jobs.deleted {
-		deleted = deleted || d == got.Status.JobRef.Name
-	}
-	if !deleted {
-		t.Error("the unschedulable Job was not deleted")
+		t.Fatalf("the build's detail = %q, want the class and the scheduler's words", got.Status.Detail)
 	}
 
 	in := e.drive(name, v1alpha1.IntentBlocked, repoImage)
-	c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionResourcesUnavailable)
-	if c == nil || c.Reason != ReasonUnschedulable || !strings.Contains(c.Message, got.Name) ||
-		strings.Contains(c.Message, "Insufficient") {
-		t.Fatalf("ResourcesUnavailable = %+v, want the run named and no scheduler words", c)
+	wantCondition(t, in.Status.Conditions, v1alpha1.ConditionResourcesUnavailable, metav1.ConditionTrue,
+		ReasonUnschedulable, got.Name)
+	if c := meta.FindStatusCondition(in.Status.Conditions, v1alpha1.ConditionResourcesUnavailable); strings.Contains(
+		c.Message, "Insufficient") {
+		t.Fatalf("ResourcesUnavailable = %q, which carries the scheduler's words", c.Message)
 	}
 	e.mustIntent(name)
 	for _, comment := range e.gh.withMarker("patchy:intent") {
@@ -496,6 +483,42 @@ func TestUnschedulableBuildStopsOnce(t *testing.T) {
 	if got := e.specOf(runs[1]).Resources; !sameResources(got, mediumResources) {
 		t.Errorf("the second attempt ran on %+v, want medium", got)
 	}
+}
+
+// stopUnschedulable drives run, a launched build whose pod no node fits,
+// through the grace: looked at again within the poll while it waits, still
+// Running a second short of the grace, then stopped once past it (its Job
+// deleted) and settled unschedulable. It returns the settled run.
+func (e *env) stopUnschedulable(name string, run v1alpha1.IntentRun) v1alpha1.IntentRun {
+	e.t.Helper()
+	ctx := context.Background()
+	res, err := e.runs.Reconcile(ctx, req(run.Name))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if res.RequeueAfter <= 0 || res.RequeueAfter > unschedulablePoll {
+		e.t.Errorf("an unscheduled pod is looked at again after %s, want within %s", res.RequeueAfter,
+			unschedulablePoll)
+	}
+	e.clock.Advance(UnschedulableGrace - time.Second)
+	if _, err := e.runs.Reconcile(ctx, req(run.Name)); err != nil {
+		e.t.Fatal(err)
+	}
+	if got := e.runsOf(name, v1alpha1.IntentStageBuild)[0]; got.Status.Phase != v1alpha1.RunRunning {
+		e.t.Fatalf("the build settled %s within the grace", got.Status.Outcome)
+	}
+	e.clock.Advance(2 * time.Second)
+	if _, err := e.runs.Reconcile(ctx, req(run.Name)); err != nil {
+		e.t.Fatal(err)
+	}
+	got := e.runsOf(name, v1alpha1.IntentStageBuild)[0]
+	if got.Status.Phase != v1alpha1.RunFailed || got.Status.Outcome != OutcomeUnschedulable {
+		e.t.Fatalf("the build = %s %s: %s", got.Status.Phase, got.Status.Outcome, got.Status.Detail)
+	}
+	if !slices.Contains(e.jobs.deleted, got.Status.JobRef.Name) {
+		e.t.Error("the unschedulable Job was not deleted")
+	}
+	return got
 }
 
 // TestUnschedulablePlanBlocks: a plan no node fits (the default resources

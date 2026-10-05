@@ -184,6 +184,36 @@ func resourceClasses(opts *cli.Options) (resourceclass.Set, error) {
 	return classes, nil
 }
 
+// jobSizes are what sizes every intent agent Job beyond its runner, each
+// read and checked before the controller starts: whether a build may run
+// its repository's image and the ephemeral-storage wall on every Job
+// (runnercfg.RepositoryImages), the default CPU and memory
+// (runnercfg.AgentResources), and the operator's resource classes.
+type jobSizes struct {
+	repositoryImages bool
+	ephemeralStorage string
+	defaults         resourceclass.Resources
+	classes          resourceclass.Set
+}
+
+// readJobSizes reads the jobSizes flags.
+func readJobSizes(opts *cli.Options) (jobSizes, error) {
+	var (
+		s   jobSizes
+		err error
+	)
+	if s.repositoryImages, s.ephemeralStorage, err = runnercfg.RepositoryImages(opts); err != nil {
+		return jobSizes{}, err
+	}
+	if s.defaults, err = runnercfg.AgentResources(opts); err != nil {
+		return jobSizes{}, err
+	}
+	if s.classes, err = resourceClasses(opts); err != nil {
+		return jobSizes{}, err
+	}
+	return s, nil
+}
+
 // harness resolves the one harness both intent stages run on: intents run
 // on brokered claude only (no other harness honours the sandbox postures),
 // or on the fake harness in dev and tests.
@@ -245,19 +275,11 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	if err != nil {
 		return err
 	}
-	repositoryImages, ephemeralStorage, err := runnercfg.RepositoryImages(opts)
+	sizes, err := readJobSizes(opts)
 	if err != nil {
 		return err
 	}
-	agentResources, err := runnercfg.AgentResources(opts)
-	if err != nil {
-		return err
-	}
-	cpuRequest, memoryRequest, cpuLimit, memoryLimit := agentResources.Strings()
-	classes, err := resourceClasses(opts)
-	if err != nil {
-		return err
-	}
+	cpuRequest, memoryRequest, cpuLimit, memoryLimit := sizes.defaults.Strings()
 	if opts.Int("changeset-max-entries") <= 0 {
 		return errors.New("--changeset-max-entries must be positive")
 	}
@@ -304,27 +326,27 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		CPULimit:      cpuLimit,
 		MemoryLimit:   memoryLimit,
 
-		EphemeralStorage:      ephemeralStorage,
-		AllowRepositoryImages: repositoryImages,
+		EphemeralStorage:      sizes.ephemeralStorage,
+		AllowRepositoryImages: sizes.repositoryImages,
 	}, log)
 	// Forges come from the cache; their Secrets are never cached, so the
 	// manager's client reads each one live.
 	gh := intent.NewForgeGitHub(forge.NewStore(mgr.GetClient()), namespace)
 	images := runnerguard.Guard{
-		Enabled: repositoryImages,
+		Enabled: sizes.repositoryImages,
 		Breaker: runnerguard.NewBreaker("intent-controller", log),
 	}
 	nudger := intent.NewNudger()
 
 	if err := (&intent.ProjectReconciler{
-		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), GitHub: gh, Settings: set, Classes: classes,
+		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), GitHub: gh, Settings: set, Classes: sizes.classes,
 		Nudger: nudger, Log: log,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
 	if err := (&intent.IntentReconciler{
 		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), GitHub: gh, Settings: set, Images: images,
-		Classes: classes, Nudger: nudger, Log: log,
+		Classes: sizes.classes, Nudger: nudger, Log: log,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -332,7 +354,7 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		Client: mgr.GetClient(), APIReader: mgr.GetAPIReader(), Jobs: runner, GitHub: gh, Settings: set,
 		MaxConcurrent: opts.Int("intent-max-concurrent-runs"), Harness: harnessID,
 		PlanModel: opts.String("intent-plan-model"), BuildModel: opts.String("intent-build-model"),
-		Images: images, Classes: classes, MaxChangesetEntries: opts.Int("changeset-max-entries"), Log: log,
+		Images: images, Classes: sizes.classes, MaxChangesetEntries: opts.Int("changeset-max-entries"), Log: log,
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -355,9 +377,9 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		slog.String("harness", harnessID),
 		slog.Int("max_concurrent_runs", opts.Int("intent-max-concurrent-runs")),
 		slog.Bool("multi_repo", set.MultiRepo),
-		slog.Bool("repository_images", repositoryImages),
-		slog.String("agent_resources", agentResources.String()),
-		slog.String("resource_classes", classes.Describe()))
+		slog.Bool("repository_images", sizes.repositoryImages),
+		slog.String("agent_resources", sizes.defaults.String()),
+		slog.String("resource_classes", sizes.classes.Describe()))
 
 	if err := mgr.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err

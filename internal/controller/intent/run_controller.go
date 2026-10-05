@@ -825,29 +825,7 @@ func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (c
 			sandboxRefused: true})
 	}
 	if !st.Done {
-		requeue, pullFailure := runnerguard.Pending(st, r.now())
-		if pullFailure != "" {
-			if err := r.Jobs.Delete(ctx, run.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
-				r.log().LogAttrs(ctx, slog.LevelWarn, "delete agent job after pull failure",
-					slog.String("job", run.Status.JobRef.Name), slog.Any("error", err))
-			}
-			return ctrl.Result{}, r.settle(ctx, run, result{outcome: OutcomeAborted, detail: pullFailure})
-		}
-		// A pod no node fits would hold its slot until the Job's deadline:
-		// past the grace it is stopped, its attempt uncounted.
-		unplaced, wait := unschedulable(st, r.now())
-		if unplaced != "" {
-			if err := r.Jobs.Delete(ctx, run.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
-				return ctrl.Result{}, fmt.Errorf("delete unschedulable job %s: %w", run.Status.JobRef.Name, err)
-			}
-			r.log().LogAttrs(ctx, slog.LevelWarn, "the agent pod could not be scheduled; the run stops",
-				slog.String("run", run.Name), slog.String("detail", unplaced))
-			return ctrl.Result{}, r.settle(ctx, run, result{outcome: OutcomeUnschedulable, detail: unplaced})
-		}
-		if wait > 0 && (requeue == 0 || wait < requeue) {
-			requeue = wait
-		}
-		return ctrl.Result{RequeueAfter: requeue}, nil
+		return r.unfinished(ctx, run, st)
 	}
 	out, err := r.Jobs.Result(ctx, run.Status.JobRef.Name)
 	if err != nil {
@@ -869,6 +847,37 @@ func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (c
 		return ctrl.Result{}, r.collectPlan(ctx, run, out.Events, transcript, st)
 	}
 	return r.heldOr(r.collectBuild(ctx, run, out.Events, transcript, st))
+}
+
+// unfinished judges a launched run whose Job has not finished. A
+// repository-image pod that cannot pull its image is stopped at once
+// (runnerguard.Pending), and a pod no node fits once it has been
+// unschedulable past UnschedulableGrace, since either would otherwise hold
+// its slot until the Job's deadline; the latter's attempt is not counted.
+// Otherwise the run is looked at again when either check next needs to.
+func (r *RunReconciler) unfinished(ctx context.Context, run *v1alpha1.IntentRun, st jobs.Status) (
+	ctrl.Result, error) {
+	requeue, pullFailure := runnerguard.Pending(st, r.now())
+	if pullFailure != "" {
+		if err := r.Jobs.Delete(ctx, run.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
+			r.log().LogAttrs(ctx, slog.LevelWarn, "delete agent job after pull failure",
+				slog.String("job", run.Status.JobRef.Name), slog.Any("error", err))
+		}
+		return ctrl.Result{}, r.settle(ctx, run, result{outcome: OutcomeAborted, detail: pullFailure})
+	}
+	unplaced, wait := unschedulable(st, r.now())
+	if unplaced != "" {
+		if err := r.Jobs.Delete(ctx, run.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("delete unschedulable job %s: %w", run.Status.JobRef.Name, err)
+		}
+		r.log().LogAttrs(ctx, slog.LevelWarn, "the agent pod could not be scheduled; the run stops",
+			slog.String("run", run.Name), slog.String("detail", unplaced))
+		return ctrl.Result{}, r.settle(ctx, run, result{outcome: OutcomeUnschedulable, detail: unplaced})
+	}
+	if wait > 0 && (requeue == 0 || wait < requeue) {
+		requeue = wait
+	}
+	return ctrl.Result{RequeueAfter: requeue}, nil
 }
 
 // settleMissingJob recovers a pre-fix revise run whose Job expired while the

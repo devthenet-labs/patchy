@@ -200,6 +200,42 @@ func within(v *resource.Quantity, lo, hi resource.Quantity) bool {
 	return v == nil || v.Sign() > 0 && v.Cmp(lo) >= 0 && v.Cmp(hi) <= 0
 }
 
+// validClass is the property's oracle, written from the rules rather than
+// the code: the three required quantities set, every set one within its
+// bounds, and each limit at or above its request.
+func validClass(r Resources) bool {
+	required := r.Requests.CPU != nil && r.Requests.Memory != nil && r.Limits.Memory != nil
+	if !required {
+		return false
+	}
+	bounded := within(r.Requests.CPU, minCPU, maxCPU) && within(r.Limits.CPU, minCPU, maxCPU) &&
+		within(r.Requests.Memory, minMemory, maxMemory) && within(r.Limits.Memory, minMemory, maxMemory)
+	ordered := (r.Limits.CPU == nil || r.Limits.CPU.Cmp(*r.Requests.CPU) >= 0) &&
+		r.Limits.Memory.Cmp(*r.Requests.Memory) >= 0
+	return bounded && ordered
+}
+
+// checkAccepted holds an accepted class to what a Job built from it needs:
+// its menu round-trips through Encode and Parse, and the rendered strings
+// never put a request above its limit.
+func checkAccepted(t *testing.T, i int, r Resources) {
+	t.Helper()
+	s := Set{"c": r}
+	back, err := Parse(s.Encode())
+	if err != nil || !sameSet(back, s) {
+		t.Fatalf("iteration %d: %s does not round-trip: %v (%s)", i, s.Encode(), err, back.Encode())
+	}
+	cr, mr, cl, ml := r.Strings()
+	for _, pair := range [][2]string{{cr, cl}, {mr, ml}} {
+		if pair[1] == "" {
+			continue
+		}
+		if req, lim := resource.MustParse(pair[0]), resource.MustParse(pair[1]); req.Cmp(lim) > 0 {
+			t.Fatalf("iteration %d: rendered request %s above limit %s", i, pair[0], pair[1])
+		}
+	}
+}
+
 // TestPropertyValidateIsExact: for any class, ValidateClass accepts it
 // exactly when the three required quantities are set, every set quantity is
 // inside its bounds and every request is at or below its limit; and every
@@ -239,11 +275,7 @@ func TestPropertyValidateIsExact(t *testing.T) {
 		if rng.Intn(2) == 0 {
 			r = sane()
 		}
-		want := r.Requests.CPU != nil && r.Requests.Memory != nil && r.Limits.Memory != nil &&
-			within(r.Requests.CPU, minCPU, maxCPU) && within(r.Limits.CPU, minCPU, maxCPU) &&
-			within(r.Requests.Memory, minMemory, maxMemory) && within(r.Limits.Memory, minMemory, maxMemory) &&
-			(r.Limits.CPU == nil || r.Limits.CPU.Cmp(*r.Requests.CPU) >= 0) &&
-			r.Limits.Memory.Cmp(*r.Requests.Memory) >= 0
+		want := validClass(r)
 		err := ValidateClass(r)
 		if (err == nil) != want {
 			t.Fatalf("iteration %d: ValidateClass(%s) = %v, want accepted=%v", i, r, err, want)
@@ -253,20 +285,7 @@ func TestPropertyValidateIsExact(t *testing.T) {
 			continue
 		}
 		accepted++
-		s := Set{"c": r}
-		back, err := Parse(s.Encode())
-		if err != nil || !sameSet(back, s) {
-			t.Fatalf("iteration %d: %s does not round-trip: %v (%s)", i, s.Encode(), err, back.Encode())
-		}
-		cr, mr, cl, ml := r.Strings()
-		for _, pair := range [][2]string{{cr, cl}, {mr, ml}} {
-			if pair[1] == "" {
-				continue
-			}
-			if req, lim := resource.MustParse(pair[0]), resource.MustParse(pair[1]); req.Cmp(lim) > 0 {
-				t.Fatalf("iteration %d: rendered request %s above limit %s", i, pair[0], pair[1])
-			}
-		}
+		checkAccepted(t, i, r)
 	}
 	if accepted < 100 || refused < 100 {
 		t.Errorf("generator did not reach both verdicts often: accepted=%d refused=%d", accepted, refused)

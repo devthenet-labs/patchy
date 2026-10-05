@@ -5,6 +5,7 @@ package runnercfg
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"os"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/bitwise-media-group/patchy/internal/cli"
@@ -662,6 +664,81 @@ func TestChartEphemeralStoragePatternIsSound(t *testing.T) {
 		admitted++
 		if err := accept(q); err != nil {
 			t.Logf("pattern admits %q, RepositoryImages refuses it: %v", q, err)
+			return false
+		}
+		return true
+	}
+	if err := quick.Check(sound, cfg); err != nil {
+		t.Error(err)
+	} else if admitted < 100 {
+		t.Errorf("only %d generated values matched the pattern; the property is near-vacuous", admitted)
+	}
+}
+
+// TestChartAgentQuantityPatternIsSound: every agent.resources quantity the
+// chart's schema admits as a string (definitions.agentQuantity) is one the
+// controllers parse as a positive quantity, so a quoted typo is a render
+// error rather than a controller that will not start. What the pattern
+// leaves to startup is the bounds and the request-at-or-below-limit rule,
+// which no pattern can express. The sizes operators write must be admitted,
+// or the pattern is merely strict.
+func TestChartAgentQuantityPatternIsSound(t *testing.T) {
+	raw, err := os.ReadFile(chartSecretEnvEnum)
+	if err != nil {
+		t.Fatalf("read chart schema: %v", err)
+	}
+	var doc struct {
+		Definitions struct {
+			AgentQuantity struct {
+				Pattern string `json:"pattern"`
+			} `json:"agentQuantity"`
+		} `json:"definitions"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse chart schema: %v", err)
+	}
+	if doc.Definitions.AgentQuantity.Pattern == "" {
+		t.Fatalf("%s: no agentQuantity pattern found; did the schema shape change?", chartSecretEnvEnum)
+	}
+	re := regexp.MustCompile(doc.Definitions.AgentQuantity.Pattern)
+	positive := func(v string) error {
+		q, err := resource.ParseQuantity(v)
+		if err != nil {
+			return err
+		}
+		if q.Sign() <= 0 {
+			return fmt.Errorf("%s is not positive", v)
+		}
+		return nil
+	}
+	for _, v := range []string{"4", "3500m", "0.5", ".5", "1500m", "8Gi", "10Gi", "1.5Gi", "512Mi", "64"} {
+		if !re.MatchString(v) {
+			t.Errorf("pattern %s refuses %q, a size operators write", re, v)
+		}
+		if err := positive(v); err != nil {
+			t.Errorf("%q: %v", v, err)
+		}
+	}
+	for _, v := range []string{"", "0", "0Gi", "0.0", "-1", "+4", " 4", "4 ", "1e3", "4GB"} {
+		if re.MatchString(v) {
+			t.Errorf("pattern %s admits %q", re, v)
+		}
+	}
+	admitted := 0
+	cfg := &quick.Config{
+		MaxCount: 1000,
+		Rand:     rand.New(rand.NewSource(20261005)),
+		Values: func(args []reflect.Value, r *rand.Rand) {
+			args[0] = reflect.ValueOf(genQuantity(r))
+		},
+	}
+	sound := func(v string) bool {
+		if !re.MatchString(v) {
+			return true
+		}
+		admitted++
+		if err := positive(v); err != nil {
+			t.Logf("pattern admits %q, which does not parse as a positive quantity: %v", v, err)
 			return false
 		}
 		return true

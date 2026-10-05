@@ -174,15 +174,22 @@ data:
     # The token budgets are enforced by the runner watching the harness's
     # streamed usage events and killing the process group when the cumulative
     # output-token count is exceeded — the CLI has no such flag itself.
+    #
+    # *_IDLE_TIMEOUT ends a run that makes no progress (no model turn, no
+    # tool result) for that long, as a timeout whose detail names the command
+    # it waited on; "0s" disables it. 20m is twice the longest a healthy
+    # claude command can run (its Bash tool's 10m maximum).
     PATCHY_MODEL_ALLOWLIST: anthropic/claude-sonnet-5,anthropic/claude-opus-5
 
     PATCHY_INVESTIGATE_MODEL: anthropic/claude-sonnet-5
     PATCHY_INVESTIGATE_TIMEOUT: 15m
+    PATCHY_INVESTIGATE_IDLE_TIMEOUT: 20m
     PATCHY_INVESTIGATE_MAX_TURNS: "25"
     PATCHY_INVESTIGATE_TOKEN_BUDGET: "150000"
 
     PATCHY_REMEDIATE_MODEL: anthropic/claude-sonnet-5
     PATCHY_REMEDIATE_TIMEOUT: 45m
+    PATCHY_REMEDIATE_IDLE_TIMEOUT: 20m
     PATCHY_REMEDIATE_AUTO_MAX_TURNS: "80"
     PATCHY_REMEDIATE_AUTO_TOKEN_BUDGET: "400000"
     PATCHY_REMEDIATE_MANUAL_MAX_TURNS: "240"

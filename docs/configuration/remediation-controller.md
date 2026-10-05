@@ -73,18 +73,21 @@ The model suggestion is still clamped: the spawner holds it to the allowlist and
 model's provider decides the runner image and credential). `--remediate-model` is the canonical fallback when the
 report's suggestion is missing or off the allowlist; its harness is derived from it.
 
-| Flag                            | Env                                  | Default                     | Purpose                                          |
-| ------------------------------- | ------------------------------------ | --------------------------- | ------------------------------------------------ |
-| `--model-allowlist`             | `PATCHY_MODEL_ALLOWLIST`             | canonical ids               | Canonical model ids remediation may run          |
-| `--remediate-model`             | `PATCHY_REMEDIATE_MODEL`             | `anthropic/claude-sonnet-5` | Canonical default when the report requests none  |
-| `--remediate-timeout`           | `PATCHY_REMEDIATE_TIMEOUT`           | `45m`                       | Wall-clock limit for the remediation stage       |
-| `--remediate-max-turns`         | `PATCHY_REMEDIATE_MAX_TURNS`         | `80`                        | Turns every run gets; approval threshold above   |
-| `--remediate-token-budget`      | `PATCHY_REMEDIATE_TOKEN_BUDGET`      | `400000`                    | Output tokens every run gets; approval threshold |
-| `--remediate-max-turns-hard`    | `PATCHY_REMEDIATE_MAX_TURNS_HARD`    | `240`                       | Most turns an approval can grant                 |
-| `--remediate-token-budget-hard` | `PATCHY_REMEDIATE_TOKEN_BUDGET_HARD` | `1200000`                   | Most output tokens an approval can grant         |
+| Flag                            | Env                                  | Default                     | Purpose                                            |
+| ------------------------------- | ------------------------------------ | --------------------------- | -------------------------------------------------- |
+| `--model-allowlist`             | `PATCHY_MODEL_ALLOWLIST`             | canonical ids               | Canonical model ids remediation may run            |
+| `--remediate-model`             | `PATCHY_REMEDIATE_MODEL`             | `anthropic/claude-sonnet-5` | Canonical default when the report requests none    |
+| `--remediate-timeout`           | `PATCHY_REMEDIATE_TIMEOUT`           | `45m`                       | Wall-clock limit for the remediation stage         |
+| `--remediate-idle-timeout`      | `PATCHY_REMEDIATE_IDLE_TIMEOUT`      | `20m`                       | End a run with no progress for this long; `0s` off |
+| `--remediate-max-turns`         | `PATCHY_REMEDIATE_MAX_TURNS`         | `80`                        | Turns every run gets; approval threshold above     |
+| `--remediate-token-budget`      | `PATCHY_REMEDIATE_TOKEN_BUDGET`      | `400000`                    | Output tokens every run gets; approval threshold   |
+| `--remediate-max-turns-hard`    | `PATCHY_REMEDIATE_MAX_TURNS_HARD`    | `240`                       | Most turns an approval can grant                   |
+| `--remediate-token-budget-hard` | `PATCHY_REMEDIATE_TOKEN_BUDGET_HARD` | `1200000`                   | Most output tokens an approval can grant           |
 
 Token budgets are enforced live — the runner watches the harness's streamed usage events and kills the process group
-when the cumulative output-token count is exceeded; the harness CLI has no such flag itself.
+when the cumulative output-token count is exceeded; the harness CLI has no such flag itself. The idle timeout is the
+runner's no-progress watchdog ([agent-runner](agent-runner.md#the-idle-watchdog)): a remediation that waits that long on
+a command that never returns ends as a `timeout` naming the command, instead of holding its slot until the wall clock.
 
 ## Behavior
 

@@ -67,12 +67,18 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.Int("intent-plan-max-turns", 40, "most agent turns a plan run may take (a Project may lower it)")
 	f.Int("intent-plan-token-budget", 200000, "most output tokens a plan run may spend (a Project may lower it)")
 	f.Duration("intent-plan-timeout", 20*time.Minute, "wall-clock limit of a plan run")
+	f.Duration("intent-plan-idle-timeout", 20*time.Minute,
+		"end a plan run that makes no progress (no model turn, no tool result) for this long; 0 disables")
 	f.Int("intent-build-max-turns", 150, "most agent turns a build run may take (a Project may lower it)")
 	f.Int("intent-build-token-budget", 800000, "most output tokens a build run may spend (a Project may lower it)")
 	f.Duration("intent-build-timeout", 60*time.Minute, "wall-clock limit of a build run")
+	f.Duration("intent-build-idle-timeout", 20*time.Minute,
+		"end a build run that makes no progress (no model turn, no tool result) for this long; 0 disables")
 	f.Int("intent-revise-max-turns", 80, "most agent turns a revise or check-fix run may take (a Project may lower it)")
 	f.Int("intent-revise-token-budget", 400000, "most output tokens a revise or check-fix run may spend")
 	f.Duration("intent-revise-timeout", 45*time.Minute, "wall-clock limit of a revise or check-fix run")
+	f.Duration("intent-revise-idle-timeout", 20*time.Minute,
+		"end a revise or check-fix run that makes no progress (no model turn, no tool result) for this long; 0 disables")
 	f.String("intent-plan-model", "anthropic/claude-sonnet-5", "canonical model the plan stage runs")
 	f.String("intent-build-model", "anthropic/claude-sonnet-5", "canonical model the build stage runs")
 
@@ -102,16 +108,19 @@ func settings(opts *cli.Options, namespace, agentNS string) (intent.Settings, er
 			MaxTurns:    int32(opts.Int("intent-plan-max-turns")),
 			TokenBudget: int64(opts.Int("intent-plan-token-budget")),
 			Timeout:     opts.Duration("intent-plan-timeout"),
+			IdleTimeout: opts.Duration("intent-plan-idle-timeout"),
 		},
 		Build: intent.StageCeiling{
 			MaxTurns:    int32(opts.Int("intent-build-max-turns")),
 			TokenBudget: int64(opts.Int("intent-build-token-budget")),
 			Timeout:     opts.Duration("intent-build-timeout"),
+			IdleTimeout: opts.Duration("intent-build-idle-timeout"),
 		},
 		Revise: intent.StageCeiling{
 			MaxTurns:    int32(opts.Int("intent-revise-max-turns")),
 			TokenBudget: int64(opts.Int("intent-revise-token-budget")),
 			Timeout:     opts.Duration("intent-revise-timeout"),
+			IdleTimeout: opts.Duration("intent-revise-idle-timeout"),
 		},
 	}
 	for _, c := range []struct {
@@ -134,6 +143,18 @@ func settings(opts *cli.Options, namespace, agentNS string) (intent.Settings, er
 	} {
 		if !c.ok {
 			return intent.Settings{}, fmt.Errorf("%s must be positive", c.name)
+		}
+	}
+	for _, c := range []struct {
+		name string
+		idle time.Duration
+	}{
+		{"--intent-plan-idle-timeout", s.Plan.IdleTimeout},
+		{"--intent-build-idle-timeout", s.Build.IdleTimeout},
+		{"--intent-revise-idle-timeout", s.Revise.IdleTimeout},
+	} {
+		if c.idle < 0 {
+			return intent.Settings{}, fmt.Errorf("%s must not be negative (0 disables it)", c.name)
 		}
 	}
 	deadline := opts.Duration("intent-job-deadline")

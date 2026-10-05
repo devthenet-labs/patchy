@@ -108,6 +108,7 @@ reaches the queue.
 | ---------------------------- | --------------------------------- | --------------------------- | --------------------------------------------------- |
 | `--investigate-model`        | `PATCHY_INVESTIGATE_MODEL`        | `anthropic/claude-sonnet-5` | Canonical model id the analysis stage runs on       |
 | `--investigate-timeout`      | `PATCHY_INVESTIGATE_TIMEOUT`      | `15m`                       | Wall-clock limit for the analysis stage             |
+| `--investigate-idle-timeout` | `PATCHY_INVESTIGATE_IDLE_TIMEOUT` | `20m`                       | End a run with no progress for this long; `0s` off  |
 | `--investigate-max-turns`    | `PATCHY_INVESTIGATE_MAX_TURNS`    | `25`                        | Agent turns allowed for the analysis stage          |
 | `--investigate-token-budget` | `PATCHY_INVESTIGATE_TOKEN_BUDGET` | `150000`                    | Output-token budget for the analysis stage          |
 | `--remediate-max-turns`      | `PATCHY_REMEDIATE_MAX_TURNS`      | `80`                        | Ceiling on the report's suggested remediation turns |
@@ -115,7 +116,9 @@ reaches the queue.
 
 The stage flags are re-serialized into `PATCHY_*` environment variables injected into every investigation pod
 ([agent-runner](agent-runner.md) reads them), so this controller's flags are the single operator-facing configuration
-point for the analysis stage.
+point for the analysis stage. The idle timeout is the runner's no-progress watchdog
+([agent-runner](agent-runner.md#the-idle-watchdog)); at its `20m` default it is longer than the stage's `15m` wall
+clock, so it never ends an analysis run early.
 
 ## Verdict routing
 

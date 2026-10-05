@@ -717,21 +717,27 @@ intentController:
         # (at least 1h), so it outlives any deadline set here.
         jobDeadline: 90m
         # The per-stage ceilings. A Project's limits may lower them, never
-        # raise them. The models must resolve to the claude harness.
+        # raise them. The models must resolve to the claude harness. Each
+        # idleTimeout ends a run of its stage that makes no progress (no
+        # model turn, no tool result) for that long, as a timeout naming the
+        # command it waited on; "0s" disables it.
         plan:
             model: anthropic/claude-sonnet-5
             maxTurns: 40
             tokenBudget: 200000
             timeout: 20m
+            idleTimeout: 20m
         build:
             model: anthropic/claude-sonnet-5
             maxTurns: 150
             tokenBudget: 800000
             timeout: 60m
+            idleTimeout: 20m
         revise:
             maxTurns: 80
             tokenBudget: 400000
             timeout: 45m
+            idleTimeout: 20m
         # Extra PATCHY_* keys for the intent controller only.
         extra: {}
     # The Secrets your Forges reference (spec.secretRef): intent-controller's
@@ -1000,10 +1006,17 @@ agent:
     # level and never a limit: a low estimate cannot starve a fix. The model
     # suggestion IS still clamped to the allowlist. Models are canonical,
     # provider-qualified ids; the harness that runs a model is derived from it.
+    #
+    # idleTimeout ends a run that makes no progress (no model turn, no tool
+    # result) for that long, as a timeout whose detail names the command it
+    # waited on; "0s" disables it. 20m is twice the longest a healthy claude
+    # command can run (its Bash tool's 10m maximum), so it only ends a run
+    # waiting on something that will not return.
     modelAllowlist: anthropic/claude-sonnet-5,anthropic/claude-opus-5
     investigate:
         model: anthropic/claude-sonnet-5
         timeout: 15m
+        idleTimeout: 20m
         maxTurns: 25
         tokenBudget: 150000
     remediate:
@@ -1011,6 +1024,7 @@ agent:
         # missing or off the allowlist.
         model: anthropic/claude-sonnet-5
         timeout: 45m
+        idleTimeout: 20m
         # Unattended: what a fix gets with nobody watching.
         auto:
             maxTurns: 80

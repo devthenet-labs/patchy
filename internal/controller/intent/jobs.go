@@ -55,19 +55,21 @@ func (l *jobLauncher) Create(ctx context.Context, spec jobs.Spec, env map[string
 }
 
 // stageEnv is a launch's stage configuration. A plan run reads the
-// investigate stage's keys: its wall clock and its ceilings (the grant rides
-// the per-Job channel and may only lower them). It also states the most its
-// build can be granted, which agent-runner reads from the build stage's own
-// ceiling, PATCHY_REMEDIATE_MANUAL_*: set to the grant the Project's build
-// receives, with the automated budget no higher, as agent-runner requires. A
-// build run reads the remediate stage's keys: its wall clock, and its manual
-// ceiling (the automated budget, which applies only to a Job with no grant,
-// no higher); every intent run is granted.
+// investigate stage's keys: its wall clock, its idle limit and its ceilings
+// (the grant rides the per-Job channel and may only lower them). It also
+// states the most its build can be granted, which agent-runner reads from the
+// build stage's own ceiling, PATCHY_REMEDIATE_MANUAL_*: set to the grant the
+// Project's build receives, with the automated budget no higher, as
+// agent-runner requires. A build run reads the remediate stage's keys: its
+// wall clock, its idle limit, and its manual ceiling (the automated budget,
+// which applies only to a Job with no grant, no higher); every intent run is
+// granted.
 func stageEnv(stage v1alpha1.IntentStage, s Settings, build v1alpha1.IntentRunGrant) map[string]string {
 	n := func(v int64) string { return strconv.FormatInt(v, 10) }
 	if stage == v1alpha1.IntentStagePlan {
 		return map[string]string{
 			"PATCHY_INVESTIGATE_TIMEOUT":           s.Plan.Timeout.String(),
+			"PATCHY_INVESTIGATE_IDLE_TIMEOUT":      s.Plan.IdleTimeout.String(),
 			"PATCHY_INVESTIGATE_MAX_TURNS":         n(int64(s.Plan.MaxTurns)),
 			"PATCHY_INVESTIGATE_TOKEN_BUDGET":      n(s.Plan.TokenBudget),
 			"PATCHY_REMEDIATE_MANUAL_MAX_TURNS":    n(int64(build.MaxTurns)),
@@ -82,6 +84,7 @@ func stageEnv(stage v1alpha1.IntentStage, s Settings, build v1alpha1.IntentRunGr
 	}
 	return map[string]string{
 		"PATCHY_REMEDIATE_TIMEOUT":             ceiling.Timeout.String(),
+		"PATCHY_REMEDIATE_IDLE_TIMEOUT":        ceiling.IdleTimeout.String(),
 		"PATCHY_REMEDIATE_MANUAL_MAX_TURNS":    n(int64(ceiling.MaxTurns)),
 		"PATCHY_REMEDIATE_MANUAL_TOKEN_BUDGET": n(ceiling.TokenBudget),
 		"PATCHY_REMEDIATE_AUTO_MAX_TURNS":      n(int64(ceiling.MaxTurns)),

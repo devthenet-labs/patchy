@@ -124,6 +124,12 @@ type Config struct {
 
 	InvestigateTimeout time.Duration
 	RemediateTimeout   time.Duration
+	// InvestigateIdleTimeout/RemediateIdleTimeout end a run of the stage
+	// that makes no progress (no model turn, no tool result) for that long,
+	// with a timeout naming what it was waiting on; zero disables the
+	// watchdog. Plan reads the investigate stage's, build the remediate's.
+	InvestigateIdleTimeout time.Duration
+	RemediateIdleTimeout   time.Duration
 
 	// ChangesetMaxBytes caps the cumulative raw content of the changeset the
 	// remediation stage may emit.
@@ -194,6 +200,22 @@ func ConfigEnvKeys() []string {
 		return ""
 	})
 	return slices.Sorted(maps.Keys(seen))
+}
+
+// negativeIdleTimeouts reports each stage idle limit set below zero: zero is
+// how the watchdog is disabled, so a negative one is a mistake, not a
+// stricter limit.
+func negativeIdleTimeouts(cfg Config) []string {
+	var errs []string
+	for _, idle := range []struct {
+		key string
+		d   time.Duration
+	}{{"INVESTIGATE_IDLE_TIMEOUT", cfg.InvestigateIdleTimeout}, {"REMEDIATE_IDLE_TIMEOUT", cfg.RemediateIdleTimeout}} {
+		if idle.d < 0 {
+			errs = append(errs, fmt.Sprintf("PATCHY_%s=%s is negative (0 disables the watchdog)", idle.key, idle.d))
+		}
+	}
+	return errs
 }
 
 // FromEnv builds the pod configuration from PATCHY_* environment variables,
@@ -269,6 +291,9 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	cfg.TranscriptMaxTotalBytes = number("TRANSCRIPT_MAX_TOTAL_BYTES", strconv.Itoa(transcript.DefaultMaxTotalBytes))
 	cfg.InvestigateTimeout = duration("INVESTIGATE_TIMEOUT", "15m")
 	cfg.RemediateTimeout = duration("REMEDIATE_TIMEOUT", "45m")
+	cfg.InvestigateIdleTimeout = duration("INVESTIGATE_IDLE_TIMEOUT", DefaultIdleTimeout.String())
+	cfg.RemediateIdleTimeout = duration("REMEDIATE_IDLE_TIMEOUT", DefaultIdleTimeout.String())
+	errs = append(errs, negativeIdleTimeouts(cfg)...)
 
 	if raw := get("CALIBRATION", ""); raw != "" {
 		var c templates.Calibration

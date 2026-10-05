@@ -171,6 +171,9 @@ namespace for claude anymore.
 {{- $_ := set $data "PATCHY_CONFIDENCE_THRESHOLD" $own.confidenceThreshold }}
 {{- $_ := set $data "PATCHY_INVESTIGATE_MODEL" $root.Values.agent.investigate.model }}
 {{- $_ := set $data "PATCHY_INVESTIGATE_TIMEOUT" $root.Values.agent.investigate.timeout }}
+{{- with $root.Values.agent.investigate.idleTimeout }}
+{{- $_ := set $data "PATCHY_INVESTIGATE_IDLE_TIMEOUT" . }}
+{{- end }}
 {{- $_ := set $data "PATCHY_INVESTIGATE_MAX_TURNS" $root.Values.agent.investigate.maxTurns }}
 {{- $_ := set $data "PATCHY_INVESTIGATE_TOKEN_BUDGET" $root.Values.agent.investigate.tokenBudget }}
 {{- else }}
@@ -178,6 +181,9 @@ namespace for claude anymore.
 {{- $_ := set $data "PATCHY_FINDING_TTL" $own.findingTTL }}
 {{- $_ := set $data "PATCHY_REMEDIATE_MODEL" $root.Values.agent.remediate.model }}
 {{- $_ := set $data "PATCHY_REMEDIATE_TIMEOUT" $root.Values.agent.remediate.timeout }}
+{{- with $root.Values.agent.remediate.idleTimeout }}
+{{- $_ := set $data "PATCHY_REMEDIATE_IDLE_TIMEOUT" . }}
+{{- end }}
 {{- end }}
 {{- $ri := $root.Values.agent.repositoryImages | default dict }}
 {{- if $ri.enabled }}
@@ -222,10 +228,16 @@ is its own: a build stage alone may take an hour.
 {{- $_ := set $data (print $prefix "MAX_TURNS") $s.maxTurns }}
 {{- $_ := set $data (print $prefix "TOKEN_BUDGET") $s.tokenBudget }}
 {{- $_ := set $data (print $prefix "TIMEOUT") $s.timeout }}
+{{- with $s.idleTimeout }}
+{{- $_ := set $data (print $prefix "IDLE_TIMEOUT") . }}
+{{- end }}
 {{- end }}
 {{- $_ := set $data "PATCHY_INTENT_REVISE_MAX_TURNS" $own.revise.maxTurns }}
 {{- $_ := set $data "PATCHY_INTENT_REVISE_TOKEN_BUDGET" $own.revise.tokenBudget }}
 {{- $_ := set $data "PATCHY_INTENT_REVISE_TIMEOUT" $own.revise.timeout }}
+{{- with $own.revise.idleTimeout }}
+{{- $_ := set $data "PATCHY_INTENT_REVISE_IDLE_TIMEOUT" . }}
+{{- end }}
 {{- $ri := $root.Values.agent.repositoryImages | default dict }}
 {{- if $ri.enabled }}
 {{/*

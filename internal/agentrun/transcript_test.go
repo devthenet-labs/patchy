@@ -157,12 +157,13 @@ func TestTranscriptRedactsCredentials(t *testing.T) {
 }
 
 func TestObserveWithoutEitherCapabilityIsNil(t *testing.T) {
-	// A harness with neither capability must leave the runner's fast path
-	// untouched rather than paying for a no-op observer on every line.
+	// A harness with neither capability, and no idle watchdog, must leave the
+	// runner's fast path untouched rather than paying for a no-op observer on
+	// every line.
 	ws := newWorkspace(t)
 	var out bytes.Buffer
 	a := New(newConfig(t, ws, &out), &fakeExec{})
-	onLine, rec := a.observe(bareHarness{}, 0)
+	onLine, rec := a.observe(bareHarness{}, 0, nil)
 	if onLine != nil || rec != nil {
 		t.Errorf("observe(bare) = (%v, %v), want (nil, nil)", onLine != nil, rec != nil)
 	}

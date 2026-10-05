@@ -168,11 +168,14 @@ func (s Settings) multiRepoOff(p *v1alpha1.Project) bool {
 	return !s.MultiRepo && len(p.Spec.Repositories) > 1
 }
 
-// StageCeiling bounds one agent stage.
+// StageCeiling bounds one agent stage. IdleTimeout ends a run of the stage
+// that makes no progress (no model turn, no tool result) for that long; zero
+// disables the watchdog.
 type StageCeiling struct {
 	MaxTurns    int32
 	TokenBudget int64
 	Timeout     time.Duration
+	IdleTimeout time.Duration
 }
 
 // Defaults the design sets.

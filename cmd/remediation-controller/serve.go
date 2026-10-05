@@ -66,6 +66,8 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.String("remediate-model", "anthropic/claude-sonnet-5",
 		"canonical default model when the report's suggestion is missing or unusable (its harness is derived)")
 	f.Duration("remediate-timeout", 45*time.Minute, "wall-clock limit for the remediation stage")
+	f.Duration("remediate-idle-timeout", 20*time.Minute,
+		"end a remediation run that makes no progress (no model turn, no tool result) for this long; 0 disables")
 	f.Int("remediate-auto-max-turns", 80,
 		"agent turns spent on an unattended fix, and the line past which an estimate needs approval")
 	f.Int("remediate-auto-token-budget", 400000,
@@ -87,6 +89,7 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 func agentEnv(opts *cli.Options) map[string]string {
 	return map[string]string{
 		"PATCHY_REMEDIATE_TIMEOUT":             opts.Duration("remediate-timeout").String(),
+		"PATCHY_REMEDIATE_IDLE_TIMEOUT":        opts.Duration("remediate-idle-timeout").String(),
 		"PATCHY_REMEDIATE_AUTO_MAX_TURNS":      fmt.Sprint(opts.Int("remediate-auto-max-turns")),
 		"PATCHY_REMEDIATE_AUTO_TOKEN_BUDGET":   fmt.Sprint(opts.Int("remediate-auto-token-budget")),
 		"PATCHY_REMEDIATE_MANUAL_MAX_TURNS":    fmt.Sprint(opts.Int("remediate-manual-max-turns")),
@@ -124,6 +127,9 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	}
 	if opts.Int("changeset-max-entries") <= 0 {
 		return errors.New("--changeset-max-entries must be positive")
+	}
+	if opts.Duration("remediate-idle-timeout") < 0 {
+		return errors.New("--remediate-idle-timeout must not be negative (0 disables it)")
 	}
 
 	mgr, err := kube.NewManager(kube.Options{

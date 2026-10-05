@@ -41,8 +41,9 @@ request was seen only as GitHub rendered it.
   `PATCHY_REMEDIATE_AUTO_MAX_TURNS`/`_TOKEN_BUDGET` is honoured, and those apply only to a build Job with no grant.
 
 No per-Job timeout reaches the pod, so a stage's wall clock is `PATCHY_INVESTIGATE_TIMEOUT` (plan) or
-`PATCHY_REMEDIATE_TIMEOUT` (build, and every revise round): the intent controller launches each stage with its own time
-limit there. The plan prompt tells the planner the most a build can be granted, read from the plan Job's
+`PATCHY_REMEDIATE_TIMEOUT` (build, and every revise round), and its idle limit `PATCHY_INVESTIGATE_IDLE_TIMEOUT` or
+`PATCHY_REMEDIATE_IDLE_TIMEOUT`: the intent controller launches each stage with its own limits there. The plan prompt
+tells the planner the most a build can be granted, read from the plan Job's
 `PATCHY_REMEDIATE_MANUAL_MAX_TURNS`/`_TOKEN_BUDGET` (the build stage's ceiling), which the intent controller sets to the
 grant the Project's build will receive.
 
@@ -69,9 +70,10 @@ the tool output a build quotes routinely aligns its columns past the plan's boun
 
 ## Stage configuration
 
-Mirrors of the controllers' stage flags: `PATCHY_INVESTIGATE_TIMEOUT` (`15m`), `PATCHY_INVESTIGATE_MAX_TURNS` (`25`),
-`PATCHY_INVESTIGATE_TOKEN_BUDGET` (`150000`), `PATCHY_REMEDIATE_TIMEOUT` (`45m`), `PATCHY_REMEDIATE_AUTO_MAX_TURNS`
-(`80`), `PATCHY_REMEDIATE_AUTO_TOKEN_BUDGET` (`400000`), `PATCHY_REMEDIATE_MANUAL_MAX_TURNS` (`240`),
+Mirrors of the controllers' stage flags: `PATCHY_INVESTIGATE_TIMEOUT` (`15m`), `PATCHY_INVESTIGATE_IDLE_TIMEOUT`
+(`20m`), `PATCHY_INVESTIGATE_MAX_TURNS` (`25`), `PATCHY_INVESTIGATE_TOKEN_BUDGET` (`150000`), `PATCHY_REMEDIATE_TIMEOUT`
+(`45m`), `PATCHY_REMEDIATE_IDLE_TIMEOUT` (`20m`), `PATCHY_REMEDIATE_AUTO_MAX_TURNS` (`80`),
+`PATCHY_REMEDIATE_AUTO_TOKEN_BUDGET` (`400000`), `PATCHY_REMEDIATE_MANUAL_MAX_TURNS` (`240`),
 `PATCHY_REMEDIATE_MANUAL_TOKEN_BUDGET` (`1200000`), and `PATCHY_MODEL_ALLOWLIST` (canonical model ids, rendered into the
 analysis prompt). The **per-Job** `PATCHY_<STAGE>_HARNESS` and `PATCHY_<STAGE>_MODEL` (a canonical, provider-qualified
 id) are set by the controller from the harness and model it resolved for this Job — so the pod runs the harness its
@@ -80,6 +82,23 @@ id. The investigate limits are absolute. The remediate values are a floor and a 
 runs on at least the ceiling whatever the investigation estimated, the per-Job `PATCHY_GRANTED_MAX_TURNS` /
 `PATCHY_GRANTED_TOKEN_BUDGET` raise that when a human approved a larger estimate, and the `_HARD` values bound the
 result. A hard cap below its ceiling is a configuration error and the runner refuses to start.
+
+### The idle watchdog
+
+`PATCHY_<STAGE>_IDLE_TIMEOUT` ends a run that makes no progress for that long: no model turn and no tool result, read
+off the stream the same way the transcript is (a CLI's housekeeping lines, such as a background task update, do not
+count). It kills the CLI's process group, as the wall clock does, and the stage ends `timeout` with a detail naming what
+it waited on, for example
+`no progress for 20m while running Bash (20m without returning): npm run test:ci 2>&1 | tail -60`. The same detail is
+the transcript's last turn and reaches the retry's prompt, and the run counts as an attempt, like any timeout. Its usage
+is recorded as for any other outcome. `0s` disables it; a negative value is a configuration error.
+
+The `20m` default never ends a working run. Claude Code's Bash tool returns a foreground command within its own timeout
+(2 minutes by default, 10 at most), and each model call's content streams as it completes, so a healthy run is never
+silent for more than about 10 minutes; 20 is twice that, and a long test suite fits. What it catches is a run waiting on
+something that will not return: overdub-10's build sat 50 minutes on `npm run test:ci` until its one-hour wall clock. It
+is longer than the investigate stage's `15m` wall clock and equal to the plan stage's `20m`, so it only ever ends a
+remediation, build or revise run early.
 
 `PATCHY_CALIBRATION` is a JSON summary of how earlier estimates in this repository compared to reality, rendered into
 the analysis prompt so the next estimate can correct for the observed skew. It is advisory — absent on a cold start, and

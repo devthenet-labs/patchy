@@ -58,6 +58,8 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.String("investigate-model", "anthropic/claude-sonnet-5",
 		"canonical model id the analysis stage runs on (its harness is derived)")
 	f.Duration("investigate-timeout", 15*time.Minute, "wall-clock limit for the analysis stage")
+	f.Duration("investigate-idle-timeout", 20*time.Minute,
+		"end an analysis run that makes no progress (no model turn, no tool result) for this long; 0 disables")
 	f.Int("investigate-max-turns", 25, "agent turns allowed for the analysis stage")
 	f.Int("investigate-token-budget", 150000, "output-token budget for the analysis stage")
 	// The remediation budgets are rendered into the ANALYSIS prompt: they tell
@@ -79,6 +81,7 @@ func agentEnv(opts *cli.Options) map[string]string {
 		"PATCHY_MODEL_ALLOWLIST": opts.String("model-allowlist"),
 
 		"PATCHY_INVESTIGATE_TIMEOUT":      opts.Duration("investigate-timeout").String(),
+		"PATCHY_INVESTIGATE_IDLE_TIMEOUT": opts.Duration("investigate-idle-timeout").String(),
 		"PATCHY_INVESTIGATE_MAX_TURNS":    fmt.Sprint(opts.Int("investigate-max-turns")),
 		"PATCHY_INVESTIGATE_TOKEN_BUDGET": fmt.Sprint(opts.Int("investigate-token-budget")),
 
@@ -116,6 +119,9 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	repositoryImages, ephemeralStorage, err := runnercfg.RepositoryImages(opts)
 	if err != nil {
 		return err
+	}
+	if opts.Duration("investigate-idle-timeout") < 0 {
+		return errors.New("--investigate-idle-timeout must not be negative (0 disables it)")
 	}
 
 	mgr, err := kube.NewManager(kube.Options{

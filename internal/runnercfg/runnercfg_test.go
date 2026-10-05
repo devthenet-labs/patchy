@@ -515,6 +515,7 @@ func TestRepositoryImages(t *testing.T) {
 		{"enabled with storage", []string{"--repository-images", "--agent-ephemeral-storage", "8Gi"}, true, "8Gi", ""},
 		{"enabled without storage", []string{"--repository-images"}, false, "", "--agent-ephemeral-storage is required"},
 		{"bad quantity", []string{"--agent-ephemeral-storage", "lots"}, false, "", "--agent-ephemeral-storage \"lots\""},
+		{"zero", []string{"--agent-ephemeral-storage", "0Gi"}, false, "", "\"0Gi\" must be positive"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -635,6 +636,15 @@ func TestChartEphemeralStoragePatternIsSound(t *testing.T) {
 		}
 	}
 
+	// Zero in any spelling is a wall no pod could write under: the pattern
+	// refuses it, so it is a render error rather than a crash-looping
+	// controller.
+	for _, q := range []string{"0", "0Gi", "00", "0.0", ".0Mi", "0."} {
+		if re.MatchString(q) {
+			t.Errorf("pattern %s admits %q, a zero quantity", re, q)
+		}
+	}
+
 	admitted := 0
 	cfg := &quick.Config{
 		MaxCount: 1000,
@@ -660,5 +670,86 @@ func TestChartEphemeralStoragePatternIsSound(t *testing.T) {
 		t.Error(err)
 	} else if admitted < 100 {
 		t.Errorf("only %d generated values matched the pattern; the property is near-vacuous", admitted)
+	}
+}
+
+// newResourceOpts registers the agent resource flags alone and loads args.
+func newResourceOpts(t *testing.T, args ...string) *cli.Options {
+	t.Helper()
+	o := cli.NewOptions()
+	cmd := &cobra.Command{Use: "test", RunE: func(*cobra.Command, []string) error { return nil }}
+	o.Bind(cmd)
+	RegisterAgentResourceFlags(cmd.Flags())
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if err := o.Load(cmd); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return o
+}
+
+// TestAgentResources: the default's four flags, unset being today's Jobs
+// (no CPU or memory at all), any subset a valid default, and every size the
+// API server would refuse, or that is a typo, a startup error naming it.
+func TestAgentResources(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		want    [4]string // requests cpu, memory; limits cpu, memory
+		wantErr string
+	}{
+		{name: "unset is none", want: [4]string{}},
+		{name: "a cpu request alone", args: []string{"--agent-cpu-request", "250m"},
+			want: [4]string{"250m", "", "", ""}},
+		{name: "all four", args: []string{"--agent-cpu-request", "500m", "--agent-memory-request", "1Gi",
+			"--agent-cpu-limit", "2", "--agent-memory-limit", "4Gi"}, want: [4]string{"500m", "1Gi", "2", "4Gi"}},
+		{name: "a whole number of cpus", args: []string{"--agent-cpu-request", "4"},
+			want: [4]string{"4", "", "", ""}},
+		{name: "spelled canonically", args: []string{"--agent-memory-request", "1024Mi"},
+			want: [4]string{"", "1Gi", "", ""}},
+		{name: "not a quantity", args: []string{"--agent-cpu-request", "four"},
+			wantErr: `--agent-cpu-request "four"`},
+		{name: "negative", args: []string{"--agent-memory-limit=-1Gi"}, wantErr: "limits.memory -1Gi must be positive"},
+		{name: "zero", args: []string{"--agent-cpu-limit", "0"}, wantErr: "limits.cpu 0 must be positive"},
+		{name: "request above limit", args: []string{"--agent-memory-request", "8Gi", "--agent-memory-limit", "4Gi"},
+			wantErr: "limits.memory 4Gi is below requests.memory 8Gi"},
+		{name: "3500 cpus", args: []string{"--agent-cpu-request", "3500"}, wantErr: "requests.cpu 3500 is above 64"},
+		{name: "7Mi of memory", args: []string{"--agent-memory-request", "7Mi"},
+			wantErr: "requests.memory 7Mi is below 128Mi"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := AgentResources(newResourceOpts(t, tt.args...))
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("AgentResources err = %v, want one containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("AgentResources: %v", err)
+			}
+			cr, mr, cl, ml := r.Strings()
+			if got := [4]string{cr, mr, cl, ml}; got != tt.want {
+				t.Errorf("AgentResources = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAgentResourcesFromTheEnvironment: the chart delivers the default as
+// PATCHY_AGENT_* keys, and an unquoted cpu: 4 renders as "4".
+func TestAgentResourcesFromTheEnvironment(t *testing.T) {
+	t.Setenv("PATCHY_AGENT_CPU_REQUEST", "4")
+	t.Setenv("PATCHY_AGENT_MEMORY_REQUEST", "8Gi")
+	t.Setenv("PATCHY_AGENT_MEMORY_LIMIT", "10Gi")
+	r, err := AgentResources(newResourceOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.String(); got != "requests cpu 4, memory 8Gi; limits memory 10Gi" {
+		t.Errorf("AgentResources = %s", got)
 	}
 }

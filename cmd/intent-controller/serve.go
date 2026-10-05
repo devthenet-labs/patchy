@@ -87,6 +87,7 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.Duration("job-ttl", time.Hour, "ttlSecondsAfterFinished for a finished agent Job")
 	runnercfg.RegisterFlags(f)
 	runnercfg.RegisterRepositoryImageFlags(f)
+	runnercfg.RegisterAgentResourceFlags(f)
 	f.Int("changeset-max-entries", changeset.DefaultMaxEntries,
 		"most files (upserts plus deletes) a build's changeset may touch before it is rejected without any forge call")
 	return cmd
@@ -230,6 +231,11 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	if err != nil {
 		return err
 	}
+	agentResources, err := runnercfg.AgentResources(opts)
+	if err != nil {
+		return err
+	}
+	cpuRequest, memoryRequest, cpuLimit, memoryLimit := agentResources.Strings()
 	if opts.Int("changeset-max-entries") <= 0 {
 		return errors.New("--changeset-max-entries must be positive")
 	}
@@ -270,6 +276,11 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		TTL:            opts.Duration("job-ttl"),
 		Runners:        runners,
 		BrokerAudience: opts.String("broker-token-audience"),
+
+		CPURequest:    cpuRequest,
+		MemoryRequest: memoryRequest,
+		CPULimit:      cpuLimit,
+		MemoryLimit:   memoryLimit,
 
 		EphemeralStorage:      ephemeralStorage,
 		AllowRepositoryImages: repositoryImages,

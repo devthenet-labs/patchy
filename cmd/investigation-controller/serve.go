@@ -50,6 +50,7 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.String("agent-service-account", "patchy-agent", "service account for the agent Jobs")
 	runnercfg.RegisterFlags(f)
 	runnercfg.RegisterRepositoryImageFlags(f)
+	runnercfg.RegisterAgentResourceFlags(f)
 	f.Duration("job-deadline", time.Hour, "activeDeadlineSeconds for an agent Job")
 	f.Duration("job-ttl", time.Hour, "ttlSecondsAfterFinished for a finished agent Job")
 	f.String("model-allowlist", "anthropic/claude-sonnet-5,anthropic/claude-opus-5",
@@ -123,6 +124,11 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	if opts.Duration("investigate-idle-timeout") < 0 {
 		return errors.New("--investigate-idle-timeout must not be negative (0 disables it)")
 	}
+	agentResources, err := runnercfg.AgentResources(opts)
+	if err != nil {
+		return err
+	}
+	cpuRequest, memoryRequest, cpuLimit, memoryLimit := agentResources.Strings()
 
 	mgr, err := kube.NewManager(kube.Options{
 		Kubeconfig:              opts.String("kubeconfig"),
@@ -168,6 +174,11 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		Runners:        runners,
 		Env:            agentEnv(opts),
 		BrokerAudience: opts.String("broker-token-audience"),
+
+		CPURequest:    cpuRequest,
+		MemoryRequest: memoryRequest,
+		CPULimit:      cpuLimit,
+		MemoryLimit:   memoryLimit,
 
 		EphemeralStorage:      ephemeralStorage,
 		AllowRepositoryImages: repositoryImages,

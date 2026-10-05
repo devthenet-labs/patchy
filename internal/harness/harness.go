@@ -124,6 +124,20 @@ type UsageScanner interface {
 	ScanUsage(line []byte) (outputTokens int, ok bool)
 }
 
+// StreamUsageReporter is the optional capability of reading what a run spent
+// off its stream when it ended without the terminal event that totals it: a
+// timeout, the budget kill switch, a crash, a cancelled pod. Every model call
+// is billed whether or not the run finishes, so a stage records this rather
+// than nothing; a cost ceiling summed from what stages record cannot see a
+// run that records zero.
+type StreamUsageReporter interface {
+	// StreamUsage returns the usage the stream reported per model call,
+	// summed, or nil when it reported none. CostUSD stays nil: no CLI
+	// reports a cost before its terminal event, so the controller prices the
+	// tokens at the model's rates (agentresult.stageCost).
+	StreamUsage(stdout []byte) *Usage
+}
+
 // TurnScanner is the optional capability of projecting the live output stream
 // onto the harness-neutral conversation vocabulary; it powers the transcript
 // the status page replays. A harness without it simply produces no transcript.

@@ -92,6 +92,9 @@ type step struct {
 	// err, when set, is returned as the executor's error (an unstartable
 	// command) instead of a result.
 	err error
+	// runErr, when set, is returned beside the result, as the runner returns
+	// a cancelled run's partial output with the context's error.
+	runErr error
 }
 
 func (f *fakeExec) Run(_ context.Context, spec runner.CommandSpec, timeout time.Duration,
@@ -138,7 +141,7 @@ func (f *fakeExec) Run(_ context.Context, spec runner.CommandSpec, timeout time.
 	if res.Elapsed == 0 {
 		res.Elapsed = 3 * time.Second
 	}
-	return res, nil
+	return res, s.runErr
 }
 
 // newWorkspace builds the pod layout the init container would assemble: a

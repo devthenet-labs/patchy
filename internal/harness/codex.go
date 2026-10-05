@@ -319,6 +319,13 @@ func (c *Codex) RuntimeError(stdout []byte, exitCode int, timedOut bool) string 
 	return ""
 }
 
+// StreamUsage sums the turn.completed usage the stream carried. Codex reports
+// usage only when a turn completes, so a run cut off inside its one turn
+// reports nil: it spent tokens, but its stream never said how many.
+func (c *Codex) StreamUsage(stdout []byte) *Usage {
+	return scanCodexEvents(stdout).usage
+}
+
 // ScanUsage reads the output-token count off one live stream line. Codex
 // reports usage only on turn.completed events, so the budget accumulator
 // sums per-turn totals; within a turn the budget cannot fire early, but a

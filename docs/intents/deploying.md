@@ -434,7 +434,9 @@ build pod is time: its Job deadline (`intentController.config.jobDeadline`, 90 m
 provider allows the key, so set a spend limit on the key at the provider too. To size the broker's limits, read the
 per-pod totals on its audit line after the first intents (`kubectl -n patchy logs deploy/patchy-egress-broker`); note
 that `tokensPerPod` counts input, cache and output tokens, while a stage's `tokenBudget` counts output tokens only, so
-it must sit far above the build stage's 800000.
+it must sit far above the build stage's 800000. A run that ends early (its stage timeout, a token budget, a crash) still
+records what it spent, as its stream reported it call by call: the input and cache tokens exactly, but output tokens
+only as counted when each call started, so the cost recorded for such a run is a floor.
 
 **The Ingresses.** Intents need neither: an App created with only `--intents --checks` has no webhook, the webhook
 Ingress serves only the security pipeline (`--security`), and the status Ingress the status page. Keeping both, as here,

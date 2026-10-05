@@ -63,18 +63,23 @@ data:
 
     # ---- the stages ---------------------------------------------------------
     # Ceilings a Project's limits may lower, never raise. Both models must
-    # resolve to the claude harness.
+    # resolve to the claude harness. Each *_IDLE_TIMEOUT ends a run of its
+    # stage that makes no progress (no model turn, no tool result) for that
+    # long, as a timeout naming the command it waited on; "0s" disables it.
     PATCHY_INTENT_PLAN_MODEL: anthropic/claude-sonnet-5
     PATCHY_INTENT_PLAN_MAX_TURNS: "40"
     PATCHY_INTENT_PLAN_TOKEN_BUDGET: "200000"
     PATCHY_INTENT_PLAN_TIMEOUT: 20m
+    PATCHY_INTENT_PLAN_IDLE_TIMEOUT: 20m
     PATCHY_INTENT_BUILD_MODEL: anthropic/claude-sonnet-5
     PATCHY_INTENT_BUILD_MAX_TURNS: "150"
     PATCHY_INTENT_BUILD_TOKEN_BUDGET: "800000"
     PATCHY_INTENT_BUILD_TIMEOUT: 60m
+    PATCHY_INTENT_BUILD_IDLE_TIMEOUT: 20m
     PATCHY_INTENT_REVISE_MAX_TURNS: "80"
     PATCHY_INTENT_REVISE_TOKEN_BUDGET: "400000"
     PATCHY_INTENT_REVISE_TIMEOUT: 45m
+    PATCHY_INTENT_REVISE_IDLE_TIMEOUT: 20m
 
     # ---- repository-declared images -----------------------------------------
     # A build runs only on an accepted repository-declared image. The base

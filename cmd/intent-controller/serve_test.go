@@ -133,9 +133,12 @@ func TestComponentConfigReachesSettings(t *testing.T) {
 		RateLimitFloor:       1000,
 		MaxAttempts:          intent.DefaultMaxAttempts,
 		MultiRepo:            true,
-		Plan:                 intent.StageCeiling{MaxTurns: 7, TokenBudget: 200000, Timeout: 20 * time.Minute},
-		Build:                intent.StageCeiling{MaxTurns: 150, TokenBudget: 800000, Timeout: 61 * time.Minute},
-		Revise:               intent.StageCeiling{MaxTurns: 80, TokenBudget: 400000, Timeout: 45 * time.Minute},
+		Plan: intent.StageCeiling{MaxTurns: 7, TokenBudget: 200000, Timeout: 20 * time.Minute,
+			IdleTimeout: 20 * time.Minute},
+		Build: intent.StageCeiling{MaxTurns: 150, TokenBudget: 800000, Timeout: 61 * time.Minute,
+			IdleTimeout: 20 * time.Minute},
+		Revise: intent.StageCeiling{MaxTurns: 80, TokenBudget: 400000, Timeout: 45 * time.Minute,
+			IdleTimeout: 20 * time.Minute},
 	}
 	if s != want {
 		t.Errorf("settings = %+v, want %+v", s, want)

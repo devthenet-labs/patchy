@@ -54,7 +54,10 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
   ran `npm run test:ci` (11 browser suites, three at a time) on the 2 vCPU, 3.7 GiB node; the command never returned and
   the agent sat idle for 50 minutes until the one-hour timeout. The same subset takes under two minutes on a 2 vCPU CI
   runner with two at a time. Patchy: a no-progress watchdog (no model request for N minutes ends the run with "a command
-  ran N minutes") and right-sized agents (agent resource classes).
+  ran N minutes") and right-sized agents (agent resource classes). Watchdog in
+  [#119](https://github.com/devthenet-labs/patchy/pull/119): 20 minutes with no model turn or tool result ends the run
+  as a timeout naming the command (`no progress for 20m while running Bash (20m without returning): npm run test:ci …`),
+  which counts as an attempt; per-stage `*-idle-timeout` flags and chart values, `0s` disables it.
 - **The agent handled pre-existing failures well** (overdub-10 attempt 2). It saw `shell-test.js` fail, ran it again on
   the untouched tree with `git stash` to prove the failures were there before its change, then moved on to the CI
   subset. Worth showing in the docs as the behaviour a repository's CLAUDE.md test note makes possible.

@@ -62,13 +62,16 @@ other binary binds, so the shared kustomize ConfigMap cannot set one by accident
 | `--intent-plan-max-turns`         | `PATCHY_INTENT_PLAN_MAX_TURNS`         | `40`                        | Most agent turns a plan run may take                                                                    |
 | `--intent-plan-token-budget`      | `PATCHY_INTENT_PLAN_TOKEN_BUDGET`      | `200000`                    | Most output tokens a plan run may spend                                                                 |
 | `--intent-plan-timeout`           | `PATCHY_INTENT_PLAN_TIMEOUT`           | `20m`                       | Wall-clock limit of a plan run                                                                          |
+| `--intent-plan-idle-timeout`      | `PATCHY_INTENT_PLAN_IDLE_TIMEOUT`      | `20m`                       | End a plan run that makes no progress for this long; `0s` disables                                      |
 | `--intent-build-model`            | `PATCHY_INTENT_BUILD_MODEL`            | `anthropic/claude-sonnet-5` | Canonical model the build stage runs                                                                    |
 | `--intent-build-max-turns`        | `PATCHY_INTENT_BUILD_MAX_TURNS`        | `150`                       | Most agent turns a build run may take                                                                   |
 | `--intent-build-token-budget`     | `PATCHY_INTENT_BUILD_TOKEN_BUDGET`     | `800000`                    | Most output tokens a build run may spend                                                                |
 | `--intent-build-timeout`          | `PATCHY_INTENT_BUILD_TIMEOUT`          | `60m`                       | Wall-clock limit of a build run                                                                         |
+| `--intent-build-idle-timeout`     | `PATCHY_INTENT_BUILD_IDLE_TIMEOUT`     | `20m`                       | End a build run that makes no progress for this long; `0s` disables                                     |
 | `--intent-revise-max-turns`       | `PATCHY_INTENT_REVISE_MAX_TURNS`       | `80`                        | Most agent turns a revise or check-fix run may take                                                     |
 | `--intent-revise-token-budget`    | `PATCHY_INTENT_REVISE_TOKEN_BUDGET`    | `400000`                    | Most output tokens a revise or check-fix run may spend                                                  |
 | `--intent-revise-timeout`         | `PATCHY_INTENT_REVISE_TIMEOUT`         | `45m`                       | Wall-clock limit of a revise or check-fix run                                                           |
+| `--intent-revise-idle-timeout`    | `PATCHY_INTENT_REVISE_IDLE_TIMEOUT`    | `20m`                       | End a revise or check-fix run that makes no progress for this long; `0s` disables                       |
 | `--agent-namespace`               | `PATCHY_AGENT_NAMESPACE`               | `patchy-agents`             | Namespace the agent Jobs run in                                                                         |
 | `--agent-service-account`         | `PATCHY_AGENT_SERVICE_ACCOUNT`         | `patchy-agent`              | Service account the agent Jobs run as                                                                   |
 | `--job-ttl`                       | `PATCHY_JOB_TTL`                       | `1h`                        | `ttlSecondsAfterFinished` on a finished agent Job                                                       |
@@ -76,11 +79,14 @@ other binary binds, so the shared kustomize ConfigMap cannot set one by accident
 | `--agent-ephemeral-storage`       | `PATCHY_AGENT_EPHEMERAL_STORAGE`       | —                           | Ephemeral-storage request and limit on both agent containers; **required** with the flag above          |
 | `--changeset-max-entries`         | `PATCHY_CHANGESET_MAX_ENTRIES`         | `500`                       | Most files a build's changeset may touch; more is rejected before any forge call                        |
 
-The per-stage limits are ceilings. A Project's `limits` may lower them for its own intents, never raise them. The
-controller refuses to start with a Job deadline shorter than either stage timeout. Any longer deadline works: each Job's
-broker caller token is minted for the deadline plus 15 minutes (at least an hour), so it always outlives the Job.
-`--job-deadline`, `--model-allowlist` and the `--investigate-*`/`--remediate-*` flags belong to the finding job
-controllers and are not read here.
+The per-stage limits are ceilings. A Project's `limits` may lower them for its own intents, never raise them. The idle
+timeouts are the runner's no-progress watchdog ([agent-runner](agent-runner.md#the-idle-watchdog)), set per stage and
+not by a Project: a run that waits that long on a command that never returns ends as a `timeout` naming the command,
+which counts as one of the run's attempts, as the wall clock's timeout does. The plan stage's equals its wall clock by
+default, so only a build, revise or check-fix run is ever ended early. The controller refuses to start with a Job
+deadline shorter than either stage timeout. Any longer deadline works: each Job's broker caller token is minted for the
+deadline plus 15 minutes (at least an hour), so it always outlives the Job. `--job-deadline`, `--model-allowlist` and
+the `--investigate-*`/`--remediate-*` flags belong to the finding job controllers and are not read here.
 
 ### Brokered claude only
 

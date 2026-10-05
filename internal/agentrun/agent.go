@@ -166,8 +166,7 @@ func (a *Agent) remediate(ctx context.Context, params remediationParams) *envelo
 		return ev
 	}
 
-	onLine, _ := a.observe(h, params.budget)
-	res, runErr := a.exec.Run(ctx, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
+	res, idle, runErr := a.run(ctx, h, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.RemediateModel, a.cfg.RemediateHarness),
 		MaxTurns:  params.maxTurns,
@@ -175,9 +174,13 @@ func (a *Agent) remediate(ctx context.Context, params remediationParams) *envelo
 		SessionID: a.newSessionID(),
 		AddDirs:   []string{a.cfg.Workspace},
 		Env:       env,
-	}), cli), a.cfg.RemediateTimeout, onLine)
+	}), cli), a.cfg.RemediateTimeout, a.cfg.RemediateIdleTimeout, params.budget)
 	a.fillStage(&ev.Stage, h, res)
 
+	if idle != "" {
+		ev.Outcome, ev.Detail = envelope.OutcomeTimeout, idle
+		return ev
+	}
 	if res.Aborted {
 		ev.Outcome = envelope.OutcomeBudgetExceeded
 		ev.Detail = res.AbortReason
@@ -221,25 +224,52 @@ func (a *Agent) remediate(ctx context.Context, params remediationParams) *envelo
 	return ev
 }
 
-// observe builds the runner's per-line observer: the transcript recorder and
-// the output-token budget kill switch, over the one pass the runner makes.
-// Either half may be absent — a harness that cannot report usage, a budget of
-// zero, a harness that cannot transcribe — and when both are, the observer is
-// nil and the runner does no per-line work at all.
+// run executes one stage's agent under its wall clock (timeout) and its idle
+// watchdog (idleLimit, zero for none), observing its stream (observe). idle
+// is the watchdog's verdict: the detail of a run it ended for making no
+// progress, also left in the transcript as its last word, or "" when it did
+// not end the run.
+func (a *Agent) run(ctx context.Context, h harness.Harness, spec runner.CommandSpec, timeout, idleLimit time.Duration,
+	budget int) (res runner.Result, idle string, runErr error) {
+	ctx, watch := newIdleWatch(ctx, idleLimit)
+	onLine, rec := a.observe(h, budget, watch)
+	res, runErr = a.exec.Run(ctx, spec, timeout, onLine)
+	if idle = watch.end(runErr, credentialValues(h, a.scrub...)); idle != "" {
+		a.cfg.Log.Warn("the idle watchdog ended the run", "phase", a.cfg.Phase, "detail", idle)
+		if rec != nil {
+			rec.Notice("%s", idle)
+		}
+	}
+	return res, idle, runErr
+}
+
+// observe builds the runner's per-line observer: the transcript recorder, the
+// idle watchdog's progress and the output-token budget kill switch, over the
+// one pass the runner makes. Each may be absent — a harness that cannot report
+// usage, a budget of zero, a harness that cannot transcribe, a disabled
+// watchdog — and when all are, the observer is nil and the runner does no
+// per-line work at all.
 //
 // Recording happens before the budget check so the turn that tripped the limit
 // is in the transcript that explains why the run stopped.
-func (a *Agent) observe(h harness.Harness, budget int) (func([]byte) (bool, string), *transcript.Recorder) {
+func (a *Agent) observe(h harness.Harness, budget int, idle *idleWatch) (func([]byte) (bool, string),
+	*transcript.Recorder) {
 	rec := a.recorder(h)
 	watch := budgetWatcher(h, budget)
-	if rec == nil && watch == nil {
+	if rec == nil && watch == nil && idle == nil {
 		return nil, nil
 	}
 
 	turns, _ := h.(harness.TurnScanner)
 	return func(line []byte) (bool, string) {
-		if rec != nil && turns != nil {
-			rec.RecordAll(turns.ScanTurns(line))
+		if turns != nil {
+			scanned := turns.ScanTurns(line)
+			if rec != nil {
+				rec.RecordAll(scanned)
+			}
+			idle.progress(scanned)
+		} else {
+			idle.alive()
 		}
 		if watch == nil {
 			return false, ""
@@ -404,8 +434,7 @@ func (a *Agent) investigate(ctx context.Context) *envelope.Investigation {
 		return ev
 	}
 
-	onLine, _ := a.observe(h, a.cfg.InvestigateTokenBudget)
-	res, runErr := a.exec.Run(ctx, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
+	res, idle, runErr := a.run(ctx, h, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.InvestigateModel, a.cfg.InvestigateHarness),
 		MaxTurns:  a.cfg.InvestigateMaxTurns,
@@ -413,9 +442,13 @@ func (a *Agent) investigate(ctx context.Context) *envelope.Investigation {
 		SessionID: a.newSessionID(),
 		AddDirs:   []string{a.cfg.Workspace},
 		Env:       env,
-	}), cli), a.cfg.InvestigateTimeout, onLine)
+	}), cli), a.cfg.InvestigateTimeout, a.cfg.InvestigateIdleTimeout, a.cfg.InvestigateTokenBudget)
 	a.fillStage(&ev.Stage, h, res)
 
+	if idle != "" {
+		ev.Outcome, ev.Detail = envelope.OutcomeTimeout, idle
+		return ev
+	}
 	if res.Aborted {
 		ev.Outcome = envelope.OutcomeBudgetExceeded
 		ev.Detail = res.AbortReason

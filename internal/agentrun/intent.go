@@ -240,12 +240,11 @@ func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.
 	}
 
 	maxTurns, budget := a.planLimits()
-	onLine, _ := a.observe(h, budget)
-	// The stage's wall clock is the investigate timeout: no per-Job timeout
-	// reaches the pod (a new key would change the repository-image Job), so
-	// the intent controller sets each stage's on the Env of the jobs Client
-	// it launches that stage with.
-	res, runErr := a.exec.Run(ctx, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
+	// The stage's wall clock and idle limit are the investigate stage's: no
+	// per-Job timeout reaches the pod (a new key would change the
+	// repository-image Job), so the intent controller sets each stage's on
+	// the Env of the jobs Client it launches that stage with.
+	res, idle, runErr := a.run(ctx, h, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.InvestigateModel, a.cfg.InvestigateHarness),
 		MaxTurns:  maxTurns,
@@ -253,9 +252,13 @@ func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.
 		SessionID: a.newSessionID(),
 		AddDirs:   []string{a.cfg.Workspace},
 		Env:       env,
-	}), cli), a.cfg.InvestigateTimeout, onLine)
+	}), cli), a.cfg.InvestigateTimeout, a.cfg.InvestigateIdleTimeout, budget)
 	a.fillStage(&ev.Stage, h, res)
 
+	if idle != "" {
+		ev.Outcome, ev.Detail = envelope.OutcomeTimeout, idle
+		return ev
+	}
 	if res.Aborted {
 		ev.Outcome = envelope.OutcomeBudgetExceeded
 		ev.Detail = res.AbortReason
@@ -365,11 +368,10 @@ func (a *Agent) build(ctx context.Context, params remediationParams, scope build
 		return ev
 	}
 
-	onLine, _ := a.observe(h, params.budget)
-	// The remediate timeout, for a build and a revise round alike: the
-	// intent controller launches each with its stage's time limit in that
-	// key (see the plan stage).
-	res, runErr := a.exec.Run(ctx, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
+	// The remediate timeout and idle limit, for a build and a revise round
+	// alike: the intent controller launches each with its stage's in those
+	// keys (see the plan stage).
+	res, idle, runErr := a.run(ctx, h, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.RemediateModel, a.cfg.RemediateHarness),
 		MaxTurns:  params.maxTurns,
@@ -377,9 +379,13 @@ func (a *Agent) build(ctx context.Context, params remediationParams, scope build
 		SessionID: a.newSessionID(),
 		AddDirs:   []string{a.cfg.Workspace},
 		Env:       env,
-	}), cli), a.cfg.RemediateTimeout, onLine)
+	}), cli), a.cfg.RemediateTimeout, a.cfg.RemediateIdleTimeout, params.budget)
 	a.fillStage(&ev.Stage, h, res)
 
+	if idle != "" {
+		ev.Outcome, ev.Detail = envelope.OutcomeTimeout, idle
+		return ev
+	}
 	if res.Aborted {
 		ev.Outcome = envelope.OutcomeBudgetExceeded
 		ev.Detail = res.AbortReason

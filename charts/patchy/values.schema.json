@@ -81,6 +81,10 @@
                 "timeout": {
                     "$ref": "#/definitions/duration"
                 },
+                "idleTimeout": {
+                    "description": "End a run that makes no progress (no model turn, no tool result) for this long; 0s disables it",
+                    "$ref": "#/definitions/duration"
+                },
                 "auto": {
                     "description": "What an unattended fix gets, and the line past which an estimate needs approval",
                     "$ref": "#/definitions/agentBudget"
@@ -105,6 +109,10 @@
                     "type": "string"
                 },
                 "timeout": {
+                    "$ref": "#/definitions/duration"
+                },
+                "idleTimeout": {
+                    "description": "End a run that makes no progress (no model turn, no tool result) for this long; 0s disables it",
                     "$ref": "#/definitions/duration"
                 },
                 "maxTurns": {
@@ -1236,6 +1244,10 @@
                                 },
                                 "timeout": {
                                     "$ref": "#/definitions/duration"
+                                },
+                                "idleTimeout": {
+                                    "description": "End a run of the stage that makes no progress (no model turn, no tool result) for this long; 0s disables it",
+                                    "$ref": "#/definitions/duration"
                                 }
                             }
                         },
@@ -1265,6 +1277,10 @@
                                 },
                                 "timeout": {
                                     "$ref": "#/definitions/duration"
+                                },
+                                "idleTimeout": {
+                                    "description": "End a run of the stage that makes no progress (no model turn, no tool result) for this long; 0s disables it",
+                                    "$ref": "#/definitions/duration"
                                 }
                             }
                         },
@@ -1287,6 +1303,10 @@
                                     "minimum": 1
                                 },
                                 "timeout": {
+                                    "$ref": "#/definitions/duration"
+                                },
+                                "idleTimeout": {
+                                    "description": "End a run of the stage that makes no progress (no model turn, no tool result) for this long; 0s disables it",
                                     "$ref": "#/definitions/duration"
                                 }
                             }

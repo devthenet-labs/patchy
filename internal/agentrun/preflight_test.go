@@ -39,6 +39,7 @@ func TestConfigEnvKeys(t *testing.T) {
 		"PATCHY_BROKER_TOKEN_FILE", "PATCHY_MODEL_MAP", "PATCHY_BIN_DIR",
 		"PATCHY_GRANTED_TOKEN_BUDGET", "PATCHY_CHANGESET_MAX_BYTES", "PATCHY_CALIBRATION",
 		"PATCHY_PREVIOUS_ATTEMPT", "PATCHY_TRANSCRIPT_MAX_TOTAL_BYTES", "PATCHY_REMEDIATE_TIMEOUT",
+		"PATCHY_OPEN_PULL_REQUESTS",
 	} {
 		if !slices.Contains(keys, want) {
 			t.Errorf("ConfigEnvKeys() lacks %s", want)
@@ -50,7 +51,7 @@ func TestConfigEnvKeys(t *testing.T) {
 	// environment happens to reach.
 	full := map[string]string{"PATCHY_REPO": "acme/shop", "PATCHY_FINDING": "finding-abc123def0-1",
 		"PATCHY_MODEL_MAP": "anthropic/claude-sonnet-5=claude-sonnet-5", "PATCHY_CALIBRATION": `{}`,
-		"PATCHY_PREVIOUS_ATTEMPT": `{}`}
+		"PATCHY_PREVIOUS_ATTEMPT": `{}`, "PATCHY_OPEN_PULL_REQUESTS": `[]`}
 	seen := map[string]bool{}
 	if _, err := FromEnv(func(k string) string { seen[k] = true; return full[k] }); err != nil {
 		t.Fatalf("FromEnv: %v", err)

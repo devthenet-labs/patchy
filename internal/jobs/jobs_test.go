@@ -342,15 +342,24 @@ func TestCreateAgentEnv(t *testing.T) {
 
 // TestCreateAgentEnvPreviousAttempt: a retry's previous attempt reaches the
 // pod as PATCHY_PREVIOUS_ATTEMPT, verbatim; a first attempt sets nothing.
+// So does an intent plan's list of open pull requests, as
+// PATCHY_OPEN_PULL_REQUESTS, and a Job with none sets nothing.
 func TestCreateAgentEnvPreviousAttempt(t *testing.T) {
 	const previous = `{"attempt":1,"outcome":"commit_failed","detail":"M patchy-target"}`
+	const open = `[{"intent":"target-2","repository":"https://github.com/acme/app","number":7}]`
 	for _, tt := range []struct {
-		name, previous string
-	}{{"retry", previous}, {"first attempt", ""}} {
+		name, env, value string
+		set              func(*Spec, string)
+	}{
+		{"retry", "PATCHY_PREVIOUS_ATTEMPT", previous, func(s *Spec, v string) { s.PreviousAttempt = v }},
+		{"first attempt", "PATCHY_PREVIOUS_ATTEMPT", "", func(s *Spec, v string) { s.PreviousAttempt = v }},
+		{"open pull requests", "PATCHY_OPEN_PULL_REQUESTS", open, func(s *Spec, v string) { s.OpenPullRequests = v }},
+		{"no open pull request", "PATCHY_OPEN_PULL_REQUESTS", "", func(s *Spec, v string) { s.OpenPullRequests = v }},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cs := fake.NewClientset()
 			spec := testSpec()
-			spec.PreviousAttempt = tt.previous
+			tt.set(&spec, tt.value)
 			name, _, err := New(cs, testConfig(), nil).Create(context.Background(), spec)
 			if err != nil {
 				t.Fatalf("Create: %v", err)
@@ -361,15 +370,15 @@ func TestCreateAgentEnvPreviousAttempt(t *testing.T) {
 			}
 			var got *corev1.EnvVar
 			for i, env := range job.Spec.Template.Spec.Containers[0].Env {
-				if env.Name == "PATCHY_PREVIOUS_ATTEMPT" {
+				if env.Name == tt.env {
 					got = &job.Spec.Template.Spec.Containers[0].Env[i]
 				}
 			}
 			switch {
-			case tt.previous == "" && got != nil:
-				t.Errorf("PATCHY_PREVIOUS_ATTEMPT = %+v on a first attempt, want absent", got)
-			case tt.previous != "" && (got == nil || got.Value != tt.previous):
-				t.Errorf("PATCHY_PREVIOUS_ATTEMPT = %+v, want %q", got, tt.previous)
+			case tt.value == "" && got != nil:
+				t.Errorf("%s = %+v with nothing to hand over, want absent", tt.env, got)
+			case tt.value != "" && (got == nil || got.Value != tt.value):
+				t.Errorf("%s = %+v, want %q", tt.env, got, tt.value)
 			}
 		})
 	}
@@ -392,6 +401,7 @@ func TestOperatorEnvCannotShadowPerJobHandoff(t *testing.T) {
 	}{
 		{"PATCHY_CALIBRATION", func(s *Spec, v string) { s.Calibration = v }},
 		{"PATCHY_PREVIOUS_ATTEMPT", func(s *Spec, v string) { s.PreviousAttempt = v }},
+		{"PATCHY_OPEN_PULL_REQUESTS", func(s *Spec, v string) { s.OpenPullRequests = v }},
 	}
 	sources := []struct {
 		name string

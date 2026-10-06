@@ -139,7 +139,9 @@ func (a *Agent) followOutput(ctx context.Context, h harness.Harness, spec runner
 }
 
 // scan applies one stream line's command events. It runs on the runner's
-// reading goroutine for every line of the CLI's stream, so it never waits.
+// reading goroutine for every line of the CLI's stream, so it never waits on
+// a command: it starts and signals goroutines, under locks only ever held
+// for a map update or one stdout line.
 func (f *outputFollower) scan(line []byte) {
 	if f == nil {
 		return

@@ -15,9 +15,14 @@ import (
 // states them up front so the agent paces its own work: reaching any of
 // them ends the run with nothing to show for it.
 type StageLimits struct {
-	MaxTurns    int
+	// MaxTurns is the run's agent-turn ceiling (claude's --max-turns).
+	MaxTurns int
+	// TokenBudget is the output tokens past which the runner kills the run.
 	TokenBudget int
-	Timeout     time.Duration
+	// Timeout is the stage's wall clock, after which the runner kills the
+	// run (PATCHY_INVESTIGATE_TIMEOUT for a plan, PATCHY_REMEDIATE_TIMEOUT
+	// for every build run).
+	Timeout time.Duration
 }
 
 // WallClock is Timeout as a prompt states it: in minutes ("15 minutes")

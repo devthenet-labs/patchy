@@ -34,10 +34,10 @@ request was seen only as GitHub rendered it.
 - **`plan`** reads the request and the tree read-only and writes `reports/plan.md`, emitted as a `plan` event. It runs
   on the investigate stage's configuration — `PATCHY_INVESTIGATE_HARNESS`/`_MODEL`/`_TIMEOUT`, and
   `PATCHY_INVESTIGATE_MAX_TURNS`/`_TOKEN_BUDGET` as its ceiling, which a per-Job grant may lower but never raise. Its
-  sandbox is the investigation's read-only one (Read, Glob, Grep and `git log`/`show`/`blame`/`diff`, nothing else
-  run) with one difference: its writes are scoped to `reports/`. claude may create and edit files there, so the
-  planner can fix its report in place, and is refused a write anywhere else in the workspace. A Finding
-  investigation's posture is unchanged.
+  sandbox is the investigation's read-only one (Read, Glob, Grep and `git log`/`show`/`blame`/`diff`, nothing else run)
+  with one difference: its writes are scoped to `reports/`. claude may create and edit files there, so the planner can
+  fix its report in place, and is refused a write anywhere else in the workspace. A Finding investigation's posture is
+  unchanged.
 - **`build`** builds the approved plan with the workspace writable — the first build and every revise round — writes
   `reports/build.md` and `commit.sh`, and emits a `remediation` event with the changeset. It runs on the remediate
   stage's configuration, with `PATCHY_REMEDIATE_MANUAL_MAX_TURNS`/`_TOKEN_BUDGET` as its ceiling, which a per-Job grant
@@ -46,10 +46,10 @@ request was seen only as GitHub rendered it.
 
 No per-Job timeout reaches the pod, so a stage's wall clock is `PATCHY_INVESTIGATE_TIMEOUT` (plan) or
 `PATCHY_REMEDIATE_TIMEOUT` (build, and every revise round), and its idle limit `PATCHY_INVESTIGATE_IDLE_TIMEOUT` or
-`PATCHY_REMEDIATE_IDLE_TIMEOUT`: the intent controller launches each stage with its own limits there. Each intent
-prompt states the run's own limits up front, exactly as the run is held to them: its turns and output tokens after the
-grant (clamped to the stage's ceiling, or the stage's default with no grant) and the stage's wall clock. The plan
-prompt also tells the planner the most a build can be granted, read from the plan Job's
+`PATCHY_REMEDIATE_IDLE_TIMEOUT`: the intent controller launches each stage with its own limits there. Each intent prompt
+states the run's own limits up front, exactly as the run is held to them: its turns and output tokens after the grant
+(clamped to the stage's ceiling, or the stage's default with no grant) and the stage's wall clock. The plan prompt also
+tells the planner the most a build can be granted, read from the plan Job's
 `PATCHY_REMEDIATE_MANUAL_MAX_TURNS`/`_TOKEN_BUDGET` (the build stage's ceiling), which the intent controller sets to the
 grant the Project's build will receive. Since the planner cannot run anything, the plan prompt points it at the
 repository's own guidance (CLAUDE.md, AGENTS.md, CONTRIBUTING.md, the README and the CI workflows) for which tests the

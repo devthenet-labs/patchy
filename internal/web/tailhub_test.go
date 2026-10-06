@@ -484,16 +484,21 @@ type followTailer struct {
 	follows []*fakeFollow
 }
 
-// fakeFollow is one Tail call: its context and sink, and end, which the test
-// closes to make it return.
+// fakeFollow is one Tail call: its Job, context and sink, and end, which
+// the test closes (finish) to make it return.
 type fakeFollow struct {
+	job  string
 	ctx  context.Context
 	sink jobs.Sink
 	end  chan struct{}
+	once sync.Once
 }
 
-func (f *followTailer) Tail(ctx context.Context, _ string, sink jobs.Sink) error {
-	ff := &fakeFollow{ctx: ctx, sink: sink, end: make(chan struct{})}
+// finish makes the follow return; a second call is a no-op.
+func (ff *fakeFollow) finish() { ff.once.Do(func() { close(ff.end) }) }
+
+func (f *followTailer) Tail(ctx context.Context, job string, sink jobs.Sink) error {
+	ff := &fakeFollow{job: job, ctx: ctx, sink: sink, end: make(chan struct{})}
 	f.mu.Lock()
 	f.follows = append(f.follows, ff)
 	f.mu.Unlock()
@@ -638,13 +643,61 @@ func TestHubViewerAfterTheLastLeftGetsALiveFollow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	close(old.end) // the old follow finishes unwinding
+	old.finish() // the old follow finishes unwinding
 	ff := expectLive(t, tl, next)
 	if ff == old {
 		t.Error("the viewer who came after the last left joined the old follow")
 	}
 	next.Close()
-	close(ff.end)
+	ff.finish()
+}
+
+// The last viewer leaving takes its run out of the hub at once, but its
+// follow counts toward maxLiveTails until it has unwound: the cap protects
+// the API server, which serves that follow until then.
+func TestHubCapCountsFollowsStillUnwinding(t *testing.T) {
+	tl := &followTailer{lag: true}
+	h := testHub(tl)
+	subs := make([]*subscription, maxLiveTails)
+	for i := range subs {
+		sub, err := h.subscribe(jobName(i), false)
+		if err != nil {
+			t.Fatalf("subscribe %d: %v", i, err)
+		}
+		subs[i] = sub
+	}
+	t.Cleanup(func() {
+		for _, sub := range subs {
+			sub.Close()
+		}
+		tl.mu.Lock()
+		defer tl.mu.Unlock()
+		for _, ff := range tl.follows {
+			ff.finish()
+		}
+	})
+	tl.nth(t, maxLiveTails)
+	var leaving *fakeFollow
+	tl.mu.Lock()
+	for _, ff := range tl.follows {
+		if ff.job == jobName(0) {
+			leaving = ff
+		}
+	}
+	tl.mu.Unlock()
+
+	subs[0].Close() // its follow is cancelled and unwinds
+	if sub, err := h.subscribe("one-more", false); err == nil {
+		sub.Close()
+		t.Fatalf("a follow past the cap of %d opened while a cancelled one still unwinds", maxLiveTails)
+	}
+	leaving.finish()
+	waitFor(t, func() bool { return h.activeTails() == maxLiveTails-1 })
+	sub, err := h.subscribe("one-more", false)
+	if err != nil {
+		t.Fatalf("subscribe once the cancelled follow unwound: %v", err)
+	}
+	subs[0] = sub
 }
 
 // A viewer that leaves after its run ended acts on that run alone, never on
@@ -658,7 +711,7 @@ func TestHubStaleCloseLeavesANewerRunAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	close(tl.nth(t, 1).end) // the run ended
+	tl.nth(t, 1).finish() // the run ended
 	if _, ok := <-stale.Turns; ok {
 		t.Fatal("received a turn from a run that ended")
 	}

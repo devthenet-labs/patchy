@@ -71,6 +71,10 @@ type tailHub struct {
 
 	mu   sync.Mutex
 	runs map[string]*tailRun
+	// detached counts the follows cancelled when their last viewer left,
+	// already out of runs, that have not yet unwound: they still count
+	// toward maxLiveTails.
+	detached int
 }
 
 func newTailHub(t Tailer, log *slog.Logger) *tailHub {
@@ -79,7 +83,8 @@ func newTailHub(t Tailer, log *slog.Logger) *tailHub {
 
 // tailRun is one followed Job and its watchers.
 type tailRun struct {
-	cancel context.CancelFunc
+	cancel   context.CancelFunc
+	detached bool // cancelled and out of the hub; guarded by tailHub.mu
 
 	mu       sync.Mutex
 	seen     []transcript.Turn
@@ -146,7 +151,7 @@ func (h *tailHub) subscribe(jobName string, output bool) (*subscription, error) 
 	defer h.mu.Unlock()
 	run, ok := h.runs[jobName]
 	if !ok {
-		if len(h.runs) >= maxLiveTails {
+		if len(h.runs)+h.detached >= maxLiveTails {
 			return nil, errTooManyTails
 		}
 		run = &tailRun{subs: make(map[*tailSub]struct{})}
@@ -227,8 +232,11 @@ func (h *tailHub) follow(ctx context.Context, jobName string, run *tailRun) {
 	run.mu.Unlock()
 
 	h.mu.Lock()
-	if h.runs[jobName] == run {
+	switch {
+	case h.runs[jobName] == run:
 		delete(h.runs, jobName)
+	case run.detached:
+		h.detached--
 	}
 	h.mu.Unlock()
 }
@@ -253,17 +261,20 @@ func (h *tailHub) unsubscribe(s *subscription) {
 	if last {
 		// Out of the hub at once, not as the follow unwinds: a viewer who
 		// comes next starts a follow of its own rather than join this one
-		// as it ends.
+		// as it ends. It counts toward the cap until it has unwound.
 		delete(h.runs, s.jobName)
+		run.detached = true
+		h.detached++
 		run.cancel()
 	}
 }
 
-// activeTails reports how many follows are open (tests).
+// activeTails reports how many follows are open, those still unwinding
+// included (tests).
 func (h *tailHub) activeTails() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return len(h.runs)
+	return len(h.runs) + h.detached
 }
 
 // outputTail is a run's command-output replay: the latest command's last

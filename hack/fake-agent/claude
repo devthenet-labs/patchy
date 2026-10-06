@@ -28,6 +28,17 @@
 #                              rewrites the report valid, "keep" changes
 #                              nothing, "touch" rewrites the report valid and
 #                              also edits VERSION, which a repair may not.
+#   PATCHY_FAKE_CLAUDE_OUTPUT  <n>: the first run also runs a foreground Bash
+#                              command printing n lines, as claude 2.1.263 was
+#                              probed to: a task_started event, the output
+#                              appended line by line to
+#                              ${CLAUDE_CODE_TMPDIR:-/tmp}/claude-<uid>/<slug
+#                              of the working directory>/<session>/tasks/
+#                              <task>.output, the file deleted as the command
+#                              ends, then task_notification and the tool
+#                              result. Its last line echoes the caller-token
+#                              header, which agent-runner must scrub. Unset or
+#                              0: no command, as before.
 #
 # Every invocation appends "<first|resume> <session> <max-turns>
 # <allowedTools>" to $HOME/.fake-claude/calls for the test to read.
@@ -70,9 +81,44 @@ write_report() {
     'Scripted build from hack/fake-agent/claude: VERSION names the current version.' >"$report"
 }
 
+# init <session> — the session's init event, printed once per run.
+inited=''
+init() {
+  [ -z "$inited" ] || return 0
+  printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$1"
+  inited=1
+}
+
+# run_command <session> <lines> — a foreground Bash command printing that many
+# lines, its output written to the file the CLI keeps it in while it runs.
+run_command() {
+  init "$1"
+  task=bscripted1 call=toolu_scripted1
+  printf '{"type":"assistant","message":{"id":"msg_cmd","content":[{"type":"tool_use","id":"%s","name":"Bash","input":{"command":"go test ./..."}}]}}\n' \
+    "$call"
+  dir="${CLAUDE_CODE_TMPDIR:-/tmp}/claude-$(id -u)/$(pwd | tr '/.' '--')/$1/tasks"
+  mkdir -p "$dir"
+  file="$dir/$task.output"
+  : >"$file"
+  printf '{"type":"system","subtype":"task_started","task_id":"%s","tool_use_id":"%s","description":"Run the suite","task_type":"local_bash","is_backgrounded":false,"uuid":"u-%s","session_id":"%s"}\n' \
+    "$task" "$call" "$task" "$1"
+  i=1
+  while [ "$i" -le "$2" ]; do
+    printf 'ok  example.com/app/pkg%d\n' "$i" >>"$file"
+    sleep 0.02
+    i=$((i + 1))
+  done
+  printf 'header: %s\n' "${ANTHROPIC_CUSTOM_HEADERS:-none}" >>"$file"
+  rm -f "$file"
+  printf '{"type":"system","subtype":"task_notification","task_id":"%s","tool_use_id":"%s","status":"completed","output_file":"","session_id":"%s"}\n' \
+    "$task" "$call" "$1"
+  printf '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"%s","content":"ok  %s packages"}]}}\n' \
+    "$call" "$2"
+}
+
 # emit <session> <turns> <in> <cache write> <cache read> <out> <cost> <text>
 emit() {
-  printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$1"
+  init "$1"
   printf '{"type":"assistant","message":{"id":"msg_%s_%s","usage":{"input_tokens":%s,"cache_creation_input_tokens":%s,"cache_read_input_tokens":%s,"output_tokens":%s},"content":[{"type":"text","text":"%s"}]}}\n' \
     "$mode" "$2" "$3" "$4" "$5" "$6" "$8"
   printf '{"type":"result","subtype":"success","is_error":false,"result":"%s","session_id":"%s","num_turns":%s,"total_cost_usd":%s,"usage":{"input_tokens":%s,"cache_creation_input_tokens":%s,"cache_read_input_tokens":%s,"output_tokens":%s}}\n' \
@@ -89,6 +135,7 @@ if [ "$mode" = first ]; then
   scalar-notes) write_report 'notes: "What was built: a VERSION file at the repository root"' ;;
   *) write_report 'notes: []' ;;
   esac
+  [ "${PATCHY_FAKE_CLAUDE_OUTPUT:-0}" -eq 0 ] || run_command "$session" "$PATCHY_FAKE_CLAUDE_OUTPUT"
   # Cost in hundredths of a cent, cumulative over the session, as the CLI's.
   echo 1000 >"$state/sessions/$session"
   emit "$session" 3 1000 200 3000 400 0.1000 "Built: VERSION added, the suite passes."

@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/transcript"
 	"github.com/bitwise-media-group/patchy/internal/web/auth"
 	"github.com/bitwise-media-group/patchy/internal/web/authz"
 )
@@ -542,6 +543,29 @@ func TestLiveStreamStripsPerSubscriber(t *testing.T) {
 		if a := lastActivity(t, tier1); a.Turns != 3 || a.Live {
 			t.Errorf("tier 1 final activity = %+v", a)
 		}
+	}
+}
+
+// Once the transcript recorder reaches its cap it records nothing more,
+// while the agent goes on working. The activity says so rather than freeze
+// on the tool open at the cap, which would read as a stuck run.
+func TestLiveActivityMarksTheTranscriptCap(t *testing.T) {
+	turns := append(fixtureTurns()[:2], transcript.Turn{Seq: 3, At: "2026-07-21T11:08:00Z",
+		Role: transcript.RoleSystem, Kind: transcript.KindNotice, Truncated: true,
+		Text: "transcript truncated: 500 turn cap reached"})
+	s, _ := intentsServer(t, &fakeTailer{turns: turns})
+	_, body := get(t, as(t, s, viewerAlpha), "/api/intents/alpha-7/runs/alpha-7-bld-r1-app-a2/stream")
+	var capped []bool
+	for _, ev := range sseEvents(body) {
+		if ev[0] == eventActivity {
+			capped = append(capped, strings.Contains(ev[1], `"capped":true`))
+		}
+	}
+	if len(capped) == 0 || !capped[len(capped)-1] {
+		t.Errorf("activity never reported the transcript cap: %s", body)
+	}
+	if a := lastActivity(t, body); a.OpenTool != "" || a.OpenToolSince != "" {
+		t.Errorf("activity after the cap = %+v, want no open tool (it is unknown)", a)
 	}
 }
 

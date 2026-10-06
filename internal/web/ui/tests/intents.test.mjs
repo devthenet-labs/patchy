@@ -105,6 +105,18 @@ test("stopConditions says what ends a running run, and when", () => {
   ]);
 });
 
+test("stopConditions never reads a frozen time past the transcript cap as idleness", () => {
+  // The recorder stopped 25 minutes ago at its cap; the agent kept going.
+  const activity = { turns: 501, lastAt: "2026-10-06T11:35:00Z", live: true, capped: true };
+  const lines = stopConditions(run, activity, now);
+  const idle = lines.find((l) => l.startsWith("ends after 20m 00s"));
+  assert.ok(idle, lines.join("\n"));
+  assert.ok(!idle.includes("last activity"), idle);
+  assert.ok(idle.includes("transcript cap"), idle);
+  const turns = lines.find((l) => l.startsWith("turn limit"));
+  assert.ok(!turns.includes("so far"), turns);
+});
+
 test("stopConditions for a revise round's earlier attempt", () => {
   const lines = stopConditions(
     { ...run, stage: "revise", lastAttempt: false, attempt: 1, countedAttempt: 1, job: undefined },

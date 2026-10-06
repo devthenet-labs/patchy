@@ -105,17 +105,25 @@ export function stopConditions(run: IntentRunDetail, activity: RunActivity | nul
         : `the Job's ${formatDuration(job.deadlineSeconds)} deadline ends it in ${formatDuration(Math.max(0, job.deadlineSeconds - since))}`,
     );
   }
+  // Past the transcript cap the recorder records nothing more, so its last
+  // time and count are frozen: they say nothing about idleness or turns.
+  const capped = run.running && activity?.capped;
   if (job?.idleTimeoutSeconds) {
     let line = `ends after ${formatDuration(job.idleTimeoutSeconds)} with no model turn or tool result`;
     const idle = secondsSince(activity?.lastAt, now);
-    if (run.running && idle !== undefined) line += ` (last activity ${formatDuration(idle)} ago)`;
+    if (capped) line += " (activity since the transcript cap is not recorded)";
+    else if (run.running && idle !== undefined) line += ` (last activity ${formatDuration(idle)} ago)`;
     out.push(line);
   }
   if (run.grant?.maxTurns) {
     const turns = activity?.turns;
     out.push(
       `turn limit ${run.grant.maxTurns}` +
-        (turns !== undefined && run.running ? ` (${turns} transcript entries so far; not every entry is a turn)` : ""),
+        (capped
+          ? ` (the transcript stopped recording at ${turns} entries)`
+          : turns !== undefined && run.running
+            ? ` (${turns} transcript entries so far; not every entry is a turn)`
+            : ""),
     );
   }
   if (run.grant?.tokenBudget) {

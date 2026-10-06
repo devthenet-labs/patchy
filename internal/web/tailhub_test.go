@@ -139,6 +139,44 @@ func TestHubReplaysToLateViewer(t *testing.T) {
 	}
 }
 
+// A run that reached the recorder's cap: its closing notice is the turn
+// after the cap, and a viewer joining late must still see it, or nothing
+// tells them the record stopped while the agent kept working.
+func TestHubReplaysTheCapNoticeToLateViewer(t *testing.T) {
+	tl := newCountingTailer()
+	h := testHub(tl)
+	first, err := h.subscribe("job-1")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer first.Close()
+	<-tl.live
+
+	// tl.send hands each turn to the follow synchronously, so the buffer
+	// holds every one of them when the loop ends.
+	for i := range transcript.DefaultMaxTurns {
+		tl.send(transcript.Turn{Seq: i + 1, Kind: transcript.KindText, Text: "turn"})
+	}
+	notice := transcript.Turn{Seq: transcript.DefaultMaxTurns + 1, Role: transcript.RoleSystem,
+		Kind: transcript.KindNotice, Text: "transcript truncated: 500 turn cap reached", Truncated: true}
+	tl.send(notice)
+	// Past the cap nothing more is kept, notices included.
+	tl.send(transcript.Turn{Seq: transcript.DefaultMaxTurns + 2, Kind: transcript.KindNotice, Truncated: true})
+
+	late, err := h.subscribe("job-1")
+	if err != nil {
+		t.Fatalf("late subscribe: %v", err)
+	}
+	defer late.Close()
+	if n := len(late.Replay); n != transcript.DefaultMaxTurns+1 {
+		t.Fatalf("replay holds %d turns, want the %d the recorder admits plus its closing notice",
+			n, transcript.DefaultMaxTurns)
+	}
+	if got := late.Replay[len(late.Replay)-1]; got.Seq != notice.Seq || got.Kind != transcript.KindNotice {
+		t.Errorf("last replayed turn = %+v, want the cap notice", got)
+	}
+}
+
 func TestHubStopsFollowWhenLastViewerLeaves(t *testing.T) {
 	// A leaked follow is an open watch against the API server for the rest of
 	// the run.

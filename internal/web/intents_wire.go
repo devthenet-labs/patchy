@@ -267,6 +267,10 @@ type RunActivity struct {
 	OpenTool      string `json:"openTool,omitempty"`
 	OpenToolSince string `json:"openToolSince,omitempty"`
 	Live          bool   `json:"live"`
+	// Capped: the transcript recorder reached its cap (LastAt is when) and
+	// records nothing more, while the agent may go on working, so what it
+	// is doing since is not known.
+	Capped bool `json:"capped,omitempty"`
 }
 
 // StreamNotice is the run stream's unavailable and end events' payload.

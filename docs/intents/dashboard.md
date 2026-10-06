@@ -17,8 +17,8 @@ every agent run that is pending or running (a multi-repository build runs one pe
 the newest run against the two each round gets (an attempt whose agent never ran, such as one no node could fit, does
 not count, as it does not for the controller), revision and CI-fix rounds against the Project's limits (every round
 started counts, a failed one too, as it does for the limit), recorded spend against the cost ceiling, its age and time
-in phase, and its pull request and preview links. A suspended intent is
-badged: it is not reconciled while suspended, so its status may be stale.
+in phase, and its pull request and preview links. A suspended intent is badged: it is not reconciled while suspended, so
+its status may be stale.
 
 **The timeline** of one intent lists its phase changes; the plan revision and digest, with a link to the plan comment;
 the accepted approval with who approved, how (label or command), the plan revision and both digests it is bound to; the
@@ -29,8 +29,10 @@ pull requests; the preview; and every run with its stage, round, attempt, outcom
 watchdog's limit (20 minutes without a model turn or tool result, by default), which tool the agent called last and has
 no result for yet and for how long, the last activity, and every condition that stops the run, in plain English. The
 output-token kill switch is listed as what it is: a count of streamed output tokens, not a bound on spend. The cost
-ceiling is checked only before the next launch, so a running run can pass it; the panel says so. A run still waiting
-for a run slot can be opened too: its panel follows it live from the moment its agent starts.
+ceiling is checked only before the next launch, so a running run can pass it; the panel says so. A run still waiting for
+a run slot can be opened too: its panel follows it live from the moment its agent starts. The activity comes from the
+run's transcript, which stops recording at its cap (500 entries or 512 KiB) while the agent goes on; past the cap the
+panel says the activity is not known rather than show the last tool and time frozen there.
 
 Spend on the dashboard is recorded spend only: the cost each run reported when it was collected. A run's spend appears
 when it ends. There are no live token or dollar figures yet.

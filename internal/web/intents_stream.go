@@ -118,7 +118,9 @@ func sseEnd(w http.ResponseWriter, flusher http.Flusher, reason string) {
 // activityTracker derives a run's activity from its turns, keeping none of
 // their text: a turn count, the newest turn's time, and the tool called last
 // and still without a result. Turn times are agent-reported, so one that
-// does not parse is ignored and one in the future is read as now.
+// does not parse is ignored and one in the future is read as now. Once the
+// recorder's closing notice arrives (capNotice) nothing more is recorded,
+// so the activity is capped: the tool open then is no longer known to be.
 type activityTracker struct {
 	now  func() time.Time
 	live bool
@@ -127,6 +129,7 @@ type activityTracker struct {
 	lastAt        string
 	openTool      string
 	openToolSince string
+	capped        bool
 }
 
 func (a *activityTracker) add(t transcript.Turn) {
@@ -135,10 +138,13 @@ func (a *activityTracker) add(t transcript.Turn) {
 	if at != "" {
 		a.lastAt = at
 	}
-	switch t.Kind {
-	case transcript.KindToolUse:
+	switch {
+	case capNotice(t):
+		a.capped = true
+		a.openTool, a.openToolSince = "", ""
+	case t.Kind == transcript.KindToolUse:
 		a.openTool, a.openToolSince = intentview.Text(t.Tool, 64), at
-	case transcript.KindToolResult, transcript.KindText:
+	case t.Kind == transcript.KindToolResult, t.Kind == transcript.KindText:
 		a.openTool, a.openToolSince = "", ""
 	}
 }
@@ -156,7 +162,7 @@ func (a *activityTracker) clamp(at string) string {
 
 func (a *activityTracker) snapshot() RunActivity {
 	return RunActivity{Turns: a.turns, LastAt: a.lastAt, OpenTool: a.openTool,
-		OpenToolSince: a.openToolSince, Live: a.live}
+		OpenToolSince: a.openToolSince, Live: a.live, Capped: a.capped}
 }
 
 // plainTurn is a turn as the intents views ship it: re-marshalled, every

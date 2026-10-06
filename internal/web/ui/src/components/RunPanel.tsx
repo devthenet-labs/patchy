@@ -91,7 +91,9 @@ export function RunPanel({ run, now }: { run: IntentRunDetail; now: number }) {
         <div>
           <dt>Now</dt>
           <dd>
-            {activity?.live && activity.openTool ? (
+            {activity?.capped && run.running ? (
+              "not known: the transcript reached its recording cap"
+            ) : activity?.live && activity.openTool ? (
               <>
                 running <span class="ps-mono-tag">{activity.openTool}</span> for{" "}
                 <span class="font-mono">{formatDuration(secondsSince(activity.openToolSince, now))}</span>
@@ -108,7 +110,11 @@ export function RunPanel({ run, now }: { run: IntentRunDetail; now: number }) {
         <div>
           <dt>Last activity</dt>
           <dd>
-            {activity?.lastAt ? `${formatDate(activity.lastAt)} (${formatDuration(secondsSince(activity.lastAt, now))} ago)` : "—"}
+            {activity?.capped && activity.lastAt
+              ? `not recorded since the transcript cap, reached ${formatDate(activity.lastAt)}`
+              : activity?.lastAt
+                ? `${formatDate(activity.lastAt)} (${formatDuration(secondsSince(activity.lastAt, now))} ago)`
+                : "—"}
           </dd>
         </div>
         <div>

@@ -719,6 +719,9 @@ export interface RunActivity {
   openTool?: string;
   openToolSince?: string;
   live: boolean;
+  // capped: the transcript recorder reached its cap at lastAt and records
+  // nothing more; what the agent has done since is not known.
+  capped?: boolean;
 }
 
 export interface StreamNotice {

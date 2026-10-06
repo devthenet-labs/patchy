@@ -111,15 +111,20 @@ func (r *Reconciler) reconcileActive(ctx context.Context, p *v1alpha1.Preview) (
 	if p.Status.ObservedGeneration != p.Generation {
 		// A new spec withdraws the host until it is Ready again — unless
 		// Ready waits for target health, which needs the Ingress (and so the
-		// target group binding) in place before the new Pods start. The
-		// Recreate rollout stops the old revision before the new one runs,
-		// and the host answers no old code past it.
+		// target group binding) in place before the new Pods start. There the
+		// rolling update keeps the previous revision serving behind the kept
+		// Ingress until the new one is Ready (its target healthy).
 		if p.Status.Slot != nil && !r.Settings.TargetHealth {
 			if err := r.deleteIngress(ctx, p, *p.Status.Slot); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
+		// A Preview holding its slot redeploys in it at once: it reports
+		// Deploying, not Ready and with no URL, at the new revision.
 		p.Status.Phase = v1alpha1.PreviewPending
+		if p.Status.Slot != nil {
+			p.Status.Phase = v1alpha1.PreviewDeploying
+		}
 		p.Status.ObservedGeneration = p.Generation
 		p.Status.ObservedRevision = p.Spec.Components[0].Revision
 		p.Status.Retries = 0
@@ -447,7 +452,11 @@ func (r *Reconciler) retryError(ctx context.Context, p *v1alpha1.Preview, cause 
 				return ctrl.Result{}, err
 			}
 		}
-		// Every component restarts: a retry deletes each one's Deployment.
+		// Every component restarts: a retry deletes each one's Deployment,
+		// so a previous revision still serving through a rolling update
+		// stops with it. Only deleting restarts the stuck rollout (the
+		// controller deletes no Pod or ReplicaSet), and a Failed Preview
+		// releases its slot anyway.
 		for i := range p.Spec.Components {
 			var dep appsv1.Deployment
 			key := types.NamespacedName{Namespace: r.Settings.slotName(*p.Status.Slot), Name: componentName(p, i)}

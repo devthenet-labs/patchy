@@ -30,7 +30,11 @@ func renderSingle(s Settings, p *v1alpha1.Preview, slot int32) []client.Object {
 // preview-controller before multi-component previews: a single-component
 // Preview must keep rendering exactly these objects under exactly these
 // names (preview-<p>), so a live preview is not re-rendered across the
-// upgrade and a rolled-back controller can still clean it up.
+// upgrade and a rolled-back controller can still clean it up. One change
+// since is deliberate: the Deployment's strategy moved from Recreate to a
+// rolling update, so a redeploy keeps the previous revision serving. The
+// Pod template is unchanged, so a live Deployment is patched in place and
+// its Pods are not restarted (TestUpgradeMovesALiveDeploymentToRolling...).
 func TestGoldenSingleComponent(t *testing.T) {
 	_, p := testPreview("preview-demo-5", time.Date(2026, 10, 3, 7, 0, 0, 0, time.UTC))
 	objects := renderSingle(testSettings(), p, 1)

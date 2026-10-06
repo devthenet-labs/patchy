@@ -34,6 +34,17 @@ a run slot can be opened too: its panel follows it live from the moment its agen
 run's transcript, which stops recording at its cap (500 entries or 512 KiB) while the agent goes on; past the cap the
 panel says the activity is not known rather than show the last tool and time frozen there.
 
+**Live output.** While a run is live, a reader with the transcripts tier also sees what the command the agent is waiting
+on prints (a test suite, a build), as it prints it. It is the latest command only: when the agent starts another, the
+block switches to it. It is live only and never stored: a viewer who opens the panel while the command runs starts from
+its last 200 lines, and a reload after the run ends, or a finished run, shows none. Each line is plain text, with
+invisible characters shown as their code point like the rest of the agent's text, cut at 1 KiB; the panel keeps the
+newest 500 lines and marks with a count wherever lines were left out (by the agent's output budget, the server's bounds
+or a slow connection). Its header says whether the command is running, finished, or reached the agent's output limit.
+Command output is not activity: the turn count, the last activity and the idle watchdog count model turns and tool
+results only, so a command printing steadily does not make a stuck agent look busy. A reader with only the intents tier
+receives none of it.
+
 Spend on the dashboard is recorded spend only: the cost each run reported when it was collected. A run's spend appears
 when it ends. There are no live token or dollar figures yet.
 
@@ -55,10 +66,10 @@ from fields the controllers write, and only as `https`.
 Access is decided per Project by Kubernetes RBAC, through SubjectAccessReviews the status server runs for the signed-in
 user, on two **virtual** subresources of `projects.patchy.bitwisemedia.uk`:
 
-| Grant                           | Shows                                                                                  |
-| ------------------------------- | -------------------------------------------------------------------------------------- |
-| `get` on `projects/intents`     | The board, timelines and run panels: phases, durations, recorded cost, outcomes, links |
-| `get` on `projects/transcripts` | With `projects/intents`: plan text, run reports and transcripts, persisted and live    |
+| Grant                           | Shows                                                                                                     |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `get` on `projects/intents`     | The board, timelines and run panels: phases, durations, recorded cost, outcomes, links                    |
+| `get` on `projects/transcripts` | With `projects/intents`: plan text, run reports, transcripts (persisted and live) and live command output |
 
 Nothing on the API server serves these subresources, so the rules grant `kubectl` nothing; the status server's reviews
 are their only reader. The tiers nest: `projects/transcripts` without `projects/intents` opens nothing. A rule without
@@ -96,9 +107,9 @@ every-Project ClusterRoles (`<release>-intents-viewer`, `<release>-intents-conte
 
 A Project a person may not see is invisible: its intents are absent from the board, and asking for one of them, its runs
 or its plans answers 404, exactly as for an intent that does not exist. A person who may see a Project but not its
-transcripts gets a 403 for plan text and no report or conversation in the run panel. The live conversation is stripped
-on the server for each viewer, so two people watching the same run at different tiers share one log follow and still
-receive different streams.
+transcripts gets a 403 for plan text and no report, conversation or command output in the run panel. The live
+conversation and command output are stripped on the server for each viewer, so two people watching the same run at
+different tiers share one log follow and still receive different streams.
 
 !!! warning "Native RBAC bypasses the tiers"
 

@@ -163,6 +163,52 @@ type TurnScanner interface {
 	ScanTurns(line []byte) []transcript.Turn
 }
 
+// TaskWatcher is the optional capability of following a command the agent
+// runs while it runs: reading the stream's command events, and knowing where
+// the CLI keeps a running command's output. It powers the live command output
+// agentrun shows beside the transcript. A harness without it shows a command's
+// output only when its tool result arrives.
+type TaskWatcher interface {
+	// ScanTasks returns the command events one stream line carries, in
+	// order, or nil for a line that carries none. Only foreground shell
+	// commands are reported started: a backgrounded one outlives the call
+	// that ran it, and other task types write no output file.
+	ScanTasks(line []byte) []TaskEvent
+	// TaskOutputGlob returns the filepath.Glob pattern matching the file a
+	// running command's output is written to, for command task of session,
+	// run by a CLI with environment env (its effective one: the last
+	// assignment of a name wins) as user uid. "" when there is none to look
+	// for. The file exists only while the command runs.
+	TaskOutputGlob(env []string, uid int, session, task string) string
+}
+
+// TaskEventKind says what a TaskEvent reports.
+type TaskEventKind int
+
+// The command events.
+const (
+	// TaskSession: the run's session started; Session names it.
+	TaskSession TaskEventKind = iota + 1
+	// TaskStarted: a foreground shell command started. Task names it,
+	// ToolUse the tool call that runs it, and Session its session when the
+	// line names one.
+	TaskStarted
+	// TaskEnded: a command ended. Task names it, ToolUse its tool call.
+	TaskEnded
+	// TaskAnswered: a tool call was answered; ToolUse names it. A command's
+	// call is answered once the command has ended, so this ends a command
+	// whose own end was never reported.
+	TaskAnswered
+)
+
+// TaskEvent is one command event off a CLI's stream.
+type TaskEvent struct {
+	Kind    TaskEventKind
+	Session string
+	Task    string
+	ToolUse string
+}
+
 // Resumer is the optional capability of continuing a session an earlier run
 // left behind, with one more prompt. agentrun uses it to have the agent that
 // wrote a report patchy refused repair it in the same conversation, which

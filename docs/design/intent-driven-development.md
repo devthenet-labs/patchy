@@ -1425,7 +1425,7 @@ class JSON later; its strict decoder makes a new field an additive change.
    - `secrets get` restricted by `resourceNames` in the release namespace; its agent-jobs Role can get, create, update
      and delete any Secret in the agents namespace, including model keys, image-pull credentials and other Jobs'
      handoffs;
-   - a token per operation, scoped to one repository and one permission;
+   - a token per operation, scoped to one repository and one permission (opening a pull request adds contents read);
    - writes only to repos listed in a Project, plus issue operations on the intent repo;
    - branches only under `patchy-intent/`, created once and then only fast-forwarded;
    - never the default branch; humans merge.

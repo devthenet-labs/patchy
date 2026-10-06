@@ -61,6 +61,9 @@ func TestClaudePromptSpecAllFlags(t *testing.T) {
 		"--max-turns", "30",
 		"--allowedTools", "Read Glob Grep Edit Write NotebookEdit Bash",
 		"--disallowedTools", "WebFetch WebSearch",
+		"--setting-sources", "user",
+		"--strict-mcp-config",
+		"--add-dir", "/work/ws",
 		"--add-dir", "/scratch",
 		"--add-dir", "/fixtures",
 		"--session-id", claudeSessionID,
@@ -72,8 +75,8 @@ func TestClaudePromptSpecAllFlags(t *testing.T) {
 	if spec.Dir != "/work/ws" {
 		t.Errorf("Dir = %q, want the workspace", spec.Dir)
 	}
-	if !slices.Equal(spec.Env, []string{"ANTHROPIC_API_KEY=k"}) {
-		t.Errorf("Env = %q, want the request env", spec.Env)
+	if want := []string{"ANTHROPIC_API_KEY=k", claudeMDFromAddDirs}; !slices.Equal(spec.Env, want) {
+		t.Errorf("Env = %q, want the request env and then %q", spec.Env, want)
 	}
 }
 
@@ -85,6 +88,9 @@ func TestClaudePromptSpecMinimal(t *testing.T) {
 	if !slices.Equal(spec.Argv, want) {
 		t.Errorf("Argv = %q, want no optional flags: %q", spec.Argv, want)
 	}
+	if spec.Env != nil {
+		t.Errorf("Env = %q, want none: an unset posture leaves the CLI's defaults", spec.Env)
+	}
 }
 
 func TestClaudePromptSpecReadOnly(t *testing.T) {
@@ -94,10 +100,77 @@ func TestClaudePromptSpecReadOnly(t *testing.T) {
 		"claude", "-p", "look", "--model", "m", "--output-format", "stream-json", "--verbose",
 		"--allowedTools", "Read Glob Grep Write Bash(git log:*) Bash(git show:*) Bash(git blame:*) Bash(git diff:*)",
 		"--disallowedTools", "WebFetch WebSearch Task",
+		"--setting-sources", "user",
+		"--strict-mcp-config",
+		"--add-dir", "/ws",
 	}
 	if !slices.Equal(spec.Argv, want) {
 		t.Errorf("Argv =\n%q\nwant\n%q", spec.Argv, want)
 	}
+}
+
+// TestClaudePromptSpecKeepsTheTreesSettingsOut: every posture reads settings
+// from the user source alone, so nothing under the working tree's .claude/
+// (hooks, env, allow rules, skills) or its .mcp.json can change what the run
+// may do, and loads CLAUDE.md through the workspace added as a directory
+// instead. The request's Env is extended, never written through: the
+// caller's backing array keeps its spare capacity untouched.
+func TestClaudePromptSpecKeepsTheTreesSettingsOut(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		sandbox Sandbox
+	}{
+		{"read-only", SandboxReadOnly},
+		{"workspace-write", SandboxWorkspaceWrite},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reqEnv := make([]string, 1, 4)
+			reqEnv[0] = "A=b"
+			spec := NewClaude().PromptSpec("/ws", PromptRequest{
+				Prompt: "p", Model: "m", Sandbox: tc.sandbox, AddDirs: []string{"/workspace"}, Env: reqEnv,
+			})
+			argv := spec.Argv
+			if n := countArg(argv, "--setting-sources"); n != 1 {
+				t.Fatalf("--setting-sources given %d times, want once: %q", n, argv)
+			}
+			if got := argv[slices.Index(argv, "--setting-sources")+1]; got != "user" {
+				t.Errorf("--setting-sources = %q, want user alone (no project, no local)", got)
+			}
+			if !slices.Contains(argv, "--strict-mcp-config") {
+				t.Errorf("argv = %q, want --strict-mcp-config", argv)
+			}
+			if !hasAddDir(argv, "/ws") || !hasAddDir(argv, "/workspace") {
+				t.Errorf("argv = %q, want the working tree added as a directory beside the request's", argv)
+			}
+			if want := []string{"A=b", claudeMDFromAddDirs}; !slices.Equal(spec.Env, want) {
+				t.Errorf("Env = %q, want %q", spec.Env, want)
+			}
+			if spare := reqEnv[:cap(reqEnv)][1]; spare != "" {
+				t.Errorf("request Env's backing array written through: %q", spare)
+			}
+		})
+	}
+}
+
+// countArg counts the occurrences of arg in argv.
+func countArg(argv []string, arg string) int {
+	n := 0
+	for _, a := range argv {
+		if a == arg {
+			n++
+		}
+	}
+	return n
+}
+
+// hasAddDir reports whether argv adds dir with --add-dir.
+func hasAddDir(argv []string, dir string) bool {
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "--add-dir" && argv[i+1] == dir {
+			return true
+		}
+	}
+	return false
 }
 
 func TestClaudeParseResultSuccess(t *testing.T) {

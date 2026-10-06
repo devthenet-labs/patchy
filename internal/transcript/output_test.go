@@ -15,7 +15,8 @@ import (
 )
 
 func TestEncodeDecodeOutputRoundTrip(t *testing.T) {
-	want := Output{Task: "b578qoc1g", Line: 41, Lines: []string{"ok  pkg/a", "--- FAIL: TestB"}, At: "2026-10-06T10:00:00Z"}
+	want := Output{Task: "b578qoc1g", Line: 41, Lines: []string{"ok  pkg/a", "--- FAIL: TestB"},
+		At: "2026-10-06T10:00:00Z"}
 	line, err := EncodeOutput(want)
 	if err != nil {
 		t.Fatalf("EncodeOutput: %v", err)

@@ -42,6 +42,15 @@
 // image and source that actually apply, and that value is what the
 // launching controller records.
 //
+// Under Config.DNS DNSNone a pod has no working resolver, which closes the
+// DNS channel out of the sandbox: dnsPolicy None, its own loopback as its
+// only nameserver, and the hosts its URLs name (the artifact server, the
+// egress broker) pinned in its hosts file, resolved through Config.Resolver
+// as Create builds the Job. A host that does not resolve fails the launch
+// (ErrUnresolved) before anything is created, and a runner that dials its
+// model API by name (NeedsResolver) is refused. DNSCluster, the default,
+// leaves every Job byte-for-byte what it was.
+//
 // A multi-repository intent's plan Job reads more than its own tree
 // (Spec.Trees): the per-Job Secret then carries a fetch list and a
 // repositories manifest, and the prepare init fetches, digest-verifies and

@@ -54,3 +54,17 @@ func TestAgentResourcesDefaultToNone(t *testing.T) {
 		t.Errorf("agent resources = %q %q %q %q, want 250m, none, none, 2Gi", cr, mr, cl, ml)
 	}
 }
+
+// TestAgentDNSFlag: the binary registers --agent-dns, defaulting to the
+// cluster resolver, so the chart's PATCHY_AGENT_DNS reaches the Jobs it
+// builds. Viper reads the environment for an unregistered name too, so the
+// flag lookup, not the value, is the proof.
+func TestAgentDNSFlag(t *testing.T) {
+	f := newServeCmd(cli.NewOptions()).Flags().Lookup("agent-dns")
+	if f == nil {
+		t.Fatal("--agent-dns is not registered")
+	}
+	if f.DefValue != "cluster" {
+		t.Errorf("--agent-dns defaults to %q, want cluster", f.DefValue)
+	}
+}

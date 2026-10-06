@@ -254,6 +254,39 @@ func AgentResources(opts *cli.Options) (resourceclass.Resources, error) {
 	return r, nil
 }
 
+// RegisterAgentDNSFlag adds --agent-dns, shared by every controller that
+// launches agent Jobs (investigation, remediation, intent and evaluation):
+// how the agent pods resolve names.
+func RegisterAgentDNSFlag(f *pflag.FlagSet) {
+	f.String("agent-dns", string(jobs.DNSCluster),
+		"how agent pods resolve names: cluster (the cluster resolver) or none (no resolver: the hosts a Job's "+
+			"pod dials, the artifact server and the egress broker, are resolved by this controller at launch and "+
+			"pinned in the pod's hosts file; brokered claude and the fake harness only)")
+}
+
+// AgentDNS reads --agent-dns and holds it to the harnesses this controller
+// runs: under none, a harness whose pod dials its model API by name (codex,
+// copilot: a credential in the pod, no broker) could never reach it, so
+// startup fails naming it rather than every one of its Jobs failing.
+// enabled is the resolved harness set; a configured runner left disabled
+// never runs, so it does not count.
+func AgentDNS(opts *cli.Options, runners map[string]jobs.Runner, enabled []string) (jobs.DNSMode, error) {
+	mode, err := jobs.ParseDNSMode(opts.String("agent-dns"))
+	if err != nil {
+		return "", fmt.Errorf("--agent-dns: %w", err)
+	}
+	if mode != jobs.DNSNone {
+		return mode, nil
+	}
+	for _, id := range enabled {
+		if jobs.NeedsResolver(runners[id]) {
+			return "", fmt.Errorf("--agent-dns %s: the %s harness dials its model API by name and needs a resolver; "+
+				"disable it (--harnesses) or keep --agent-dns %s", jobs.DNSNone, id, jobs.DNSCluster)
+		}
+	}
+	return mode, nil
+}
+
 // EvolveRunners builds the evolve-runner fleet from the flags, mirroring
 // Runners: a harness is a candidate only when its evolve image flag is set.
 // The claude evolve runner is brokered like its finding sibling; codex and

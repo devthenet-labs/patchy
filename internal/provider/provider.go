@@ -103,6 +103,17 @@ var GatewayEnvNames = []string{
 	"PATCHY_MODEL_MAP",
 }
 
+// BaseURLEnvNames are the gateway names whose value is a URL the agent pod
+// dials: the broker's provider route Env sets, one per provider. internal/jobs
+// reads their hosts off a runner's env to pin them in the hosts file of a pod
+// that has no resolver.
+var BaseURLEnvNames = []string{
+	"ANTHROPIC_BASE_URL",
+	"ANTHROPIC_BEDROCK_BASE_URL",
+	"ANTHROPIC_VERTEX_BASE_URL",
+	"ANTHROPIC_FOUNDRY_BASE_URL",
+}
+
 // Validate rejects a config the gateway env cannot be built from.
 func (c Config) Validate() error {
 	if !slices.Contains(Names, c.Name) {

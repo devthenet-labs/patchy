@@ -7,7 +7,67 @@
 > documentation values `111122223333` and `203.0.113.10/32`. The real ones are in terraform-devthenet's `k8s/` values
 > (private).
 
-## Current checkpoint — 2026-10-06
+## Current checkpoint — 2026-10-06 (afternoon): 0.12.20
+
+**0.12.20 released, deployed, gated, and its new features checked live.** The owner narrowed the planned batch to four
+items: a harness fix, broker spend limits, and two dashboard features. Items (a)–(e) of the 0.12.20 plan (re-run a
+failed check before a fix round, tell the planner about open intent PRs, "waiting for a preview slot", the Revisions
+status line, per-Project turn limits) are deferred until the owner asks.
+
+- #132 claude's settings sources are pinned for every postured run
+  (`--setting-sources user --strict-mcp-config --add-dir <tree>` plus `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1`),
+  so a stage's tool posture is patchy's alone, independent of configuration files in the tree under work. The tree's
+  root `CLAUDE.md`, `.claude/CLAUDE.md` and `.claude/rules` still load; a subdirectory's `CLAUDE.md` no longer loads on
+  demand. Checked on the production CLI (2.1.263) before merge and live after the upgrade: the build pod's `claude`
+  process carried the new flags and the variable.
+- #134 the timeline's run rows are visibly links: the underlined run name and a trailing "View conversation →" ("Open
+  run →" when the panel will show no conversation). A first version made the whole row clickable; review showed it broke
+  double-click selection and modified clicks, so it is two plain links.
+- #135 the transcript recorder scrubs credential values before stripping terminal escapes as well as after (a bare or
+  unfinished escape used to swallow a secret's first byte and let the rest through).
+- #136 live command output in the run panel. The claude CLI writes a running Bash command's output to
+  `<CLAUDE_CODE_TMPDIR or /tmp>/claude-<uid>/<cwd slug>/<session>/tasks/<task_id>.output` and announces the task on its
+  stream; agent-runner follows it (intent stages only, one command at a time) and prints a new `PATCHY-OUTPUT:` stdout
+  stream, scrubbed and bounded (1 KiB lines; 64 KiB per command then samples, 64 KiB of samples; 512 KiB per pod), never
+  persisted. status-server follows it beside the turns with its own replay ring and channel, to transcripts-tier readers
+  only. Review (13 findings, all fixed and re-verified) also fixed an older bug: a stage result whose report quoted
+  `PATCHY-TURN: ` was dropped, and a tail-hub race could cancel a viewer's stream as another left. Live: on the real CLI
+  in a repository-image pod, a command's first chunk arrived at 20:31:19Z and its last, with Done, at 20:31:41Z, while
+  it ran.
+- Broker spend limits are on in terraform-devthenet (#46): `tokensPerPod` 15M, `tokensPerHour` 60M, `requestsPerPod`
+  1000, `concurrentPerPod` 4, sized from real IntentRun usage (largest build 10.5M tokens in ~120 requests).
+
+Helm: patchy **60** (0.12.19 + broker limits; rollback **58**; rev 59 was an interrupted upgrade, failed with no
+change), then **61** (0.12.20; rollback **60**); patchy-config **39** (0.12.20; rollback **38**). The render diff for
+0.12.19 → 0.12.20 changed only version strings and checksums. Repository-image pods get the new agent-runner and CLI
+too: the prepare step copies both from the default image. Release PR #133 was stamps and CHANGELOG only, its CI approved
+at the verified head. All nine Deployments Ready on v0.12.20 with zero restarts; all five Projects Ready.
+
+Gate: weak-key alert **#46** → `finding-514becf18f-21` → issue **#85** → `/patchy expedite` → no hold this time → PR
+**#86** (2048-bit key plus a committed regression test, all checks green) → merged `fc402d8` → Remediated, issue closed
+completed, exactly one Finding for the alert, each marker once; main's CodeQL scan marked alert #46 fixed.
+
+Live test intent: preview-demo-16 (intents#16, a build-version footer) planned in one run ($0.36), was approved by
+label, built in the repository image, and opened patchy-preview-demo#12 with every check green, including the changelog
+check. Its preview is Queued: both slots are held by the owner's demos (Hello.Web#2, overdub#2). PR #12 is left open for
+the owner.
+
+**Next (each needs the owner's go-ahead):**
+
+- Resume the agent's CLI session across rounds (plan revisions first, then build review rounds) instead of re-reading
+  everything each round; a short design note first. Warm or paused pods were considered and rejected: the model API is
+  stateless and the prompt cache expires long before a human review, so they would save only installs while holding
+  capacity and breaking one-stage-per-pod isolation.
+- Restrict agent pods' DNS to cluster names (hardening; agent pods otherwise reach only the artifact server and the
+  broker).
+- Cosign-sign repository agent images, then `allowUnsigned: false`.
+- Repositories with real dependencies: agent pods have no network, so dependencies must be in the agent image (patchy
+  uses the devcontainer's image, not `postCreateCommand`). Rebuild the scaffolded agent image when the lockfile changes;
+  if an agent ever needs new dependencies, a per-Project dependency proxy serving only lockfile and plan-approved
+  packages, never general egress.
+- The deferred 0.12.20 items (a)–(e).
+
+## Earlier checkpoint — 2026-10-06 (overnight): 0.12.19
 
 **0.12.19 released, deployed and fresh-Finding gated; sign-in and the intents dashboard are on (2026-10-06, overnight;
 the owner asked for everything "well tested" while asleep).** Six PRs, each with `make pr`, `mise run e2e` and a

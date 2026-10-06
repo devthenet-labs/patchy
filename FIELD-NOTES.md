@@ -41,6 +41,23 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
 
 ## Running intents
 
+- **Live output streams on the real CLI** (preview-demo-16, 2026-10-06, 0.12.20). In a repository-image build pod, the
+  agent's `go vet`/`go test` command printed its first chunk at 20:31:19Z and its last, with Done, 22 seconds later,
+  while it ran. Docs: the run panel's Live output box shows the latest command only, and only while the run is live; the
+  conversation keeps the command's result afterwards.
+- **A repository image's baked Go module cache is read-only in the pod** (preview-demo-16). The image put modules in
+  `/opt/go/pkg/mod` on the read-only root filesystem, so `go` warned
+  `writing stat cache: mkdir /opt/go/pkg/mod/cache: read-only file system` and carried on. Harmless for stdlib-only
+  apps; with real dependencies it means the agent cannot add a module in the pod (there is no network either). Docs:
+  bake dependencies into the agent image, rebuild it when the lockfile changes, and point `GOFLAGS`/`GOMODCACHE` at a
+  writable copy if the toolchain needs to write.
+- **The planner guessed the next PR number for the changelog** (preview-demo-16). The repository's changelog check wants
+  the PR number in the entry; the plan asked the approver to correct "#12" if wrong, and it happened to be right. Docs:
+  a changelog convention that names the PR number forces a guess; prefer one the CI check can accept before the PR
+  exists.
+- **The 0.12.20 gate went straight through** (2026-10-06). No `breakingChangeAvailable` hold this time; the remediation
+  kept its regression test. The gate procedure's `/patchy approve` step is conditional.
+
 - **A fake client cannot see a Deployment's generation, so it hid an upgrade bug** (#129 review, 2026-10-06). Switching
   live preview Deployments from Recreate to rolling raises their `metadata.generation`; the controller then read the
   not-yet-observed generation as "not ready" and, for a preview Ready longer than the rollout timeout, retried it:

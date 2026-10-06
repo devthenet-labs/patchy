@@ -138,7 +138,7 @@ var tokenUses = map[string][]string{
 	"CreatePullRequest": {onAppRepository}, "GetPullRequest": {onAppRepository},
 	"ListPullRequestComments": {onAppRepository}, "GetPullRequestComment": {onAppRepository},
 	"PullRequestCommentEdited": {onAppRepository}, "CreatePullRequestComment": {onAppRepository},
-	"EditPullRequestComment": {onAppRepository},
+	"EditPullRequestComment":  {onAppRepository},
 	"ReactPullRequestComment": {onAppRepository}, "ListPullRequestReviews": {onAppRepository},
 	"ListPullRequestReviewComments": {onAppRepository}, "ReviewEdited": {onAppRepository},
 	"ReviewCommentEdited": {onAppRepository}, "ComparePatch": {onAppRepository},

@@ -26,7 +26,9 @@ import (
 // PreviewSourceReconciler is the sole writer of Preview spec. It copies only
 // operator Project configuration and the PR heads (or preview bases) already
 // verified and recorded by the Intent reconciler; it never reads issue or
-// agent text.
+// agent text. The Intent reconciler reads Preview status (preview_view.go),
+// never writes it, to tell the issue and the pull requests where the preview
+// stands.
 // A separate reconciler prevents preview errors from blocking an Intent's
 // merge, status comment, or Finding flow. Disabled unless the operator
 // explicitly enables it alongside the preview-controller.

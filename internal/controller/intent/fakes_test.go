@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -1299,6 +1300,28 @@ func intentStatusSchema(in *v1alpha1.Intent) error {
 	return kerrors.NewInvalid(v1alpha1.GroupVersion.WithKind("Intent").GroupKind(), in.Name, errs)
 }
 
+// firstPreviewGeneration gives a Preview being created generation 1, as the
+// API server does and the fake client does not.
+func firstPreviewGeneration(obj client.Object) {
+	if pv, ok := obj.(*v1alpha1.Preview); ok && pv.Generation == 0 {
+		pv.Generation = 1
+	}
+}
+
+// updatePreviewGeneration updates obj, moving a Preview's generation when
+// its spec changes, as the API server does and the fake client does not.
+func updatePreviewGeneration(ctx context.Context, c client.WithWatch, obj client.Object,
+	opts ...client.UpdateOption) error {
+	if pv, ok := obj.(*v1alpha1.Preview); ok {
+		var stored v1alpha1.Preview
+		if err := c.Get(ctx, client.ObjectKeyFromObject(pv), &stored); err == nil &&
+			!reflect.DeepEqual(stored.Spec, pv.Spec) {
+			pv.Generation = stored.Generation + 1
+		}
+	}
+	return c.Update(ctx, obj, opts...)
+}
+
 func testSettings() Settings {
 	return Settings{
 		Namespace: testNS, AgentNamespace: "patchy-agents",
@@ -1330,8 +1353,10 @@ func newEnv(t *testing.T, objs ...client.Object) *env {
 				if ts := obj.GetCreationTimestamp(); ts.IsZero() {
 					obj.SetCreationTimestamp(metav1.NewTime(e.clock.Now()))
 				}
+				firstPreviewGeneration(obj)
 				return c.Create(ctx, obj, opts...)
 			},
+			Update: updatePreviewGeneration,
 			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 				if _, ok := obj.(*v1alpha1.Repository); ok && e.failRepoDeletes > 0 {
 					e.failRepoDeletes--

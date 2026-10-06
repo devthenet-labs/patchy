@@ -41,6 +41,35 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
 
 ## Running intents
 
+- **A fake client cannot see a Deployment's generation, so it hid an upgrade bug** (#129 review, 2026-10-06). Switching
+  live preview Deployments from Recreate to rolling raises their `metadata.generation`; the controller then read the
+  not-yet-observed generation as "not ready" and, for a preview Ready longer than the rollout timeout, retried it:
+  deleting its Deployment and spending a retry. controller-runtime's fake client never bumps generation and envtest has
+  no Deployment controller, so the PR's own tests passed. Caught by an adversarial reviewer, reproduced on a real
+  kube-apiserver, fixed before release. Docs/patchy: tests of upgrade paths that patch a live spec need generation
+  semantics (an interceptor, or envtest).
+- **A plan can be confidently wrong about a security header** (hello-web-14, 2026-10-06). The planner claimed inline
+  `style="…"` attributes pass Hello.Web's `default-src 'none'` CSP; they do not (style-src falls back to default-src).
+  Its test would not have noticed. Cancelled. Docs: the human plan review is where this is caught; tell reviewers to
+  read claims about CSP, auth and permissions skeptically.
+- **Two intents on one file collide** (hello-web-14). It planned against `main` while Hello.Web#2 (another intent's PR)
+  changes the same file, so merging it would have left the demo PR conflicting. Patchy: the planner could be told about
+  open intent PRs in the same repository.
+- **A flaky check can still start a needless CI-fix round** (overdub#2, 2026-10-06). `studio-test.js` failed in CI and
+  passed in the agent's pod; re-running the failed job before patchy's check-fix round launched turned it green, which
+  mattered at $9.48 of a $10 ceiling. Patchy: re-run a failed check once before spending a fix round on it.
+- **A queued preview reads as "being deployed"** (preview-demo-15). With both slots held, its status comment said the
+  preview was being deployed when it was waiting for a slot. Patchy: say "waiting for a preview slot".
+- **The 0.12.19 gate needed an approval** (2026-10-06). The investigation recommended remediation at 0.95 confidence but
+  held it (`breakingChangeAvailable`); earlier gates went straight through. Docs: the gate procedure may need
+  `/patchy approve` after `/patchy expedite`.
+- **Dex on the shared ALB, three snags** (operator, 2026-10-06): the chart's image runs as the named user `dex`, which
+  `runAsNonRoot` cannot verify (pin uid 1001); its entrypoint renders config into `/tmp` (emptyDir under a read-only
+  root); and the shared ALB's IngressClassParams admitted only the `patchy` namespace (FailedLoadGroupID; the allowlist
+  now names `dex` too, and the refusal left the ALB untouched). Docs: list these in the sign-in guide.
+- **golangci-lint's cache can report another worktree's paths** (operator). After a scratch worktree was deleted,
+  `make pr` in a different worktree failed on `../patchy-integ/...` lll findings from the cache;
+  `golangci-lint cache clean` fixed it.
 - **The first private repository could not get its pull request** (overdub-12, 2026-10-06). The build succeeded and
   pushed `patchy-intent/overdub-12`, then GitHub refused the pull request: `422 ... not all refs are readable`. Patchy
   opened pull requests with a pull-requests-write token only; in a public repository the refs are readable anyway, so

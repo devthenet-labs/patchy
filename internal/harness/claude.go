@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -38,7 +39,8 @@ func NewClaude() *Claude {
 // allowed is refused) and narrows Bash to read-only git. Write stays allowed
 // so the agent can emit its report: anywhere the agent can reach, unless the
 // request scopes it with WriteDirs (claudeAllow). SandboxDefault is absent by
-// design: an unset posture imposes no grammar and leaves the CLI's defaults.
+// design: an unset posture imposes no grammar and leaves the CLI's defaults,
+// settings sources included (claudeSettingSources).
 //
 // A multi-repository intent's planner reads its other repositories' trees
 // with the same read-only tools: they sit under the workspace the stage adds
@@ -60,10 +62,41 @@ var claudeTools = map[Sandbox]struct{ allow, deny []string }{
 	},
 }
 
+// claudeSettingSources is the one settings source a postured run reads, so
+// that the posture is patchy's alone. claude -p never asks whether to trust
+// the directory it runs in, and from the working tree's .claude/settings.json,
+// .claude/settings.local.json and .mcp.json it would still take hooks, the
+// env block and helper commands, a local file's allow rules, a defaultMode
+// such as acceptEdits, project skills with their allowed-tools, and MCP
+// servers: each runs a command or grants a tool the grammar above withholds.
+// The user source is the settings under HOME, which in the agent pod is the
+// workspace root, where no tree is unpacked. Leaving out the project source
+// leaves out .mcp.json too, and --strict-mcp-config, passed beside it,
+// refuses every MCP server not named by --mcp-config, which patchy never
+// passes.
+//
+// The project source also carries the tree's CLAUDE.md, which the stages
+// want for its build and test guidance. The CLI reads CLAUDE.md,
+// .claude/CLAUDE.md and .claude/rules from an --add-dir directory when
+// claudeMDFromAddDirs is in its environment, so the run adds its own working
+// directory (ws, the tree) with --add-dir too. From such a directory the CLI
+// reads skills, commands and subagents only through the project source, and
+// from its settings only the plugin keys, with no plugin installed in the pod
+// to enable. What the tree loses is the CLAUDE.md of a subdirectory, which
+// the CLI loads on demand through the project source, and CLAUDE.local.md,
+// which needs the local one.
+const claudeSettingSources = "user"
+
+// claudeMDFromAddDirs is the environment entry that has the CLI load
+// CLAUDE.md from its --add-dir directories; see claudeSettingSources.
+const claudeMDFromAddDirs = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1"
+
 // PromptSpec builds the headless claude invocation for one prompted run.
 // stream-json with --verbose emits one JSON event per line, which is what
 // ParseResult and ScanUsage parse. Optional request fields append their flag
-// only when set, in a stable order.
+// only when set, in a stable order. A posture also pins where the run's
+// settings come from (claudeSettingSources); the request's Env is never
+// written through.
 func (c *Claude) PromptSpec(ws string, req PromptRequest) runner.CommandSpec {
 	argv := []string{
 		"claude", "-p", req.Prompt,
@@ -74,9 +107,12 @@ func (c *Claude) PromptSpec(ws string, req PromptRequest) runner.CommandSpec {
 	if req.MaxTurns > 0 {
 		argv = append(argv, "--max-turns", strconv.Itoa(req.MaxTurns))
 	}
+	env := req.Env
 	if t, ok := claudeTools[req.Sandbox]; ok {
 		argv = append(argv, "--allowedTools", strings.Join(claudeAllow(ws, req, t.allow), " "))
 		argv = append(argv, "--disallowedTools", strings.Join(t.deny, " "))
+		argv = append(argv, "--setting-sources", claudeSettingSources, "--strict-mcp-config", "--add-dir", ws)
+		env = append(slices.Clip(req.Env), claudeMDFromAddDirs)
 	}
 	for _, dir := range req.AddDirs {
 		argv = append(argv, "--add-dir", dir)
@@ -87,7 +123,7 @@ func (c *Claude) PromptSpec(ws string, req PromptRequest) runner.CommandSpec {
 	if req.SystemPromptAppend != "" {
 		argv = append(argv, "--append-system-prompt", req.SystemPromptAppend)
 	}
-	return runner.CommandSpec{Argv: argv, Dir: ws, Env: req.Env}
+	return runner.CommandSpec{Argv: argv, Dir: ws, Env: env}
 }
 
 // ResumeSpec continues session sessionID: PromptSpec's own command for req,

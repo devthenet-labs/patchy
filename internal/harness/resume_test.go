@@ -24,8 +24,9 @@ func TestResumers(t *testing.T) {
 
 // TestClaudeResumeSpec: a resumed run renders every flag the first run had —
 // the CLI keeps none of them, and a plan resumed without its tool grammar
-// would no longer be read-only — with --resume in place of --session-id,
-// which the CLI refuses beside it.
+// would no longer be read-only, nor one without its settings pin confined to
+// patchy's posture — with --resume in place of --session-id, which the CLI
+// refuses beside it.
 func TestClaudeResumeSpec(t *testing.T) {
 	c := NewClaude()
 	for _, sandbox := range []Sandbox{SandboxReadOnly, SandboxWorkspaceWrite} {
@@ -50,12 +51,16 @@ func TestClaudeResumeSpec(t *testing.T) {
 		if slices.Contains(got.Argv, "--session-id") || slices.Contains(got.Argv, "ignored-on-resume") {
 			t.Errorf("sandbox %d: Argv %q carries --session-id beside --resume", sandbox, got.Argv)
 		}
-		for _, flag := range []string{"--allowedTools", "--disallowedTools", "--add-dir", "--max-turns", "--model"} {
+		for _, flag := range []string{
+			"--allowedTools", "--disallowedTools", "--setting-sources", "--strict-mcp-config",
+			"--add-dir", "--max-turns", "--model",
+		} {
 			if !slices.Contains(got.Argv, flag) {
 				t.Errorf("sandbox %d: Argv %q lacks %s", sandbox, got.Argv, flag)
 			}
 		}
-		if got.Dir != "/workspace/repo" || !slices.Equal(got.Env, req.Env) {
+		if wantEnv := append(slices.Clone(req.Env), claudeMDFromAddDirs); got.Dir != "/workspace/repo" ||
+			!slices.Equal(got.Env, wantEnv) {
 			t.Errorf("sandbox %d: spec = %+v, want the first run's directory and the request env", sandbox, got)
 		}
 	}

@@ -1,12 +1,14 @@
-// Pure helpers behind the intents views: column grouping, durations, and the
-// plain-English stop conditions of a run. No DOM, no fetches, so the node
-// test runner exercises them directly (tests/intents.test.mjs).
+// Pure helpers behind the intents views: column grouping, durations, a run
+// row's link text, and the plain-English stop conditions of a run. No DOM, no fetches, so the node test runner exercises them directly
+// (tests/intents.test.mjs).
 
 import type {
   IntentCard,
   IntentColumn,
   IntentPhase,
   IntentRunDetail,
+  IntentRunRow,
+  IntentTier,
   RunActivity,
 } from "./types";
 
@@ -73,6 +75,20 @@ export function secondsSince(iso: string | undefined, now: number): number | und
 export function costShare(cost: number, ceiling: number): { share: number; over: boolean } {
   if (!(ceiling > 0)) return { share: 0, over: false };
   return { share: Math.min(1, Math.max(0, cost / ceiling)), over: cost >= ceiling };
+}
+
+// runLinkLabel is the visible text of a timeline row's link to its run
+// panel: what that panel will show this viewer. The conversation is there
+// only for a transcripts-tier reader, and only once the agent has launched
+// (a Pending run is still waiting for a run slot) or once it recorded one;
+// otherwise the panel shows the run's clock, activity and stop conditions,
+// so the link says no more than "Open run".
+export function runLinkLabel(
+  tier: IntentTier,
+  run: Pick<IntentRunRow, "running" | "phase" | "transcript">,
+): string {
+  const launched = run.running === true && run.phase !== "Pending";
+  return tier === "transcripts" && (launched || run.transcript) ? "View conversation" : "Open run";
 }
 
 function usd(micro: number): string {

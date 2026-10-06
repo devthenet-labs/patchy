@@ -81,9 +81,9 @@ the tool output a build quotes routinely aligns its columns past the plan's boun
 A stage whose report is missing, or refused by its parser (any rule above, and a plan naming a repository outside its
 manifest), is not given up at once on claude or the fake harness. agent-runner asks the agent that wrote the report to
 repair it in the same session. It resumes the session the run left under `HOME` (`claude -p --resume <id>`, from the
-same working directory, with every flag the first run had, so a plan stays read-only) with one message: patchy's fixed
-text and the refusal reason, quoted as data in a fence. The message asks for the report alone, and asks for an untrue
-claim (tests that failed, a step not built) to be corrected rather than hidden.
+same working directory, with every flag the first run had, so a plan stays read-only and writes only under `reports/`)
+with one message: patchy's fixed text and the refusal reason, quoted as data in a fence. The message asks for the report
+alone, and asks for an untrue claim (tests that failed, a step not built) to be corrected rather than hidden.
 
 - At most **2 rounds**, each of at most **6 turns** and **10 minutes**, and never more than the stage has left of its
   turns, output tokens (its token budget or grant) and wall clock (its `_TIMEOUT`). No round starts with less than **2
@@ -98,7 +98,8 @@ claim (tests that failed, a step not built) to be corrected rather than hidden.
   priced at the model's rates and added to the cost the first run reported.
 - On `remediate` and `build`, which write the working tree, a repair may change only the report and `commit.sh`. The
   clone is fingerprinted around each round (`HEAD`, what is staged, and every working file that is not ignored), and a
-  repair that changed any of it is refused whole: the stage ends `report_invalid`, with the original reason followed by
+  repair that changed any of it is refused whole: the stage ends with its original outcome (`report_missing` or
+  `report_invalid`), with the original reason followed by
   `(repair refused in round N: it changed the working tree: <paths>, …)`.
 - A report still refused after the rounds ends the stage as before, `report_missing` or `report_invalid`, with the last
   reason followed by how the repair went: `(not repaired in 2 rounds)`, how the last repair run ended when it did not

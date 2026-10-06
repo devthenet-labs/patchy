@@ -46,6 +46,13 @@ func (f *Fake) PromptSpec(ws string, req PromptRequest) runner.CommandSpec {
 	}
 }
 
+// ResumeSpec replays the fixture exactly as PromptSpec does: a resumed run
+// is one more replay, so tests and the dev overlay can drive a stage's
+// report repair through the real runner.
+func (f *Fake) ResumeSpec(ws, _ string, req PromptRequest) runner.CommandSpec {
+	return f.PromptSpec(ws, req)
+}
+
 // ParseResult parses the fixture exactly as Claude parses live output.
 func (f *Fake) ParseResult(stdout []byte) (AgentResult, bool) {
 	return parseStreamResult(stdout)

@@ -1,0 +1,75 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# The status server's grants for the intents views; mirrors the chart's
+# statusServer.intents.enabled Roles (hack/chart-render-test.sh compares the
+# rules).
+#
+# Read-only on the intent kinds, cached through informers (hence list and
+# watch). Never */status, never a write, never Secrets. The plan and
+# transcript ConfigMaps are read with the base Role's configmaps get, and the
+# server serves one only when it carries the intent's label and a controller
+# reference to its very owner.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: patchy-status-server-intents
+    namespace: patchy
+    labels:
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [projects, intents, intentruns, previews]
+      verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: patchy-status-server-intents
+    namespace: patchy
+    labels:
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/part-of: patchy
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: patchy-status-server-intents
+subjects:
+    - kind: ServiceAccount
+      name: patchy-status-server
+      namespace: patchy
+---
+# A live intent run's Job clock (creation, start, activeDeadlineSeconds, the
+# stage idle limit) for the run panel, and the live follow's "has the Job
+# ended" check. get only: the server projects those fields and never passes
+# the Job (its env names SecretKeyRefs) to a viewer.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: patchy-status-server-agent-jobs
+    namespace: patchy-agents
+    labels:
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [batch]
+      resources: [jobs]
+      verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: patchy-status-server-agent-jobs
+    namespace: patchy-agents
+    labels:
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/part-of: patchy
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: patchy-status-server-agent-jobs
+subjects:
+    - kind: ServiceAccount
+      name: patchy-status-server
+      namespace: patchy

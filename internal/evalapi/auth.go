@@ -86,6 +86,9 @@ func LoadConfig(path string) (*Config, error) {
 		if cfg.OIDC.Claims.DisplayName == "" {
 			cfg.OIDC.Claims.DisplayName = "name"
 		}
+		if err := cfg.OIDC.Claims.Validate(); err != nil {
+			return nil, fmt.Errorf("evalapi: auth config %s: %w", path, err)
+		}
 	}
 	return &cfg, nil
 }

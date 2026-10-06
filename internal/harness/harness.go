@@ -55,6 +55,13 @@ type PromptRequest struct {
 	Sandbox            Sandbox  // filesystem/exec posture; each harness renders it natively
 	AddDirs            []string // extra directories the agent may access
 	Env                []string // extras appended to os.Environ() by the runner
+	// WriteDirs scopes a SandboxReadOnly run's writes: the directories (absolute,
+	// or relative to the run's workspace) it may create and change files in,
+	// and nowhere else. Empty keeps the posture's unscoped write, so a request
+	// that does not set it renders exactly as before; other postures ignore it.
+	// claude renders it as path-scoped edit rules; a harness with no path
+	// grammar ignores it, and the pod remains its boundary.
+	WriteDirs []string
 }
 
 // AgentResult is the parsed terminal result of one agent run.
@@ -154,6 +161,19 @@ type TurnScanner interface {
 	// It reports raw text; bounding, redaction, and sequencing belong to the
 	// caller's transcript.Recorder.
 	ScanTurns(line []byte) []transcript.Turn
+}
+
+// Resumer is the optional capability of continuing a session an earlier run
+// left behind, with one more prompt. agentrun uses it to have the agent that
+// wrote a report patchy refused repair it in the same conversation, which
+// still holds everything it did. A harness without it has no repair.
+type Resumer interface {
+	// ResumeSpec builds the headless command that continues session
+	// sessionID in workspace ws with req.Prompt as the next message, under
+	// the rest of req exactly as PromptSpec renders it: model, turn cap,
+	// sandbox posture, directories, environment. req.SessionID is ignored;
+	// sessionID names the session.
+	ResumeSpec(ws, sessionID string, req PromptRequest) runner.CommandSpec
 }
 
 // All returns the builtin harness set.

@@ -84,13 +84,19 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   periodic orphan sweep. Intent-controller projects the operator's Project preview config and recorded PR head into
   Preview spec only when explicitly enabled: one component per previewed repository (at most four, path-routed on one
   host), a repository with no PR running its default-branch head from `status.previewBases`, all derived by the one
-  pure `v1alpha1.DesiredPreviewComponents` the writer and the controller's re-check share. See
-  `docs/configuration/preview-controller.md`.
+  pure `v1alpha1.DesiredPreviewComponents` the writer and the controller's re-check share. The intent reconciler reads
+  Preview status (one uncached get per pass, never written) to link the preview from the issue's status comment and one
+  sticky comment per previewed PR, only once it checks out (`preview_view.go`: UID, observed generation, derived
+  revisions, a bare `https://<intent>.<suffix>`). See `docs/configuration/preview-controller.md`.
 - `cmd/status-server` — the human-facing status page (NOT a controller: no reconcilers, no leases): the embedded
   SPA + JSON projection of Findings/FindingRollups, SSE refetch signal, OIDC sign-in, the access-review-gated
   approve/retry/expedite/suspend/resume actions, and the user-menu demo tooling (replay → Integration
   `spec.replay`; reset → delete all pipeline CRs). Rollup statistics are public; the findings surface always
   requires auth. Writes SPEC only (`spec.approval`, `spec.suspend`, `spec.replay`) — never status, never a phase.
+  With `--intents-enabled` (chart `statusServer.intents.enabled`, kustomize component `status-intents`; default
+  off) it also serves the read-only intents views (board, timeline, run panel; docs/intents/dashboard.md): per-Project
+  access reviews on the virtual subresources `projects/intents` and `projects/transcripts`, mode oidc with both claim
+  prefixes required, and a hardened browser envelope for the whole page. No intent write of any kind.
 - `cmd/patchy` — the workstation CLI (the only binary not deployed): `patchy <verb> <noun>` over the
   caller's own kubeconfig, no channel through any controller. get/describe/review/browse/can-i plus the five
   action verbs. Writes SPEC only, same as status-server; enforcement of the custom verbs for direct API
@@ -147,7 +153,10 @@ e2e/                SEPARATE Go module: envtest carries the CRDs, the real binar
                     Finding Jobs never run there; the intent tests register a fake kubelet
                     (kubelet_test.go) that runs hack/fake-agent for run-kind=intent Jobs (staging
                     the working tree, a plan Job's trees and the handoff as the prepare init
-                    does), beside an in-memory OCI registry (registry_test.go) serving the
+                    does) — or, for the phases a test opts into (useAgentRunner), the real
+                    agent-runner driving hack/fake-agent/claude, a scripted claude CLI, so
+                    in-pod behaviour such as report repair runs end to end — beside an
+                    in-memory OCI registry (registry_test.go) serving the
                     repository runner image. fakegithub's refs and PR listings are per
                     repository, so intent_multirepo_test.go runs multi-repository intents end to
                     end; cluster.stoppableController restarts a binary with other flags.
@@ -189,8 +198,9 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   transcripts beside them are never in its memory).
 - `forge` — the shared forge seam: resolve a repository URL to its covering `Forge` CR (host → orgs → repo
   regexes; most-constrained wins) and mint scoped read/write tokens. Consumers: source (read), remediation
-  (write), intent (a token per operation, one repository and one permission each: `TokenWith`). `ghclient`,
-  `ghpush`, `ghsecret` sit beneath it.
+  (write), intent (a token per operation, one repository and one permission each: `TokenWith`; opening a pull
+  request also reads contents, which GitHub needs in a private repository). `ghclient`, `ghpush`, `ghsecret` sit
+  beneath it.
 - `schedule`, `priority`, `stats` — pure logic: slot picking with anti-starvation aging, the 0–100 scheduling
   score, rollup delta arithmetic + OTel taps.
 - `labels` — the trimmed human-facing label vocabulary the issue projection renders (one-way; never parsed back
@@ -206,10 +216,11 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   OTHER piece of agent text bound for GitHub takes (hidden markup shown literally, tables as text, characters that
   render as nothing as their code point; mentions, issue references on any host and so closing keywords made inline
   code); both with seeded properties checked against goldmark as a stand-in for GitHub; and the intent status comment,
-  notices, PR body ("Part of", never a closing keyword), PR title and commit message, over plain values. The last three
-  can land on the default branch as plain text (a squash commit copies the title and, if the repo says so, the body),
-  where inline code protects nothing, so each also `defang`s every reference and mention, code spans included; seeded
-  properties read them raw.
+  notices, the preview comment (`intent_preview.go`: the host linked only while live and only as bare DNS labels, the
+  preview controller's message never shown), PR body ("Part of", never a closing keyword), PR title and commit message,
+  over plain values. The last three can land on the default branch as plain text (a squash commit copies the title
+  and, if the repo says so, the body), where inline code protects nothing, so each also `defang`s every reference and
+  mention, code spans included; seeded properties read them raw.
 - `webhook`, `telemetry`, `cli`, `version` — service plumbing (the webhook server is used by
   integration-controller only).
 - `action` — the human-action vocabulary (the custom verbs) and the state-machine gating behind each one:
@@ -231,8 +242,15 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   `ui/src/types.ts` (keep the two in lockstep), the action handlers, SSE broker + cache-informer watcher, and
   the embedded UI (`internal/web/ui`, Vite/Preact, single-file build embedded behind the `withui` tag; `mise run
   ui` builds it, bare `go build` compiles a stub). `auth` = who you are (OIDC/none/anonymous/unconfigured,
-  cookie sessions, zero k8s imports); `authz` = what you may do (SubjectAccessReviews for the custom verbs
-  approve/retry/expedite/suspend/resume + native get).
+  cookie sessions, zero k8s imports; claim prefixes and verified email applied once, in `MapClaims`); `authz` = what
+  you may do (SubjectAccessReviews for the custom verbs approve/retry/expedite/suspend/resume + native get, and
+  `ProjectReviewer`'s per-Project read tiers). The intents side (`intents*.go`, `envelope.go`) reads every ConfigMap
+  through `guardedConfigMap` (the intent's label and a controller reference to its very owner), strips the live run
+  stream per subscriber, and pins its wire types to `types.ts` by parsing it (`TestIntentWireTypesMatchTypeScript`).
+- `intentview` — the pure public projection of intents for the status page: board columns, fixed public wording
+  for outcomes and block reasons (never a run's detail or a condition's message), limits with schema defaults, cost
+  parsing, and `Text` (templates.VisibleText plus a cap) for every shown string. Copies of intent-controller facts
+  are pinned to their originals by `internal/controller/intent/intentview_pin_test.go`.
 - `ghas`, `enhancers` — the built-in `pkg/source` and `pkg/enhance` implementations.
 - `generic` — the generic integration's behavior over the `pkg/generic` wire contract: the validating source
   handler (source id = the Integration's NAME; N integrations coexist) and the HMAC-signing outbound client behind
@@ -244,7 +262,9 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   reuse investigate's and remediate's configuration and helpers and run on brokered claude only);
   `report`/`envelope` are its contracts (frontmatter schemas in, JSONL events out — a `plan` event beside the
   others at v4); `agentresult` converts envelope results onto CR status (`FromPlan` re-derives a plan from its
-  report).
+  report). A missing or refused report is first repaired in the agent's own session (`repair.go`: the optional
+  `harness.Resumer`, claude and fake only; at most 2 bounded rounds; one transcript per stage; a writable stage's
+  clone fingerprinted so a repair may change only the report and commit.sh).
 - `jobs` — the Kubernetes Job the agent runs in. The isolation model lives here, and it STRENGTHENED with the
   broker: a brokered (claude) pod holds no credential of any kind — its projected SA token (audience-bound,
   agent container only, never the init) is an identity document, not a capability; its fixed, non-secret

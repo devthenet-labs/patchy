@@ -128,6 +128,7 @@ func TestPlanOverTrees(t *testing.T) {
 		IssuePath: filepath.Join(ws, "input", "issue.md"), ReportPath: filepath.Join(ws, "reports", "plan.md"),
 		Intent:        request(t, ws),
 		BuildMaxTurns: cfg.RemediateManualMaxTurns, BuildTokenBudget: cfg.RemediateManualTokenBudget,
+		Limits: ungrantedPlanLimits(cfg),
 		Trees: []templates.PlanTree{
 			{URL: webURL, Path: filepath.Join(ws, "repo")},
 			{URL: apiURL, Path: filepath.Join(ws, TreesDir, "api")},
@@ -186,6 +187,7 @@ func TestPlanWithoutManifestUnchanged(t *testing.T) {
 		IssuePath: filepath.Join(ws, "input", "issue.md"), ReportPath: filepath.Join(ws, "reports", "plan.md"),
 		Intent:        request(t, ws),
 		BuildMaxTurns: cfg.RemediateManualMaxTurns, BuildTokenBudget: cfg.RemediateManualTokenBudget,
+		Limits: ungrantedPlanLimits(cfg),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -377,6 +379,7 @@ func TestBuildScopedToItsRepository(t *testing.T) {
 				PlanPath:         filepath.Join(ws, "input", "investigation.md"),
 				ReportPath:       filepath.Join(ws, "reports", "build.md"),
 				CommitScriptPath: filepath.Join(ws, "commit.sh"),
+				Limits:           ungrantedBuildLimits(cfg),
 				ThisRepository:   apiURL, Siblings: []string{webURL},
 			})
 			if err != nil {
@@ -403,6 +406,7 @@ func TestBuildOneRepositoryUnscoped(t *testing.T) {
 		PlanPath:         filepath.Join(ws, "input", "investigation.md"),
 		ReportPath:       filepath.Join(ws, "reports", "build.md"),
 		CommitScriptPath: filepath.Join(ws, "commit.sh"),
+		Limits:           ungrantedBuildLimits(cfg),
 	})
 	if err != nil {
 		t.Fatal(err)

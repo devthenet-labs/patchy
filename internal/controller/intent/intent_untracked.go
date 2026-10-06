@@ -182,10 +182,22 @@ func (p *pass) untrackedNotice() templates.IntentUntrackedNotice {
 }
 
 // postOnceOnPullRequest posts body, which opens with the notice marker of key,
-// on pr unless the App's bot already did. It can only have been posted after
-// pr was opened, which was after its repository's build finished: the look
-// for it starts there, never at the start of the thread.
+// on pr unless the App's bot already did (findOwnOnPullRequest).
 func (p *pass) postOnceOnPullRequest(ctx context.Context, pr v1alpha1.IntentPullRequest, key, body string) error {
+	c, err := p.findOwnOnPullRequest(ctx, pr, key)
+	if err != nil || c != nil {
+		return err
+	}
+	_, err = p.r.GitHub.CreatePullRequestComment(ctx, pr.Repository, pr.Number, body)
+	return err
+}
+
+// findOwnOnPullRequest is the comment on pr the App's bot posted under the
+// notice marker of key, nil when there is none. It can only have been posted
+// after pr was opened, which was after its repository's build finished: the
+// look for it starts there, never at the start of the thread.
+func (p *pass) findOwnOnPullRequest(ctx context.Context, pr v1alpha1.IntentPullRequest,
+	key string) (*ghclient.Comment, error) {
 	var since time.Time
 	if ap := p.in.Status.Approval; ap != nil {
 		if build := p.round(v1alpha1.IntentStageBuild, ap.PlanRevision, pr.Repository).latest(); build != nil &&
@@ -195,18 +207,17 @@ func (p *pass) postOnceOnPullRequest(ctx context.Context, pr v1alpha1.IntentPull
 	}
 	comments, err := p.r.GitHub.ListPullRequestComments(ctx, pr.Repository, pr.Number, since)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	bot, err := p.r.GitHub.BotLogin(ctx, pr.Repository)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	marker := templates.NoticeMarker(p.in.Namespace, p.in.Name, key)
 	for _, c := range comments {
 		if markerOf(c.Body) == marker && (bot == "" || strings.EqualFold(c.UserLogin, bot)) {
-			return nil
+			return c, nil
 		}
 	}
-	_, err = p.r.GitHub.CreatePullRequestComment(ctx, pr.Repository, pr.Number, body)
-	return err
+	return nil, nil
 }

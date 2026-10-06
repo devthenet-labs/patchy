@@ -9,6 +9,9 @@ Finding and FindingRollup resources and nudges open browsers over Server-Sent Ev
 The same findings, the same actions and the same RBAC are available from a terminal via the [patchy CLI](cli.md) — it
 reads and writes the identical custom resources, so the two surfaces never disagree about state.
 
+With `statusServer.intents.enabled` the page also shows intents: a board, each intent's timeline and each agent run's
+panel, read-only and access-reviewed per Project. See [the intents dashboard](intents/dashboard.md).
+
 ## Views
 
 The screenshots below show the [canned dev data](deployment/dev-fake.md#canned-status-page-data) — every finding

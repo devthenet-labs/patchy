@@ -38,6 +38,21 @@ webhook), plus:
 | `--health-addr`     | `PATCHY_HEALTH_ADDR`     | `:8081`         | healthz/readyz probe listen address                                                  |
 | `--auth-config`     | `PATCHY_AUTH_CONFIG`     | _(unset)_       | Mounted authentication config; absent ⇒ rollups-only (see below)                     |
 
+Two more flags turn on the [intents dashboard](../intents/dashboard.md):
+
+| Flag                     | Env                           | Default | Purpose                                                                                                                                        |
+| ------------------------ | ----------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--intents-enabled`      | `PATCHY_INTENTS_ENABLED`      | `false` | Serve the read-only intents views with per-Project access reviews. Needs mode `oidc` with both claim prefixes, and hardens the page (below)    |
+| `--intents-dev-insecure` | `PATCHY_INTENTS_DEV_INSECURE` | `false` | Development only: let the intents views run in mode `none`, showing every Project to every visitor. Refused unless `--listen-addr` is loopback |
+
+With `--intents-enabled` the server refuses to start in mode `none` (without the development flag) or `anonymous`, with
+no auth config, or in mode `oidc` without `claims.usernamePrefix` and `claims.groupsPrefix` (and
+`claims.requireVerifiedEmail` when the username claim is `email`). It also runs a stricter browser envelope for the
+whole page: `Sec-Fetch-Site` same-site and cross-site refused on every `/api` request and `/events`, a write without the
+header refused, streams `no-store`, open findings transcript streams re-authorised every 20 seconds, a cap on `/events`
+subscribers, a Content-Security-Policy and HSTS. See the [dashboard page](../intents/dashboard.md) for what it shows,
+its RBAC and its limits. With the flag off the server behaves exactly as before it existed.
+
 ## Authentication configuration
 
 `--auth-config` points at a YAML file, conventionally a mounted Secret (`patchy-status-auth`, key `config.yaml` — the
@@ -63,7 +78,17 @@ oidc: # mode: oidc only
     username: email # the subject access reviews run for
     groups: groups
     displayName: name
+    # usernamePrefix: "oidc:"     # prepended to the username before every access review
+    # groupsPrefix: "oidc:"       # prepended to every group
+    # requireVerifiedEmail: true  # refuse a token whose email_verified is not true
 ```
+
+`usernamePrefix` and `groupsPrefix` work like kube-apiserver's `--oidc-username-prefix` and `--oidc-groups-prefix`: with
+them, a binding written for a status page user cannot also match a cluster identity of the same name, and a provider
+group named `system:masters` reaches the review as `oidc:system:masters`. A prefix inside `system:` is refused. They
+rename every identity for every review, so rebind the existing roles to the prefixed names when you set them. They are
+optional unless the intents views are on, and so is `requireVerifiedEmail`, which the views require when the username
+claim is `email`. The evaluation API reads the same `claims` block and applies the same rules.
 
 ### Modes
 

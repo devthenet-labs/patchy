@@ -24,8 +24,17 @@ const maxLiveTails = 8
 
 // tailBuffer bounds the turns a run holds for replay. It matches the
 // recorder's own turn cap, so a viewer joining late still sees the whole
-// conversation rather than only what arrives after they connect.
-const tailBuffer = 500
+// conversation rather than only what arrives after they connect. One more
+// slot is kept for the recorder's closing notice (capNotice), the turn after
+// its cap that tells a reader the record stopped.
+const tailBuffer = transcript.DefaultMaxTurns
+
+// capNotice reports the recorder's closing notice: it stops recording at its
+// turn or byte cap and says so in one truncated notice, while the agent may
+// go on working.
+func capNotice(t transcript.Turn) bool {
+	return t.Kind == transcript.KindNotice && t.Truncated
+}
 
 // errTooManyTails is returned when the live-follow budget is exhausted.
 var errTooManyTails = errors.New("too many live transcripts")
@@ -114,7 +123,7 @@ func (h *tailHub) subscribe(jobName string) (*subscription, error) {
 func (h *tailHub) follow(ctx context.Context, jobName string, run *tailRun) {
 	err := h.tailer.Tail(ctx, jobName, func(t transcript.Turn) error {
 		run.mu.Lock()
-		if len(run.seen) < tailBuffer {
+		if len(run.seen) < tailBuffer || (len(run.seen) == tailBuffer && capNotice(t)) {
 			run.seen = append(run.seen, t)
 		}
 		for ch := range run.subs {

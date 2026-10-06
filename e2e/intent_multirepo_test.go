@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/e2e/fakegithub"
@@ -327,6 +328,118 @@ func (e *intentEnv) waitPreviewGone(t *testing.T, name string, components ...str
 	})
 }
 
+// readyPreview plays the Deployment controller and the kubelet for the
+// Intent's preview, which envtest has neither of: each component's
+// Deployment in slot 0 has rolled out, and a Pod running exactly the
+// component's image is Ready with an image ID. A Pod of an earlier revision
+// is deleted; a component already served at its revision is left as it is.
+func (e *intentEnv) readyPreview(t *testing.T, name string, want []v1alpha1.PreviewComponent) {
+	t.Helper()
+	ctx := context.Background()
+	keys := make([]string, 0, len(want))
+	for _, c := range want {
+		keys = append(keys, c.Name)
+	}
+	for i, d := range previewObjects(name, keys...) {
+		c := want[i]
+		image := c.ImageRepository + ":sha-" + c.Revision
+		key := types.NamespacedName{Namespace: "patchy-preview-0", Name: d}
+		var dep appsv1.Deployment
+		eventually(t, "the "+c.Name+" Deployment to roll out", func() bool {
+			if e.cl.client.Get(ctx, key, &dep) != nil || dep.Spec.Template.Spec.Containers[0].Image != image {
+				return false
+			}
+			dep.Status.ObservedGeneration = dep.Generation
+			dep.Status.Replicas, dep.Status.ReadyReplicas, dep.Status.AvailableReplicas = 1, 1, 1
+			return e.cl.client.Status().Update(ctx, &dep) == nil
+		})
+		var pods corev1.PodList
+		if err := e.cl.client.List(ctx, &pods, client.InNamespace(key.Namespace),
+			client.MatchingLabels(dep.Spec.Template.Labels)); err != nil {
+			t.Fatal(err)
+		}
+		served := false
+		for i := range pods.Items {
+			if pods.Items[i].Spec.Containers[0].Image == image {
+				served = true
+				continue
+			}
+			if err := e.cl.client.Delete(ctx, &pods.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+				t.Fatal(err)
+			}
+		}
+		if served {
+			continue
+		}
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: d + "-" + c.Revision[:8], Namespace: key.Namespace,
+			Labels: dep.Spec.Template.Labels}, Spec: dep.Spec.Template.Spec}
+		if err := e.cl.client.Create(ctx, pod); err != nil {
+			t.Fatal(err)
+		}
+		pod.Status.Phase = corev1.PodRunning
+		pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+		pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: c.Name, Ready: true,
+			ImageID: c.ImageRepository + "@sha256:" + strings.Repeat(c.Revision[:1], 64)}}
+		if err := e.cl.client.Status().Update(ctx, pod); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// clearPreviewPods deletes every Pod in slot 0, as garbage collection does
+// once their Deployments are gone, so a preview's cleanup can finish.
+func (e *intentEnv) clearPreviewPods(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	var pods corev1.PodList
+	if err := e.cl.client.List(ctx, &pods, client.InNamespace("patchy-preview-0")); err != nil {
+		t.Fatal(err)
+	}
+	for i := range pods.Items {
+		if err := e.cl.client.Delete(ctx, &pods.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+			t.Fatal(err)
+		}
+	}
+}
+
+// waitPreviewComment waits for exactly one preview comment of patchy's on
+// pull request number that says says, and returns it.
+func (e *intentEnv) waitPreviewComment(t *testing.T, name string, number int64, why string,
+	says ...string) fakegithub.Comment {
+	t.Helper()
+	var got []fakegithub.Comment
+	eventually(t, why, func() bool {
+		got = e.own(int(number), notice(name, templates.PreviewKey))
+		if len(got) != 1 {
+			return false
+		}
+		for _, s := range says {
+			if !strings.Contains(got[0].Body, s) {
+				return false
+			}
+		}
+		return true
+	})
+	return got[0]
+}
+
+// waitStatusComment waits for the intent issue's status comment to satisfy
+// cond, and returns its body.
+func (e *intentEnv) waitStatusComment(t *testing.T, name string, number int, why string,
+	cond func(string) bool) string {
+	t.Helper()
+	var body string
+	eventually(t, why, func() bool {
+		st := e.own(number, templates.IntentStatusMarker(namespace, name))
+		if len(st) != 1 {
+			return false
+		}
+		body = st[0].Body
+		return cond(body)
+	})
+	return body
+}
+
 // failCheck records a failed run of the named check "test" on head, whose
 // Actions job log is log, as GitHub reports one; id numbers the check run,
 // its workflow run (id+1) and its job (id+2).
@@ -484,6 +597,20 @@ func TestMultiRepoIntentLifecycle(t *testing.T) {
 	if len(in.Status.PreviewBases) != 0 {
 		t.Errorf("preview bases = %+v, want none: both repositories have a pull request", in.Status.PreviewBases)
 	}
+	// Once preview-controller serves both heads, the issue links the
+	// preview and lists what it serves, and each pull request gets one
+	// comment naming its head live at the host, under its path.
+	host := name + ".preview.patchy.example.com"
+	link := "[`" + host + "`](https://" + host + ")"
+	e.readyPreview(t, name, []v1alpha1.PreviewComponent{webPreview, apiPreview})
+	e.waitStatusComment(t, name, number, "the status comment to link the live preview", func(body string) bool {
+		return strings.Contains(body, "**Preview:** "+link+"\n") &&
+			strings.Contains(body, "- `/api`: `acme/api` at `"+heads["api"][:12]+"`")
+	})
+	webComment := e.waitPreviewComment(t, name, prs["web"].Number, "the web pull request's preview comment",
+		"This pull request's head, `"+heads["web"][:12]+"`, is live at "+link+", under `/`.")
+	e.waitPreviewComment(t, name, prs["api"].Number, "the api pull request's preview comment",
+		"This pull request's head, `"+heads["api"][:12]+"`, is live at "+link+", under `/api`.")
 
 	// 6. A revision round on the web pull request: the web repository
 	//    alone, in its own image, fast-forwarded.
@@ -519,6 +646,12 @@ func TestMultiRepoIntentLifecycle(t *testing.T) {
 	webPreview.Revision = heads["web"]
 	e.waitPreview(t, name, "the web component moved to the revised head",
 		[]v1alpha1.PreviewComponent{webPreview, apiPreview})
+	// The same comment, edited, names the revised head once it is live.
+	e.readyPreview(t, name, []v1alpha1.PreviewComponent{webPreview, apiPreview})
+	if c := e.waitPreviewComment(t, name, prs["web"].Number, "the web preview comment to name the revised head",
+		"`"+heads["web"][:12]+"`, is live at "+link); c.ID != webComment.ID {
+		t.Errorf("the revised head's preview comment is %d, not the one posted, %d", c.ID, webComment.ID)
+	}
 
 	// 7. A CI-fix round on the API pull request, started by its failed
 	//    named check, labelled as one.
@@ -549,6 +682,9 @@ func TestMultiRepoIntentLifecycle(t *testing.T) {
 	apiPreview.Revision = heads["api"]
 	e.waitPreview(t, name, "the api component moved to the fixed head",
 		[]v1alpha1.PreviewComponent{webPreview, apiPreview})
+	e.readyPreview(t, name, []v1alpha1.PreviewComponent{webPreview, apiPreview})
+	e.waitPreviewComment(t, name, prs["api"].Number, "the api preview comment to name the fixed head",
+		"`"+heads["api"][:12]+"`, is live at "+link)
 
 	// Each branch was created once, then only fast-forwarded by its own
 	// repository's round.
@@ -587,6 +723,19 @@ func TestMultiRepoIntentLifecycle(t *testing.T) {
 		!strings.Contains(summary[0].Body, "**CI-fix rounds:** 1\n") {
 		t.Errorf("summary = %+v, want both merged and the rounds counted apart", summary)
 	}
+	// Each preview comment, the same one, now says the preview was removed,
+	// and links nothing; the status comment no longer mentions a preview.
+	for _, key := range []string{"web", "api"} {
+		c := e.waitPreviewComment(t, name, prs[key].Number, "the "+key+" preview comment to say it was removed",
+			"The intent has ended, and its preview was removed.")
+		if strings.Contains(c.Body, "https://") {
+			t.Errorf("%s preview comment once removed still links:\n%s", key, c.Body)
+		}
+	}
+	e.waitStatusComment(t, name, number, "the status comment to drop the preview", func(body string) bool {
+		return !strings.Contains(body, "**Preview:**") && !strings.Contains(body, "https://"+host)
+	})
+	e.clearPreviewPods(t)
 	e.waitPreviewGone(t, name, "web", "api")
 
 	// Every comment patchy wrote, it wrote once.
@@ -602,7 +751,7 @@ func TestMultiRepoIntentLifecycle(t *testing.T) {
 		}
 		for key, round := range map[string]int{"web": 1, "api": 2} {
 			n := int(prs[key].Number)
-			if len(e.own(n, siblings)) != 1 ||
+			if len(e.own(n, siblings)) != 1 || len(e.own(n, notice(name, templates.PreviewKey))) != 1 ||
 				len(e.own(n, fmt.Sprintf("<!-- patchy:intent-pr-round:%s:%d -->", name, round))) != 1 {
 				return false
 			}

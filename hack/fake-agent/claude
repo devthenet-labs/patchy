@@ -1,0 +1,114 @@
+#!/bin/sh
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# The scripted stand-in for the claude CLI. Where hack/fake-agent/agent-runner
+# replaces agent-runner whole, this replaces only the model: the REAL
+# agent-runner drives it exactly as it drives claude, so the stage flow around
+# the CLI (the report check, its repair in the same session, the tree guard,
+# commit.sh, the changeset, the accounting and the transcript) runs for real.
+# The e2e fake kubelet runs it for the Jobs a test asks for (useAgentRunner).
+#
+# It speaks the parts of the CLI agent-runner relies on, as claude 2.1.291 was
+# probed to: `--version`; `-p ... --session-id <id>` starts a session and
+# `--resume <id>` continues one, failing with an error result event and exit
+# status 1 when the session is unknown; the stream-json events (an init event,
+# assistant events with usage, a terminal result event); a resumed run's
+# result carries its own num_turns and usage, but a total_cost_usd cumulative
+# over the session. Sessions are files under $HOME, as the CLI's are.
+#
+# Only the build stage is scripted. What the agent does is chosen by the
+# environment, a test's stand-in for a model:
+#
+#   PATCHY_FAKE_CLAUDE_REPORT  the first run's report: "ok" (default), or the
+#                              two slips that threw builds away live:
+#                              "long-note" (one note of 574 characters) and
+#                              "scalar-notes" (notes as a single string).
+#   PATCHY_FAKE_CLAUDE_REPAIR  what a resumed run does: "fix" (default)
+#                              rewrites the report valid, "keep" changes
+#                              nothing, "touch" rewrites the report valid and
+#                              also edits VERSION, which a repair may not.
+#
+# Every invocation appends "<first|resume> <session> <max-turns>
+# <allowedTools>" to $HOME/.fake-claude/calls for the test to read.
+set -eu
+
+if [ "${1:-}" = "--version" ]; then
+  echo "2.1.291 (Claude Code; patchy scripted stand-in)"
+  exit 0
+fi
+
+mode='' session='' turns='' tools=''
+while [ $# -gt 0 ]; do
+  case "$1" in
+  --session-id) mode=first session=$2; shift 2 ;;
+  --resume) mode=resume session=$2; shift 2 ;;
+  --max-turns) turns=$2; shift 2 ;;
+  --allowedTools) tools=$2; shift 2 ;;
+  -p | --model | --output-format | --disallowedTools | --add-dir | --append-system-prompt) shift 2 ;;
+  *) shift ;;
+  esac
+done
+
+workspace="${PATCHY_WORKSPACE:?PATCHY_WORKSPACE is unset}"
+state="$HOME/.fake-claude"
+mkdir -p "$state/sessions"
+printf '%s %s %s %s\n' "$mode" "$session" "$turns" "$tools" >>"$state/calls"
+
+if [ "${PATCHY_PHASE:-}" != build ] || [ -z "$mode" ]; then
+  printf '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"session_id":"%s","errors":["the scripted claude only builds"]}\n' "$session"
+  exit 1
+fi
+
+report="$workspace/reports/build.md"
+mkdir -p "$workspace/reports"
+
+# write_report <notes line> — the build report, with the notes line given.
+write_report() {
+  printf '%s\n' '---' 'success: true' 'summary: "Add a VERSION file"' 'tests:' '  ran: true' \
+    '  passed: true' '  command: "go test ./..."' "$1" '---' '' '## What changed' '' \
+    'Scripted build from hack/fake-agent/claude: VERSION names the current version.' >"$report"
+}
+
+# emit <session> <turns> <in> <cache write> <cache read> <out> <cost> <text>
+emit() {
+  printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$1"
+  printf '{"type":"assistant","message":{"id":"msg_%s_%s","usage":{"input_tokens":%s,"cache_creation_input_tokens":%s,"cache_read_input_tokens":%s,"output_tokens":%s},"content":[{"type":"text","text":"%s"}]}}\n' \
+    "$mode" "$2" "$3" "$4" "$5" "$6" "$8"
+  printf '{"type":"result","subtype":"success","is_error":false,"result":"%s","session_id":"%s","num_turns":%s,"total_cost_usd":%s,"usage":{"input_tokens":%s,"cache_creation_input_tokens":%s,"cache_read_input_tokens":%s,"output_tokens":%s}}\n' \
+    "$8" "$1" "$2" "$7" "$3" "$4" "$5" "$6"
+}
+
+if [ "$mode" = first ]; then
+  printf '0.1.0\n' >VERSION
+  printf '%s\n' '#!/bin/sh' 'set -e' 'git add VERSION' 'git commit -qm "feat: add a VERSION file"' \
+    >"$workspace/commit.sh"
+  case "${PATCHY_FAKE_CLAUDE_REPORT:-ok}" in
+  long-note) write_report "notes:
+  - \"$(printf '%574s' '' | tr ' ' 'n')\"" ;;
+  scalar-notes) write_report 'notes: "What was built: a VERSION file at the repository root"' ;;
+  *) write_report 'notes: []' ;;
+  esac
+  # Cost in hundredths of a cent, cumulative over the session, as the CLI's.
+  echo 1000 >"$state/sessions/$session"
+  emit "$session" 3 1000 200 3000 400 0.1000 "Built: VERSION added, the suite passes."
+  exit 0
+fi
+
+if [ ! -f "$state/sessions/$session" ]; then
+  printf '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"session_id":"%s","total_cost_usd":0,"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0},"errors":["No conversation found with session ID: %s"]}\n' \
+    "$session" "$session"
+  echo "No conversation found with session ID: $session" >&2
+  exit 1
+fi
+
+case "${PATCHY_FAKE_CLAUDE_REPAIR:-fix}" in
+fix) write_report 'notes: []' ;;
+touch)
+  write_report 'notes: []'
+  printf '0.2.0\n' >VERSION
+  ;;
+esac
+cost=$(($(cat "$state/sessions/$session") + 100))
+echo "$cost" >"$state/sessions/$session"
+emit "$session" 1 10 20 3000 30 "$(printf '0.%04d' "$cost")" "Report fixed."

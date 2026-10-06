@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -413,6 +414,9 @@ func (f *fakeGitHub) deleteComment(id int64) {
 	for _, is := range f.issues {
 		is.comments = slices.DeleteFunc(is.comments, func(c *ghclient.Comment) bool { return c.ID == id })
 	}
+	for n, comments := range f.prComments {
+		f.prComments[n] = slices.DeleteFunc(comments, func(c *ghclient.Comment) bool { return c.ID == id })
+	}
 	f.version++
 }
 
@@ -782,6 +786,37 @@ func (f *fakeGitHub) CreatePullRequestComment(ctx context.Context, repoURL strin
 
 func (f *fakeGitHub) ReactPullRequestComment(ctx context.Context, repoURL string, id int64) error {
 	return f.React(ctx, repoURL, id)
+}
+
+// EditPullRequestComment edits a comment on a pull request of repoURL: one
+// that is not there (deleted, or on another repository's pull request) is a
+// 404, and a locked conversation refuses it.
+func (f *fakeGitHub) EditPullRequestComment(_ context.Context, repoURL string, id int64, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("EditPullRequestComment"); err != nil {
+		return err
+	}
+	if err := f.repoErr("EditPullRequestComment", repoURL); err != nil {
+		return err
+	}
+	for number, comments := range f.prComments {
+		if pr, ok := f.prs[number]; !ok || !pr.in(repoURL) {
+			continue
+		}
+		for _, c := range comments {
+			if c.ID != id {
+				continue
+			}
+			if f.lockedPRs[number] {
+				return ghError(http.StatusForbidden, "Unable to update comment because issue is locked.")
+			}
+			c.Body, c.UpdatedAt = body, f.clock.Now()
+			f.edited[id] = true
+			return nil
+		}
+	}
+	return ghError(http.StatusNotFound, "Not Found")
 }
 
 func (f *fakeGitHub) EditIssueComment(_ context.Context, _ string, id int64, body string) error {
@@ -1265,6 +1300,28 @@ func intentStatusSchema(in *v1alpha1.Intent) error {
 	return kerrors.NewInvalid(v1alpha1.GroupVersion.WithKind("Intent").GroupKind(), in.Name, errs)
 }
 
+// firstPreviewGeneration gives a Preview being created generation 1, as the
+// API server does and the fake client does not.
+func firstPreviewGeneration(obj client.Object) {
+	if pv, ok := obj.(*v1alpha1.Preview); ok && pv.Generation == 0 {
+		pv.Generation = 1
+	}
+}
+
+// updatePreviewGeneration updates obj, moving a Preview's generation when
+// its spec changes, as the API server does and the fake client does not.
+func updatePreviewGeneration(ctx context.Context, c client.WithWatch, obj client.Object,
+	opts ...client.UpdateOption) error {
+	if pv, ok := obj.(*v1alpha1.Preview); ok {
+		var stored v1alpha1.Preview
+		if err := c.Get(ctx, client.ObjectKeyFromObject(pv), &stored); err == nil &&
+			!reflect.DeepEqual(stored.Spec, pv.Spec) {
+			pv.Generation = stored.Generation + 1
+		}
+	}
+	return c.Update(ctx, obj, opts...)
+}
+
 func testSettings() Settings {
 	return Settings{
 		Namespace: testNS, AgentNamespace: "patchy-agents",
@@ -1296,8 +1353,10 @@ func newEnv(t *testing.T, objs ...client.Object) *env {
 				if ts := obj.GetCreationTimestamp(); ts.IsZero() {
 					obj.SetCreationTimestamp(metav1.NewTime(e.clock.Now()))
 				}
+				firstPreviewGeneration(obj)
 				return c.Create(ctx, obj, opts...)
 			},
+			Update: updatePreviewGeneration,
 			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
 				if _, ok := obj.(*v1alpha1.Repository); ok && e.failRepoDeletes > 0 {
 					e.failRepoDeletes--

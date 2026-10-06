@@ -122,6 +122,16 @@ Not `--existing`: that would keep the template's names and its `ci.yml` runtime 
 rewrites the application's files too, which in a fresh copy are the template's. The template is a snapshot of one CLI
 release; regenerate it with `init app --force` when you upgrade patchy.
 
+### Tell the planner how to test
+
+patchy's planner reads the repository but cannot run anything in it: no tests, no builds, no package managers. Its
+prompt tells it to take the build's test plan from what the repository says about testing (`CLAUDE.md`, `AGENTS.md`,
+`CONTRIBUTING.md`, the README's development notes and the CI workflows under `.github/workflows/`), to name the test
+command your CI runs, and to leave out the tests that guidance calls slow, flaky, platform-specific or not run in CI. So
+write down, in one of those places, the command that runs the tests and which tests need something the agent image lacks
+(a browser, a database, the network): the build runs offline, in the agent image. A full scaffold's `ci.yml` already
+runs `go test -race ./...`.
+
 ## The registry repositories and publisher roles
 
 Each application gets two ECR repositories with immutable tags, `patchy/app-envs/<slug>` (the agent image) and

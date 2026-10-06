@@ -110,17 +110,41 @@ still being published is covered by the rollout's retries.
 objects of components no longer rendered, so a renamed component's Service fits the slot quota, then creates a fixed
 ClusterIP Service and a single-replica, restricted Deployment per component on the dedicated `DefaultDeny` preview pool;
 a component whose spec did not change is not rolled. With `targetHealth` off, only after every component has a Ready Pod
-with the requested image and an image ID does it create the fixed `alb-preview` Ingress and mark the Preview `Ready`
-with its URL and each component's revision and image ID, and a PR-head change removes the old Ingress before updating
-the runtime images. With `targetHealth` on (the chart's default), the Ingress comes first and stays (below). Cleanup and
-pruning find a Preview's objects by its UID label, so a component the Project stops previewing is removed. Timed-out
-rollouts are retried at most `previewController.config.maxRetries` times (default three) with a 10-minute per-attempt
-deadline; `Failed` frees the slot after cleanup. `Expired` is reached 72 hours after the last successful deployment (or
-after creation/attempt start if none ever succeeds); a later new PR head may revive it. An Intent merge/close or Project
-opt-out deletes the Preview. Its finalizer waits until its rendered resources and Pods/ReplicaSets are gone. A periodic
-sweep deletes owned orphans left by a lost CR, while the queue refuses to reuse a slot that still contains owned
-resources. Reducing `slotCount` while a Preview owns a removed slot deliberately blocks finalizer removal: restore the
-count and drain first.
+of its current spec (the requested image, port and readiness path) and an image ID does it create the fixed
+`alb-preview` Ingress and mark the Preview `Ready` with its URL and each component's revision and image ID, and a
+PR-head change removes the old Ingress before updating the runtime images. With `targetHealth` on (the chart's default),
+the Ingress comes first and stays (below). Cleanup and pruning find a Preview's objects by its UID label, so a component
+the Project stops previewing is removed. Timed-out rollouts are retried at most `previewController.config.maxRetries`
+times (default three) with a 10-minute per-attempt deadline; `Failed` frees the slot after cleanup. `Expired` is reached
+72 hours after the last successful deployment (or after creation/attempt start if none ever succeeds); a later new PR
+head may revive it. An Intent merge/close or Project opt-out deletes the Preview. Its finalizer waits until its rendered
+resources and Pods/ReplicaSets are gone. A periodic sweep deletes owned orphans left by a lost CR, while the queue
+refuses to reuse a slot that still contains owned resources. Reducing `slotCount` while a Preview owns a removed slot
+deliberately blocks finalizer removal: restore the count and drain first.
+
+A new spec on a Preview that holds its slot, such as a revision round's new PR head, redeploys it there at once: the
+Preview is `Deploying`, with no URL, its `observedRevision` the new head, until the new revision is `Ready`. Each
+Deployment rolls out with `maxSurge: 1` and `maxUnavailable: 0`: the new revision's Pod starts beside the serving one,
+which stops only once the new one is Ready. The slot quota (8 Pods, 2 CPU and 2Gi of limits) holds that surge Pod for
+each of four components. With `targetHealth` on, the Ingress stays, so the previous revision keeps answering on the host
+until the new one's target is healthy. The pull request's runtime image may not be published yet (its trusted publisher
+runs after the pull request's checks), so the new Pod waits for it while the kubelet retries the pull, and nothing fails
+before the rollout deadline. The kubelet's pull back-off grows to five minutes, so an image published more than about
+five minutes after its Pod started is pulled only at about ten, past the default deadline. If the new revision is not
+Ready by the deadline, the retry restarts every component as before, by deleting its Deployment, which stops the
+previous revision too; after `maxRetries` attempts the Preview is `Failed` and its slot is released. With `targetHealth`
+off, the host is still withdrawn for a redeploy.
+
+Upgrading from a release that rendered the `Recreate` strategy (0.12.18 or earlier) patches each live Deployment to the
+rolling one in place. Its Pod template is unchanged, so no Pod restarts, and a `Ready` Preview stays `Ready` while the
+Deployment controller observes the patch. Rolling back to such a release is not as quiet: its controller patches the
+strategy back and counts the moment before the Deployment controller observes that against the rollout deadline, so a
+Preview `Ready` for longer than `rolloutTimeout` is retried at once. Its Pods restart, its host is down until they are
+Ready again, and one already on its last retry ends `Failed`.
+
+intent-controller reads a Preview's status, never writes it, to link the preview from the intent's issue and its pull
+requests once it is `Ready` at their heads; it never posts the status `message`. See
+[The preview link](intent-controller.md#the-preview-link).
 
 With `previewController.config.targetHealth: true` (the chart's default; `--preview-target-health` on the binary, whose
 own default is still off), `Ready` also means the load balancer's target is healthy, so the host does not answer 404 or
@@ -131,22 +155,23 @@ but the `alb-preview` class is Auto Mode's). The gate is injected only into a Po
 exists, which follows the Ingress, so in this mode the Ingress is created with the Services, before any Deployment; the
 Deployments wait until the load balancer has published the Ingress's address; and a component is Ready only once its Pod
 carries a readiness gate and every gate is True. The Ingress stays across a PR-head redeploy and a retry (the new Pods
-need its binding): the Recreate rollout stops the old revision before the new one starts, and the load balancer routes
-nothing to a target until it is healthy. A spec that adds a component (or renames one) replaces the Ingress instead,
-withdrawing the host until `Ready`: the load balancer keeps an Ingress's address once published, so only a new Ingress's
-address shows that the new component's binding exists. A Preview already `Ready` when the mode is switched on keeps
-serving on its Pods rather than being restarted to grow a gate. The Auto Mode label comes from AWS (an EKS Auto Mode
-blog post and a maintainer's answer on aws/containers-roadmap#2511), not from the EKS user guide. It has been checked on
-a live preview (patchy 0.12.14): Auto Mode injected the gate, and the host answered 200 to all 60 requests made once a
-second from the moment the Preview was `Ready`, where the ungated `Ready` gave about 15 seconds of 404s and empty
-replies. Previews require EKS Auto Mode, and a preview whose host does not answer yet is not ready to review, so the
-chart turns the mode on by default. That default was off up to 0.12.15, so an upgrade from there that never set the
-value turns it on, and a Preview deploying during that upgrade may spend one retry: its Pods predate the label and carry
-no gate (see [the upgrade note](../deployment/helm.md#eks-auto-mode-and-previews)). If Auto Mode ever injects no gate,
-every rollout times out and retries, the retry's message naming the missing gate, and `targetHealth: false` restores the
-ungated behaviour. A Pod that has the gate but whose target never turns healthy (a readiness path the component does not
-serve, or a security group or network policy keeping the load balancer's health checks out) is retried with a message
-naming the unhealthy target instead.
+need its binding): the rolling update keeps the previous revision's Pod serving until the new Pod is Ready, which here
+means its target is healthy, and the load balancer routes nothing to a target until it is healthy. A spec that adds a
+component (or renames one) replaces the Ingress instead, withdrawing the host until `Ready`: the load balancer keeps an
+Ingress's address once published, so only a new Ingress's address shows that the new component's binding exists. A
+Preview already `Ready` when the mode is switched on keeps serving on its Pods rather than being restarted to grow a
+gate. The Auto Mode label comes from AWS (an EKS Auto Mode blog post and a maintainer's answer on
+aws/containers-roadmap#2511), not from the EKS user guide. It has been checked on a live preview (patchy 0.12.14): Auto
+Mode injected the gate, and the host answered 200 to all 60 requests made once a second from the moment the Preview was
+`Ready`, where the ungated `Ready` gave about 15 seconds of 404s and empty replies. Previews require EKS Auto Mode, and
+a preview whose host does not answer yet is not ready to review, so the chart turns the mode on by default. That default
+was off up to 0.12.15, so an upgrade from there that never set the value turns it on, and a Preview deploying during
+that upgrade may spend one retry: its Pods predate the label and carry no gate (see
+[the upgrade note](../deployment/helm.md#eks-auto-mode-and-previews)). If Auto Mode ever injects no gate, every rollout
+times out and retries, the retry's message naming the missing gate, and `targetHealth: false` restores the ungated
+behaviour. A Pod that has the gate but whose target never turns healthy (a readiness path the component does not serve,
+or a security group or network policy keeping the load balancer's health checks out) is retried with a message naming
+the unhealthy target instead.
 
 Before enabling any Project preview, complete the separate ALB, placeholder Ingress and wildcard DNS check-in, then run
 the cold-start isolation gate in `hack/preview-isolation-probe/README.md` with a disposable PR image. Repeat that gate

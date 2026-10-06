@@ -166,7 +166,7 @@ func (a *Agent) remediate(ctx context.Context, params remediationParams) *envelo
 		return ev
 	}
 
-	res, idle, runErr := a.run(ctx, h, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
+	sr := a.newStage(h, cli, harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.RemediateModel, a.cfg.RemediateHarness),
 		MaxTurns:  params.maxTurns,
@@ -174,7 +174,8 @@ func (a *Agent) remediate(ctx context.Context, params remediationParams) *envelo
 		SessionID: a.newSessionID(),
 		AddDirs:   []string{a.cfg.Workspace},
 		Env:       env,
-	}), cli), a.cfg.RemediateTimeout, a.cfg.RemediateIdleTimeout, params.budget)
+	}, a.cfg.RemediateTimeout, a.cfg.RemediateIdleTimeout, params.budget)
+	res, idle, runErr := a.start(ctx, sr)
 	a.fillStage(&ev.Stage, h, res)
 
 	if idle != "" {
@@ -191,16 +192,10 @@ func (a *Agent) remediate(ctx context.Context, params remediationParams) *envelo
 		return ev
 	}
 
-	raw, err := os.ReadFile(a.cfg.remediationPath())
-	if err != nil {
-		ev.Outcome = envelope.OutcomeReportMissing
-		ev.Detail = err.Error()
-		return ev
-	}
-	rem, err := report.ParseRemediation(raw)
-	if err != nil {
-		ev.Outcome = envelope.OutcomeReportInvalid
-		ev.Detail = err.Error()
+	rem, raw, outcome, detail := settleReport(ctx, a, sr, &ev.Stage, a.cfg.remediationPath(), os.ReadFile,
+		report.ParseRemediation)
+	if outcome != envelope.OutcomeOK {
+		ev.Outcome, ev.Detail = outcome, detail
 		return ev
 	}
 	// Raw, frontmatter included: the report is the machine contract as well
@@ -224,20 +219,21 @@ func (a *Agent) remediate(ctx context.Context, params remediationParams) *envelo
 	return ev
 }
 
-// run executes one stage's agent under its wall clock (timeout) and its idle
-// watchdog (idleLimit, zero for none), observing its stream (observe). idle
-// is the watchdog's verdict: the detail of a run it ended for making no
-// progress, also left in the transcript as its last word, or "" when it did
-// not end the run.
-func (a *Agent) run(ctx context.Context, h harness.Harness, spec runner.CommandSpec, timeout, idleLimit time.Duration,
+// run executes one of a stage's runs — its first, or a repair — under the
+// given wall clock (timeout), the stage's idle watchdog and the given
+// output-token budget, observing its stream (observe) into the stage's one
+// transcript. idle is the watchdog's verdict: the detail of a run it ended
+// for making no progress, also left in the transcript as its last word, or
+// "" when it did not end the run.
+func (a *Agent) run(ctx context.Context, sr *stageRun, spec runner.CommandSpec, timeout time.Duration,
 	budget int) (res runner.Result, idle string, runErr error) {
-	ctx, watch := newIdleWatch(ctx, idleLimit)
-	onLine, rec := a.observe(h, budget, watch)
+	ctx, watch := newIdleWatch(ctx, sr.idle)
+	onLine := a.observe(sr.h, sr.rec, budget, watch)
 	res, runErr = a.exec.Run(ctx, spec, timeout, onLine)
-	if idle = watch.end(runErr, credentialValues(h, a.scrub...)); idle != "" {
+	if idle = watch.end(runErr, credentialValues(sr.h, a.scrub...)); idle != "" {
 		a.cfg.Log.Warn("the idle watchdog ended the run", "phase", a.cfg.Phase, "detail", idle)
-		if rec != nil {
-			rec.Notice("%s", idle)
+		if sr.rec != nil {
+			sr.rec.Notice("%s", idle)
 		}
 	}
 	return res, idle, runErr
@@ -246,18 +242,17 @@ func (a *Agent) run(ctx context.Context, h harness.Harness, spec runner.CommandS
 // observe builds the runner's per-line observer: the transcript recorder, the
 // idle watchdog's progress and the output-token budget kill switch, over the
 // one pass the runner makes. Each may be absent — a harness that cannot report
-// usage, a budget of zero, a harness that cannot transcribe, a disabled
-// watchdog — and when all are, the observer is nil and the runner does no
-// per-line work at all.
+// usage, a budget of zero, a harness that cannot transcribe (rec nil), a
+// disabled watchdog — and when all are, the observer is nil and the runner
+// does no per-line work at all.
 //
 // Recording happens before the budget check so the turn that tripped the limit
 // is in the transcript that explains why the run stopped.
-func (a *Agent) observe(h harness.Harness, budget int, idle *idleWatch) (func([]byte) (bool, string),
-	*transcript.Recorder) {
-	rec := a.recorder(h)
+func (a *Agent) observe(h harness.Harness, rec *transcript.Recorder, budget int,
+	idle *idleWatch) func([]byte) (bool, string) {
 	watch := budgetWatcher(h, budget)
 	if rec == nil && watch == nil && idle == nil {
-		return nil, nil
+		return nil
 	}
 
 	turns, _ := h.(harness.TurnScanner)
@@ -279,11 +274,12 @@ func (a *Agent) observe(h harness.Harness, budget int, idle *idleWatch) (func([]
 			rec.Notice("%s", reason)
 		}
 		return abort, reason
-	}, rec
+	}
 }
 
-// recorder builds the transcript recorder for a run, or nil when the harness
-// cannot project its stream onto the turn vocabulary.
+// recorder builds the transcript recorder for a stage, which all its runs
+// share, or nil when the harness cannot project its stream onto the turn
+// vocabulary.
 func (a *Agent) recorder(h harness.Harness) *transcript.Recorder {
 	if _, ok := h.(harness.TurnScanner); !ok {
 		a.cfg.Log.Info("harness cannot transcribe; no transcript for this run", "harness", h.ID())
@@ -434,7 +430,7 @@ func (a *Agent) investigate(ctx context.Context) *envelope.Investigation {
 		return ev
 	}
 
-	res, idle, runErr := a.run(ctx, h, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
+	sr := a.newStage(h, cli, harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.InvestigateModel, a.cfg.InvestigateHarness),
 		MaxTurns:  a.cfg.InvestigateMaxTurns,
@@ -442,7 +438,8 @@ func (a *Agent) investigate(ctx context.Context) *envelope.Investigation {
 		SessionID: a.newSessionID(),
 		AddDirs:   []string{a.cfg.Workspace},
 		Env:       env,
-	}), cli), a.cfg.InvestigateTimeout, a.cfg.InvestigateIdleTimeout, a.cfg.InvestigateTokenBudget)
+	}, a.cfg.InvestigateTimeout, a.cfg.InvestigateIdleTimeout, a.cfg.InvestigateTokenBudget)
+	res, idle, runErr := a.start(ctx, sr)
 	a.fillStage(&ev.Stage, h, res)
 
 	if idle != "" {
@@ -459,16 +456,10 @@ func (a *Agent) investigate(ctx context.Context) *envelope.Investigation {
 		return ev
 	}
 
-	raw, err := os.ReadFile(a.cfg.investigationPath())
-	if err != nil {
-		ev.Outcome = envelope.OutcomeReportMissing
-		ev.Detail = err.Error()
-		return ev
-	}
-	inv, err := report.ParseInvestigation(raw)
-	if err != nil {
-		ev.Outcome = envelope.OutcomeReportInvalid
-		ev.Detail = err.Error()
+	inv, raw, outcome, detail := settleReport(ctx, a, sr, &ev.Stage, a.cfg.investigationPath(), os.ReadFile,
+		report.ParseInvestigation)
+	if outcome != envelope.OutcomeOK {
+		ev.Outcome, ev.Detail = outcome, detail
 		return ev
 	}
 

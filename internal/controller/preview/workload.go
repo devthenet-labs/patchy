@@ -237,9 +237,14 @@ func (r *Reconciler) prune(ctx context.Context, p *v1alpha1.Preview, slot int32)
 type componentReadiness int
 
 const (
-	// componentPending: no Pod running the component's exact image has a
-	// Ready container yet, or none the Deployment counts available.
-	componentPending componentReadiness = iota
+	// componentUnobserved: the Deployment controller has yet to observe the
+	// component's Deployment at its current generation, so its status says
+	// nothing about the spec last written.
+	componentUnobserved componentReadiness = iota
+	// componentPending: no Pod running the component's current spec
+	// (runsComponent) has a Ready container yet, or none the Deployment
+	// counts available.
+	componentPending
 	// componentGateless: gated, and the component's Pod is up but carries no
 	// load-balancer readiness gate, so its target health is never reported.
 	componentGateless
@@ -251,9 +256,12 @@ const (
 )
 
 // readyImage reports component i's ready image ID: its Deployment has rolled
-// out and a Pod running the component's exact image is Ready — and, when
-// gated, its load balancer target is healthy too (targetHealthy). Short of
-// that, it reports how far the furthest Pod has got.
+// out and a Pod running the component's current spec (runsComponent) is
+// Ready — and, when gated, its load balancer target is healthy too
+// (targetHealthy). Short of that, it reports how far the furthest Pod has
+// got, or componentUnobserved while the Deployment controller has yet to
+// observe the Deployment's current generation. A previous revision's Pod,
+// still serving through the rolling update, never counts.
 //
 // Each Pod is classified whether or not the Deployment counts one available
 // yet: the kubelet holds a Pod's Ready condition False until every readiness
@@ -269,7 +277,7 @@ func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, i int,
 		return "", componentPending, err
 	}
 	if dep.Status.ObservedGeneration < dep.Generation {
-		return "", componentPending, nil
+		return "", componentUnobserved, nil
 	}
 	available := dep.Status.AvailableReplicas >= 1
 	var pods corev1.PodList
@@ -279,8 +287,7 @@ func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, i int,
 	}
 	furthest := componentPending
 	for _, pod := range pods.Items {
-		if !pod.DeletionTimestamp.IsZero() || len(pod.Spec.Containers) != 1 ||
-			pod.Spec.Containers[0].Image != image(c) {
+		if !pod.DeletionTimestamp.IsZero() || !runsComponent(&pod, c) {
 			continue
 		}
 		idx := slices.IndexFunc(pod.Status.ContainerStatuses, func(s corev1.ContainerStatus) bool {
@@ -306,6 +313,21 @@ func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, i int,
 		furthest = max(furthest, state)
 	}
 	return "", furthest, nil
+}
+
+// runsComponent reports whether the Pod runs component c as its spec renders
+// it now: one container with c's exact image, port and readiness path. The
+// rolling update keeps the previous revision's Pod Ready beside the new one
+// until the new one is available, so a spec change that keeps the image (an
+// operator's new port or readiness path) must not count that Pod.
+func runsComponent(pod *corev1.Pod, c v1alpha1.PreviewComponent) bool {
+	if len(pod.Spec.Containers) != 1 {
+		return false
+	}
+	ct := pod.Spec.Containers[0]
+	probe := ct.ReadinessProbe
+	return ct.Image == image(c) && len(ct.Ports) == 1 && ct.Ports[0].ContainerPort == c.Port &&
+		probe != nil && probe.HTTPGet != nil && probe.HTTPGet.Path == c.ReadinessPath
 }
 
 // podCondition reports whether the Pod's condition of type t is True.

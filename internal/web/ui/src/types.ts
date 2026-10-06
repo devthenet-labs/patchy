@@ -490,3 +490,240 @@ export interface ConfigDataset {
   integrations: IntegrationConfig[];
   enhancers: EnhancerConfig[];
 }
+
+// ---- intents views --------------------------------------------------------
+// Mirrors internal/web/intents_wire.go; TestIntentWireTypesMatchTypeScript
+// keeps the field names of every interface below in lockstep with the Go
+// struct of the same name. Every string that is not the server's own fixed
+// wording arrives already made visible (invisible characters as [U+XXXX]);
+// the views render all of it as plain text nodes, never as markdown.
+
+// IntentPhase is the lifecycle of one intent (api/v1alpha1 IntentPhase).
+export type IntentPhase =
+  | "Pending"
+  | "Planning"
+  | "AwaitingApproval"
+  | "Building"
+  | "InReview"
+  | "Revising"
+  | "Blocked"
+  | "Merged"
+  | "Closed"
+  | "Failed";
+
+// IntentColumn is a board column (internal/intentview Columns).
+export type IntentColumn = "planning" | "approval" | "building" | "review" | "blocked" | "done";
+
+// IntentTier is how much of a Project the caller may read.
+export type IntentTier = "intents" | "transcripts";
+
+export type IntentStage = "plan" | "build" | "revise";
+
+export interface Me {
+  name: string;
+  loggedIn: boolean;
+  projects: ProjectAccess[];
+}
+
+export interface ProjectAccess {
+  name: string;
+  tier: IntentTier;
+}
+
+export interface IntentBoard {
+  generatedAt: string;
+  projects: BoardProject[];
+  intents: IntentCard[];
+}
+
+export interface BoardProject {
+  name: string;
+  tier: IntentTier;
+  suspended?: boolean;
+  repositories?: ProjectRepo[];
+  limits: IntentLimits;
+}
+
+export interface ProjectRepo {
+  key: string;
+  slug?: string;
+}
+
+export interface IntentLimits {
+  maxRevisions: number;
+  maxCheckFixes: number;
+  maxCostMicroUSD: number;
+  maxAttempts: number;
+}
+
+export interface IntentCard {
+  name: string;
+  project: string;
+  issue: number;
+  issueURL?: string;
+  phase: IntentPhase;
+  column: IntentColumn;
+  blockedFrom?: IntentPhase;
+  blockedReasons?: string[];
+  suspended?: boolean;
+  summary?: string;
+  repositories?: string[];
+  pullRequests?: IntentPR[];
+  preview?: PreviewLink;
+  runningRuns?: RunningRun[];
+  attempt?: AttemptCount;
+  revisions: number;
+  checkFixes: number;
+  costMicroUSD: number;
+  requestedBy?: string;
+  requestedAt?: string;
+  phaseSince?: string;
+  completedAt?: string;
+}
+
+export interface IntentPR {
+  repository: string;
+  number: number;
+  url?: string;
+  state?: string;
+  mergedAt?: string;
+}
+
+export interface PreviewLink {
+  phase?: string;
+  url?: string;
+  revision?: string;
+  lastDeployedAt?: string;
+}
+
+export interface RunningRun {
+  name: string;
+  stage: IntentStage;
+  repository?: string;
+  round: number;
+  attempt: number;
+  phase: string;
+  startedAt?: string;
+}
+
+export interface AttemptCount {
+  stage: IntentStage;
+  current: number;
+  max: number;
+}
+
+export interface IntentPhaseTime {
+  phase: IntentPhase;
+  at: string;
+}
+
+export interface IntentDetail extends IntentCard {
+  tier: IntentTier;
+  limits: IntentLimits;
+  phaseTimes?: IntentPhaseTime[];
+  input?: IntentInputView;
+  plan?: IntentPlanView;
+  approval?: IntentApproval;
+  rounds?: number;
+  runs: IntentRunRow[];
+  planTexts?: number[];
+}
+
+export interface IntentInputView {
+  revision: number;
+  digest: string;
+}
+
+export interface IntentPlanView {
+  revision: number;
+  digest: string;
+  summary?: string;
+  repositories?: string[];
+  postedAt?: string;
+  commentURL?: string;
+}
+
+export interface IntentApproval {
+  by: string;
+  source: string;
+  at: string;
+  planRevision: number;
+  planDigest: string;
+  inputDigest: string;
+}
+
+export interface IntentRunRow {
+  name: string;
+  stage: IntentStage;
+  trigger?: string;
+  repository?: string;
+  round: number;
+  attempt: number;
+  phase?: string;
+  outcome?: string;
+  reason?: string;
+  createdAt?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  costMicroUSD?: number;
+  usage?: Usage;
+  baseSHA?: string;
+  pushedCommit?: string;
+  imageSource?: string;
+  imageDigest?: string;
+  transcript?: TranscriptSummary;
+  grant?: RunGrant;
+  running?: boolean;
+}
+
+export interface RunGrant {
+  maxTurns?: number;
+  tokenBudget?: number;
+  timeoutMilliseconds?: number;
+}
+
+export interface IntentRunDetail extends IntentRunRow {
+  intent: string;
+  project: string;
+  tier: IntentTier;
+  // countedAttempt is the attempt as counted toward limits.maxAttempts;
+  // attempt is the ordinal, which runs ahead once an attempt did not count.
+  countedAttempt: number;
+  lastAttempt?: boolean;
+  limits: IntentLimits;
+  intentCostMicroUSD: number;
+  job?: RunJobClock;
+  report?: string;
+}
+
+export interface RunJobClock {
+  createdAt?: string;
+  startedAt?: string;
+  deadlineSeconds?: number;
+  idleTimeoutSeconds?: number;
+}
+
+export interface IntentPlanText {
+  intent: string;
+  revision: number;
+  digest?: string;
+  current?: boolean;
+  text: string;
+}
+
+// RunActivity is what a live run is doing, derived server-side from its
+// transcript without any of its text; every tier receives it.
+export interface RunActivity {
+  turns: number;
+  lastAt?: string;
+  openTool?: string;
+  openToolSince?: string;
+  live: boolean;
+  // capped: the transcript recorder reached its cap at lastAt and records
+  // nothing more; what the agent has done since is not known.
+  capped?: boolean;
+}
+
+export interface StreamNotice {
+  reason?: string;
+}

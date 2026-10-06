@@ -745,8 +745,13 @@ published and the load balancer reports the target healthy; `kubectl -n patchy g
 That includes one already open, such as step 9's: its Preview appears within about a minute of the Project gaining
 `preview`, so no new intent is needed. Its head was pushed before `PREVIEW_PUBLISH_ENABLED` was set, though, so publish
 its image the same way, re-running the pull request's latest `test` run (`--branch patchy-intent/shop-web-<issue>`
-above). A cold preview node takes about three minutes the first time. A new push to the pull request redeploys it, and
-merging or closing the pull request deletes it; the node goes soon after.
+above). A cold preview node takes about three minutes the first time. A new push to the pull request redeploys it, the
+previous revision answering until the new one is Ready (its image published and its target healthy), and merging or
+closing the pull request deletes it; the node goes soon after.
+
+Reviewers need not ask for the URL: within a minute of a preview going live, the issue's status comment links it, and
+the pull request gets one comment linking it at its head, which patchy edits as the head moves, the preview redeploys or
+fails, and once the intent ends ([The preview link](../configuration/intent-controller.md#the-preview-link)).
 
 ## Several repositories in one Project
 

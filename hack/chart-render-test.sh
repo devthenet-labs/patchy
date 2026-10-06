@@ -1254,6 +1254,95 @@ if [ "$(get default 'select(.kind == "Deployment" and .metadata.name == "patchy-
   fail "limits: the broker's checksum/config did not change, so an upgrade would not roll it"
 fi
 
+# ---- status server: the intents views ----------------------------------------
+# Off (the default), the status server's template renders byte for byte what
+# main rendered before the views existed, blank lines and the chart version
+# aside: status-server.default.yaml and status-server.user-roles.yaml are those
+# renders, taken from main, and are never regenerated to make this pass. On,
+# status-server.intents.yaml is the whole template (regenerate it with the
+# same helm template command, the version replaced by VERSION, and review the
+# diff). The version is neutralised because release-please bumps it.
+chart_version=$(yq eval '.version' "$chart/Chart.yaml" | sed 's/[.]/\\./g')
+app_version=$(yq eval '.appVersion' "$chart/Chart.yaml" | sed 's/[.]/\\./g')
+# golden_neutral NAME FILE [helm args...]: golden_render with the chart and
+# app versions replaced by VERSION in the render.
+golden_neutral() {
+  name=$1
+  file=$2
+  shift 2
+  if ! helm template patchy "$chart" --namespace patchy "$@" >"$out/$name.raw" 2>"$out/$name.err"; then
+    fail "$name: render failed: $(cat "$out/$name.err")"
+    return
+  fi
+  sed -e "s/$app_version/VERSION/g" -e "s/$chart_version/VERSION/g" "$out/$name.raw" >"$out/$name.golden"
+  if ! same_render "$file" "$out/$name.golden"; then
+    fail "$name: render differs from $file: $(head -20 "$out/same.diff")"
+  fi
+}
+ss=templates/status-server.yaml
+sif=$fixtures/status-intents.yaml
+golden_neutral status-server-off "$golden/status-server.default.yaml" --show-only "$ss"
+golden_neutral status-server-off-roles "$golden/status-server.user-roles.yaml" --show-only "$ss" \
+  --set statusServer.rbac.userRoles=true
+golden_neutral status-server-intents "$golden/status-server.intents.yaml" --show-only "$ss" -f "$sif"
+render status-intents -f "$sif"
+cm default status-server PATCHY_INTENTS_ENABLED null
+cm status-intents status-server PATCHY_INTENTS_ENABLED true
+# Exactly the grants the views need, and none of them while off.
+intentrole='select(.kind == "Role" and .metadata.name == "patchy-status-server-intents") | .rules[] | (.resources | join(",")) + " " + (.verbs | join(","))'
+expect status-intents "$intentrole" "projects,intents,intentruns,previews get,list,watch"
+expect status-intents 'select(.kind == "Role" and .metadata.name == "patchy-status-server-intents") | .metadata.namespace' patchy
+jobsrole='select(.kind == "Role" and .metadata.name == "patchy-status-server-agent-jobs")'
+expect status-intents "$jobsrole | .metadata.namespace" patchy-agents
+expect status-intents "$jobsrole | .rules[] | (.apiGroups | join(\",\")) + \" \" + (.resources | join(\",\")) + \" \" + (.verbs | join(\",\"))" \
+  "batch jobs get"
+for n in patchy-status-server-intents patchy-status-server-agent-jobs patchy-intents-viewer patchy-intents-content; do
+  expect default "select(.metadata.name == \"$n\") | .kind" ""
+done
+# The kustomize component (components/status-intents) grants exactly what the
+# chart does.
+kz=deploy/kustomize/components/status-intents/rbac.yaml
+for n in patchy-status-server-intents patchy-status-server-agent-jobs; do
+  q="select(.kind == \"Role\" and .metadata.name == \"$n\") | .metadata.namespace + \" \" + (.rules | to_json(0))"
+  want=$(yq eval "$q" "$kz" | grep -v '^---$' || true)
+  got=$(get status-intents "$q")
+  if [ -z "$want" ] || [ "$want" != "$got" ]; then
+    fail "status-intents: the kustomize component's $n ($want) differs from the chart's ($got)"
+  fi
+done
+# The server never gains a write, a status subresource, Secrets or pods/exec
+# from the views.
+expect status-intents 'select((.kind == "Role" or .kind == "ClusterRole") and (.metadata.name | test("status-server"))) | .rules[] | select(.resources[] | test("status|secrets|exec")) | .resources | join(",")' ""
+expect status-intents "select(.kind == \"ClusterRole\" and .metadata.name == \"patchy-intents-viewer\") | .rules[0].resources | join(\",\")" \
+  "projects/intents"
+expect status-intents "select(.kind == \"ClusterRole\" and .metadata.name == \"patchy-intents-content\") | .rules[0].resources | join(\",\")" \
+  "projects/intents,projects/transcripts"
+# Enabling the views rolls the server (its ConfigMap changed).
+sscsum='select(.kind == "Deployment" and .metadata.name == "patchy-status-server") | .spec.template.metadata.annotations["checksum/config"]'
+if [ "$(get default "$sscsum")" = "$(get status-intents "$sscsum")" ]; then
+  fail "status-intents: the status server's checksum/config did not change, so enabling the views would not roll it"
+fi
+# Guards: the views refuse every auth posture but oidc with both prefixes.
+expect_fail 'intents without auth' 'statusServer.intents.enabled requires an auth config in mode oidc' \
+  --set statusServer.intents.enabled=true
+expect_fail 'intents in mode none' 'requires statusServer.auth.config.mode oidc' \
+  --set statusServer.intents.enabled=true --set statusServer.auth.config.mode=none
+expect_fail 'intents in mode anonymous' 'requires statusServer.auth.config.mode oidc' \
+  --set statusServer.intents.enabled=true --set statusServer.auth.config.mode=anonymous \
+  --set statusServer.auth.config.anonymous.username=viewer
+expect_fail 'intents without claim prefixes' 'claims.usernamePrefix and groupsPrefix' \
+  --set statusServer.intents.enabled=true --set statusServer.auth.config.mode=oidc \
+  --set statusServer.auth.config.oidc.issuerURL=https://sso.example.com --set statusServer.auth.config.oidc.clientID=c
+expect_fail 'intents with one claim prefix' 'claims.usernamePrefix and groupsPrefix' \
+  --set statusServer.intents.enabled=true --set statusServer.auth.config.mode=oidc \
+  --set statusServer.auth.config.oidc.claims.usernamePrefix=github:
+render status-intents-inline --set statusServer.intents.enabled=true --set statusServer.auth.config.mode=oidc \
+  --set statusServer.auth.config.oidc.claims.usernamePrefix=github: \
+  --set statusServer.auth.config.oidc.claims.groupsPrefix=github:
+cm status-intents-inline status-server PATCHY_INTENTS_ENABLED true
+expect_fail 'intents block of the wrong shape' 'additional properties' \
+  --set statusServer.intents.bogus=true
+
 # ---- charts/patchy-config: Projects ------------------------------------------
 # The CR chart renders .Values.projects into Project CRs verbatim; its values
 # schema embeds the CRD's spec schema (hack/codegen.sh), so a malformed entry

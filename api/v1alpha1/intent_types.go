@@ -475,6 +475,20 @@ type IntentPullRequest struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	ChecksObservedProjectGeneration int64 `json:"checksObservedProjectGeneration,omitempty"`
+	// PreviewCommentID is GitHub's id of the sticky preview comment on this
+	// pull request (marker <!-- patchy:notice <namespace>/<intent> preview
+	// -->): posted once the intent's preview is first live at the pull
+	// request's head, and edited in place thereafter. Written by the intent
+	// reconciler only; 0 while there is none.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	PreviewCommentID int64 `json:"previewCommentID,omitempty"`
+	// PreviewDigest is the sha256 of the body last written to the preview
+	// comment, so an unchanged preview is never written again. Written by
+	// the intent reconciler only.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
+	PreviewDigest string `json:"previewDigest,omitempty"`
 }
 
 // IntentPreviewBase records the default-branch head an intent previews for a

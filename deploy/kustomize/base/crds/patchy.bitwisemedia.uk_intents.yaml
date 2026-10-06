@@ -685,6 +685,23 @@ spec:
                       format: int64
                       minimum: 1
                       type: integer
+                    previewCommentID:
+                      description: |-
+                        PreviewCommentID is GitHub's id of the sticky preview comment on this
+                        pull request (marker <!-- patchy:notice <namespace>/<intent> preview
+                        -->): posted once the intent's preview is first live at the pull
+                        request's head, and edited in place thereafter. Written by the intent
+                        reconciler only; 0 while there is none.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    previewDigest:
+                      description: |-
+                        PreviewDigest is the sha256 of the body last written to the preview
+                        comment, so an unchanged preview is never written again. Written by
+                        the intent reconciler only.
+                      pattern: ^sha256:[0-9a-f]{64}$
+                      type: string
                     repository:
                       description: |-
                         Repository is the https URL of the app repository the pull request

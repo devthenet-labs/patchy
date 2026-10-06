@@ -142,6 +142,10 @@ strategy back and counts the moment before the Deployment controller observes th
 Preview `Ready` for longer than `rolloutTimeout` is retried at once. Its Pods restart, its host is down until they are
 Ready again, and one already on its last retry ends `Failed`.
 
+intent-controller reads a Preview's status, never writes it, to link the preview from the intent's issue and its pull
+requests once it is `Ready` at their heads; it never posts the status `message`. See
+[The preview link](intent-controller.md#the-preview-link).
+
 With `previewController.config.targetHealth: true` (the chart's default; `--preview-target-health` on the binary, whose
 own default is still off), `Ready` also means the load balancer's target is healthy, so the host does not answer 404 or
 nothing for the seconds after `Ready` while a new target registers. The chart then labels the slot namespaces

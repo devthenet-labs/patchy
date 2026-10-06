@@ -52,7 +52,7 @@ other binary binds, so the shared kustomize ConfigMap cannot set one by accident
 | `--intent-poll-interval`                        | `PATCHY_INTENT_POLL_INTERVAL`                             | `60s`                       | How often each Project's intent repository and each active intent's issue are polled                                                                                                                                                                  |
 | `--intent-approval-poll-interval`               | `PATCHY_INTENT_APPROVAL_POLL_INTERVAL`                    | `30s`                       | How often an intent awaiting approval polls its issue's events                                                                                                                                                                                        |
 | `--intent-pr-poll-interval`                     | `PATCHY_INTENT_PR_POLL_INTERVAL`                          | `60s`                       | How often an intent in review polls its pull request                                                                                                                                                                                                  |
-| `--intent-previews-enabled`                     | `PATCHY_INTENT_PREVIEWS_ENABLED`                          | `false`                     | PRs, and unchanged repositories' main heads, into Preview CRs; Helm: `previewController.enabled`                                                                                                                                                      |
+| `--intent-previews-enabled`                     | `PATCHY_INTENT_PREVIEWS_ENABLED`                          | `false`                     | PRs, and unchanged repositories' main heads, into Preview CRs, and post each preview's link (see [The preview link](#the-preview-link)); Helm: `previewController.enabled`                                                                            |
 | `--intent-multi-repo`                           | `PATCHY_INTENT_MULTI_REPO`                                | `false`                     | Run intents of Projects listing several repositories; off, their intents are held `Blocked`                                                                                                                                                           |
 | `--intent-max-concurrent-runs`                  | `PATCHY_INTENT_MAX_CONCURRENT_RUNS`                       | `1`                         | Intent agent Jobs at once, a pool apart from remediation's; a multi-repository intent's builds share it                                                                                                                                               |
 | `--intent-rate-limit-floor`                     | `PATCHY_INTENT_RATE_LIMIT_FLOOR`                          | `1000`                      | Pause intent polling while the installation has fewer core requests left than this; `0` disables                                                                                                                                                      |
@@ -273,6 +273,35 @@ Each round posts one comment on the pull request saying what kind of round it wa
 for `test`") and what it pushed, and when it pushed, asks the approvers to review again. The summary patchy posts when
 the intent ends counts revisions and CI-fix rounds apart.
 
+### The preview link
+
+With `--intent-previews-enabled` and a Project that previews the pull request's repository, patchy tells reviewers where
+the preview is, in two places:
+
+- **The issue's status comment** gains a **Preview** line: the link once the preview is live, "being deployed" while
+  preview-controller rolls it out, or why it is not available (it could not be deployed, or it expired after its time to
+  live). With several previewed repositories it lists what each path serves, at which commit.
+- **Each previewed pull request** gets one comment of its own, posted the first time the preview is live at that pull
+  request's head. patchy then edits that same comment, never posting another: to "being deployed" when a round or a push
+  moves the head, back to live with the new commit once it is served, to say why when the preview fails or expires, and
+  last to say the preview was removed once the intent ends. Edits notify nobody; the round's own comment already asks
+  for the review. A pull request whose repository is not previewed (a library) gets no preview comment.
+
+The link is posted only when it can be checked: the Preview is this intent's, has rolled out its current spec, serves
+exactly the commits the intent recorded (each pull request's head, or a preview base), and its address is a bare
+`https://<intent>.<host suffix>` with no path, port, query or user. Anything else shows no link, and a Ready preview at
+an address patchy does not link says so. The Preview's own status message, which can quote the cluster, is never posted:
+a failure names the Preview resource instead (`kubectl -n <namespace> get preview <intent> -o yaml` shows why).
+
+patchy reads the Preview once per pass (a poll interval apart at most, a minute by default, so the link can lag Ready by
+up to that long), through the API server rather than a watch, so it needs only the `get` on previews the chart already
+grants with `previewController.enabled`. A failed read shows no link that pass and leaves the pull request comments as
+they are. The comment writes are best effort, like the comment linking a multi-repository intent's pull requests: each
+one asks the rate floor of its own repository, nothing is written to a repository that left the Project, one GitHub
+refuses (a locked conversation, say) is tried again only once it would say something else, and an ended intent's last
+edit never holds anything back. A comment someone deletes is posted again the next time the preview goes live. Turning
+`--intent-previews-enabled` off stops all of it, and leaves the comments as they last were.
+
 ## Several repositories
 
 With `--intent-multi-repo` (`intentController.config.multiRepo: true` in the chart), a Project may list up to eight
@@ -362,7 +391,9 @@ intent-controller is the second code path that writes to a forge (remediation-co
   only ever `patchy-intent/…`, and the default branch is never touched.
 - **RBAC:**
   - in the release namespace, projects (read, status), intents and intent runs (their lifecycle, status and finalizers),
-    Repositories (create, read, delete), Forges (read), ConfigMaps (create, read, update), leases and events;
+    Repositories (create, read, delete), Forges (read), ConfigMaps (create, read, update), leases and events; with
+    `previewController.enabled`, previews too (create, get, update, delete: the spec it writes, and the status it reads
+    for the preview link), never list or watch;
   - in the agents namespace, its own copy of the agent-jobs Role;
   - no ClusterRole.
 - **Network:** egress to DNS, the Kubernetes API server and GitHub on 443. It never dials the artifact server or an

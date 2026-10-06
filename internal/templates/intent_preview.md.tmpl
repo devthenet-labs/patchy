@@ -1,0 +1,15 @@
+{{- /* The sticky preview comment on each previewed pull request of an
+intent: posted once the preview first serves the pull request's head, then
+edited in place as the preview changes, and last to say it was removed. The
+sentence is built in Go from plain values: the host is linked only while the
+preview is live, and in code; the preview controller's own words are never
+shown. One line per paragraph: GitHub renders a line break inside a comment as
+a hard break. */ -}}
+{{ .Marker }}
+### patchy: preview
+
+{{ .Sentence }}
+{{- if not .Removed }}
+
+_patchy updates this comment as the preview changes, and removes the preview when the intent ends._
+{{- end }}

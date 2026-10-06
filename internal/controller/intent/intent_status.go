@@ -22,11 +22,13 @@ import (
 // looks for its own among the comments since the trigger, so a restart
 // between posting and recording adopts it. It is edited only when what it
 // would say changed (its digest), and a status comment someone deleted is
-// posted again.
+// posted again. With the preview projection on, it also says where the
+// intent's preview stands (loadPreview).
 func (p *pass) syncStatusComment(ctx context.Context) error {
 	if p.in.Status.Input == nil {
 		return nil
 	}
+	p.loadPreview(ctx)
 	body, err := templates.RenderIntentStatusComment(p.statusComment())
 	if err != nil {
 		return err
@@ -73,7 +75,8 @@ func (p *pass) syncStatusComment(ctx context.Context) error {
 	})
 }
 
-// statusComment is what the status comment says about the Intent now.
+// statusComment is what the status comment says about the Intent now: the
+// preview as loadPreview last read it.
 func (p *pass) statusComment() templates.IntentStatusComment {
 	st := p.in.Status
 	c := templates.IntentStatusComment{
@@ -98,6 +101,7 @@ func (p *pass) statusComment() templates.IntentStatusComment {
 			Repository: repoSlug(pr.Repository), Number: pr.Number, URL: pr.URL, State: pr.State,
 		})
 	}
+	c.Preview = p.statusPreview()
 	switch st.Phase {
 	case v1alpha1.IntentRevising:
 		run := p.round(v1alpha1.IntentStageRevise, st.Rounds, anyRepository).latest()

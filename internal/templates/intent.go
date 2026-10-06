@@ -123,6 +123,9 @@ type IntentStatusComment struct {
 	Repositories []string
 	// PullRequests are the pull requests patchy opened.
 	PullRequests []IntentPullRequest
+	// Preview is the intent's preview (intent_preview.go); nil, or a zero
+	// State, omits the line, and the comment is exactly the one without.
+	Preview *IntentPreview
 	// FixingChecks reports a Revising intent whose round failed checks
 	// started rather than review feedback: the phase's sentence then says
 	// so.
@@ -199,6 +202,7 @@ func RenderIntentStatusComment(c IntentStatusComment) (string, error) {
 		ApprovedRevision int32
 		Repositories     string
 		PullRequests     []statusPR
+		Preview          *statusPreview
 		Revisions        int32
 		MaxRevisions     int32
 		Cost             string
@@ -216,6 +220,7 @@ func RenderIntentStatusComment(c IntentStatusComment) (string, error) {
 		ApprovedRevision: c.ApprovedRevision,
 		Repositories:     repositoryList(c.Repositories, false),
 		PullRequests:     prs,
+		Preview:          renderStatusPreview(c.Preview),
 		Revisions:        c.Revisions,
 		MaxRevisions:     c.MaxRevisions,
 		Cost:             usd(c.CostMicroUSD),

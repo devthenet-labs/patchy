@@ -229,8 +229,9 @@ code on hosts that are same-site with the status host, and same-site requests ca
 - a Content-Security-Policy whose `script-src` admits only the page's own inline scripts, by hash, and
   `Strict-Transport-Security`;
 - the findings transcript streams re-check the viewer's grant every 20 seconds too;
-- the public `/events` stream takes at most 512 subscribers; one person holds at most 6 intents streams at once, the
-  server 256.
+- the public `/events` stream holds at most 512 subscribers: one past that is served and the oldest dropped (its page
+  reconnects on its own), so filling the stream locks no one out; one person holds at most 6 intents streams at once,
+  the server 256.
 
 Every intents stream ends after 10 minutes and the page reopens it through the current session, so a signed-out or
 expired session stops streaming within that time. The change signal the board listens on reaches a person only for the

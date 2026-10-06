@@ -24,20 +24,42 @@ const (
 // notification, which is harmless because every notification carries the
 // same meaning ("refetch") — the next one catches it up.
 type broker struct {
-	mu      sync.Mutex
-	clients map[chan string]struct{}
+	mu sync.Mutex
+	// clients maps each client's channel to its subscription order.
+	clients map[chan string]uint64
+	next    uint64
 }
 
 func newBroker() *broker {
-	return &broker{clients: make(map[chan string]struct{})}
+	return &broker{clients: make(map[chan string]uint64)}
 }
 
 // subscribe registers a new client and returns its event channel.
-func (b *broker) subscribe() chan string {
+func (b *broker) subscribe() chan string { return b.subscribeCapped(0) }
+
+// subscribeCapped registers a new client, first dropping the oldest ones
+// while limit (when positive) are already subscribed: a dropped client's
+// channel is closed, which ends its stream. Dropping the oldest rather than
+// refusing the newest keeps the cap from locking viewers out: anyone can
+// fill an unauthenticated stream's subscribers, and a browser's EventSource
+// gives up for good on a refused stream but reconnects on its own after one
+// that ends.
+func (b *broker) subscribeCapped(limit int) chan string {
 	ch := make(chan string, 8)
 	b.mu.Lock()
-	b.clients[ch] = struct{}{}
-	b.mu.Unlock()
+	defer b.mu.Unlock()
+	for limit > 0 && len(b.clients) >= limit {
+		var oldest chan string
+		for c, order := range b.clients {
+			if oldest == nil || order < b.clients[oldest] {
+				oldest = c
+			}
+		}
+		delete(b.clients, oldest)
+		close(oldest)
+	}
+	b.next++
+	b.clients[ch] = b.next
 	return ch
 }
 
@@ -87,16 +109,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
-	if s.hardened() && s.broker.count() >= maxEventSubscribers {
-		http.Error(w, "too many open streams", http.StatusServiceUnavailable)
-		return
-	}
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", s.streamCacheControl())
 	h.Set("Connection", "keep-alive")
 
-	ch := s.broker.subscribe()
+	limit := 0
+	if s.hardened() {
+		limit = maxEventSubscribers
+	}
+	ch := s.broker.subscribeCapped(limit)
 	defer s.broker.unsubscribe(ch)
 
 	_, _ = fmt.Fprint(w, ": connected\n\n")

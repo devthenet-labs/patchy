@@ -27,7 +27,9 @@ import (
 //     bundle's own inline scripts, by hash, and HSTS.
 
 // maxEventSubscribers bounds the public /events stream's subscribers while
-// the envelope is hardened: it is unauthenticated, so the cap is global.
+// the envelope is hardened: it is unauthenticated, so the cap is global, and
+// a subscriber past it drops the oldest rather than being refused
+// (broker.subscribeCapped), so filling it locks no one out.
 const maxEventSubscribers = 512
 
 // hstsValue keeps browsers on HTTPS for the status host for a year. Not

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 func request(t *testing.T, method, url, site string) *http.Response {
@@ -150,17 +151,45 @@ func TestHardenedEnvelope(t *testing.T) {
 	}
 }
 
-// The public /events stream is capped while hardened.
+// The public /events stream is capped while hardened, and the cap cannot be
+// used to lock viewers out: it is unauthenticated, so anyone can fill it, and
+// a browser's EventSource gives up for good on a refused (non-200) stream.
+// A new subscriber past the cap is served, and the oldest one is dropped
+// instead; its stream ends, and a browser's EventSource reconnects on its
+// own after a stream that was served.
 func TestHardenedEventsCap(t *testing.T) {
 	s, _ := intentsServer(t, nil)
 	ts := as(t, s, nil)
+	subs := make([]chan string, 0, maxEventSubscribers)
 	for range maxEventSubscribers {
 		ch := s.broker.subscribe()
 		defer s.broker.unsubscribe(ch)
+		subs = append(subs, ch)
 	}
 	res := request(t, http.MethodGet, ts.URL+"/events", "same-origin")
-	if res.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("GET /events past the cap = %d, want 503", res.StatusCode)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /events past the cap = %d, want 200 (the oldest subscriber dropped instead)", res.StatusCode)
+	}
+	select {
+	case _, ok := <-subs[0]:
+		if ok {
+			t.Error("the oldest subscriber received an event instead of being dropped")
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("the oldest subscriber was not dropped")
+	}
+	if got := s.broker.count(); got != maxEventSubscribers {
+		t.Errorf("subscribers = %d, want the cap %d", got, maxEventSubscribers)
+	}
+	// Only the oldest went: the next oldest is still subscribed.
+	s.broker.publish(eventFindingsChanged)
+	select {
+	case ev, ok := <-subs[1]:
+		if !ok || ev != eventFindingsChanged {
+			t.Errorf("the second-oldest subscriber got (%q, %v), want the event", ev, ok)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("the second-oldest subscriber was dropped too")
 	}
 }
 

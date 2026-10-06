@@ -367,16 +367,23 @@ func TestFakeAgentTranscript(t *testing.T) {
 }
 
 // TestFakeAgentOutput decodes the live command output the script prints
-// for the stages that run commands: each command's chunks are numbered
-// from its first line with none left out, the last one Done, and the log
-// scan keeps none of them, so the stage still has one result and the
-// transcript only its turns.
+// for an intent's build: each command's chunks are numbered from its first
+// line with none left out, the last one Done, and the log scan keeps none of
+// them, so the stage still has one result and the transcript only its turns.
+// A Finding's remediation prints none, as the real runner prints the output
+// for the intent stages alone.
 func TestFakeAgentOutput(t *testing.T) {
 	for _, phase := range []string{"remediate", "build"} {
 		t.Run(phase, func(t *testing.T) {
 			stdout, err := execFakeAgent(t, phase, phaseInputs[phase])
 			if err != nil {
 				t.Fatalf("run fake agent (%s): %v", phase, err)
+			}
+			if phase == "remediate" {
+				if bytes.Contains(stdout, []byte(transcript.OutputPrefix)) {
+					t.Errorf("the remediate run printed command output; only an intent's stages do")
+				}
+				return
 			}
 			byTask := map[string][]transcript.Output{}
 			var order []string

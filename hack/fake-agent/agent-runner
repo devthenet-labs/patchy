@@ -19,7 +19,9 @@
 #                  below so that live stream is actually watchable.
 #   PATCHY-OUTPUT: a chunk of a running command's output (internal/transcript,
 #                  output schema v1), printed between a Bash call and its
-#                  result. Live only: no controller keeps it.
+#                  result, in an intent's build only, as the real runner
+#                  prints it only for the intent stages. Live only: no
+#                  controller keeps it.
 #   PATCHY-EVENT:  the stage result (internal/envelope, schema v4). Exactly one
 #                  per run, last.
 #
@@ -183,8 +185,6 @@ remediate)
   turn assistant tool_use Edit 'repo/app.js: replace the unescaped assignment with an escaped one'
   turn user tool_result Edit 'applied 1 edit to repo/app.js'
   turn assistant tool_use Bash 'npm test'
-  output bfake0001 1 false '"> app@1.0.0 test","> jest --ci"'
-  output bfake0001 3 true '"Test Suites: 12 passed, 12 total","Tests: 84 passed, 84 total"'
   turn user tool_result Bash 'Test Suites: 12 passed, 12 total\nTests: 84 passed, 84 total'
   turn assistant tool_use Bash 'git commit -am fix(security): escape the sink'
   turn user tool_result Bash '[detached HEAD 4f1c2ab] fix(security): escape the sink\n 1 file changed, 1 insertion(+), 1 deletion(-)'

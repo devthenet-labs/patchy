@@ -218,11 +218,11 @@ marked failed for the controller's orphan handling.
 
 ## Live command output
 
-While a claude stage runs a foreground shell command, agent-runner prints the command's output as it is produced, as
-`PATCHY-OUTPUT:` lines beside the transcript's `PATCHY-TURN:` lines, so a viewer following the pod log can watch a long
-test suite while it runs rather than only when its tool result arrives. It reads the file the claude CLI keeps a running
-command's output in (under `CLAUDE_CODE_TMPDIR`, `/tmp` by default). A backgrounded command is not followed, and codex
-and copilot stages print none.
+While an intent's plan or build stage runs a foreground shell command, agent-runner prints the command's output as it is
+produced, as `PATCHY-OUTPUT:` lines beside the transcript's `PATCHY-TURN:` lines, so a viewer of the intent's run panel
+can watch a long test suite while it runs rather than only when its tool result arrives. It reads the file the claude
+CLI keeps a running command's output in (under `CLAUDE_CODE_TMPDIR`, `/tmp` by default). A backgrounded command is not
+followed, and a Finding's investigate and remediate stages print none, since nothing shows it there.
 
 A line is shown as a terminal would show it, the text after its last carriage return, so a progress bar shows its latest
 state. Escape sequences are stripped, the pod's credentials and the broker caller token are redacted as in the

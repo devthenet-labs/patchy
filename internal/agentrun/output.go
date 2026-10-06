@@ -20,13 +20,13 @@ import (
 )
 
 // Live command output. While the agent's CLI runs a foreground shell
-// command, agent-runner reads the file the CLI writes that command's output
-// to and prints it as transcript.Output chunks (PATCHY-OUTPUT lines), for a
-// viewer following the pod log to watch a long command as it runs. The
-// chunks are live only: the controller persists none of them, they never
-// pass through the transcript recorder, and they are not progress to the
-// idle watchdog or spend to the token budget, which read the CLI's own
-// stream alone.
+// command in an intent's stage, agent-runner reads the file the CLI writes
+// that command's output to and prints it as transcript.Output chunks
+// (PATCHY-OUTPUT lines), for a viewer following the pod log to watch a long
+// command as it runs. The chunks are live only: the controller persists none
+// of them, they never pass through the transcript recorder, and they are not
+// progress to the idle watchdog or spend to the token budget, which read the
+// CLI's own stream alone.
 //
 // The bounds are constants, not configuration: a new PATCHY_* key would
 // change the environment a repository-image Job blanks. They keep the
@@ -73,7 +73,8 @@ type outputPace struct {
 	drain  time.Duration // the longest a command's end waits for its file to be read out
 }
 
-// defaultOutputPace is the production timing; tests shorten it.
+// defaultOutputPace is the production timing, which New gives every Agent;
+// tests shorten it.
 var defaultOutputPace = outputPace{
 	poll:   250 * time.Millisecond,
 	flush:  500 * time.Millisecond,
@@ -116,21 +117,22 @@ type followedTask struct {
 func (t *followedTask) end() { t.once.Do(func() { close(t.ended) }) }
 
 // followOutput sets up the live output of one run whose command is spec,
-// or returns nil when the harness cannot follow commands. secrets is the
-// run's scrub list: the credentials, and the caller token read afresh for
-// this run.
+// or returns nil when the stage shows none or the harness cannot follow
+// commands. Only an intent's stages show it: an intent run's panel is the
+// output's one reader, and a Finding's stages, whose transcript view never
+// shows it, would only add it to their pod log. secrets is the run's scrub
+// list: the credentials, and the caller token read afresh for this run.
 func (a *Agent) followOutput(ctx context.Context, h harness.Harness, spec runner.CommandSpec,
 	secrets []string) *outputFollower {
+	if a.cfg.Phase != PhasePlan && a.cfg.Phase != PhaseBuild {
+		return nil
+	}
 	tw, ok := h.(harness.TaskWatcher)
 	if !ok {
 		return nil
 	}
-	pace := a.pace
-	if pace == (outputPace{}) {
-		pace = defaultOutputPace
-	}
 	return &outputFollower{
-		a: a, tw: tw, ctx: ctx, pace: pace, secrets: secrets, uid: os.Getuid(),
+		a: a, tw: tw, ctx: ctx, pace: a.pace, secrets: secrets, uid: os.Getuid(),
 		// The runner runs the CLI with its own environment and the spec's
 		// after it, so a later assignment wins, as it does here.
 		env:   append(os.Environ(), spec.Env...),

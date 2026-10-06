@@ -124,8 +124,8 @@ func (e *commandExec) Run(_ context.Context, _ runner.CommandSpec, _ time.Durati
 	return runner.Result{Stdout: []byte(out.String()), Elapsed: time.Second}, nil
 }
 
-// reported is the investigate stage's good report, for a run to write.
-var reported = map[string]string{"reports/investigation.md": goodInvestigation}
+// reported is the plan stage's good report, for a run to write.
+var reported = map[string]string{"reports/plan.md": goodPlan}
 
 // commandFile creates the file claude writes a command's output to, under
 // tmp (CLAUDE_CODE_TMPDIR), in a working directory's slug, and returns it
@@ -154,15 +154,16 @@ func put(t *testing.T, f *os.File, s string) {
 }
 
 // outputSetup is a stage whose CLI keeps its temporary files under a test
-// directory: the investigate stage on the fake harness, which follows
+// directory: an intent's plan stage on the fake harness, which follows
 // commands as claude does.
 func outputSetup(t *testing.T) (Config, string, string, *syncBuffer) {
 	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("CLAUDE_CODE_TMPDIR", tmp)
-	ws := newWorkspace(t)
 	out := &syncBuffer{}
-	return newConfig(t, ws, out), ws, tmp, out
+	cfg, ws := intentConfig(t, PhasePlan, nil)
+	cfg.Out = out
+	return cfg, ws, tmp, out
 }
 
 // fastPace makes the tests that do not measure timing quick.
@@ -589,7 +590,8 @@ func TestOutputScrubsTheRepairsToken(t *testing.T) {
 	}
 	exec := &commandExec{ws: ws, runs: []commandRun{
 		{script: func(func(string)) {}, writes: map[string]string{
-			"reports/investigation.md": badInvestigation, "broker-token": rotated + "\n",
+			"reports/plan.md":           strings.Replace(goodPlan, "confidence: 0.8", "confidence: 7", 1),
+			"broker-token":              rotated + "\n",
 		}},
 		{writes: reported, script: func(feed func(string)) {
 			f, _ := commandFile(t, tmp, "benv")
@@ -608,6 +610,39 @@ func TestOutputScrubsTheRepairsToken(t *testing.T) {
 	}
 	if strings.Contains(out.String(), rotated) || strings.Contains(out.String(), first) {
 		t.Error("stdout carries a caller token")
+	}
+}
+
+// TestOutputOnlyInIntentStages: the live output has one reader, an intent
+// run's panel. A Finding's stages, whose transcript view never shows it,
+// print none, whatever their commands print, so it adds nothing to their
+// pod log.
+func TestOutputOnlyInIntentStages(t *testing.T) {
+	for _, phase := range []Phase{PhaseInvestigate, PhaseRemediate} {
+		t.Run(string(phase), func(t *testing.T) {
+			tmp := t.TempDir()
+			t.Setenv("CLAUDE_CODE_TMPDIR", tmp)
+			out := &syncBuffer{}
+			cfg, ws := newConfig(t, newWorkspace(t), out), ""
+			writes := map[string]string{"reports/investigation.md": goodInvestigation}
+			if phase == PhaseRemediate {
+				cfg, ws = remediateConfig(t, goodInvestigation, out)
+				writes = map[string]string{"reports/remediation.md": goodRemediation}
+			} else {
+				ws = cfg.Workspace
+			}
+			exec := &commandExec{ws: ws, runs: []commandRun{{writes: writes, script: func(feed func(string)) {
+				f, _ := commandFile(t, tmp, "bfinding")
+				feed(startedLine("bfinding", "toolu_f"))
+				put(t, f, "ok  ./...\n")
+				time.Sleep(10 * fastPace.poll) // time enough for a read
+				feed(notifiedLine("bfinding", "toolu_f"))
+			}}}}
+			runStage(t, cfg, exec, fastPace, out)
+			if strings.Contains(out.String(), transcript.OutputPrefix) {
+				t.Errorf("the %s stage printed command output:\n%s", phase, out.String())
+			}
+		})
 	}
 }
 

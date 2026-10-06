@@ -267,10 +267,11 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   others at v4); `agentresult` converts envelope results onto CR status (`FromPlan` re-derives a plan from its
   report). A missing or refused report is first repaired in the agent's own session (`repair.go`: the optional
   `harness.Resumer`, claude and fake only; at most 2 bounded rounds; one transcript per stage; a writable stage's
-  clone fingerprinted so a repair may change only the report and commit.sh). A running foreground command's output is
-  printed live as `PATCHY-OUTPUT:` chunks (`output.go`: read from the file the CLI keeps it in, via the optional
-  `harness.TaskWatcher`; bounded per command and per process by constants; never persisted, never a turn, never
-  idle-watchdog progress; `jobs.scanLog` skips it), and one lock serialises every stdout line.
+  clone fingerprinted so a repair may change only the report and commit.sh). In the intent stages, a running
+  foreground command's output is printed live as `PATCHY-OUTPUT:` chunks (`output.go`: read from the file the CLI
+  keeps it in, via the optional `harness.TaskWatcher`; bounded per command and per process by constants; never
+  persisted, never a turn, never idle-watchdog progress; `jobs.scanLog` skips it), and one lock serialises every
+  stdout line.
 - `jobs` — the Kubernetes Job the agent runs in. The isolation model lives here, and it STRENGTHENED with the
   broker: a brokered (claude) pod holds no credential of any kind — its projected SA token (audience-bound,
   agent container only, never the init) is an identity document, not a capability; its fixed, non-secret

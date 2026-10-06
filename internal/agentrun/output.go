@@ -436,7 +436,7 @@ func (f *outputFollower) newStream(task string) *outputStream {
 // reports false once nothing more may be printed.
 func (s *outputStream) read(file *os.File, now time.Time) bool {
 	s.now = now
-	s.readFile(file, now.Add(s.f.pace.poll))
+	s.readFile(file, time.Now().Add(s.f.pace.poll))
 	if s.stopped {
 		return false
 	}

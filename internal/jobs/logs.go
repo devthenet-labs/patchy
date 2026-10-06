@@ -106,14 +106,22 @@ func (c *Client) ResultLines(ctx context.Context, jobName string, fn func(line [
 	return nil
 }
 
-// scanLog splits the agent's log into its two prefixed streams, delivering
-// each line to the matching handler and ignoring everything else; a handler
-// error stops the scan. Either handler may be nil.
+// scanLog splits the agent's log into its two persisted prefixed streams,
+// delivering each line to the matching handler and ignoring everything else;
+// a handler error stops the scan. Either handler may be nil.
 //
 // Turn lines are tested first and never offered to envelope.Decode: that
 // decoder searches for its prefix anywhere in the line to survive log
 // wrapping, so a turn whose text quotes the envelope prefix would otherwise be
 // mis-scanned as a stage result.
+//
+// The live command output (PATCHY-OUTPUT chunks) is the log's third stream,
+// and nothing here keeps it: a chunk is skipped before envelope.Decode, so a
+// run's many chunks never pass through the result's decoder. A line is
+// skipped as a chunk only when it decodes as one, not merely because it holds
+// the prefix: a stage result whose report quotes the prefix must still be
+// found, and a chunk's JSON-encoded lines can never make a line of another
+// stream decode as one.
 func scanLog(r io.Reader, onEvent func(envelope.Event) error, onTurn func(transcript.Turn) error) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64<<10), maxEventLine)
@@ -127,6 +135,11 @@ func scanLog(r io.Reader, onEvent func(envelope.Event) error, onTurn func(transc
 				return err
 			}
 			continue
+		}
+		if transcript.HasOutputPrefix(sc.Bytes()) {
+			if _, ok := transcript.DecodeOutput(sc.Bytes()); ok {
+				continue
+			}
 		}
 		e, ok := envelope.Decode(sc.Bytes())
 		if !ok || onEvent == nil {

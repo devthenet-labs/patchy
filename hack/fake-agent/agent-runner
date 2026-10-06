@@ -10,21 +10,25 @@
 # request — without a model key. Branches on PATCHY_PHASE exactly like the
 # real runtime; PATCHY_BASE_SHA seeds the changeset's push base.
 #
-# Two prefixed streams share stdout, exactly as the real runner emits them:
+# Three prefixed streams share stdout, exactly as the real runner emits them:
 #
-#   PATCHY-TURN:  one conversation turn (internal/transcript, schema v1). The
-#                 owning controller collects these into the run's transcript
-#                 ConfigMap; the status server follows the pod log live, so an
-#                 in-flight run streams into the page. Paced by turn_delay
-#                 below so that live stream is actually watchable.
-#   PATCHY-EVENT: the stage result (internal/envelope, schema v4). Exactly one
-#                 per run, last.
+#   PATCHY-TURN:   one conversation turn (internal/transcript, schema v1). The
+#                  owning controller collects these into the run's transcript
+#                  ConfigMap; the status server follows the pod log live, so an
+#                  in-flight run streams into the page. Paced by turn_delay
+#                  below so that live stream is actually watchable.
+#   PATCHY-OUTPUT: a chunk of a running command's output (internal/transcript,
+#                  output schema v1), printed between a Bash call and its
+#                  result. Live only: no controller keeps it.
+#   PATCHY-EVENT:  the stage result (internal/envelope, schema v4). Exactly one
+#                  per run, last.
 #
-# BOTH schema versions are checked on decode, and a mismatch is silent at the
+# EVERY schema version is checked on decode, and a mismatch is silent at the
 # source: a stale envelope version fails every run with "agent job produced no
 # <stage> event", a stale turn version drops the conversation with the run
-# otherwise green. internal/jobs/fakeagent_test.go runs this script and decodes
-# its real output with the current Go types so neither can rot unnoticed.
+# otherwise green, a stale output version drops the live output. internal/jobs/
+# fakeagent_test.go runs this script and decodes its real output with the
+# current Go types so none can rot unnoticed.
 #
 # The investigation verdict is remediate at 0.92 confidence — above the
 # default 0.75 threshold, so findings flow straight to Queued. Edit the
@@ -82,6 +86,16 @@ turn() {
   seq=$((seq + 1))
   printf 'PATCHY-TURN: {"v":1,"seq":%d,"at":"%s","role":"%s","kind":"%s","tool":"%s","text":"%s"}\n' \
     "$seq" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" "$2" "$3" "$4"
+  [ "$turn_delay" = 0 ] || sleep "$turn_delay"
+}
+
+# output <task> <line> <done> <lines> — print one chunk of a running command's
+# output: <lines> is the JSON array's body, quoted strings separated by
+# commas, none holding a double quote or backslash; <line> is the number of
+# its first line, <done> true on the command's last chunk.
+output() {
+  printf 'PATCHY-OUTPUT: {"v":1,"task":"%s","line":%d,"lines":[%s],"done":%s,"at":"%s"}\n' \
+    "$1" "$2" "$4" "$3" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   [ "$turn_delay" = 0 ] || sleep "$turn_delay"
 }
 
@@ -169,6 +183,8 @@ remediate)
   turn assistant tool_use Edit 'repo/app.js: replace the unescaped assignment with an escaped one'
   turn user tool_result Edit 'applied 1 edit to repo/app.js'
   turn assistant tool_use Bash 'npm test'
+  output bfake0001 1 false '"> app@1.0.0 test","> jest --ci"'
+  output bfake0001 3 true '"Test Suites: 12 passed, 12 total","Tests: 84 passed, 84 total"'
   turn user tool_result Bash 'Test Suites: 12 passed, 12 total\nTests: 84 passed, 84 total'
   turn assistant tool_use Bash 'git commit -am fix(security): escape the sink'
   turn user tool_result Bash '[detached HEAD 4f1c2ab] fix(security): escape the sink\n 1 file changed, 1 insertion(+), 1 deletion(-)'
@@ -267,6 +283,8 @@ build)
   turn assistant tool_use Write 'repo/VERSION'
   turn user tool_result Write 'wrote repo/VERSION (6 B)'
   turn assistant tool_use Bash 'go test ./...'
+  output bfake0003 1 false '"ok  example.com/app 0.4s"'
+  output bfake0003 2 true '"ok  example.com/app/version 0.1s"'
   turn user tool_result Bash 'ok  all packages'
   turn assistant tool_use Bash 'commit.sh'
   turn user tool_result Bash '[detached HEAD 7a1b2c3] Add a VERSION file\n 1 file changed, 1 insertion(+)'

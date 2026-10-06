@@ -7,11 +7,14 @@ import { test } from "node:test";
 import {
   INTENTS_VIEW_FILES,
   costShare,
+  followsRowClick,
   formatDuration,
   groupByColumn,
+  runLinkLabel,
   secondsSince,
   stopConditions,
 } from "../src/intents.ts";
+import { mockIntentDetail } from "../src/mock/intents.ts";
 import { hrefForIntent, hrefForIntentRun, isIntentsRoute, parseRoute } from "../src/router.ts";
 
 const card = (name, column, phaseSince) => ({
@@ -147,6 +150,84 @@ test("intents routes parse and round-trip", () => {
   });
   assert.equal(isIntentsRoute(parseRoute("#/intents/demo-7")), true);
   assert.equal(isIntentsRoute(parseRoute("#/finding/x")), false);
+});
+
+test("runLinkLabel promises the conversation only to a reader who will see it", () => {
+  const cases = [
+    { tier: "transcripts", run: { running: true }, want: "View conversation" },
+    { tier: "transcripts", run: { transcript: { turns: 4 } }, want: "View conversation" },
+    // Finished without a recorded conversation: the panel would say so.
+    { tier: "transcripts", run: {}, want: "Open run" },
+    { tier: "intents", run: { running: true }, want: "Open run" },
+    { tier: "intents", run: { transcript: { turns: 4 } }, want: "Open run" },
+  ];
+  for (const c of cases) {
+    assert.equal(runLinkLabel(c.tier, c.run), c.want, JSON.stringify(c));
+  }
+});
+
+test("followsRowClick follows only a plain primary click on the row itself", () => {
+  const plain = { button: 0, modified: false, defaultPrevented: false, onInteractive: false, selecting: false };
+  const cases = [
+    { name: "plain click", click: plain, want: true },
+    // The link navigates itself; following it again would double-navigate.
+    { name: "on the link", click: { ...plain, onInteractive: true }, want: false },
+    { name: "modified", click: { ...plain, modified: true }, want: false },
+    { name: "secondary button", click: { ...plain, button: 2 }, want: false },
+    { name: "middle button", click: { ...plain, button: 1 }, want: false },
+    { name: "already handled", click: { ...plain, defaultPrevented: true }, want: false },
+    { name: "selecting text", click: { ...plain, selecting: true }, want: false },
+  ];
+  for (const c of cases) {
+    assert.equal(followsRowClick(c.click), c.want, c.name);
+  }
+});
+
+test("every timeline run row links to its own run panel", () => {
+  for (const intent of ["storefront-12", "storefront-9"]) {
+    const d = mockIntentDetail(intent);
+    assert.ok(d && d.runs.length > 0, intent);
+    for (const run of d.runs) {
+      assert.deepEqual(parseRoute(hrefForIntentRun(d.name, run.name)), {
+        view: "intentRun",
+        name: d.name,
+        run: run.name,
+      });
+      assert.equal(runLinkLabel(d.tier, run), "View conversation", run.name);
+    }
+  }
+});
+
+// The run rows are only findable if they look like links: a source check
+// that each one renders through RunRow, whose run name and trailing
+// affordance both link to the run's panel, and whose row follows a click.
+test("run rows render a visible link and a trailing affordance to the run panel", () => {
+  const src = readFileSync(new URL("../src/components/IntentTimeline.tsx", import.meta.url), "utf8");
+  const start = src.indexOf("function RunRow(");
+  const end = src.indexOf("export function IntentTimeline(");
+  assert.ok(start >= 0 && end > start, "RunRow precedes IntentTimeline");
+  const row = src.slice(start, end);
+  const timeline = src.slice(end);
+
+  // Every run goes through RunRow; the timeline's only other row is the header.
+  assert.match(timeline, /d\.runs\.map\(\(run\) => \(\s*<RunRow key=\{run\.name\} intent=\{d\.name\} tier=\{d\.tier\}/);
+  assert.equal(timeline.match(/<tr\b/g)?.length, 1, "the timeline renders run rows only through RunRow");
+
+  assert.match(row, /const href = hrefForIntentRun\(intent, run\.name\);/);
+  assert.match(row, /const label = runLinkLabel\(tier, run\);/);
+  assert.equal(row.match(/href=\{href\}/g)?.length, 2, "the run name and the affordance both link to the panel");
+  // The run name reads as a link, and says where it goes to a screen reader.
+  assert.match(
+    row,
+    /<a\s+href=\{href\}\s+class="text-ink underline[^"]*"\s*>\s*\{run\.name\}\s*<span class="sr-only"> \(\{label\.toLowerCase\(\)\}\)<\/span>/,
+  );
+  // The trailing affordance is visible text with an arrow, a pointer-only
+  // repeat of the run name's link.
+  assert.match(row, /tabIndex=\{-1\}\s+aria-hidden="true"[^>]*>\s*\{label\} →\s*<\/a>/);
+  // The whole row is a pointer target that follows the same href.
+  assert.match(row, /<tr class="[^"]*\bcursor-pointer\b[^"]*" onClick=\{onClick\}>/);
+  assert.match(row, /if \(followsRowClick\(click\)\) navigate\(href\);/);
+  assert.doesNotMatch(row, /<button\b/, "no control nested in a clickable row");
 });
 
 // Agent text is rendered as plain text only: no intents view may reach the

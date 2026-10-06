@@ -228,10 +228,29 @@ func TestRepairInvalidReport(t *testing.T) {
 				t.Fatalf("commands = %d, want the first run and one repair", len(fx.specs))
 			}
 			c.checkRepairCommand(t, ws, fx.specs[0], fx.specs[1])
+			if c.phase == PhasePlan {
+				checkPlanRepairScope(t, ws, fx.specs[1])
+			}
 			checkRepairedSpend(t, stage)
 			checkRepairTranscript(t, turns(t, out.String()))
 			c.checkRepairedReport(t, evs[0])
 		})
+	}
+}
+
+// checkPlanRepairScope pins what a plan's repair may write: its reports
+// directory alone, as the first plan run (TestPlanRunsReadOnly), never the
+// posture's bare Write, so fixing a report cannot touch the repository.
+func checkPlanRepairScope(t *testing.T, ws string, repair runner.CommandSpec) {
+	t.Helper()
+	i := slices.Index(repair.Argv, "--allowedTools")
+	if i < 0 || i+1 >= len(repair.Argv) {
+		t.Fatalf("plan repair argv lacks --allowedTools: %q", repair.Argv)
+	}
+	tools := strings.Fields(repair.Argv[i+1])
+	if scoped := "Edit(/" + filepath.Join(ws, "reports") + "/**)"; !slices.Contains(tools, scoped) ||
+		slices.Contains(tools, "Write") {
+		t.Errorf("plan repair --allowedTools = %q, want %s and no bare Write", repair.Argv[i+1], scoped)
 	}
 }
 

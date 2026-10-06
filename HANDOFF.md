@@ -9,6 +9,13 @@
 
 ## Current checkpoint — 2026-10-06
 
+**overdub demo in progress (2026-10-06).** Codex applied the `large` agent class (requests 4 CPU / 8Gi, memory limit
+10Gi) and overdub's pick: patchy rev **55**, patchy-config rev **37**. overdub-10's replan then failed twice on the
+chart's 40 plan turns, so `intentController.config.plan` is now 100 turns and 30m (terraform-devthenet #38): patchy rev
+**56**, rollback point **55**; patchy-config unchanged at 37. Because a re-label keeps an intent's spend ($6.07 of its
+$10 ceiling), intents#10 was closed and re-filed as **intents#12**. Its plan (about 67 turns, $2.22) was approved by the
+owner; the build runs on a `c6a.2xlarge` Auto Mode picked for the `large` class. Details in FIELD-NOTES.md.
+
 **0.12.18 released, deployed and fresh-Finding gated.** PR #122 added operator-defined agent resource classes and fast
 failure for unschedulable Jobs, with fixes for durable run outcomes and public eviction messages. Its local `make pr`
 and `mise run e2e` gates passed, and every PR check concluded SUCCESS or SKIPPED before merge. Release-please PR #120
@@ -71,16 +78,15 @@ fix.
 
 **First live preview demo: PASSED (2026-10-03).** The owner opened intent `devthenet-labs/intents#4` ("Hello from
 patchy", teal card) with the preview-demo form. An approve label added before the plan existed was correctly ignored and
-removed when the plan was posted (80 s,
-$0.26); the owner re-approved after reading it. The build (100 s) opened
+removed when the plan was posted (80 s, $0.26); the owner re-approved after reading it. The build (100 s) opened
 `devthenet-labs/patchy-preview-demo#7`; the PR CI built the runtime image, the trusted publisher pushed it, and the
 Preview reached Ready in ~170 s (cold preview node `t3a.medium` from zero) at
 `https://preview-demo-4.preview.patchy.devthe.net`, serving the PR head SHA. The owner's "Request changes" review
-(purple) started a revision round after the quiet window ($0.24),
-a fast-forward push (`e2256900`, parent `3ffe8b96`), and the Preview redeployed at the new head in ~160 s (one brief
-empty response during the ALB target switch). After the owner merged: Intent Merged (merge `0f6d1a94`), issue closed
-completed, Preview and slot workloads deleted within ~10 s, the preview node terminated ~40 s later (pool resources all
-zero), and the old host returns 404. Total agent cost for the intent: $0.81.
+(purple) started a revision round after the quiet window ($0.24), a fast-forward push (`e2256900`, parent `3ffe8b96`),
+and the Preview redeployed at the new head in ~160 s (one brief empty response during the ALB target switch). After the
+owner merged: Intent Merged (merge `0f6d1a94`), issue closed completed, Preview and slot workloads deleted within ~10 s,
+the preview node terminated ~40 s later (pool resources all zero), and the old host returns 404. Total agent cost for
+the intent: $0.81.
 
 **Fresh-Finding gate after enabling previews: PASSED.** Weak-key alert #38 → `finding-514becf18f-13` → issue #69 →
 `/patchy expedite` → PR #70 (pushedCommit = PR head `1c553a4c`), checks green, merged `4a3dd6f0` → Remediated, issue
@@ -386,10 +392,9 @@ setting. The standing permission for these run approvals is recorded below; it d
 
 Slice 1a/1b code is merged and live on **0.12.6**, patchy revision **33**, patchy-config revision **19**, intents
 enabled. PR #65 fixed PR-comment permissions and durable notices; the missing round-1 notice on target PR #46 was
-recovered exactly once. The new human review completed a successful revision
-($0.295620), the owner merged PR #46, target-2
-reached Merged, and intents issue #2 closed as completed with one summary. Its total reported cost was $1.150306.
-The automatic check-fix path remains **unexercised live**: the revision's checks passed on its first push.
+recovered exactly once. The new human review completed a successful revision ($0.295620), the owner merged PR #46,
+target-2 reached Merged, and intents issue #2 closed as completed with one summary. Its total reported cost was
+$1.150306. The automatic check-fix path remains **unexercised live**: the revision's checks passed on its first push.
 
 The post-demo fresh-Finding gate passed: alert 30, `finding-514becf18f-5`, issue #53, repair PR #54, merge
 `bf707b46c24c68889288e6b3d91e1709ffaef247`. Go/CodeQL checks were green, the Finding reached Remediated with its merge

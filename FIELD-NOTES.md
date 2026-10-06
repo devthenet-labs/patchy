@@ -41,6 +41,24 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
 
 ## Running intents
 
+- **With 100 turns the replan finished** (overdub-12, 2026-10-06): about 67 turns, $2.22, 10 minutes, a 243-line plan
+  with 3 questions. It also showed the planner's sandbox is uneven. It tried to run the transport browser test 4 times
+  (each refused; plans are read-only) before going back to reading, and its Write tool was not refused: it created a
+  scratch file inside its copy of the repository, then could not delete it because `rm` is. Harmless (a plan's tree is
+  discarded and nothing is pushed from it), but patchy should tell the planner up front that it cannot run commands and
+  either refuse Write in the repository tree or say "read-only" means shell only.
+- **The per-intent cost ceiling survives a re-label** (operator). Re-labelling a Failed issue resumes the same Intent,
+  whose recorded spend still counts toward `limits.maxCostMicroUSD`: overdub-10 had spent $6.07 of $10, too little left
+  for a 100-turn plan and a build. It was closed and re-filed as intents#12. Docs: retry an expensive intent as a new
+  issue, or raise the ceiling.
+- **40 plan turns is too few for a real app** (overdub-10, 2026-10-06). The successful first plan used about 38 turns;
+  the replan's two attempts both hit 40 ($1.46 and $0.96) while reading sensibly: the transport UI, the recording tests,
+  the icon helper, the user guide. Each turn made one tool call, never several in parallel. The plan prompt gives the
+  build's turn budget but not the planner's own until a retry, after it has already run out. On devthenet
+  `intentController.config.plan` is now 100 turns and 30m (chart-wide; there is no per-Project setting). Patchy: tell
+  the planner its limit up front, encourage parallel reads, let a Project override its plan and build limits, and make a
+  mid-run dollar cap (broker limits) the real spend guard. Docs: a transcript's `turns` counts entries (each tool call
+  and each result), about twice the model turns.
 - **The 0.12.18 fresh-Finding gate passed** (2026-10-06). A new weak-key alert became one Finding and one tracking
   issue. `/patchy expedite` took it through investigation and remediation to a repair PR. The agent raised the key size
   and added a regression test; all PR and post-merge CodeQL checks passed. Patchy closed the issue as completed, emitted
@@ -60,14 +78,13 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
   failed writes and failed deletes.
 
 - **A timed-out run records no usage, so the cost ceiling cannot see it** (overdub-10, 2026-10-04). The second build
-  attempt timed out after an hour; its run status has no usage, so the intent reports
-  $3.65 while the broker counted
-  another 2.9 million tokens for that pod (about $1.50 to
-  $2.00 more; the real total is about $5.50). The ceiling is checked against the reported usage, so spend in killed runs
-  is invisible to it. Patchy: record usage for every outcome (from the stream read so far, or the broker's per-pod
-  count). Fixed in [#118](https://github.com/devthenet-labs/patchy/pull/118): every outcome now records the usage its
-  stream reported, input and cache tokens exactly and output tokens as a floor (claude streams each call's output count
-  before it is final), so the broker's count remains the authoritative one.
+  attempt timed out after an hour; its run status has no usage, so the intent reports $3.65 while the broker counted
+  another 2.9 million tokens for that pod (about $1.50 to $2.00 more; the real total is about $5.50). The ceiling is
+  checked against the reported usage, so spend in killed runs is invisible to it. Patchy: record usage for every outcome
+  (from the stream read so far, or the broker's per-pod count). Fixed in
+  [#118](https://github.com/devthenet-labs/patchy/pull/118): every outcome now records the usage its stream reported,
+  input and cache tokens exactly and output tokens as a floor (claude streams each call's output count before it is
+  final), so the broker's count remains the authoritative one.
 - **An agent can wait on one command until the stage times out** (overdub-10 attempt 2). After ten minutes of work it
   ran `npm run test:ci` (11 browser suites, three at a time) on the 2 vCPU, 3.7 GiB node; the command never returned and
   the agent sat idle for 50 minutes until the one-hour timeout. The same subset takes under two minutes on a 2 vCPU CI
@@ -94,8 +111,8 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
   count cached re-reads: overdub-10's build passed 5 million tokens through the broker (almost all cache reads) without
   tripping it. Patchy/docs: say plainly which limit bounds spend; set broker limits from observed runs.
 - **Spend on a real app, for scale** (overdub-10, Sonnet 5): plan $1.45 (~7 min), first build attempt $2.20 (31 min on 2
-  vCPU, about 20 of them waiting on browser tests). Hello.Web's whole intent was
-  $0.55; marigold's two-repo intent $1.51.
+  vCPU, about 20 of them waiting on browser tests). Hello.Web's whole intent was $0.55; marigold's two-repo intent
+  $1.51.
 - **Agent Jobs request no CPU or memory, so heavy builds starve** (overdub-10, 2026-10-04). Pods set only
   ephemeral-storage, so EKS Auto Mode placed an overdub build (Chromium + audio rendering) on a `c6a.large`: 2 vCPU,
   ~3.7 GiB, shared. Builds are slow and risk OOM. Addressed in

@@ -1355,7 +1355,12 @@ agent:
         #            them in the pod's hosts file (hostAliases); the pod's only
         #            nameserver is its own loopback, where nothing answers, and
         #            the agent egress policies drop their DNS rules. A launch
-        #            whose names do not resolve is retried, never run. Brokered
+        #            whose names do not resolve is retried, never run. Nothing
+        #            in the pod can resolve any other name, so the agent's own
+        #            commands cannot fetch anything by name either (npm
+        #            install, go mod download, pip, apt, git clone): every
+        #            toolchain and dependency a run needs must already be in
+        #            the runner image. Brokered
         #            claude only: enabling codex or copilot on either fleet
         #            fails the render, and so does mode istio, whose sidecar
         #            must resolve istiod. It closes DNS, not addresses: pair it

@@ -21,7 +21,10 @@
 #     its own loopback as its only nameserver (nothing answers there), and the
 #     two names it dials, the artifact server and the egress broker, pinned in
 #     its hosts file, resolved by the controller as it creates the Job. A
-#     launch whose names do not resolve is retried, never run.
+#     launch whose names do not resolve is retried, never run. Nothing in
+#     the pod can resolve any other name, the agent's own commands included
+#     (npm install, go mod download, pip, apt, git clone): every toolchain
+#     and dependency a run needs must already be in the runner image.
 #   * the DNS rule of base/networkpolicy.yaml's patchy-agents-egress and, with
 #     ../cilium, of the claude CiliumNetworkPolicy. A `test` op guards each
 #     removal, so a reordered policy fails the build instead of losing another

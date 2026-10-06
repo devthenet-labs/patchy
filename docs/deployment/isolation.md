@@ -183,6 +183,11 @@ on any CNI:
 - **The pod has no resolver.** Its `dnsPolicy` is `None` and its only nameserver is `127.0.0.1`, its own loopback, where
   nothing answers. A lookup the hosts file cannot answer is refused at once (about 5 ms for curl in the runner image);
   the `timeout:1` and `attempts:1` options bound the libcs that do not see the refusal (musl) to a second.
+- **Nothing in the pod can resolve an external name.** That includes the agent's own commands: `npm install`,
+  `go mod download`, `pip install`, `apt-get` or a `git clone` of another repository fails on its first lookup, whatever
+  the egress policies would admit. Everything a run needs (toolchains, dependencies, module and package caches) must
+  already be in the runner image, or in the repository's working tree; a repository whose build fetches at run time
+  cannot be built or tested under `dns: none`.
 - **The names it needs are pinned.** An agent pod dials exactly two in-cluster names: the artifact server (the prepare
   init's fetch) and the egress broker (the claude CLI's base URL). The job controller that creates the Job resolves the
   hosts in the Job's own URLs with its own resolver, which still reaches cluster DNS, and writes them into the pod's

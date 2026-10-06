@@ -83,9 +83,11 @@ gets `dnsPolicy: None`, its own loopback as its only nameserver, and a `hostAlia
 the artifact server in the prepare init's fetch URL (and each tree's, for a multi-repository plan) and the egress broker
 in the claude runner's base URL. The controller resolves those hosts with its own resolver as it creates the Job; a host
 that does not resolve fails the launch with an error naming it, before any Secret or Job exists, and the launch is
-retried. A harness that dials its model API by name cannot run without a resolver, so with codex or copilot enabled the
-controller refuses to start. `cluster`, the default, leaves every Job exactly as before. See
-[Closing DNS](../deployment/isolation.md#closing-dns) for the network policies and what else must change.
+retried. No other name resolves in the pod, so the agent's own commands cannot fetch anything by name either: every
+toolchain and dependency a run needs must already be in the runner image. A harness that dials its model API by name
+cannot run without a resolver, so with codex or copilot enabled the controller refuses to start. `cluster`, the default,
+leaves every Job exactly as before. See [Closing DNS](../deployment/isolation.md#closing-dns) for the network policies
+and what else must change.
 
 ### Repository-declared runner images
 

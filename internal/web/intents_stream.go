@@ -36,9 +36,16 @@ const (
 // Run stream and signal event names.
 const (
 	eventActivity       = "activity"
+	eventOutput         = "output"
 	eventUnavailable    = "unavailable"
 	eventIntentsChanged = "intents-changed"
 )
+
+// maxShownOutputLine caps one line of command output on the run stream, in
+// bytes, after it is made visible; a longer line is cut and marked "…". A
+// line that long is a minified bundle or an encoded blob, not something a
+// person reads as it scrolls past.
+const maxShownOutputLine = 1024
 
 // End reasons a stream gives the browser.
 const (
@@ -175,9 +182,22 @@ func plainTurn(t transcript.Turn) Turn {
 	return w
 }
 
+// plainOutput is a chunk of command output as the intents views ship it:
+// re-marshalled, the task and every line made visible as turn text is, and
+// each line cut to maxShownOutputLine.
+func plainOutput(o transcript.Output) RunOutput {
+	lines := make([]string, len(o.Lines))
+	for i, l := range o.Lines {
+		lines[i] = intentview.Text(l, maxShownOutputLine)
+	}
+	return RunOutput{Task: intentview.Text(o.Task, 64), Line: o.Line, Lines: lines, Done: o.Done,
+		Truncated: o.Truncated}
+}
+
 // handleRunStream streams one run as Server-Sent Events. Every tier gets
 // activity events (counts and the open tool's name, no text); only a tier 2
-// reader also gets the turns. The stripping happens here, per subscriber, on
+// reader also gets the turns and, while the run is live, the output of the
+// command it is running. The stripping happens here, per subscriber, on
 // every send: the follow behind a live run is shared by everyone watching
 // it, whatever their tier. A run that has not launched yet is waited for
 // (awaitLaunch). The stream re-checks its grant every reauth period and ends
@@ -242,6 +262,32 @@ func (rs *runStream) send(t transcript.Turn) bool {
 		return false
 	}
 	return sseSend(rs.w, rs.flusher, eventActivity, rs.act.snapshot())
+}
+
+// sendOutput emits one chunk of command output, to tier 2 only. Output is
+// live only and is not a turn: it never moves the activity, which counts
+// and times turns, so a chatty command cannot read as a busy agent.
+func (rs *runStream) sendOutput(o transcript.Output) bool {
+	if rs.tier != authz.TierTranscripts {
+		return true
+	}
+	return sseSend(rs.w, rs.flusher, eventOutput, plainOutput(o))
+}
+
+// drainOutput sends the output chunks already queued for this viewer, so the
+// last of a command's output (its done chunk) is not lost to the run ending
+// in the same instant.
+func (rs *runStream) drainOutput(ch <-chan transcript.Output) {
+	for {
+		select {
+		case o, ok := <-ch:
+			if !ok || !rs.sendOutput(o) {
+				return
+			}
+		default:
+			return
+		}
+	}
 }
 
 func (rs *runStream) serve(ctx context.Context) {
@@ -325,7 +371,8 @@ func (rs *runStream) awaitLaunch(ctx context.Context) bool {
 	}
 }
 
-// persisted replays a collected run's stored transcript and ends.
+// persisted replays a collected run's stored transcript and ends. It sends
+// no output: command output is never stored.
 func (rs *runStream) persisted(ctx context.Context) {
 	turns, err := rs.s.runTranscript(ctx, rs.in, rs.run)
 	if err != nil && !errors.Is(err, errNotVisible) {
@@ -355,7 +402,9 @@ func (rs *runStream) live(ctx context.Context) {
 		sseEnd(rs.w, rs.flusher, "")
 		return
 	}
-	sub, err := rs.s.tails.subscribe(rs.run.Status.JobRef.Name, false)
+	// Only a tier 2 viewer subscribes to output at all, so a tier 1 stream
+	// has no output channel to leak from.
+	sub, err := rs.s.tails.subscribe(rs.run.Status.JobRef.Name, rs.tier == authz.TierTranscripts)
 	if err != nil {
 		sseSend(rs.w, rs.flusher, eventUnavailable, StreamNotice{
 			Reason: fmt.Sprintf("live view unavailable: %d runs are already followed", maxLiveTails)})
@@ -369,7 +418,13 @@ func (rs *runStream) live(ctx context.Context) {
 			return
 		}
 	}
+	for _, o := range sub.OutputReplay {
+		if !rs.sendOutput(o) {
+			return
+		}
+	}
 	sseSend(rs.w, rs.flusher, eventActivity, rs.act.snapshot())
+	output := sub.Output // nil for tier 1: that case never fires
 
 	ping := time.NewTicker(keepalivePeriod)
 	defer ping.Stop()
@@ -381,12 +436,21 @@ func (rs *runStream) live(ctx context.Context) {
 			return
 		case t, ok := <-sub.Turns:
 			if !ok {
+				rs.drainOutput(output)
 				rs.act.live = false
 				sseSend(rs.w, rs.flusher, eventActivity, rs.act.snapshot())
 				sseEnd(rs.w, rs.flusher, "")
 				return
 			}
 			if !rs.send(t) {
+				return
+			}
+		case o, ok := <-output:
+			if !ok {
+				output = nil
+				continue
+			}
+			if !rs.sendOutput(o) {
 				return
 			}
 		case <-reauth.C:

@@ -724,6 +724,22 @@ export interface RunActivity {
   capped?: boolean;
 }
 
+// RunOutput is one chunk of what the command a live run is running prints,
+// sent only to a transcripts-tier reader. It is never persisted, and only
+// the latest command's output is replayed to a late viewer. line is the
+// number of lines[0] in the command's output; a chunk that starts past the
+// previous one's end means lines were left out. Mirrors
+// internal/web.RunOutput.
+export interface RunOutput {
+  task: string;
+  line: number;
+  lines: string[];
+  // done: the command's last chunk; truncated: the agent stopped forwarding
+  // its output at its budget.
+  done?: boolean;
+  truncated?: boolean;
+}
+
 export interface StreamNotice {
   reason?: string;
 }

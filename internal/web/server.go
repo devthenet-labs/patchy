@@ -111,6 +111,10 @@ func (s *Server) Handler() http.Handler {
 		s.csp = buildCSP(assets)
 	}
 	s.auth.Register(mux)
+	// An /api path no route serves is a 404, never the SPA shell: the SPA
+	// asks for GET /api/me on every page load to learn whether the intents
+	// views are on, and the shell is the whole bundle again.
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) { notFound(w) })
 	mux.Handle("/", s.staticHandler())
 	return s.middleware(mux)
 }
@@ -235,9 +239,9 @@ func (s *Server) handleRollups(w http.ResponseWriter, r *http.Request) {
 	writeJSONGzip(w, r, ds)
 }
 
-// staticHandler serves the embedded SPA. Unknown paths fall back to the
-// shell so the client-side router works; without the bundle (a bare
-// `go build`) a stub page points at the tagged build.
+// staticHandler serves the embedded SPA. Unknown paths outside /api fall
+// back to the shell so the client-side router works; without the bundle (a
+// bare `go build`) a stub page points at the tagged build.
 func (s *Server) staticHandler() http.Handler {
 	assets, ok := uiAssets()
 	if !ok {

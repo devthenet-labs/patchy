@@ -290,7 +290,8 @@ export function subscribe(onChange: () => void): () => void {
 //
 // The intents routes exist only while the server runs with the views on, so
 // fetchMe is also how the SPA learns whether they are: anything but a JSON
-// answer (the SPA shell, a 404, a 401 before sign-in) means "no Intents nav".
+// answer (the bare 404 the server gives an /api path it does not serve, a 401
+// before sign-in) means "no Intents nav".
 // Every request is same-origin, so the browser sends Sec-Fetch-Site
 // same-origin, which the hardened server requires.
 

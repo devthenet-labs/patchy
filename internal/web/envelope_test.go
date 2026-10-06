@@ -48,12 +48,19 @@ func TestIntentsOffBehavesAsBefore(t *testing.T) {
 			t.Errorf("%s = %q with the intents views off, want none", h, got)
 		}
 	}
-	// The intents routes do not exist: the paths fall through to the SPA
-	// shell (or its stub), never a JSON payload.
+	// The intents routes do not exist: the paths answer a bare 404, never a
+	// JSON payload, and never the SPA shell, which the SPA's GET /api/me on
+	// every page load would otherwise download a second time.
 	for _, path := range []string{"/api/me", "/api/intents", "/api/intents/alpha-7"} {
 		res := request(t, http.MethodGet, ts.URL+path, "same-origin")
 		if ct := res.Header.Get("Content-Type"); strings.Contains(ct, "json") {
 			t.Errorf("GET %s answered %s with the intents views off", path, ct)
+		}
+		if res.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s = %d with the intents views off, want 404", path, res.StatusCode)
+		}
+		if body, _ := io.ReadAll(res.Body); len(body) > 64 {
+			t.Errorf("GET %s answered %d bytes with the intents views off, want a bare 404", path, len(body))
 		}
 	}
 	// Reads carry no Sec-Fetch-Site check, as before.

@@ -61,6 +61,33 @@ func TestRecorderRedactsSecrets(t *testing.T) {
 	}
 }
 
+// TestRecorderScrubsAroundBrokenEscapes: a secret printed straight after a
+// bare or unfinished escape is still redacted. Stripping escapes first
+// would eat the secret's first byte with the escape and leave the rest to
+// pass the scrub, so the recorder scrubs before stripping as well as after;
+// a secret split by escape codes is caught by the scrub after.
+func TestRecorderScrubsAroundBrokenEscapes(t *testing.T) {
+	const secret = "sk-ant-api03-Zx9Qw8Ev7Rt6Yu5Io4Pa3Sd2Fg1Hj0Kl"
+	tests := []struct{ name, text string }{
+		{"unfinished CSI", "token: \x1b[" + secret + "\n"},
+		{"bare escape", "token: \x1b" + secret},
+		{"CSI with a parameter", "token: \x1b[1" + secret},
+		{"split by escape codes", "token: " + secret[:10] + "\x1b[0m" + secret[10:]},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, got := collect(Limits{}, []string{secret})
+			r.Record(Turn{Role: RoleUser, Kind: KindToolResult, Text: tt.text})
+			text := (*got)[0].Text
+			for i := 0; i+minSecretLen <= len(secret); i++ {
+				if piece := secret[i : i+minSecretLen]; strings.Contains(text, piece) {
+					t.Fatalf("Text = %q shows %q of the secret", text, piece)
+				}
+			}
+		})
+	}
+}
+
 func TestRecorderStripsANSI(t *testing.T) {
 	r, got := collect(Limits{}, nil)
 	r.Record(Turn{Role: RoleUser, Kind: KindToolResult, Text: "\x1b[31mFAIL\x1b[0m ok"})

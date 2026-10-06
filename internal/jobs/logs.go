@@ -110,10 +110,10 @@ func (c *Client) ResultLines(ctx context.Context, jobName string, fn func(line [
 // delivering each line to the matching handler and ignoring everything else;
 // a handler error stops the scan. Either handler may be nil.
 //
-// Turn lines are tested first and never offered to envelope.Decode: that
-// decoder searches for its prefix anywhere in the line to survive log
-// wrapping, so a turn whose text quotes the envelope prefix would otherwise be
-// mis-scanned as a stage result.
+// Turns are tested first, and a line that decodes as one is never offered to
+// envelope.Decode: that decoder searches for its prefix anywhere in the line
+// to survive log wrapping, so a turn whose text quotes the envelope prefix
+// would otherwise be mis-scanned as a stage result.
 //
 // The live command output (PATCHY-OUTPUT chunks) is the log's third stream,
 // and nothing here keeps it: a chunk is skipped before envelope.Decode, so a

@@ -11,6 +11,7 @@ import (
 
 	"github.com/bitwise-media-group/patchy/internal/envelope"
 	"github.com/bitwise-media-group/patchy/internal/harness"
+	"github.com/bitwise-media-group/patchy/internal/runner"
 	"github.com/bitwise-media-group/patchy/internal/transcript"
 )
 
@@ -164,9 +165,10 @@ func TestObserveWithoutEitherCapabilityIsNil(t *testing.T) {
 	var out bytes.Buffer
 	a := New(newConfig(t, ws, &out), &fakeExec{})
 	rec := a.recorder(bareHarness{})
-	onLine := a.observe(bareHarness{}, rec, 0, nil)
-	if onLine != nil || rec != nil {
-		t.Errorf("observe(bare) = (%v, %v), want (nil, nil)", onLine != nil, rec != nil)
+	output := a.followOutput(context.Background(), bareHarness{}, runner.CommandSpec{}, nil)
+	onLine := a.observe(bareHarness{}, rec, 0, nil, output)
+	if onLine != nil || rec != nil || output != nil {
+		t.Errorf("observe(bare) = (%v, %v, %v), want (nil, nil, nil)", onLine != nil, rec != nil, output != nil)
 	}
 }
 

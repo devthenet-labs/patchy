@@ -1,0 +1,724 @@
+// Copyright 2026 Bitwise Media Group Ltd.
+// SPDX-License-Identifier: MIT
+
+package agentrun
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"testing/quick"
+	"time"
+	"unicode/utf8"
+
+	"github.com/bitwise-media-group/patchy/internal/envelope"
+	"github.com/bitwise-media-group/patchy/internal/harness"
+	"github.com/bitwise-media-group/patchy/internal/runner"
+	"github.com/bitwise-media-group/patchy/internal/transcript"
+)
+
+// syncBuffer is the runner's stdout as a test reads it while the stage's
+// followers still write to it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// The claude stream lines a command's run is told by.
+func initLine() string {
+	return `{"type":"system","subtype":"init","session_id":"` + testSessionID + `"}`
+}
+
+// startedLine announces a foreground shell command; it names no session,
+// so the init event's is used, as on a CLI that leaves it off.
+func startedLine(task, toolUse string) string {
+	return `{"type":"system","subtype":"task_started","task_id":"` + task + `","tool_use_id":"` + toolUse +
+		`","description":"run it","task_type":"local_bash","is_backgrounded":false}`
+}
+
+func backgroundedLine(task, toolUse string) string {
+	return strings.Replace(startedLine(task, toolUse), `"is_backgrounded":false`, `"is_backgrounded":true`, 1)
+}
+
+func notifiedLine(task, toolUse string) string {
+	return `{"type":"system","subtype":"task_notification","task_id":"` + task + `","tool_use_id":"` + toolUse +
+		`","status":"completed","output_file":""}`
+}
+
+func answeredLine(toolUse, text string) string {
+	return `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"` + toolUse +
+		`","content":"` + text + `"}]}}`
+}
+
+const resultLine = `{"type":"result","subtype":"success","is_error":false,"result":"Done.","session_id":"` +
+	testSessionID + `","num_turns":3}`
+
+// commandRun is one run as commandExec plays it: the script feeds the
+// CLI's stream and writes the commands' files meanwhile, then the run
+// writes its files and ends with a result.
+type commandRun struct {
+	script func(feed func(string))
+	writes map[string]string
+}
+
+// commandExec plays each run as claude does when its agent runs commands:
+// the stream reaches the observer on the runner's goroutine, line by line,
+// while the test writes the files the CLI would. slowest is the longest any
+// one line kept the observer.
+type commandExec struct {
+	ws      string
+	runs    []commandRun
+	slowest time.Duration
+}
+
+func (e *commandExec) Run(_ context.Context, _ runner.CommandSpec, _ time.Duration,
+	onLine func([]byte) (bool, string)) (runner.Result, error) {
+	if len(e.runs) == 0 {
+		return runner.Result{}, fmt.Errorf("commandExec: no run scripted")
+	}
+	r := e.runs[0]
+	e.runs = e.runs[1:]
+	var out strings.Builder
+	feed := func(line string) {
+		out.WriteString(line + "\n")
+		if onLine == nil {
+			return
+		}
+		start := time.Now()
+		onLine([]byte(line + "\n"))
+		e.slowest = max(e.slowest, time.Since(start))
+	}
+	feed(initLine())
+	r.script(feed)
+	for path, content := range r.writes {
+		full := filepath.Join(e.ws, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return runner.Result{}, err
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			return runner.Result{}, err
+		}
+	}
+	feed(resultLine)
+	return runner.Result{Stdout: []byte(out.String()), Elapsed: time.Second}, nil
+}
+
+// reported is the investigate stage's good report, for a run to write.
+var reported = map[string]string{"reports/investigation.md": goodInvestigation}
+
+// commandFile creates the file claude writes a command's output to, under
+// tmp (CLAUDE_CODE_TMPDIR), in a working directory's slug, and returns it
+// open for appending, and its path.
+func commandFile(t *testing.T, tmp, task string) (*os.File, string) {
+	t.Helper()
+	dir := filepath.Join(tmp, "claude-"+strconv.Itoa(os.Getuid()), "-workspace-repo", testSessionID, "tasks")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, task+".output")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	return f, path
+}
+
+// put appends output to a command's file.
+func put(t *testing.T, f *os.File, s string) {
+	t.Helper()
+	if _, err := f.WriteString(s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// outputSetup is a stage whose CLI keeps its temporary files under a test
+// directory: the investigate stage on the fake harness, which follows
+// commands as claude does.
+func outputSetup(t *testing.T) (Config, string, string, *syncBuffer) {
+	t.Helper()
+	tmp := t.TempDir()
+	t.Setenv("CLAUDE_CODE_TMPDIR", tmp)
+	ws := newWorkspace(t)
+	out := &syncBuffer{}
+	return newConfig(t, ws, out), ws, tmp, out
+}
+
+// fastPace makes the tests that do not measure timing quick.
+var fastPace = outputPace{poll: 5 * time.Millisecond, flush: 10 * time.Millisecond,
+	sample: 40 * time.Millisecond, drain: 2 * time.Second}
+
+// runStage runs the configured stage at the given pace (zero: production's)
+// and returns its one event.
+func runStage(t *testing.T, cfg Config, exec Executor, pace outputPace, out *syncBuffer) envelope.Event {
+	t.Helper()
+	a := New(cfg, exec)
+	if pace != (outputPace{}) {
+		a.pace = pace
+	}
+	if err := a.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	evs := events(t, out.String())
+	if len(evs) != 1 {
+		t.Fatalf("events = %d, want 1:\n%s", len(evs), out.String())
+	}
+	return evs[0]
+}
+
+// chunks decodes every output chunk on the runner's stdout, in order.
+func chunks(out string) []transcript.Output {
+	var got []transcript.Output
+	for line := range strings.SplitSeq(out, "\n") {
+		if o, ok := transcript.DecodeOutput([]byte(line)); ok {
+			got = append(got, o)
+		}
+	}
+	return got
+}
+
+// waitFor polls the runner's stdout until cond holds of its chunks.
+func waitFor(t *testing.T, out *syncBuffer, what string, cond func([]transcript.Output) bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond(chunks(out.String())) {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s; chunks: %+v", what, chunks(out.String()))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// settled waits for the process's goroutines to fall back to n: a command's
+// goroutine that outlived its run would hold it above.
+func settled(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for runtime.NumGoroutine() > n {
+		if time.Now().After(deadline) {
+			buf := make([]byte, 1<<20)
+			t.Fatalf("goroutines = %d after the stage, want %d:\n%s", runtime.NumGoroutine(), n,
+				buf[:runtime.Stack(buf, true)])
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// checkWholeLines asserts every line of stdout is one whole line of one of
+// its three streams: nothing interleaved.
+func checkWholeLines(t *testing.T, out string) {
+	t.Helper()
+	for line := range strings.SplitSeq(strings.TrimSuffix(out, "\n"), "\n") {
+		_, turn := transcript.Decode([]byte(line))
+		_, chunk := transcript.DecodeOutput([]byte(line))
+		_, event := envelope.Decode([]byte(line))
+		if !turn && !chunk && !event {
+			t.Errorf("stdout line is none of a turn, a chunk or an event: %.200q", line)
+		}
+	}
+}
+
+// joined is a task's lines over its chunks, checking they are consecutive
+// from line 1 and only the last is Done.
+func joined(t *testing.T, got []transcript.Output) []string {
+	t.Helper()
+	var lines []string
+	for i, o := range got {
+		if o.Line != len(lines)+1 {
+			t.Errorf("chunk %d starts at line %d, want %d: lines left out of a command under its budget",
+				i, o.Line, len(lines)+1)
+		}
+		if o.Done != (i == len(got)-1) {
+			t.Errorf("chunk %d done = %v; only the last chunk is", i, o.Done)
+		}
+		if o.Truncated {
+			t.Errorf("chunk %d is truncated; the command was under its budget", i)
+		}
+		if o.At == "" {
+			t.Errorf("chunk %d has no timestamp", i)
+		}
+		lines = append(lines, o.Lines...)
+	}
+	return lines
+}
+
+// TestOutputFollowsACommand runs a command the way claude 2.1.263 does —
+// announced, its output appended to a file as it is produced, the file
+// deleted as it ends, then the end announced — and checks a viewer sees it
+// live, line by line as a terminal shows it, scrubbed and capped, in order,
+// with the lines written after the file was deleted, closed by a Done chunk
+// before the stage's result; and that following it never held up the stream.
+func TestOutputFollowsACommand(t *testing.T) {
+	const secret = "s3cr3t-output-value-42"
+	t.Setenv("OUTPUT_TEST_API_KEY", secret)
+	cfg, ws, tmp, out := outputSetup(t)
+	baseline := runtime.NumGoroutine()
+
+	long := strings.Repeat("é", 700) // 1400 bytes
+	var live []transcript.Output
+	exec := &commandExec{ws: ws, runs: []commandRun{{writes: reported, script: func(feed func(string)) {
+		f, path := commandFile(t, tmp, "b578qoc1g")
+		feed(startedLine("b578qoc1g", "toolu_01"))
+		put(t, f, "first\n\x1b[31mred\x1b[0m\n10%\r50%\r100%\ncrlf\r\nkey="+secret+"\n"+long+"\n")
+		// The production pace: the first lines reach stdout while the
+		// command still runs.
+		waitFor(t, out, "the first lines, live", func(got []transcript.Output) bool {
+			return len(got) > 0 && slices.Contains(got[0].Lines, "first")
+		})
+		live = chunks(out.String())
+		put(t, f, "par")
+		time.Sleep(2 * defaultOutputPace.poll) // a read between the halves
+		put(t, f, "tial\nbefore unlink\n")
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		put(t, f, "after unlink\nunterminated") // the CLI's open file outlives its name
+		feed(notifiedLine("b578qoc1g", "toolu_01"))
+		feed(answeredLine("toolu_01", "first"))
+	}}}}
+	ev := runStage(t, cfg, exec, outputPace{}, out)
+	if st := stageOf(t, ev); st.Outcome != envelope.OutcomeOK {
+		t.Fatalf("outcome = %s (%s)", st.Outcome, st.Detail)
+	}
+
+	got := chunks(out.String())
+	for _, o := range got {
+		if o.Task != "b578qoc1g" {
+			t.Errorf("chunk task = %q, want b578qoc1g", o.Task)
+		}
+	}
+	capped := strings.Repeat("é", 510) + "…"
+	want := []string{"first", "red", "100%", "crlf", "key=" + transcript.Redacted, capped, "partial",
+		"before unlink", "after unlink", "unterminated"}
+	if lines := joined(t, got); !slices.Equal(lines, want) {
+		t.Errorf("lines = %q,\nwant %q", lines, want)
+	}
+	if len(capped) > outputLineBytes || !utf8.ValidString(capped) {
+		t.Fatalf("the expected cap is wrong: %d bytes", len(capped))
+	}
+	if len(live) == 0 || live[len(live)-1].Done {
+		t.Errorf("chunks while the command ran = %+v, want some, none of them done", live)
+	}
+	if strings.Contains(out.String(), secret) {
+		t.Error("stdout carries the secret the command printed")
+	}
+
+	// The Done chunk comes before the stage's result, and nothing after it.
+	text := out.String()
+	done := strings.LastIndex(text, transcript.OutputPrefix)
+	if result := strings.Index(text, envelope.Prefix); done < 0 || result < done {
+		t.Errorf("the last output chunk (at %d) is not before the stage's result (at %d)", done, result)
+	}
+	checkWholeLines(t, text)
+	// Output is not the conversation: no turn carries it.
+	for _, turn := range turns(t, text) {
+		if strings.Contains(turn.Text, "before unlink") {
+			t.Errorf("turn %d carries the command's output: %q", turn.Seq, turn.Text)
+		}
+	}
+	if exec.slowest > 100*time.Millisecond {
+		t.Errorf("a stream line held the observer %s; following a command must never block it", exec.slowest)
+	}
+	settled(t, baseline)
+	if after := out.String(); after != text {
+		t.Errorf("stdout grew after the stage ended:\n%s", strings.TrimPrefix(after, text))
+	}
+}
+
+// numbered is line n of a numbered command's output.
+func numbered(n int) string { return fmt.Sprintf("%05d %s", n, strings.Repeat("x", 100)) }
+
+// TestOutputSamplesALongCommand: a command printing past its budget is
+// printed at full fidelity up to it, then sampled, each sample its newest
+// lines with their true numbers, so the gap shows; its last chunk is its
+// newest lines, Done and Truncated.
+func TestOutputSamplesALongCommand(t *testing.T) {
+	cfg, ws, tmp, out := outputSetup(t)
+	const burst, tail = 3000, 25
+	exec := &commandExec{ws: ws, runs: []commandRun{{writes: reported, script: func(feed func(string)) {
+		f, path := commandFile(t, tmp, "blong")
+		feed(startedLine("blong", "toolu_long"))
+		var b strings.Builder
+		for n := 1; n <= burst; n++ {
+			b.WriteString(numbered(n) + "\n")
+		}
+		put(t, f, b.String())
+		waitFor(t, out, "a sample", func(got []transcript.Output) bool {
+			return slices.ContainsFunc(got, func(o transcript.Output) bool { return o.Truncated })
+		})
+		// A few lines, fewer than a sample shows: the next sample is those
+		// alone, never the lines before them shown again.
+		put(t, f, numbered(burst+1)+"\n"+numbered(burst+2)+"\n"+numbered(burst+3)+"\n")
+		waitFor(t, out, "a sample of the next lines", func(got []transcript.Output) bool {
+			return slices.ContainsFunc(got, func(o transcript.Output) bool {
+				return slices.Contains(o.Lines, numbered(burst+3))
+			})
+		})
+		for n := burst + 4; n <= burst+tail; n++ {
+			put(t, f, numbered(n)+"\n")
+			time.Sleep(2 * time.Millisecond)
+		}
+		_ = os.Remove(path)
+		feed(notifiedLine("blong", "toolu_long"))
+	}}}}
+	runStage(t, cfg, exec, fastPace, out)
+
+	got := chunks(out.String())
+	full, printed, next := 0, 0, 1
+	for ; full < len(got) && !got[full].Truncated; full++ {
+		o := got[full]
+		if o.Line != next || o.Done {
+			t.Fatalf("full-fidelity chunk %d = line %d (done %v), want line %d, not done", full, o.Line, o.Done, next)
+		}
+		next += len(o.Lines)
+		line, _ := transcript.EncodeOutput(o)
+		printed += len(line) + 1
+	}
+	if printed < outputTaskBytes || printed > outputTaskBytes+16<<10 {
+		t.Errorf("printed %d bytes at full fidelity, want the budget %d and at most one chunk more",
+			printed, outputTaskBytes)
+	}
+	sampled := got[full:]
+	if len(sampled) < 2 {
+		t.Fatalf("sampled chunks = %+v, want samples and a last chunk", sampled)
+	}
+	last := next - 1
+	for i, o := range sampled {
+		if !o.Truncated || len(o.Lines) > outputSampleLines {
+			t.Errorf("sample %d = %d lines, truncated %v; want at most %d, truncated", i, len(o.Lines), o.Truncated,
+				outputSampleLines)
+		}
+		if i == 0 && o.Line <= last+1 {
+			t.Errorf("the first sample starts at line %d, right after line %d: no gap shows", o.Line, last)
+		}
+		if o.Line <= last {
+			t.Errorf("sample %d starts at line %d, not after line %d", i, o.Line, last)
+		}
+		for k, text := range o.Lines {
+			if want := numbered(o.Line + k); text != want {
+				t.Errorf("sample %d line %d = %.20q, want %.20q: a line shown under another's number", i,
+					o.Line+k, text, want)
+			}
+		}
+		last = o.Line + len(o.Lines) - 1
+		if o.Done != (i == len(sampled)-1) {
+			t.Errorf("sample %d done = %v; only the last chunk is", i, o.Done)
+		}
+	}
+	// The newest line is shown by the last chunk, or by a sample before it,
+	// when the last chunk then carries none and starts right after it.
+	if end := sampled[len(sampled)-1]; last != burst+tail {
+		t.Errorf("the last chunk = %+v, want line %d, the command's last, shown by then", end, burst+tail)
+	}
+}
+
+// TestOutputProcessBudget: commands printing more than a process may are
+// cut off once its budget is spent: one chunk closes the command it ran out
+// on, Done and Truncated, and nothing more is printed for any command.
+func TestOutputProcessBudget(t *testing.T) {
+	cfg, ws, tmp, out := outputSetup(t)
+	closing := func(o transcript.Output) bool { return o.Done && o.Truncated && len(o.Lines) == 0 }
+	exec := &commandExec{ws: ws, runs: []commandRun{{writes: reported, script: func(feed func(string)) {
+		line := strings.Repeat("y", 999) + "\n"
+		for i := 1; i <= 9; i++ {
+			task := fmt.Sprintf("bcmd%d", i)
+			f, _ := commandFile(t, tmp, task)
+			feed(startedLine(task, "toolu_"+task))
+			put(t, f, strings.Repeat(line, 150))
+			feed(notifiedLine(task, "toolu_"+task))
+			if slices.ContainsFunc(chunks(out.String()), closing) {
+				continue // spent: nothing more is followed
+			}
+			waitFor(t, out, task+" to end", func(got []transcript.Output) bool {
+				return slices.ContainsFunc(got, func(o transcript.Output) bool { return o.Task == task && o.Done })
+			})
+		}
+		time.Sleep(10 * fastPace.poll)
+	}}}}
+	runStage(t, cfg, exec, fastPace, out)
+
+	got, total := chunks(out.String()), 0
+	for line := range strings.SplitSeq(out.String(), "\n") {
+		if transcript.HasOutputPrefix([]byte(line)) {
+			total += len(line) + 1
+		}
+	}
+	if total > outputProcessBytes {
+		t.Errorf("command output = %d bytes, over the process's %d", total, outputProcessBytes)
+	}
+	at := slices.IndexFunc(got, closing)
+	if at != len(got)-1 {
+		t.Fatalf("the closing chunk is at %d of %d chunks, want exactly one, last", at, len(got))
+	}
+	for _, o := range got[:at] {
+		if o.Truncated {
+			t.Errorf("chunk %+v is truncated before the budget ran out", o)
+		}
+	}
+	if task := got[at].Task; task == "bcmd9" || task == "bcmd1" {
+		t.Errorf("the budget ran out on %s; the test meant it to run out midway", task)
+	}
+}
+
+// TestOutputIsQuietWithoutAFile: a command whose file never appears — a
+// fixture's, replayed by the fake harness, or one over before the first
+// look — and one the CLI backgrounds print nothing, whether the command's
+// end is announced or the run just ends.
+func TestOutputIsQuietWithoutAFile(t *testing.T) {
+	cfg, ws, tmp, out := outputSetup(t)
+	baseline := runtime.NumGoroutine()
+	exec := &commandExec{ws: ws, runs: []commandRun{{writes: reported, script: func(feed func(string)) {
+		feed(startedLine("bnever", "toolu_1"))
+		time.Sleep(5 * fastPace.poll)
+		feed(notifiedLine("bnever", "toolu_1"))
+		f, _ := commandFile(t, tmp, "bbg")
+		put(t, f, "a backgrounded server's log\n")
+		feed(backgroundedLine("bbg", "toolu_2"))
+		feed(startedLine("bunended", "toolu_3"))
+		time.Sleep(5 * fastPace.poll)
+	}}}}
+	runStage(t, cfg, exec, fastPace, out)
+	if got := chunks(out.String()); len(got) != 0 {
+		t.Errorf("chunks = %+v, want none", got)
+	}
+	if exec.slowest > 100*time.Millisecond {
+		t.Errorf("a stream line held the observer %s", exec.slowest)
+	}
+	settled(t, baseline)
+}
+
+// TestOutputEnds: a command is closed by its tool result when its end is
+// never announced, and by the run's end when neither comes; a file that
+// appears after the command started is found.
+func TestOutputEnds(t *testing.T) {
+	cfg, ws, tmp, out := outputSetup(t)
+	exec := &commandExec{ws: ws, runs: []commandRun{{writes: reported, script: func(feed func(string)) {
+		feed(startedLine("banswered", "toolu_a"))
+		time.Sleep(4 * fastPace.poll)
+		f, _ := commandFile(t, tmp, "banswered")
+		put(t, f, "one\ntwo\n")
+		waitFor(t, out, "the late file's lines", func(got []transcript.Output) bool { return len(got) > 0 })
+		feed(answeredLine("toolu_a", "one two"))
+		waitFor(t, out, "the answered command to end", func(got []transcript.Output) bool {
+			return slices.ContainsFunc(got, func(o transcript.Output) bool { return o.Task == "banswered" && o.Done })
+		})
+
+		g, _ := commandFile(t, tmp, "bcut")
+		feed(startedLine("bcut", "toolu_b"))
+		put(t, g, "three\nfour")
+	}}}}
+	runStage(t, cfg, exec, fastPace, out)
+
+	byTask := map[string][]transcript.Output{}
+	for _, o := range chunks(out.String()) {
+		byTask[o.Task] = append(byTask[o.Task], o)
+	}
+	if lines := joined(t, byTask["banswered"]); !slices.Equal(lines, []string{"one", "two"}) {
+		t.Errorf("answered command lines = %q", lines)
+	}
+	if lines := joined(t, byTask["bcut"]); !slices.Equal(lines, []string{"three", "four"}) {
+		t.Errorf("the run's last command lines = %q, want its output read out when the run ended", lines)
+	}
+	text := out.String()
+	if strings.LastIndex(text, transcript.OutputPrefix) > strings.Index(text, envelope.Prefix) {
+		t.Error("a chunk follows the stage's result")
+	}
+}
+
+// TestOutputEndWaitsForTheLastChunk: once a run's end has returned, every
+// command it followed has printed its last chunk and nothing more is
+// printed, so the stage's result is the last line.
+func TestOutputEndWaitsForTheLastChunk(t *testing.T) {
+	cfg, ws, tmp, out := outputSetup(t)
+	a := New(cfg, &commandExec{ws: ws})
+	a.pace = fastPace
+	f := a.followOutput(context.Background(), harness.NewFake(), runner.CommandSpec{}, nil)
+	file, _ := commandFile(t, tmp, "bslow")
+	f.scan([]byte(initLine()))
+	f.scan([]byte(startedLine("bslow", "toolu_slow")))
+	// Enough unread output that reading it out takes a while.
+	put(t, file, strings.Repeat(strings.Repeat("z", 200)+"\n", 50000))
+	f.end()
+	ended := out.String()
+	got := chunks(ended)
+	if len(got) == 0 || !got[len(got)-1].Done {
+		t.Fatalf("chunks when end returned = %d, the last done %v; want the command closed by then", len(got),
+			len(got) > 0 && got[len(got)-1].Done)
+	}
+	time.Sleep(10 * fastPace.poll)
+	if out.String() != ended {
+		t.Error("stdout grew after end returned")
+	}
+	f.scan([]byte(startedLine("blate", "toolu_late")))
+	if len(f.tasks) != 0 {
+		t.Errorf("tasks followed after the run = %d, want none", len(f.tasks))
+	}
+}
+
+// TestOutputScrubsTheRepairsToken: a repair run reads the caller token
+// afresh, and what its commands print is scrubbed of the token that run
+// read, as well as the first run's.
+func TestOutputScrubsTheRepairsToken(t *testing.T) {
+	const first, rotated = "caller-token-first-0001", "caller-token-rotated-0002"
+	cfg, ws, tmp, out := outputSetup(t)
+	cfg.InvestigateTimeout = 10 * time.Minute // room for a repair
+	cfg.BrokerTokenFile = filepath.Join(ws, "broker-token")
+	if err := os.WriteFile(cfg.BrokerTokenFile, []byte(first+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	exec := &commandExec{ws: ws, runs: []commandRun{
+		{script: func(func(string)) {}, writes: map[string]string{
+			"reports/investigation.md": badInvestigation, "broker-token": rotated + "\n",
+		}},
+		{writes: reported, script: func(feed func(string)) {
+			f, _ := commandFile(t, tmp, "benv")
+			feed(startedLine("benv", "toolu_env"))
+			put(t, f, "x-patchy-broker-token: "+rotated+"\nearlier: "+first+"\n")
+			feed(notifiedLine("benv", "toolu_env"))
+		}},
+	}}
+	if st := stageOf(t, runStage(t, cfg, exec, fastPace, out)); st.Outcome != envelope.OutcomeOK {
+		t.Fatalf("outcome = %s (%s), want the repaired report", st.Outcome, st.Detail)
+	}
+	lines := joined(t, chunks(out.String()))
+	want := []string{"x-patchy-broker-token: " + transcript.Redacted, "earlier: " + transcript.Redacted}
+	if !slices.Equal(lines, want) {
+		t.Errorf("repair command lines = %q, want %q", lines, want)
+	}
+	if strings.Contains(out.String(), rotated) || strings.Contains(out.String(), first) {
+		t.Error("stdout carries a caller token")
+	}
+}
+
+// splitAll runs a splitter over the pieces and returns every line, the
+// unended last one included.
+func splitAll(pieces ...string) []string {
+	var s lineSplitter
+	var lines []string
+	for _, p := range pieces {
+		s.write([]byte(p), func(l []byte) { lines = append(lines, string(l)) })
+	}
+	if rest, ok := s.rest(); ok {
+		lines = append(lines, string(rest))
+	}
+	return lines
+}
+
+func TestLineSplitter(t *testing.T) {
+	tests := []struct {
+		name   string
+		pieces []string
+		want   []string
+	}{
+		{"lines", []string{"a\nb\n"}, []string{"a", "b"}},
+		{"blank lines count", []string{"a\n\n\nb\n"}, []string{"a", "", "", "b"}},
+		{"an unended last line", []string{"a\nb"}, []string{"a", "b"}},
+		{"a progress bar redraws its line", []string{"10%\r50%\r100%\n"}, []string{"100%"}},
+		{"crlf ends a line", []string{"one\r\ntwo\r\n"}, []string{"one", "two"}},
+		{"crlf split across reads", []string{"one\r", "\ntwo\n"}, []string{"one", "two"}},
+		{"a redraw split across reads", []string{"10%\r", "50%\n"}, []string{"50%"}},
+		{"a line split across reads", []string{"par", "tial\n"}, []string{"partial"}},
+		{"a bar left mid-redraw", []string{"10%\r20%\r"}, []string{"20%"}},
+		{"only carriage returns", []string{"\r\r\n"}, []string{""}},
+		{"nothing", nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := splitAll(tt.pieces...); !slices.Equal(got, tt.want) {
+				t.Errorf("lines = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	long := strings.Repeat("a", 3*outputHeldBytes)
+	if got := splitAll(long[:outputHeldBytes-1], long, "\nok\n"); len(got) != 2 ||
+		len(got[0]) != outputHeldBytes || got[1] != "ok" {
+		t.Errorf("an overlong line = %d lines, the first %d bytes; want it held to %d, then the next line",
+			len(got), len(got[0]), outputHeldBytes)
+	}
+	if got := splitAll(long, "\rshort\n"); !slices.Equal(got, []string{"short"}) {
+		t.Errorf("an overlong line redrawn = %q, want the redraw", got)
+	}
+}
+
+// TestLineSplitterProperty: however the output is cut into reads, its lines
+// are the same, and each is what a terminal shows of its line: the text
+// after its last carriage return, the ones ending it aside.
+func TestLineSplitterProperty(t *testing.T) {
+	alphabet := []string{"a", "é", "漢", " ", "\r", "\n", "\r\n", "\x1b[1m", "%"}
+	property := func(seed int64, n uint8) bool {
+		r := rand.New(rand.NewSource(seed))
+		var b strings.Builder
+		for range int(n) {
+			b.WriteString(alphabet[r.Intn(len(alphabet))])
+		}
+		in := b.String()
+		var pieces []string
+		for rest := in; rest != ""; {
+			k := 1 + r.Intn(len(rest))
+			pieces, rest = append(pieces, rest[:k]), rest[k:]
+		}
+		var want []string
+		segments := strings.Split(in, "\n")
+		for i, seg := range segments {
+			seg = strings.TrimRight(seg, "\r")
+			seg = seg[strings.LastIndex(seg, "\r")+1:]
+			if i < len(segments)-1 || seg != "" {
+				want = append(want, seg)
+			}
+		}
+		whole, cut := splitAll(in), splitAll(pieces...)
+		return slices.Equal(whole, want) && slices.Equal(cut, want)
+	}
+	cfg := &quick.Config{MaxCount: 1000, Rand: rand.New(rand.NewSource(20261006))}
+	if err := quick.Check(property, cfg); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestOutputClean(t *testing.T) {
+	f := &outputFollower{secrets: []string{"SECRETVALUE1"}}
+	tests := []struct {
+		name, raw, want string
+	}{
+		{"escapes", "\x1b[1;32mok\x1b[0m done", "ok done"},
+		{"invalid utf-8", "bad \xff\xfe bytes", "bad \uFFFD bytes"},
+		{"a secret", "token=SECRETVALUE1;", "token=" + transcript.Redacted + ";"},
+		{"at the cap", strings.Repeat("a", outputLineBytes), strings.Repeat("a", outputLineBytes)},
+		{"over the cap", strings.Repeat("a", 2000), strings.Repeat("a", outputLineBytes-3) + "…"},
+		{"over the cap, mid-rune", strings.Repeat("漢", 400), strings.Repeat("漢", 340) + "…"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := f.clean([]byte(tt.raw))
+			if got != tt.want {
+				t.Errorf("clean = %.60q (%d bytes), want %.60q", got, len(got), tt.want)
+			}
+			if len(got) > outputLineBytes || !utf8.ValidString(got) {
+				t.Errorf("clean = %d bytes, valid %v; want at most %d, valid", len(got), utf8.ValidString(got),
+					outputLineBytes)
+			}
+		})
+	}
+}

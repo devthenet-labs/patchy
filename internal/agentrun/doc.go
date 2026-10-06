@@ -41,4 +41,13 @@
 // report_missing or report_invalid, with how the repair went after the
 // reason. Codex and copilot cannot resume, so their stages end on the
 // first refusal, as before.
+//
+// While a run's CLI runs a foreground shell command, the runner prints that
+// command's output as it is produced, as PATCHY-OUTPUT chunks beside the
+// turns (output.go, on a harness.TaskWatcher: claude, and the fake harness
+// whose fixtures write no such file). The CLI's own file is read, never its
+// stream, so the output is bounded per command and per process, and it is
+// live only: never persisted, never a turn, never progress to the idle
+// watchdog. All of stdout goes through one lock, so the three streams'
+// lines never interleave.
 package agentrun

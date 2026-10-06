@@ -49,4 +49,10 @@
 // controller's own words never reach GitHub (a failure names the Preview
 // resource instead). No preview renders no line, so the status comment of an
 // intent without one is byte-identical to what it was before.
+//
+// The repair prompt (RenderRepairPrompt) is the one message agent-runner
+// sends a stage's agent, in its own session, when patchy refused the report
+// it wrote or found none. It quotes the refusal reason as a previous
+// attempt's detail is quoted — bounded, stripped and fenced as data — and
+// nothing else: not the request, the plan or the report.
 package templates

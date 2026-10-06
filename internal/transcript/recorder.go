@@ -5,6 +5,7 @@ package transcript
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +74,20 @@ func NewRecorder(limits Limits, secrets []string, emit func(Turn)) *Recorder {
 		secrets: scrubbable(secrets),
 		now:     time.Now,
 		emit:    emit,
+	}
+}
+
+// AddSecrets registers more literal values to scrub from every turn recorded
+// from now on. A recorder that outlives one process — shared by a stage's
+// runs, each of which reads the broker caller token afresh — learns each new
+// value before the run that could echo it starts.
+func (r *Recorder) AddSecrets(values ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range scrubbable(values) {
+		if !slices.Contains(r.secrets, s) {
+			r.secrets = append(r.secrets, s)
+		}
 	}
 }
 

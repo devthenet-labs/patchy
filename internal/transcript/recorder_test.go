@@ -131,3 +131,46 @@ func TestRecorderNotice(t *testing.T) {
 		t.Errorf("Text = %q, want the formatted args", (*got)[0].Text)
 	}
 }
+
+// TestRecorderAddSecrets: a recorder shared by a stage's runs scrubs a value
+// it learns after it was built (the broker caller token a later run reads
+// afresh), from the next turn on, while still scrubbing the ones it had and
+// still ignoring values too short to scrub safely.
+func TestRecorderAddSecrets(t *testing.T) {
+	const first, rotated = "first-caller-token-value", "rotated-caller-token-value"
+	r, got := collect(Limits{}, []string{first})
+	r.Record(Turn{Role: RoleUser, Kind: KindToolResult, Text: "before: " + rotated})
+	r.AddSecrets(rotated, rotated, "short", "")
+	r.Record(Turn{Role: RoleUser, Kind: KindToolResult, Text: "after: " + rotated + " " + first + " short"})
+
+	if len(*got) != 2 {
+		t.Fatalf("emitted %d turns, want 2", len(*got))
+	}
+	if (*got)[0].Text != "before: "+rotated {
+		t.Errorf("turn before AddSecrets = %q, want it untouched", (*got)[0].Text)
+	}
+	if want := "after: " + Redacted + " " + Redacted + " short"; (*got)[1].Text != want {
+		t.Errorf("turn after AddSecrets = %q, want %q", (*got)[1].Text, want)
+	}
+}
+
+// TestRecorderAddSecretsConcurrently: AddSecrets takes the recorder's lock,
+// so a value registered while the runner's observer is recording races
+// nothing (go test -race).
+func TestRecorderAddSecretsConcurrently(t *testing.T) {
+	r := NewRecorder(Limits{MaxTurns: -1, MaxTotalBytes: -1}, nil, func(Turn) {})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range 200 {
+			r.Record(Turn{Role: RoleAssistant, Kind: KindText, Text: strings.Repeat("x", i%16)})
+		}
+	}()
+	for i := range 200 {
+		r.AddSecrets(strings.Repeat("s", 8+i%4))
+	}
+	<-done
+	if n, _ := r.Stats(); n != 200 {
+		t.Errorf("recorded %d turns, want 200", n)
+	}
+}

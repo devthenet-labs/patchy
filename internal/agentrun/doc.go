@@ -28,4 +28,17 @@
 // report claiming success is downgraded unless commit.sh ran cleanly and
 // left real commits on the branch. It never talks to a forge — the pod has
 // no forge credentials by design; the controllers own every side effect.
+//
+// A report the runner refuses, missing or failing its parser, does not end
+// the stage at once on a harness that can continue a session (claude, and
+// the fake harness that stands in for it): the agent is asked, in its own
+// session (harness.Resumer), to repair the report, for at most
+// repairRounds rounds, each within what the stage has left of its turns,
+// output tokens and wall clock, sharing the stage's transcript and adding
+// to its recorded spend (repair.go). On a stage that writes the working
+// tree a repair may change nothing in the clone, and one that does is
+// refused. Only a report still refused after that ends the stage
+// report_missing or report_invalid, with how the repair went after the
+// reason. Codex and copilot cannot resume, so their stages end on the
+// first refusal, as before.
 package agentrun

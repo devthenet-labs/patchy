@@ -115,6 +115,13 @@ func TestBuildPromptStatesTheRules(t *testing.T) {
 			"at most 56 KiB",
 			"writes the pull request's description itself",
 			"It is all you are given of the request",
+			// The two report slips that threw away whole builds live: a
+			// scalar notes value and a 574-character note.
+			"`notes` is always a YAML list",
+			"`notes: []` when you have none; never a single string",
+			"Each note is one line of at most 500 characters",
+			"belongs in the markdown body below",
+			"correct the claim rather than leave it out",
 		} {
 			if !strings.Contains(got, want) {
 				t.Errorf("previous attempt %+v: build prompt lacks %q", prev, want)

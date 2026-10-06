@@ -90,6 +90,27 @@ func (c *Claude) PromptSpec(ws string, req PromptRequest) runner.CommandSpec {
 	return runner.CommandSpec{Argv: argv, Dir: ws, Env: req.Env}
 }
 
+// ResumeSpec continues session sessionID: PromptSpec's own command for req,
+// so every flag the first run had is rendered again — the CLI keeps none of
+// them, and a resumed run without its tool grammar would leave its sandbox
+// posture — with --resume in place of --session-id, which the CLI refuses
+// beside it. It is meant to run in the first run's directory, where the CLI
+// filed the session.
+//
+// What claude 2.1.291 does on a resumed run (probed; production pins
+// 2.1.263): the result event repeats the same session_id; num_turns and
+// usage count this invocation alone, while total_cost_usd is cumulative
+// over the session's invocations; --max-turns caps this invocation alone,
+// not counting earlier turns; and an unknown session id ends at once with
+// an error result event (error_during_execution, "No conversation found
+// with session ID: <id>") and exit status 1.
+func (c *Claude) ResumeSpec(ws, sessionID string, req PromptRequest) runner.CommandSpec {
+	req.SessionID = ""
+	spec := c.PromptSpec(ws, req)
+	spec.Argv = append(spec.Argv, "--resume", sessionID)
+	return spec
+}
+
 // claudeAllow is the posture's allow list for one request. A SandboxReadOnly
 // request with WriteDirs swaps the bare Write, at its place in the list, for
 // one Edit rule per directory: in Claude Code's grammar an Edit rule covers

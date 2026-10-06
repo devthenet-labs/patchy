@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -466,5 +467,210 @@ func TestHubOutputOnlyForViewersWhoAsk(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("%s channel not closed when the run ended", name)
 		}
+	}
+}
+
+// followTailer keeps every follow the hub opens apart, so a test can deliver
+// to one, end one, or tell a new follow from an old one. With lag set, a
+// cancelled follow returns only once the test ends it, as a real upstream
+// follow is still unwinding a moment after its cancel.
+type followTailer struct {
+	lag bool
+
+	mu      sync.Mutex
+	follows []*fakeFollow
+}
+
+// fakeFollow is one Tail call: its context and sink, and end, which the test
+// closes to make it return.
+type fakeFollow struct {
+	ctx  context.Context
+	sink jobs.Sink
+	end  chan struct{}
+}
+
+func (f *followTailer) Tail(ctx context.Context, _ string, sink jobs.Sink) error {
+	ff := &fakeFollow{ctx: ctx, sink: sink, end: make(chan struct{})}
+	f.mu.Lock()
+	f.follows = append(f.follows, ff)
+	f.mu.Unlock()
+	if f.lag {
+		<-ff.end
+		return ctx.Err()
+	}
+	select {
+	case <-ff.end:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// nth waits for the hub's nth follow (from 1) and returns it.
+func (f *followTailer) nth(t *testing.T, n int) *fakeFollow {
+	t.Helper()
+	var ff *fakeFollow
+	waitFor(t, func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if len(f.follows) >= n {
+			ff = f.follows[n-1]
+		}
+		return ff != nil
+	})
+	return ff
+}
+
+// live waits up to two seconds for a follow the hub has not cancelled, and
+// returns it, or nil when there is none.
+func (f *followTailer) live() *fakeFollow {
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		f.mu.Lock()
+		for _, ff := range f.follows {
+			if ff.ctx.Err() == nil {
+				f.mu.Unlock()
+				return ff
+			}
+		}
+		f.mu.Unlock()
+	}
+	return nil
+}
+
+// expectLive checks a viewer is on a run still followed: a turn sent through
+// the follow the hub keeps reaches it, and its channel has not closed.
+func expectLive(t *testing.T, tl *followTailer, sub *subscription) *fakeFollow {
+	t.Helper()
+	ff := tl.live()
+	if ff == nil {
+		t.Fatal("every follow is cancelled: the viewer joined a run nobody follows")
+	}
+	_ = ff.sink.Turn(transcript.Turn{Seq: 99, Kind: transcript.KindText, Text: "live"})
+	select {
+	case turn, ok := <-sub.Turns:
+		if !ok {
+			t.Fatal("the viewer's channel closed: it joined a run that was being cancelled")
+		}
+		if turn.Seq != 99 {
+			t.Errorf("the viewer got turn %d, want the live one", turn.Seq)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the viewer received nothing from the follow")
+	}
+	return ff
+}
+
+// blockedIn waits until some goroutine is parked on a sync.Mutex with fn on
+// its stack, so a test can order who reaches a lock first.
+func blockedIn(t *testing.T, fn string) {
+	t.Helper()
+	buf := make([]byte, 1<<20)
+	waitFor(t, func() bool {
+		for g := range strings.SplitSeq(string(buf[:runtime.Stack(buf, true)]), "\n\n") {
+			if strings.Contains(g, "[sync.Mutex.Lock") && strings.Contains(g, fn) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// A viewer leaving while another is joining the same run must not cancel the
+// run under the newcomer. Before, subscribe found the run, let go of the
+// hub's lock and only then registered its viewer: a leaving last viewer that
+// reached the run in between saw nobody watching and cancelled it, and the
+// newcomer joined a follow already ending.
+func TestHubLeavingViewerNeverCancelsAJoiningOne(t *testing.T) {
+	tl := &followTailer{}
+	h := testHub(tl)
+	leaving, err := h.subscribe("job-1", false)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	tl.nth(t, 1)
+	h.mu.Lock()
+	run := h.runs["job-1"]
+	h.mu.Unlock()
+
+	// Hold the run so both reach its lock: the leaving viewer first.
+	run.mu.Lock()
+	go leaving.Close()
+	blockedIn(t, "(*tailHub).unsubscribe")
+	joined := make(chan *subscription, 1)
+	go func() {
+		sub, err := h.subscribe("job-1", false)
+		if err != nil {
+			t.Errorf("subscribe: %v", err)
+		}
+		joined <- sub
+	}()
+	blockedIn(t, "(*tailHub).subscribe")
+	run.mu.Unlock()
+
+	sub := <-joined
+	if sub == nil {
+		t.FailNow()
+	}
+	defer sub.Close()
+	expectLive(t, tl, sub)
+}
+
+// The last viewer leaving takes the run out of the hub at once: a viewer
+// arriving while that follow still unwinds starts a follow of its own rather
+// than join one that is ending.
+func TestHubViewerAfterTheLastLeftGetsALiveFollow(t *testing.T) {
+	tl := &followTailer{lag: true}
+	h := testHub(tl)
+	first, err := h.subscribe("job-1", false)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	old := tl.nth(t, 1)
+	first.Close()
+	if old.ctx.Err() == nil {
+		t.Fatal("the last viewer leaving did not cancel the follow")
+	}
+
+	next, err := h.subscribe("job-1", false)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	close(old.end) // the old follow finishes unwinding
+	ff := expectLive(t, tl, next)
+	if ff == old {
+		t.Error("the viewer who came after the last left joined the old follow")
+	}
+	next.Close()
+	close(ff.end)
+}
+
+// A viewer that leaves after its run ended acts on that run alone, never on
+// a newer run the hub follows under the same Job name. Before, Close looked
+// the run up by name, and a newer run whose first viewer was not registered
+// yet looked unwatched, so the stale Close cancelled it.
+func TestHubStaleCloseLeavesANewerRunAlone(t *testing.T) {
+	tl := &followTailer{}
+	h := testHub(tl)
+	stale, err := h.subscribe("job-1", false)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	close(tl.nth(t, 1).end) // the run ended
+	if _, ok := <-stale.Turns; ok {
+		t.Fatal("received a turn from a run that ended")
+	}
+	waitFor(t, func() bool { return h.activeTails() == 0 })
+
+	// A newer run of the same name, as it stood while its first viewer was
+	// still being registered.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.mu.Lock()
+	h.runs["job-1"] = &tailRun{cancel: cancel, subs: map[*tailSub]struct{}{}}
+	h.mu.Unlock()
+
+	stale.Close()
+	if ctx.Err() != nil {
+		t.Error("closing a subscription to an ended run cancelled a newer run of the same Job")
 	}
 }

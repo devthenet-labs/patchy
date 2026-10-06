@@ -118,25 +118,35 @@ type subscription struct {
 
 	hub     *tailHub
 	jobName string
+	run     *tailRun // the run this viewer joined, whatever the hub follows since
 	sub     *tailSub
 }
 
 // Close detaches the viewer, stopping the upstream follow when it was the last.
-func (s *subscription) Close() { s.hub.unsubscribe(s.jobName, s.sub) }
+func (s *subscription) Close() { s.hub.unsubscribe(s) }
 
 // subscribe attaches a viewer to jobName, starting the follow if this is the
 // first. It returns the conversation so far plus the channel carrying the
 // rest, and with output the same for the latest command's output, all
 // captured atomically so nothing falls between a replay and its channel.
+//
+// The viewer is registered in the same critical section, under h.mu, that
+// found or started its run (lock order: h.mu, then run.mu, everywhere both
+// are held). unsubscribe takes h.mu too, so a viewer leaving can never come
+// between the two, find the run unwatched and cancel it under the newcomer.
 func (h *tailHub) subscribe(jobName string, output bool) (*subscription, error) {
 	if h == nil || h.tailer == nil {
 		return nil, errTooManyTails
 	}
+	ts := &tailSub{turns: make(chan transcript.Turn, turnQueue)}
+	if output {
+		ts.output = make(chan transcript.Output, outputQueue)
+	}
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	run, ok := h.runs[jobName]
 	if !ok {
 		if len(h.runs) >= maxLiveTails {
-			h.mu.Unlock()
 			return nil, errTooManyTails
 		}
 		run = &tailRun{subs: make(map[*tailSub]struct{})}
@@ -145,27 +155,21 @@ func (h *tailHub) subscribe(jobName string, output bool) (*subscription, error) 
 		run.cancel = cancel
 		go h.follow(ctx, jobName, run)
 	}
-	h.mu.Unlock()
 
-	ts := &tailSub{turns: make(chan transcript.Turn, turnQueue)}
-	if output {
-		ts.output = make(chan transcript.Output, outputQueue)
-	}
-	sub := &subscription{Turns: ts.turns, Output: ts.output, hub: h, jobName: jobName, sub: ts}
+	sub := &subscription{Turns: ts.turns, Output: ts.output, hub: h, jobName: jobName, run: run, sub: ts}
 	run.mu.Lock()
+	defer run.mu.Unlock()
 	sub.Replay = append([]transcript.Turn(nil), run.seen...)
 	if output {
 		sub.OutputReplay = run.output.replay()
 	}
 	if run.finished {
-		// The run ended between the hub lookup and here; the replay is the
-		// whole conversation, so hand back closed channels.
-		run.mu.Unlock()
+		// The run ended and its follow has not yet taken it out of the hub;
+		// the replay is the whole conversation, so hand back closed channels.
 		ts.close()
 		return sub, nil
 	}
 	run.subs[ts] = struct{}{}
-	run.mu.Unlock()
 	return sub, nil
 }
 
@@ -229,25 +233,29 @@ func (h *tailHub) follow(ctx context.Context, jobName string, run *tailRun) {
 	h.mu.Unlock()
 }
 
-// unsubscribe detaches one viewer and cancels the follow when none remain.
-func (h *tailHub) unsubscribe(jobName string, sub *tailSub) {
+// unsubscribe detaches one viewer from the run it joined, and cancels that
+// run's follow when it was the last viewer of a run the hub still follows.
+// It acts on the viewer's own run alone: never on a newer run of the same
+// Job name the hub has started since that one ended. Lock order: h.mu, then
+// run.mu (see subscribe).
+func (h *tailHub) unsubscribe(s *subscription) {
 	h.mu.Lock()
-	run, ok := h.runs[jobName]
-	h.mu.Unlock()
-	if !ok {
-		return
-	}
-
+	defer h.mu.Unlock()
+	run := s.run
 	run.mu.Lock()
-	if _, live := run.subs[sub]; live {
-		delete(run.subs, sub)
-		sub.close()
+	if _, live := run.subs[s.sub]; live {
+		delete(run.subs, s.sub)
+		s.sub.close()
 	}
-	last := len(run.subs) == 0 && !run.finished
+	last := len(run.subs) == 0 && !run.finished && h.runs[s.jobName] == run
 	run.mu.Unlock()
 
 	if last {
-		run.cancel() // follow() removes the run from the hub as it unwinds
+		// Out of the hub at once, not as the follow unwinds: a viewer who
+		// comes next starts a follow of its own rather than join this one
+		// as it ends.
+		delete(h.runs, s.jobName)
+		run.cancel()
 	}
 }
 

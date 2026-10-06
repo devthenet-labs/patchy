@@ -734,8 +734,9 @@ export interface RunOutput {
   task: string;
   line: number;
   lines: string[];
-  // done: the command's last chunk; truncated: the agent stopped forwarding
-  // its output at its budget.
+  // done: the command's last chunk; truncated: a limit of the agent's
+  // stopped the command's live output for good (a gap in the line numbers
+  // alone is a sample, not a limit).
   done?: boolean;
   truncated?: boolean;
 }

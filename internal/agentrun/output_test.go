@@ -352,10 +352,44 @@ func TestOutputFollowsACommand(t *testing.T) {
 // numbered is line n of a numbered command's output.
 func numbered(n int) string { return fmt.Sprintf("%05d %s", n, strings.Repeat("x", 100)) }
 
+// sampledFrom is the index of the first chunk that starts past the end of
+// the one before it, as a sample does, or len(got).
+func sampledFrom(got []transcript.Output) int {
+	next := 1
+	for i, o := range got {
+		if o.Line > next {
+			return i
+		}
+		next = o.Line + len(o.Lines)
+	}
+	return len(got)
+}
+
+// printedBytes is what chunks put on stdout, framing included.
+func printedBytes(got []transcript.Output) int {
+	n := 0
+	for _, o := range got {
+		line, _ := transcript.EncodeOutput(o)
+		n += len(line) + 1
+	}
+	return n
+}
+
+// textBytes is the text of a chunk's lines.
+func textBytes(o transcript.Output) int {
+	n := 0
+	for _, l := range o.Lines {
+		n += len(l)
+	}
+	return n
+}
+
 // TestOutputSamplesALongCommand: a command printing past its budget is
-// printed at full fidelity up to it, then sampled, each sample its newest
-// lines with their true numbers, so the gap shows; its last chunk is its
-// newest lines, Done and Truncated.
+// printed at full fidelity up to it, then sampled: every sample interval its
+// newest lines, at most outputSampleLines of them and outputSampleBytes of
+// their text, under their true numbers so the gap shows. A sample is not a
+// truncation: the command's live output goes on, and its last chunk shows
+// its newest lines, Done.
 func TestOutputSamplesALongCommand(t *testing.T) {
 	cfg, ws, tmp, out := outputSetup(t)
 	const burst, tail = 3000, 25
@@ -367,9 +401,7 @@ func TestOutputSamplesALongCommand(t *testing.T) {
 			b.WriteString(numbered(n) + "\n")
 		}
 		put(t, f, b.String())
-		waitFor(t, out, "a sample", func(got []transcript.Output) bool {
-			return slices.ContainsFunc(got, func(o transcript.Output) bool { return o.Truncated })
-		})
+		waitFor(t, out, "a sample", func(got []transcript.Output) bool { return sampledFrom(got) < len(got) })
 		// A few lines, fewer than a sample shows: the next sample is those
 		// alone, never the lines before them shown again.
 		put(t, f, numbered(burst+1)+"\n"+numbered(burst+2)+"\n"+numbered(burst+3)+"\n")
@@ -388,17 +420,13 @@ func TestOutputSamplesALongCommand(t *testing.T) {
 	runStage(t, cfg, exec, fastPace, out)
 
 	got := chunks(out.String())
-	full, printed, next := 0, 0, 1
-	for ; full < len(got) && !got[full].Truncated; full++ {
-		o := got[full]
-		if o.Line != next || o.Done {
-			t.Fatalf("full-fidelity chunk %d = line %d (done %v), want line %d, not done", full, o.Line, o.Done, next)
+	full := sampledFrom(got)
+	for i, o := range got[:full] {
+		if o.Done || o.Truncated {
+			t.Fatalf("full-fidelity chunk %d = %+v, want neither done nor truncated", i, o)
 		}
-		next += len(o.Lines)
-		line, _ := transcript.EncodeOutput(o)
-		printed += len(line) + 1
 	}
-	if printed < outputTaskBytes || printed > outputTaskBytes+16<<10 {
+	if printed := printedBytes(got[:full]); printed < outputTaskBytes || printed > outputTaskBytes+16<<10 {
 		t.Errorf("printed %d bytes at full fidelity, want the budget %d and at most one chunk more",
 			printed, outputTaskBytes)
 	}
@@ -406,14 +434,11 @@ func TestOutputSamplesALongCommand(t *testing.T) {
 	if len(sampled) < 2 {
 		t.Fatalf("sampled chunks = %+v, want samples and a last chunk", sampled)
 	}
-	last := next - 1
+	last := got[full-1].Line + len(got[full-1].Lines) - 1
 	for i, o := range sampled {
-		if !o.Truncated || len(o.Lines) > outputSampleLines {
-			t.Errorf("sample %d = %d lines, truncated %v; want at most %d, truncated", i, len(o.Lines), o.Truncated,
-				outputSampleLines)
-		}
-		if i == 0 && o.Line <= last+1 {
-			t.Errorf("the first sample starts at line %d, right after line %d: no gap shows", o.Line, last)
+		if o.Truncated || len(o.Lines) > outputSampleLines || textBytes(o) > outputSampleBytes {
+			t.Errorf("sample %d = %d lines of %d bytes, truncated %v; want at most %d lines and %d bytes, "+
+				"not truncated", i, len(o.Lines), textBytes(o), o.Truncated, outputSampleLines, outputSampleBytes)
 		}
 		if o.Line <= last {
 			t.Errorf("sample %d starts at line %d, not after line %d", i, o.Line, last)
@@ -424,7 +449,9 @@ func TestOutputSamplesALongCommand(t *testing.T) {
 					o.Line+k, text, want)
 			}
 		}
-		last = o.Line + len(o.Lines) - 1
+		if len(o.Lines) > 0 {
+			last = o.Line + len(o.Lines) - 1
+		}
 		if o.Done != (i == len(sampled)-1) {
 			t.Errorf("sample %d done = %v; only the last chunk is", i, o.Done)
 		}
@@ -436,19 +463,84 @@ func TestOutputSamplesALongCommand(t *testing.T) {
 	}
 }
 
+// TestOutputStopsSamplingAtItsCap: a command that floods long past its
+// budget is sampled until its samples have printed outputSampledBytes, each
+// at most outputSampleBytes of text; then one chunk past its last line read
+// marks its live output truncated for good, and nothing more is printed for
+// it but its last chunk, Done and still Truncated.
+func TestOutputStopsSamplingAtItsCap(t *testing.T) {
+	cfg, ws, tmp, out := outputSetup(t)
+	pace := outputPace{poll: 2 * time.Millisecond, flush: 4 * time.Millisecond, sample: 4 * time.Millisecond,
+		drain: 2 * time.Second}
+	truncated := func(got []transcript.Output) bool {
+		return slices.ContainsFunc(got, func(o transcript.Output) bool { return o.Truncated })
+	}
+	long := strings.Repeat("z", 1500) // shown cut to a KiB: two fill a sample
+	exec := &commandExec{ws: ws, runs: []commandRun{{writes: reported, script: func(feed func(string)) {
+		f, path := commandFile(t, tmp, "bflood")
+		feed(startedLine("bflood", "toolu_flood"))
+		deadline := time.Now().Add(20 * time.Second)
+		n := 1
+		for ; n%20 != 0 || !truncated(chunks(out.String())); n++ {
+			if time.Now().After(deadline) {
+				t.Fatalf("no chunk marked the command truncated after %d lines", n)
+			}
+			put(t, f, fmt.Sprintf("%06d %s\n", n, long))
+			time.Sleep(100 * time.Microsecond)
+		}
+		for range 50 { // after the cut: none of these is shown
+			put(t, f, fmt.Sprintf("%06d %s\n", n, long))
+			n++
+		}
+		time.Sleep(10 * pace.sample)
+		_ = os.Remove(path)
+		feed(notifiedLine("bflood", "toolu_flood"))
+	}}}}
+	runStage(t, cfg, exec, pace, out)
+
+	got := chunks(out.String())
+	full := sampledFrom(got)
+	at := slices.IndexFunc(got, func(o transcript.Output) bool { return o.Truncated })
+	if full >= at {
+		t.Fatalf("the cut is chunk %d and sampling began at chunk %d; want samples before the cut", at, full)
+	}
+	samples := got[full:at]
+	for i, o := range samples {
+		if o.Done || len(o.Lines) == 0 || textBytes(o) > outputSampleBytes {
+			t.Errorf("sample %d = %d lines of %d bytes, done %v; want lines, at most %d bytes, not done", i,
+				len(o.Lines), textBytes(o), o.Done, outputSampleBytes)
+		}
+	}
+	if printed := printedBytes(samples); printed > outputSampledBytes || printed < outputSampledBytes-4<<10 {
+		t.Errorf("the samples printed %d bytes, want close to and at most %d", printed, outputSampledBytes)
+	}
+	cut, shown := got[at], samples[len(samples)-1]
+	if cut.Done || len(cut.Lines) != 0 || cut.Line <= shown.Line+len(shown.Lines) {
+		t.Errorf("the cut = %+v after a sample ending at line %d; want no lines, not done, a gap before it", cut,
+			shown.Line+len(shown.Lines)-1)
+	}
+	rest := got[at+1:]
+	if len(rest) != 1 || !rest[0].Done || !rest[0].Truncated || len(rest[0].Lines) != 0 || rest[0].Line < cut.Line {
+		t.Errorf("after the cut = %+v, want only the last chunk: done, truncated, no lines, at or past line %d",
+			rest, cut.Line)
+	}
+}
+
 // TestOutputProcessBudget: commands printing more than a process may are
 // cut off once its budget is spent: one chunk closes the command it ran out
-// on, Done and Truncated, and nothing more is printed for any command.
+// on, Done and Truncated, past the lines it dropped, and nothing more is
+// printed for any command.
 func TestOutputProcessBudget(t *testing.T) {
 	cfg, ws, tmp, out := outputSetup(t)
 	closing := func(o transcript.Output) bool { return o.Done && o.Truncated && len(o.Lines) == 0 }
+	const commands, lines = 12, 150
 	exec := &commandExec{ws: ws, runs: []commandRun{{writes: reported, script: func(feed func(string)) {
 		line := strings.Repeat("y", 999) + "\n"
-		for i := 1; i <= 9; i++ {
+		for i := 1; i <= commands; i++ {
 			task := fmt.Sprintf("bcmd%d", i)
 			f, _ := commandFile(t, tmp, task)
 			feed(startedLine(task, "toolu_"+task))
-			put(t, f, strings.Repeat(line, 150))
+			put(t, f, strings.Repeat(line, lines))
 			feed(notifiedLine(task, "toolu_"+task))
 			if slices.ContainsFunc(chunks(out.String()), closing) {
 				continue // spent: nothing more is followed
@@ -479,8 +571,19 @@ func TestOutputProcessBudget(t *testing.T) {
 			t.Errorf("chunk %+v is truncated before the budget ran out", o)
 		}
 	}
-	if task := got[at].Task; task == "bcmd9" || task == "bcmd1" {
-		t.Errorf("the budget ran out on %s; the test meant it to run out midway", task)
+	end := got[at]
+	if end.Task == "bcmd1" || end.Task == fmt.Sprintf("bcmd%d", commands) {
+		t.Errorf("the budget ran out on %s; the test meant it to run out midway", end.Task)
+	}
+	shown := 0
+	for _, o := range got[:at] {
+		if o.Task == end.Task && len(o.Lines) > 0 {
+			shown = o.Line + len(o.Lines) - 1
+		}
+	}
+	if end.Line <= shown || end.Line > lines+1 {
+		t.Errorf("the closing chunk is at line %d after line %d was shown; want past it, at most %d", end.Line,
+			shown, lines+1)
 	}
 }
 

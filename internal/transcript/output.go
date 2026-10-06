@@ -24,7 +24,8 @@ const OutputVersion = 1
 // output lines, the first of them line Line of the command's output (1-based);
 // a later chunk whose Line is past the end of the previous one means the
 // emitter left lines out. Done is set on a task's last chunk, which may carry
-// no lines; Truncated says the emitter's budget cut the task's output short.
+// no lines; Truncated says a limit of the emitter's stopped the task's live
+// output for good, which a gap in the line numbers alone (a sample) does not.
 // An emitter follows one task at a time: the chunks of one task are never
 // interleaved with another's, so a reader may start over at each new task id
 // and hold one task's state alone.

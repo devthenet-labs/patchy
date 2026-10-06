@@ -38,9 +38,9 @@ export function LiveOutput({ output, following }: { output: RunOutputState; foll
       <figcaption class="flex items-center gap-2 border-b border-line px-3.5 py-2 font-mono text-[10px] tracking-[0.07em] text-faint uppercase">
         printed by the command
         <span class="ml-auto normal-case tracking-normal">
-          {status === "running" ? (
-            <Pill tone="seedling">
-              <span class="ps-live-dot" /> running
+          {status.startsWith("running") ? (
+            <Pill tone={output.truncated ? "amber" : "seedling"}>
+              <span class="ps-live-dot" /> {status}
             </Pill>
           ) : (
             <Pill tone={status === "finished" ? "green" : "amber"}>{status}</Pill>

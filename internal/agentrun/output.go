@@ -51,14 +51,22 @@ const (
 	// outputTaskBytes is what one command may print at full fidelity,
 	// counted as the chunk lines it put on stdout. Past it the command is
 	// sampled: its newest lines, every sample interval.
-	outputTaskBytes = 256 << 10
-	// outputSampleLines is how many of a command's newest lines a sample
-	// shows.
+	outputTaskBytes = 64 << 10
+	// outputSampleLines and outputSampleBytes (of line text) bound one
+	// sample: the newest lines that fit both.
 	outputSampleLines = 10
+	outputSampleBytes = 2 << 10
+	// outputSampledBytes bounds what one command's samples print, counted
+	// as outputTaskBytes is. A sample past it is not printed: one chunk marks
+	// the command's live output truncated instead, and nothing more is
+	// printed for it but its last chunk.
+	outputSampledBytes = 64 << 10
 	// outputProcessBytes bounds every chunk line one agent-runner prints,
 	// across all its commands, framing included; outputClosingBytes of it is
 	// kept back for the chunk that closes the command the budget ran out on.
-	outputProcessBytes = 1 << 20
+	// It keeps the pod log far below the kubelet's rotation beside a build's
+	// result line.
+	outputProcessBytes = 512 << 10
 	outputClosingBytes = 512
 	// outputQueued bounds the commands waiting while another is followed.
 	// The CLI runs its foreground commands one at a time; this only bounds
@@ -382,7 +390,10 @@ func (f *outputFollower) clean(raw []byte, over bool) string {
 
 // outputStream is one command's output as it is read: split into lines,
 // cleaned, batched into chunks, and held to the command's budget, past which
-// it is sampled. It belongs to the command's goroutine.
+// it is sampled, and to its samples' budget, past which it is cut. Only a
+// limit that stops the command's live output for good marks a chunk
+// Truncated: a sample's gap in the line numbers already shows what it left
+// out. It belongs to the command's goroutine.
 type outputStream struct {
 	f     *outputFollower
 	task  string
@@ -397,11 +408,13 @@ type outputStream struct {
 	batchBytes int
 	batchSince time.Time
 
-	printed  int  // what the command printed at full fidelity
-	sampling bool // past its budget: only samples of the newest lines
-	newest   ring // the newest lines, once sampling
-	sampled  time.Time
-	stopped  bool // the process's budget is spent: nothing more is printed
+	printed      int  // what the command printed at full fidelity
+	sampling     bool // past its budget: only samples of the newest lines
+	newest       ring // the newest lines, once sampling
+	sampled      time.Time
+	sampledBytes int  // what the command's samples printed
+	cut          bool // past its samples' budget: nothing more is printed but the last chunk
+	stopped      bool // the process's budget is spent: nothing more is printed
 }
 
 // newStream is command task's output stream, from its first line.
@@ -419,9 +432,10 @@ func (s *outputStream) read(file *os.File, now time.Time) bool {
 		return false
 	}
 	switch {
+	case s.cut:
 	case s.sampling:
 		if s.now.Sub(s.sampled) >= s.f.pace.sample {
-			s.sample(false)
+			s.sample(false, false)
 		}
 	case len(s.batch) > 0 && s.now.Sub(s.batchSince) >= s.f.pace.flush:
 		s.flush(false, false)
@@ -432,7 +446,8 @@ func (s *outputStream) read(file *os.File, now time.Time) bool {
 // close ends the command's output: it reads the rest of the file — the CLI
 // deletes it when the command ends, and the file it opened still reads to its
 // end — within the drain time, then prints the last chunk, Done. An output
-// not read to its end in that time is marked truncated.
+// not read to its end in that time is marked truncated, as is one already
+// cut.
 func (s *outputStream) close(file *os.File) {
 	if s.stopped {
 		return
@@ -445,14 +460,15 @@ func (s *outputStream) close(file *os.File) {
 	if raw, over, ok := s.split.rest(); ok && whole {
 		s.line(raw, over) // the last line, which the output did not end
 	}
-	if s.stopped {
-		return
+	switch {
+	case s.stopped:
+	case s.cut:
+		s.print(s.chunk(s.next, nil, true, true))
+	case s.sampling:
+		s.sample(true, !whole)
+	default:
+		s.flush(true, !whole)
 	}
-	if s.sampling {
-		s.sample(true)
-		return
-	}
-	s.flush(true, !whole)
 }
 
 // readFile reads up to limit bytes from the file, until deadline when it is
@@ -481,7 +497,7 @@ func (s *outputStream) readFile(file *os.File, limit int, deadline time.Time) bo
 func (s *outputStream) line(raw []byte, over bool) {
 	n := s.next
 	s.next++
-	if s.stopped {
+	if s.stopped || s.cut {
 		return
 	}
 	if s.sampling {
@@ -505,7 +521,7 @@ func (s *outputStream) flush(done, truncated bool) {
 	if len(s.batch) == 0 && !done {
 		return
 	}
-	o := transcript.Output{Task: s.task, Line: s.batchLine, Lines: s.batch, Done: done, Truncated: truncated}
+	o := s.chunk(s.batchLine, s.batch, done, truncated)
 	if len(s.batch) == 0 {
 		o.Line = s.next
 	}
@@ -516,25 +532,54 @@ func (s *outputStream) flush(done, truncated bool) {
 	}
 }
 
-// sample prints the newest lines not yet shown as one chunk, done marking
-// the command's last; its line number leaves a gap after the last chunk, so
-// a reader sees how much was left out.
-func (s *outputStream) sample(done bool) {
+// sample prints the newest lines not yet shown that fit a sample as one
+// chunk, done marking the command's last and truncated a last chunk the
+// drain time cut short; its line number leaves a gap after the last chunk,
+// so a reader sees how much was left out. A sample that would take the
+// command's samples past outputSampledBytes cuts the command instead: one
+// chunk past its last line read, Truncated, and nothing more until its
+// last.
+func (s *outputStream) sample(done, truncated bool) {
 	first, lines := s.newest.since(s.shown, s.f.clean)
+	first, lines = newestWithin(first, lines, outputSampleBytes)
 	if len(lines) == 0 && !done {
 		return
 	}
 	if len(lines) == 0 {
 		first = s.next
 	}
-	s.print(transcript.Output{Task: s.task, Line: first, Lines: lines, Done: done, Truncated: true})
+	o := s.chunk(first, lines, done, truncated)
+	if line, err := transcript.EncodeOutput(o); err == nil && s.sampledBytes+len(line)+1 > outputSampledBytes {
+		s.cut = true
+		s.print(s.chunk(s.next, nil, done, true))
+		return
+	}
+	s.sampledBytes += s.print(o)
 	s.sampled = s.now
 }
 
-// print stamps and prints one chunk and returns what it put on stdout,
-// stopping the stream once the process's budget is spent.
+// newestWithin keeps the newest of lines, numbered from first, whose text
+// fits in limit bytes, the newest line at least, and returns the number of
+// the first it keeps.
+func newestWithin(first int, lines []string, limit int) (int, []string) {
+	size := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		if size += len(lines[i]); size > limit && i < len(lines)-1 {
+			return first + i + 1, lines[i+1:]
+		}
+	}
+	return first, lines
+}
+
+// chunk is a chunk of the command's output, stamped with the pass's time.
+func (s *outputStream) chunk(line int, lines []string, done, truncated bool) transcript.Output {
+	return transcript.Output{Task: s.task, Line: line, Lines: lines, Done: done, Truncated: truncated,
+		At: s.now.UTC().Format(time.RFC3339)}
+}
+
+// print prints one chunk and returns what it put on stdout, stopping the
+// stream once the process's budget is spent.
 func (s *outputStream) print(o transcript.Output) int {
-	o.At = s.now.UTC().Format(time.RFC3339)
 	n, ok := s.f.a.emitOutput(o)
 	if !ok {
 		s.stopped = true

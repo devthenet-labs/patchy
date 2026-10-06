@@ -213,10 +213,36 @@ test("mergeRunOutput tracks done and truncated, and outputStatus names them", ()
   const done = mergeRunOutput(running, chunk(2, [], { done: true }));
   assert.equal(done.done, true);
   assert.equal(outputStatus(done, true), "finished");
+  assert.equal(outputStatus(done, false), "finished");
   // A later chunk does not undo either flag.
-  const cut = fold([chunk(2, ["b"], { truncated: true }), chunk(3, ["c"])], running);
+  const cut = fold([chunk(2, [], { truncated: true }), chunk(3, [])], running);
   assert.equal(cut.truncated, true);
-  assert.equal(outputStatus({ ...cut, done: true }, true), "output limit reached");
+  assert.equal(cut.done, false);
+  assert.equal(cut.end, 3);
+});
+
+// The header ranks the command's state: its end outranks everything, a
+// stream that ended without it knows nothing more, and a limit the agent
+// hit is said beside "running" only, never in its place, since the command
+// goes on. A gap in the line numbers (a sample) is not a limit.
+test("outputStatus ranks finished, no longer followed, the limit, then running", () => {
+  const state = (extra) => ({ task: "b1", lines: [], end: 1, done: false, truncated: false, ...extra });
+  const cases = [
+    [{ done: true }, true, "finished"],
+    [{ done: true }, false, "finished"],
+    [{ done: true, truncated: true }, true, "finished · live output limit reached"],
+    [{ done: true, truncated: true }, false, "finished · live output limit reached"],
+    [{}, false, "no longer followed"],
+    [{ truncated: true }, false, "no longer followed"],
+    [{ truncated: true }, true, "running · live output limit reached"],
+    [{}, true, "running"],
+  ];
+  for (const [extra, following, want] of cases) {
+    assert.equal(outputStatus(state(extra), following), want, JSON.stringify({ extra, following }));
+  }
+  // Samples leave gaps and are not truncated: still just running.
+  const sampled = fold([chunk(1, ["a"]), chunk(50, ["x"]), chunk(90, ["y"])]);
+  assert.equal(outputStatus(sampled, true), "running");
 });
 
 test("mergeRunOutput ignores a malformed chunk", () => {

@@ -785,6 +785,21 @@ statusServer:
     # never to an agent pod, so no network policy changes. Disabling it keeps
     # transcripts of completed runs, which are read from their own ConfigMaps.
     liveTranscripts: true
+    # The intents views: a board of every intent by phase, each intent's
+    # timeline, and a run panel answering "is it stuck, what has it spent,
+    # when will it stop?". Read-only; approval stays on GitHub. Access is per
+    # Project, through access reviews on two virtual subresources of
+    # projects.patchy.bitwisemedia.uk (projects/intents for the board and
+    # numbers, projects/transcripts for plans, reports and transcripts; see
+    # docs/intents/dashboard.md). Enabling it grants the server read on
+    # projects, intents, intentruns and previews, and jobs get in the agent
+    # namespace (a Job's clock, never its spec). It also hardens the whole
+    # page: CSP, HSTS, Sec-Fetch-Site on every API request, writes refused
+    # without it. The server refuses to start unless auth is mode oidc with
+    # oidc.claims.usernamePrefix and groupsPrefix set (and
+    # requireVerifiedEmail when the username claim is email).
+    intents:
+        enabled: false
     config:
         # Extra PATCHY_* keys for the status server only.
         extra: {}

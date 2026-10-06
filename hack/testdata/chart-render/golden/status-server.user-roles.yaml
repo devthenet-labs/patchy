@@ -1,0 +1,491 @@
+---
+# Source: patchy/templates/status-server.yaml
+# Ingress: 8080 from anywhere (the fronting ingress/gateway lives wherever
+# yours does; session authentication and the public-rollups-only unconfigured
+# posture carry the access control) plus 8081 probes. Egress: DNS, the
+# Kubernetes API server (cache watches + access reviews), and TCP 443 out
+# (the OIDC issuer, an OTLP collector).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: patchy-status-server
+    namespace: patchy
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+spec:
+    podSelector:
+        matchLabels:
+            app.kubernetes.io/name: status-server
+            app.kubernetes.io/instance: patchy
+            app.kubernetes.io/part-of: patchy
+    policyTypes: [Ingress, Egress]
+    ingress:
+        - ports:
+              - protocol: TCP
+                port: 8080
+              - protocol: TCP
+                port: 8081
+    egress:
+        - to:
+              - namespaceSelector:
+                    matchLabels:
+                        kubernetes.io/metadata.name: kube-system
+          ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+        - ports:
+              - protocol: TCP
+                port: 443
+              - protocol: TCP
+                port: 6443
+---
+# Source: patchy/templates/status-server.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+    name: patchy-status-server
+    namespace: patchy
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+---
+# Source: patchy/templates/status-server.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: patchy-status-server-config
+    namespace: patchy
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+data:
+    PATCHY_AGENT_NAMESPACE: "patchy-agents"
+    PATCHY_AUTH_CONFIG: "/etc/patchy/auth/config.yaml"
+    PATCHY_HEALTH_ADDR: ":8081"
+    PATCHY_LISTEN_ADDR: ":8080"
+    PATCHY_LOG_LEVEL: "warn"
+---
+# Source: patchy/templates/status-server.yaml
+# SubjectAccessReview is cluster-scoped, so this one grant needs a
+# ClusterRole. Review-only: the power to ask "may user U approve findings?",
+# not to act.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+    name: patchy-status-server-authz
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [authorization.k8s.io]
+      resources: [subjectaccessreviews]
+      verbs: [create]
+---
+# Source: patchy/templates/status-server.yaml
+# Example user-facing grant tiers. Bindings are yours to bring: bind Users to
+# the OIDC username claim's values and Groups to the groups claim's values,
+# in the release namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+    name: patchy-findings-viewer
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [findings, findingrollups]
+      verbs: [get, list]
+---
+# Source: patchy/templates/status-server.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+    name: patchy-findings-approver
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [findings, findingrollups]
+      verbs: [get, list]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [findings]
+      verbs: [approve]
+---
+# Source: patchy/templates/status-server.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+    name: patchy-findings-operator
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [findings, findingrollups]
+      verbs: [get, list]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [findings]
+      verbs: [approve, retry, expedite, suspend, resume]
+---
+# Source: patchy/templates/status-server.yaml
+# Operator + the configuration view (native get on integrations), the
+# backfill trigger, and the user menu's demo tooling: replay the webhook
+# delivery log, reset (delete) all pipeline state. Grant replay/reset
+# sparingly. Migration note: replay/reset moved from findings to
+# integrations — the resource they act on and the one the integrations
+# admission policy checks.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+    name: patchy-findings-admin
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [findings, findingrollups]
+      verbs: [get, list]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [findings]
+      verbs: [approve, retry, expedite, suspend, resume]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [integrations]
+      verbs: [get, list, backfill, replay, reset]
+---
+# Source: patchy/templates/status-server.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+    name: patchy-status-server-authz
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: patchy-status-server-authz
+subjects:
+    - kind: ServiceAccount
+      name: patchy-status-server
+      namespace: patchy
+---
+# Source: patchy/templates/status-server.yaml
+# Reads Findings/FindingRollups for the projection; writes SPEC only
+# (approve records spec.approval, retry/expedite record spec.retry /
+# spec.expedite, suspend/resume toggle spec.suspend, replay stamps
+# Integration spec.replay). Deliberately NO */status — the status server
+# never moves a phase — and no leases (no reconcilers, no leader election).
+# The delete/deletecollection verbs back the access-review-gated reset
+# action (demo tooling): wipe the pipeline state, keep the configuration.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: patchy-status-server
+    namespace: patchy
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [findings]
+      verbs: [get, list, watch, update, patch, delete, deletecollection]
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [findingrollups]
+      verbs: [get, list, watch, delete, deletecollection]
+    # Read-only plus reset: the projection lifts each run's report markdown
+    # from the Investigation/Remediation children (reports live on the child
+    # only); repositories exist for reset alone.
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [investigations, remediations, repositories]
+      verbs: [get, list, watch, delete, deletecollection]
+    # Spec-only write seam for the replay and backfill actions (spec.replay,
+    # spec.backfill); the cached client's informer needs list/watch.
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [integrations]
+      verbs: [get, list, watch, update, patch]
+    # Read-only: the configuration view projects the Forges alongside the
+    # Integrations.
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [forges]
+      verbs: [get, list, watch]
+    # The persisted agent transcripts, read one at a time when a human opens a
+    # finding. Get only: they are read through the uncached API reader, so no
+    # informer and no list/watch — caching every ConfigMap in the namespace to
+    # serve these would be a poor trade.
+    - apiGroups: [""]
+      resources: [configmaps]
+      verbs: [get]
+---
+# Source: patchy/templates/status-server.yaml
+# Live transcripts: the status server follows a running agent's pod log to
+# stream its conversation, through the API server — it never dials an agent
+# pod, so the agents' default-deny ingress policy is untouched. Read-only, and
+# scoped to the agents namespace: no Jobs, no Secrets, no writes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: patchy-status-server-agent-logs
+    namespace: patchy-agents
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [""]
+      resources: [pods]
+      verbs: [get, list]
+    - apiGroups: [""]
+      resources: [pods/log]
+      verbs: [get]
+---
+# Source: patchy/templates/status-server.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: patchy-status-server-agent-logs
+    namespace: patchy-agents
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: patchy-status-server-agent-logs
+subjects:
+    - kind: ServiceAccount
+      name: patchy-status-server
+      namespace: patchy
+---
+# Source: patchy/templates/status-server.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: patchy-status-server
+    namespace: patchy
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: patchy-status-server
+subjects:
+    - kind: ServiceAccount
+      name: patchy-status-server
+      namespace: patchy
+---
+# Source: patchy/templates/status-server.yaml
+apiVersion: v1
+kind: Service
+metadata:
+    name: patchy-status-server
+    namespace: patchy
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+spec:
+    type: ClusterIP
+    selector:
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+    ports:
+        - name: http
+          port: 8080
+          targetPort: http
+          protocol: TCP
+---
+# Source: patchy/templates/status-server.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: patchy-status-server
+    namespace: patchy
+    labels:
+        app: status-server
+        helm.sh/chart: patchy-VERSION
+        app.kubernetes.io/managed-by: Helm
+        app.kubernetes.io/version: "VERSION"
+        app.kubernetes.io/name: status-server
+        app.kubernetes.io/instance: patchy
+        app.kubernetes.io/part-of: patchy
+        app.kubernetes.io/component: server
+spec:
+    replicas: 1
+    strategy:
+        type: Recreate
+    selector:
+        matchLabels:
+            app.kubernetes.io/name: status-server
+            app.kubernetes.io/instance: patchy
+            app.kubernetes.io/part-of: patchy
+    template:
+        metadata:
+            labels:
+                app: status-server
+                helm.sh/chart: patchy-VERSION
+                app.kubernetes.io/managed-by: Helm
+                app.kubernetes.io/version: "VERSION"
+                app.kubernetes.io/name: status-server
+                app.kubernetes.io/instance: patchy
+                app.kubernetes.io/part-of: patchy
+                app.kubernetes.io/component: server
+            annotations:
+                checksum/config: aa5b9b64397f08e7b9e21696d47b936ed5ad4e78a88d9767e845808715762b33
+        spec:
+            serviceAccountName: patchy-status-server
+            securityContext:
+                runAsNonRoot: true
+                runAsUser: 65532
+                runAsGroup: 65532
+                fsGroup: 65532
+                fsGroupChangePolicy: Always
+                seccompProfile:
+                    type: RuntimeDefault
+            containers:
+                - name: server
+                  image: ghcr.io/devthenet-labs/patchy/status-server:vVERSION
+                  imagePullPolicy: IfNotPresent
+                  args: ["serve"]
+                  envFrom:
+                      - configMapRef:
+                            name: patchy-status-server-config
+                  env:
+                      - name: POD_NAMESPACE
+                        valueFrom:
+                            fieldRef:
+                                fieldPath: metadata.namespace
+                  ports:
+                      - name: http
+                        containerPort: 8080
+                        protocol: TCP
+                      - name: health
+                        containerPort: 8081
+                        protocol: TCP
+                  livenessProbe:
+                      httpGet:
+                          path: /healthz
+                          port: health
+                      initialDelaySeconds: 5
+                      periodSeconds: 20
+                  readinessProbe:
+                      httpGet:
+                          path: /readyz
+                          port: health
+                      initialDelaySeconds: 2
+                      periodSeconds: 10
+                  resources:
+                      limits:
+                        cpu: 500m
+                        memory: 256Mi
+                      requests:
+                        cpu: 50m
+                        memory: 64Mi
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                          drop: ["ALL"]
+                      seccompProfile:
+                          type: RuntimeDefault
+                  volumeMounts:
+                      - name: auth
+                        mountPath: /etc/patchy/auth
+                        readOnly: true
+                      - name: tmp
+                        mountPath: /tmp
+            volumes:
+                # optional: with no auth Secret at all the server runs the
+                # rollups-only posture.
+                - name: auth
+                  secret:
+                      secretName: patchy-status-auth
+                      optional: true
+                - name: tmp
+                  emptyDir: {}
+---
+# Source: patchy/templates/status-server.yaml
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# The status server, in one file (unlike the controllers, which render from
+# shared per-kind templates): it is the only optional component
+# (statusServer.enabled), the only one labelled component=server rather than
+# controller, and the only one with an auth mount and a human-facing
+# exposure — spreading its guards across six kind files would obscure all
+# three facts. Mirrors deploy/kustomize/base/{deployment-status-server,
+# rbac,service,networkpolicy}.yaml.

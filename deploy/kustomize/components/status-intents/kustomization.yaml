@@ -1,0 +1,36 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Optional component: the status page's intents views, the kustomize twin of
+# the chart's statusServer.intents.enabled. Enable it from an overlay with
+#
+#     components:
+#         - ../../components/status-intents
+#
+# It adds a board of every intent by phase, each intent's timeline and a run
+# panel to the status server. Read-only: approval stays on GitHub. Access is
+# per Project, through access reviews on two virtual subresources of
+# projects.patchy.bitwisemedia.uk (docs/intents/dashboard.md); the example
+# grants for them are in base/rbac.users.example.yaml.
+#
+# What it adds:
+#
+#   * PATCHY_INTENTS_ENABLED=true on the status server, which then refuses to
+#     start unless its auth config (base/secrets.example.yaml #3) is mode oidc
+#     with oidc.claims.usernamePrefix and groupsPrefix set, and
+#     requireVerifiedEmail when the username claim is email. It also hardens
+#     the whole page: CSP, HSTS, Sec-Fetch-Site on every API request, writes
+#     refused without it.
+#   * read on projects, intents, intentruns and previews in patchy (the views'
+#     informers), and jobs get in patchy-agents (a live run's Job clock,
+#     projected; never the Job itself).
+#
+# Nothing for the network: the server already reaches the API server.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+    - rbac.yaml
+
+patches:
+    - path: deployment-patch.yaml

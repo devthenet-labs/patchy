@@ -1,0 +1,17 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Turns the intents views on (--intents-enabled).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: patchy-status-server
+    namespace: patchy
+spec:
+    template:
+        spec:
+            containers:
+                - name: server
+                  env:
+                      - name: PATCHY_INTENTS_ENABLED
+                        value: "true"

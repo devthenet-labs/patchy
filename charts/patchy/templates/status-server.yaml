@@ -20,6 +20,26 @@ is empty and the server serves public rollup statistics only.
 {{- if and $vals.auth.existingSecret $vals.auth.config }}
 {{- fail "statusServer.auth.existingSecret and statusServer.auth.config are mutually exclusive" }}
 {{- end }}
+{{- /*
+The intents views show plans and transcripts per Project, so they come up only
+under oidc with both claim prefixes (the server refuses anything else at
+startup; an inline config is checked here too, so a bad one fails the render
+rather than crash-looping the pod). An existingSecret is opaque to the chart.
+*/}}
+{{- if $vals.intents.enabled }}
+{{- if not (or $vals.auth.config $vals.auth.existingSecret) }}
+{{- fail "statusServer.intents.enabled requires an auth config in mode oidc (statusServer.auth.existingSecret or statusServer.auth.config)" }}
+{{- end }}
+{{- with $vals.auth.config }}
+{{- if ne (.mode | default "") "oidc" }}
+{{- fail "statusServer.intents.enabled requires statusServer.auth.config.mode oidc: modes none and anonymous would show every Project to every visitor" }}
+{{- end }}
+{{- $claims := (.oidc | default dict).claims | default dict }}
+{{- if or (not $claims.usernamePrefix) (not $claims.groupsPrefix) }}
+{{- fail "statusServer.intents.enabled requires statusServer.auth.config.oidc.claims.usernamePrefix and groupsPrefix" }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if $vals.auth.config }}
 ---
 apiVersion: v1
@@ -60,6 +80,9 @@ metadata:
     "PATCHY_AGENT_NAMESPACE" .Values.agent.namespace
     "PATCHY_LOG_LEVEL" .Values.config.logLevel
 }}
+{{- if $vals.intents.enabled }}
+{{- $_ := set $data "PATCHY_INTENTS_ENABLED" "true" }}
+{{- end }}
 {{- range $k, $v := .Values.config.extra }}
 {{- $_ := set $data $k $v }}
 {{- end }}
@@ -167,6 +190,73 @@ roleRef:
     apiGroup: rbac.authorization.k8s.io
     kind: Role
     name: {{ include "patchy.fullname" . }}-{{ $name }}-agent-logs
+subjects:
+    - kind: ServiceAccount
+      name: {{ include "patchy.serviceAccountName" (dict "root" . "name" $name "vals" $vals) }}
+      namespace: {{ .Release.Namespace }}
+---
+{{- end }}
+{{- if $vals.intents.enabled }}
+# The intents views: read-only on the intent kinds, cached through informers
+# (hence list and watch). Never */status, never a write, never Secrets. The
+# plan and transcript ConfigMaps are read with the configmaps get above, and
+# the server serves one only when it carries the intent's label and a
+# controller reference to its very owner.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: {{ include "patchy.fullname" . }}-{{ $name }}-intents
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [projects, intents, intentruns, previews]
+      verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: {{ include "patchy.fullname" . }}-{{ $name }}-intents
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: {{ include "patchy.fullname" . }}-{{ $name }}-intents
+subjects:
+    - kind: ServiceAccount
+      name: {{ include "patchy.serviceAccountName" (dict "root" . "name" $name "vals" $vals) }}
+      namespace: {{ .Release.Namespace }}
+---
+# A live intent run's Job clock (creation, start, activeDeadlineSeconds, the
+# stage idle limit) for the run panel, and the live follow's "has the Job
+# ended" check. get only: the server projects those fields and never passes
+# the Job (its env names SecretKeyRefs) to a viewer.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: {{ include "patchy.fullname" . }}-{{ $name }}-agent-jobs
+    namespace: {{ .Values.agent.namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+rules:
+    - apiGroups: [batch]
+      resources: [jobs]
+      verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: {{ include "patchy.fullname" . }}-{{ $name }}-agent-jobs
+    namespace: {{ .Values.agent.namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: {{ include "patchy.fullname" . }}-{{ $name }}-agent-jobs
 subjects:
     - kind: ServiceAccount
       name: {{ include "patchy.serviceAccountName" (dict "root" . "name" $name "vals" $vals) }}
@@ -283,6 +373,37 @@ rules:
     - apiGroups: [patchy.bitwisemedia.uk]
       resources: [integrations]
       verbs: [get, list, backfill, replay, reset]
+{{- if $vals.intents.enabled }}
+---
+# The intents views' two read tiers, one per role. The subresources are
+# virtual: nothing on the API server serves them, so these grant kubectl
+# nothing; the status server's access reviews are their only reader. As
+# ClusterRoles without resourceNames they cover every Project: bind them with
+# a RoleBinding in the release namespace. For one Project, write a Role with
+# resourceNames: [<project>] instead (docs/intents/dashboard.md).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+    name: {{ include "patchy.fullname" . }}-intents-viewer
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [projects/intents]
+      verbs: [get]
+---
+# Viewer + private content: plan text, run reports and transcripts.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+    name: {{ include "patchy.fullname" . }}-intents-content
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [projects/intents, projects/transcripts]
+      verbs: [get]
+{{- end }}
 {{- end }}
 ---
 apiVersion: apps/v1

@@ -163,6 +163,103 @@ subjects:
       apiGroup: rbac.authorization.k8s.io
       name: dev@example.com # a `username` claim value
 ---
+# The intents views (components/status-intents; the chart's
+# statusServer.intents.enabled): two read tiers per Project, each an access
+# review for get on a VIRTUAL subresource of projects.patchy.bitwisemedia.uk.
+# Nothing on the API server serves projects/intents or projects/transcripts,
+# so these rules grant kubectl nothing; the status server's reviews are their
+# only reader. With the intents views on, usernames and groups reach the
+# reviews prefixed (auth config claims.usernamePrefix / groupsPrefix), so
+# bind the prefixed names: github:octocat, github:acme:security. The prefixes
+# apply to EVERY review the status server runs, the findings ones above
+# included: once they are set, those bindings must name the prefixed values
+# too, or their subjects lose the findings page.
+#
+#   * projects/intents     — the board, timeline and run numbers (phases,
+#                            durations, recorded cost, outcomes in public
+#                            wording, pull request and preview links)
+#   * projects/transcripts — plus private content: plan text, run reports and
+#                            transcripts. Grant it with projects/intents; on
+#                            its own it opens nothing.
+#
+# A rule without resourceNames covers every Project; resourceNames scopes it
+# to the Projects named. NEVER give a per-Project viewer native reads instead:
+# get on configmaps in patchy reads every Project's plans and transcripts (and
+# every finding's), and pods/log in patchy-agents reads raw agent output; the
+# built-in view and edit roles include both.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+    name: patchy-intents-viewer
+    labels:
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [projects/intents]
+      verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+    name: patchy-intents-content
+    labels:
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [projects/intents, projects/transcripts]
+      verbs: [get]
+---
+# Every Project's board for the whole security team.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: patchy-intents-viewers
+    namespace: patchy
+    labels:
+        app.kubernetes.io/part-of: patchy
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: patchy-intents-viewer
+subjects:
+    - kind: Group
+      apiGroup: rbac.authorization.k8s.io
+      name: github:acme:security # a prefixed `groups` claim value (Dex: org:team)
+---
+# One Project's plans and transcripts for the team that owns it: a Role, not
+# the ClusterRole, because resourceNames lives in the rule.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: patchy-intents-content-storefront
+    namespace: patchy
+    labels:
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [projects/intents, projects/transcripts]
+      resourceNames: [storefront] # the Project's name
+      verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: patchy-intents-content-storefront
+    namespace: patchy
+    labels:
+        app.kubernetes.io/part-of: patchy
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: patchy-intents-content-storefront
+subjects:
+    - kind: Group
+      apiGroup: rbac.authorization.k8s.io
+      name: github:acme:storefront
+    - kind: User
+      apiGroup: rbac.authorization.k8s.io
+      name: github:octocat # a prefixed `username` claim value (a GitHub login)
+---
 # Remote-evaluation submitters (the evolve CLI): create submits an
 # evaluation and uploads workspaces, get reads snapshots and streams the SSE
 # monitor, delete cancels. Native verbs only — no custom verbs, no admission

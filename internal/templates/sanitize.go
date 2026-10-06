@@ -91,6 +91,13 @@ func SanitizeInline(s string) string {
 	return sanitizeLine(strings.TrimSpace(strings.ReplaceAll(visibleText(s), "\n", " ")))
 }
 
+// VisibleText is visibleText for a reader outside this package: the status
+// page shows agent, issue and controller text as plain text nodes, and passes
+// every such string through it first, so a character that renders as nothing
+// (a bidi control, a tag character, a C0 control such as the escape that
+// starts a terminal sequence) is shown as its code point there too.
+func VisibleText(s string) string { return visibleText(s) }
+
 // visibleText is plainText for agent text an approver is shown: invalid
 // UTF-8 replaced and line breaks normalised, but a character that renders
 // as nothing is written as its code point ("[U+E0041]") rather than dropped.

@@ -1,0 +1,13 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# The status server's intents views on, behind an operator-owned auth Secret
+# (opaque to the chart: the server checks it is oidc with both prefixes at
+# startup), with the example user roles.
+statusServer:
+    intents:
+        enabled: true
+    auth:
+        existingSecret: patchy-status-auth
+    rbac:
+        userRoles: true

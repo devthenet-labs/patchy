@@ -1412,6 +1412,17 @@
                     "type": "boolean",
                     "description": "Stream a running agent's conversation into the status page; grants pod and pod-log read in the agent namespace."
                 },
+                "intents": {
+                    "type": "object",
+                    "description": "The read-only intents views (board, timeline, run panel) with per-Project access reviews. Needs auth mode oidc with usernamePrefix and groupsPrefix, and hardens the whole page's browser envelope.",
+                    "additionalProperties": false,
+                    "required": ["enabled"],
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean"
+                        }
+                    }
+                },
                 "image": {
                     "$ref": "#/definitions/imageOverride"
                 },

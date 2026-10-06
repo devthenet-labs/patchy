@@ -93,6 +93,10 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   approve/retry/expedite/suspend/resume actions, and the user-menu demo tooling (replay → Integration
   `spec.replay`; reset → delete all pipeline CRs). Rollup statistics are public; the findings surface always
   requires auth. Writes SPEC only (`spec.approval`, `spec.suspend`, `spec.replay`) — never status, never a phase.
+  With `--intents-enabled` (chart `statusServer.intents.enabled`, kustomize component `status-intents`; default
+  off) it also serves the read-only intents views (board, timeline, run panel; docs/intents/dashboard.md): per-Project
+  access reviews on the virtual subresources `projects/intents` and `projects/transcripts`, mode oidc with both claim
+  prefixes required, and a hardened browser envelope for the whole page. No intent write of any kind.
 - `cmd/patchy` — the workstation CLI (the only binary not deployed): `patchy <verb> <noun>` over the
   caller's own kubeconfig, no channel through any controller. get/describe/review/browse/can-i plus the five
   action verbs. Writes SPEC only, same as status-server; enforcement of the custom verbs for direct API
@@ -238,8 +242,15 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   `ui/src/types.ts` (keep the two in lockstep), the action handlers, SSE broker + cache-informer watcher, and
   the embedded UI (`internal/web/ui`, Vite/Preact, single-file build embedded behind the `withui` tag; `mise run
   ui` builds it, bare `go build` compiles a stub). `auth` = who you are (OIDC/none/anonymous/unconfigured,
-  cookie sessions, zero k8s imports); `authz` = what you may do (SubjectAccessReviews for the custom verbs
-  approve/retry/expedite/suspend/resume + native get).
+  cookie sessions, zero k8s imports; claim prefixes and verified email applied once, in `MapClaims`); `authz` = what
+  you may do (SubjectAccessReviews for the custom verbs approve/retry/expedite/suspend/resume + native get, and
+  `ProjectReviewer`'s per-Project read tiers). The intents side (`intents*.go`, `envelope.go`) reads every ConfigMap
+  through `guardedConfigMap` (the intent's label and a controller reference to its very owner), strips the live run
+  stream per subscriber, and pins its wire types to `types.ts` by parsing it (`TestIntentWireTypesMatchTypeScript`).
+- `intentview` — the pure public projection of intents for the status page: board columns, fixed public wording
+  for outcomes and block reasons (never a run's detail or a condition's message), limits with schema defaults, cost
+  parsing, and `Text` (templates.VisibleText plus a cap) for every shown string. Copies of intent-controller facts
+  are pinned to their originals by `internal/controller/intent/intentview_pin_test.go`.
 - `ghas`, `enhancers` — the built-in `pkg/source` and `pkg/enhance` implementations.
 - `generic` — the generic integration's behavior over the `pkg/generic` wire contract: the validating source
   handler (source id = the Integration's NAME; N integrations coexist) and the HMAC-signing outbound client behind

@@ -3,7 +3,7 @@ import type { AdminVerb, Dataset } from "../types";
 import type { DataMode } from "../api";
 import { readProvider, signOut } from "../auth";
 import { PERSONAS, type Persona } from "../mock/personas";
-import { hrefForConfig, hrefForList, hrefForRollups, type Route } from "../router";
+import { hrefForConfig, hrefForIntents, hrefForList, hrefForRollups, isIntentsRoute, type Route } from "../router";
 import { Icon } from "./icons";
 import { PatchMark } from "./PatchMark";
 import { ThemeToggle, type ThemeMode } from "./ThemeToggle";
@@ -148,6 +148,7 @@ export function TopBar({
   mode,
   route,
   configView,
+  intentsNav,
   themeMode,
   onToggleTheme,
   persona,
@@ -161,6 +162,9 @@ export function TopBar({
   // Whether the configuration view is reachable for this user; the nav
   // link renders only when true.
   configView: boolean;
+  // Whether the server has the intents views on and shows this user at
+  // least one Project.
+  intentsNav: boolean;
   themeMode: ThemeMode;
   onToggleTheme: () => void;
   persona: Persona;
@@ -180,9 +184,17 @@ export function TopBar({
           </span>
         </a>
         <nav class="flex gap-1 rounded-[9px] border border-line bg-surface p-[3px]" aria-label="Views">
-          <a href={hrefForList()} class={navClass(route.view !== "rollups" && route.view !== "config")}>
+          <a
+            href={hrefForList()}
+            class={navClass(route.view !== "rollups" && route.view !== "config" && !isIntentsRoute(route))}
+          >
             Findings
           </a>
+          {intentsNav ? (
+            <a href={hrefForIntents()} class={navClass(isIntentsRoute(route))}>
+              Intents
+            </a>
+          ) : null}
           <a href={hrefForRollups()} class={navClass(route.view === "rollups")}>
             Rollups
           </a>

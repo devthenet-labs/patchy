@@ -468,23 +468,3 @@ func TestHubOutputOnlyForViewersWhoAsk(t *testing.T) {
 		}
 	}
 }
-
-func TestClipBytes(t *testing.T) {
-	for _, tc := range []struct {
-		in   string
-		n    int
-		want string
-	}{
-		{"short", 10, "short"},
-		{"exact", 5, "exact"},
-		{"abcdef", 3, "abc"},
-		{"aé", 2, "a"},                      // the cut would split é
-		{"a€b", 3, "a"},                     // and €
-		{"a€b", 4, "a€"},                    // a whole rune fits
-		{"\x80\x80\x80\x80\x80", 4, "\x80"}, // never more than a rune's worth backed off
-	} {
-		if got := clipBytes(tc.in, tc.n); got != tc.want {
-			t.Errorf("clipBytes(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
-		}
-	}
-}

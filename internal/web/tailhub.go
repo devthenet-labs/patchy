@@ -8,7 +8,6 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/transcript"
@@ -332,20 +331,8 @@ func boundOutput(o transcript.Output) transcript.Output {
 	}
 	lines := make([]string, len(o.Lines))
 	for i, l := range o.Lines {
-		lines[i] = clipBytes(l, maxOutputLine)
+		lines[i], _ = transcript.Truncate(l, maxOutputLine)
 	}
 	o.Lines = lines
 	return o
-}
-
-// clipBytes cuts s to at most n bytes, backing off to the start of the rune
-// the cut would split.
-func clipBytes(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for i := 0; i < utf8.UTFMax-1 && n > 0 && !utf8.RuneStart(s[n]); i++ {
-		n--
-	}
-	return s[:n]
 }

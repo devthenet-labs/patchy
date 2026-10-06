@@ -14,8 +14,9 @@ envelope for the whole status page; read this page before you do.
 included), done (merged, closed, failed, until the intent expires). A Blocked intent stays in the column of the phase it
 was blocked from, with a badge and the reason. A card shows the issue, the plan's one-line summary, the repositories,
 every agent run that is pending or running (a multi-repository build runs one per repository at once), the attempt of
-the newest run against the two each round gets, revisions and CI-fix rounds against the Project's limits, recorded spend
-against the cost ceiling, its age and time in phase, and its pull request and preview links. A suspended intent is
+the newest run against the two each round gets, revision and CI-fix rounds against the Project's limits (every round
+started counts, a failed one too, as it does for the limit), recorded spend against the cost ceiling, its age and time
+in phase, and its pull request and preview links. A suspended intent is
 badged: it is not reconciled while suspended, so its status may be stale.
 
 **The timeline** of one intent lists its phase changes; the plan revision and digest, with a link to the plan comment;

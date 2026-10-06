@@ -81,13 +81,17 @@ type IntentCard struct {
 	Preview      *PreviewLink  `json:"preview,omitempty"`
 	RunningRuns  []RunningRun  `json:"runningRuns,omitempty"`
 	Attempt      *AttemptCount `json:"attempt,omitempty"`
-	Revisions    int32         `json:"revisions"`
-	CheckFixes   int32         `json:"checkFixes"`
-	CostMicroUSD int64         `json:"costMicroUSD"`
-	RequestedBy  string        `json:"requestedBy,omitempty"`
-	RequestedAt  string        `json:"requestedAt,omitempty"`
-	PhaseSince   string        `json:"phaseSince,omitempty"`
-	CompletedAt  string        `json:"completedAt,omitempty"`
+	// Revisions and CheckFixes are the review/command and check-fix rounds
+	// started that count against the Project's limits, failed ones included
+	// (intentview.RevisionRounds, CheckFixRounds): what the limits are
+	// enforced with, not the completed rounds status.revisions counts.
+	Revisions    int32  `json:"revisions"`
+	CheckFixes   int32  `json:"checkFixes"`
+	CostMicroUSD int64  `json:"costMicroUSD"`
+	RequestedBy  string `json:"requestedBy,omitempty"`
+	RequestedAt  string `json:"requestedAt,omitempty"`
+	PhaseSince   string `json:"phaseSince,omitempty"`
+	CompletedAt  string `json:"completedAt,omitempty"`
 }
 
 // IntentPR is one pull request patchy opened for an intent.

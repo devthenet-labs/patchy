@@ -392,7 +392,9 @@ func wireLimits(l intentview.Limits) IntentLimits {
 }
 
 // projectCard is one intent's board card, built from its own status, its
-// runs and its Preview only.
+// runs and its Preview only. Its revision and check-fix counts are the
+// rounds the runs count against the limits, as intent-controller counts
+// them, so the card agrees with what blocks the intent.
 func projectCard(in *v1alpha1.Intent, runs []*v1alpha1.IntentRun, pv *v1alpha1.Preview,
 	limits intentview.Limits) IntentCard {
 	st := in.Status
@@ -404,8 +406,8 @@ func projectCard(in *v1alpha1.Intent, runs []*v1alpha1.IntentRun, pv *v1alpha1.P
 		Phase:        string(st.Phase),
 		Column:       string(intentview.ColumnFor(in)),
 		Suspended:    in.Spec.Suspend,
-		Revisions:    st.Revisions,
-		CheckFixes:   st.CheckFixes,
+		Revisions:    intentview.RevisionRounds(runs),
+		CheckFixes:   intentview.CheckFixRounds(runs),
 		CostMicroUSD: st.Usage.CostMicroUSD,
 		RequestedBy:  intentview.Text(in.Spec.RequestedBy.Login, 64),
 		RequestedAt:  stamp(in.Spec.RequestedBy.At),
@@ -416,7 +418,7 @@ func projectCard(in *v1alpha1.Intent, runs []*v1alpha1.IntentRun, pv *v1alpha1.P
 	}
 	if st.Phase == v1alpha1.IntentBlocked {
 		c.BlockedFrom = string(v1alpha1.IntentBlockedFrom(in))
-		c.BlockedReasons = intentview.BlockedReasons(in, limits)
+		c.BlockedReasons = intentview.BlockedReasons(in, limits, runs)
 	}
 	if n := len(st.PhaseTimes); n > 0 {
 		c.PhaseSince = stamp(st.PhaseTimes[n-1].At)

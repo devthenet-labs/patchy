@@ -231,31 +231,76 @@ var blockText = map[string]map[string]string{
 	},
 }
 
+// RevisionRounds is how many review and command revise rounds of an
+// Intent's runs count against the Project's maxRevisions: every round
+// started, a failed one included, except a round whose latest attempt failed
+// for want of usable feedback. It is the count intent-controller enforces
+// the limit with, which status.revisions (completed rounds only) is not; a
+// test in internal/controller/intent pins the two counts together.
+func RevisionRounds(runs []*v1alpha1.IntentRun) int32 {
+	latest := map[int32]*v1alpha1.IntentRun{}
+	for _, run := range runs {
+		if run.Spec.Stage != v1alpha1.IntentStageRevise {
+			continue
+		}
+		if l := latest[run.Spec.Round]; l == nil || run.Spec.Attempt > l.Spec.Attempt {
+			latest[run.Spec.Round] = run
+		}
+	}
+	seen := map[int32]bool{}
+	for _, run := range runs {
+		if run.Spec.Stage != v1alpha1.IntentStageRevise || run.Spec.Trigger == v1alpha1.IntentRunTriggerChecks {
+			continue
+		}
+		if l := latest[run.Spec.Round]; l.Status.Phase == v1alpha1.RunFailed &&
+			l.Status.Outcome == "no_usable_feedback" {
+			continue
+		}
+		seen[run.Spec.Round] = true
+	}
+	return int32(len(seen))
+}
+
+// CheckFixRounds is how many check-fix rounds of an Intent's runs count
+// against the Project's maxCheckFixes: every one started, failed ones
+// included, as intent-controller counts them (status.checkFixes counts
+// completed ones only); pinned like RevisionRounds.
+func CheckFixRounds(runs []*v1alpha1.IntentRun) int32 {
+	seen := map[int32]bool{}
+	for _, run := range runs {
+		if run.Spec.Stage == v1alpha1.IntentStageRevise && run.Spec.Trigger == v1alpha1.IntentRunTriggerChecks {
+			seen[run.Spec.Round] = true
+		}
+	}
+	return int32(len(seen))
+}
+
 // BlockedReasons are the public reasons the True blocking conditions give,
-// in BlockingConditions order, from fixed wording and the Intent's own
-// counters only, never a condition's message.
-func BlockedReasons(in *v1alpha1.Intent, l Limits) []string {
+// in BlockingConditions order, from fixed wording, the Intent's own
+// counters and the rounds its runs count against the limits
+// (RevisionRounds, CheckFixRounds) only, never a condition's message.
+func BlockedReasons(in *v1alpha1.Intent, l Limits, runs []*v1alpha1.IntentRun) []string {
 	var out []string
 	for _, typ := range BlockingConditions {
 		c := meta.FindStatusCondition(in.Status.Conditions, typ)
 		if c == nil || c.Status != metav1.ConditionTrue {
 			continue
 		}
-		out = append(out, blockReason(in, l, c))
+		out = append(out, blockReason(in, l, runs, c))
 	}
 	return out
 }
 
-func blockReason(in *v1alpha1.Intent, l Limits, c *metav1.Condition) string {
+func blockReason(in *v1alpha1.Intent, l Limits, runs []*v1alpha1.IntentRun, c *metav1.Condition) string {
 	switch c.Type {
 	case v1alpha1.ConditionBudgetExhausted:
 		return fmt.Sprintf("spent %s of the %s cost ceiling", FormatUSD(in.Status.Usage.CostMicroUSD),
 			FormatUSD(l.MaxCostMicroUSD))
 	case v1alpha1.ConditionRevisionLimitReached:
-		return fmt.Sprintf("the revision limit is reached (%d of %d)", in.Status.Revisions, l.MaxRevisions)
+		return fmt.Sprintf("the revision limit is reached (%d of %d)", RevisionRounds(runs), l.MaxRevisions)
 	case v1alpha1.ConditionChecksFailing:
 		if c.Reason == "MaxCheckFixes" {
-			return fmt.Sprintf("the check-fix limit is reached (%d of %d)", in.Status.CheckFixes, l.MaxCheckFixes)
+			return fmt.Sprintf("the check-fix limit is reached (%d of %d)", CheckFixRounds(runs), l.MaxCheckFixes)
 		}
 	}
 	texts := blockText[c.Type]

@@ -5,6 +5,7 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"reflect"
 	"slices"
@@ -12,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
@@ -133,6 +136,69 @@ func TestBoardCardProjection(t *testing.T) {
 	wantLimits := IntentLimits{MaxRevisions: 3, MaxCheckFixes: 2, MaxCostMicroUSD: 10_000_000, MaxAttempts: 2}
 	if b.Projects[0].Limits != wantLimits {
 		t.Errorf("limits = %+v", b.Projects[0].Limits)
+	}
+}
+
+// The revision and check-fix counts a card shows, and the limit-reached
+// reasons, are the rounds intent-controller holds against the limits: every
+// round started, failed ones included, not status.revisions and
+// status.checkFixes, which count completed rounds only. Here two failed
+// check-fix rounds and one failed review round have blocked an intent whose
+// completed-round counters are still zero.
+func TestBoardCountsRoundsAsTheLimitsDo(t *testing.T) {
+	objs := intentsFixture(t)
+	var beta *v1alpha1.Project
+	var in *v1alpha1.Intent
+	for _, o := range objs {
+		switch v := o.(type) {
+		case *v1alpha1.Project:
+			if v.Name == "beta" {
+				beta = v
+			}
+		case *v1alpha1.Intent:
+			if v.Name == "beta-3" {
+				in = v
+			}
+		}
+	}
+	one, two := int32(1), int32(2)
+	beta.Spec.Limits.MaxRevisions, beta.Spec.Limits.MaxCheckFixes = &one, &two
+	in.Status.Phase = v1alpha1.IntentBlocked
+	in.Status.Revisions, in.Status.CheckFixes = 0, 0
+	in.Status.Conditions = []metav1.Condition{
+		{Type: v1alpha1.ConditionRevisionLimitReached, Status: metav1.ConditionTrue, Reason: "MaxRevisions"},
+		{Type: v1alpha1.ConditionChecksFailing, Status: metav1.ConditionTrue, Reason: "MaxCheckFixes"},
+	}
+	revise := func(round, attempt int32, trigger v1alpha1.IntentRunTrigger, outcome string) *v1alpha1.IntentRun {
+		return &v1alpha1.IntentRun{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("beta-3-rev-r%d-a%d", round, attempt), Namespace: "patchy",
+				UID: types.UID(fmt.Sprintf("uid-rev-%d-%d", round, attempt))},
+			Spec: v1alpha1.IntentRunSpec{
+				IntentRef: v1alpha1.ObjectReference{Name: "beta-3", UID: "uid-beta-3"},
+				Stage:     v1alpha1.IntentStageRevise, Round: round, Attempt: attempt, Trigger: trigger,
+				Repository: v1alpha1.IntentRunRepository{URL: "https://github.com/acme/web"},
+			},
+			Status: v1alpha1.IntentRunStatus{Phase: v1alpha1.RunFailed, Outcome: outcome},
+		}
+	}
+	objs = append(objs,
+		revise(1, 1, v1alpha1.IntentRunTriggerReview, "runtime_error"),
+		revise(1, 2, v1alpha1.IntentRunTriggerReview, "timeout"),
+		revise(2, 1, v1alpha1.IntentRunTriggerChecks, "timeout"),
+		revise(3, 1, v1alpha1.IntentRunTriggerChecks, "runtime_error"),
+		// A round refused for want of usable feedback spends no revision.
+		revise(4, 1, v1alpha1.IntentRunTriggerCommand, "no_usable_feedback"),
+	)
+	s, _ := intentsServer(t, nil, objs...)
+	_, body := get(t, as(t, s, viewerBeta), "/api/intents")
+	c := decode[IntentBoard](t, body).Intents[0]
+	if c.Revisions != 1 || c.CheckFixes != 2 {
+		t.Errorf("card counts revisions %d, check fixes %d; want 1 and 2, the rounds the limits count",
+			c.Revisions, c.CheckFixes)
+	}
+	want := []string{"the revision limit is reached (1 of 1)", "the check-fix limit is reached (2 of 2)"}
+	if !slices.Equal(c.BlockedReasons, want) {
+		t.Errorf("blocked reasons = %q, want %q", c.BlockedReasons, want)
 	}
 }
 

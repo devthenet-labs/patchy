@@ -146,7 +146,14 @@ func TestBlockedReasonsUsePublicWordingOnly(t *testing.T) {
 			{Type: v1alpha1.ConditionUnsupportedRepositories, Status: metav1.ConditionFalse, Message: leak},
 		},
 	}}
-	got := BlockedReasons(in, Limits{MaxRevisions: 3, MaxCheckFixes: 2, MaxCostMicroUSD: 10_000_000})
+	runs := []*v1alpha1.IntentRun{
+		reviseRun(1, 1, v1alpha1.IntentRunTriggerReview, v1alpha1.RunComplete, "ok"),
+		reviseRun(2, 1, v1alpha1.IntentRunTriggerChecks, v1alpha1.RunComplete, "ok"),
+		reviseRun(3, 1, v1alpha1.IntentRunTriggerCommand, v1alpha1.RunComplete, "ok"),
+		reviseRun(4, 1, v1alpha1.IntentRunTriggerChecks, v1alpha1.RunComplete, "ok"),
+		reviseRun(5, 1, v1alpha1.IntentRunTriggerReview, v1alpha1.RunComplete, "ok"),
+	}
+	got := BlockedReasons(in, Limits{MaxRevisions: 3, MaxCheckFixes: 2, MaxCostMicroUSD: 10_000_000}, runs)
 	want := []string{
 		"spent $10.25 of the $10.00 cost ceiling",
 		"the repository's agent image was rejected",
@@ -161,6 +168,62 @@ func TestBlockedReasonsUsePublicWordingOnly(t *testing.T) {
 	for _, r := range got {
 		if strings.Contains(r, "111122223333") || strings.Contains(r, "ip-10-") {
 			t.Errorf("reason %q leaks a condition message", r)
+		}
+	}
+}
+
+func reviseRun(round, attempt int32, trigger v1alpha1.IntentRunTrigger, phase v1alpha1.RunPhase,
+	outcome string) *v1alpha1.IntentRun {
+	return &v1alpha1.IntentRun{
+		Spec: v1alpha1.IntentRunSpec{Stage: v1alpha1.IntentStageRevise, Round: round, Attempt: attempt,
+			Trigger: trigger},
+		Status: v1alpha1.IntentRunStatus{Phase: phase, Outcome: outcome},
+	}
+}
+
+// The rounds counted against the limits are the rounds started, failed ones
+// included, not the completed rounds status.revisions and
+// status.checkFixes count; a review or command round that failed for want
+// of usable feedback spends no revision.
+func TestRoundsCountedAgainstTheLimits(t *testing.T) {
+	failed, complete, running := v1alpha1.RunFailed, v1alpha1.RunComplete, v1alpha1.RunRunning
+	review, command, checks := v1alpha1.IntentRunTriggerReview, v1alpha1.IntentRunTriggerCommand,
+		v1alpha1.IntentRunTriggerChecks
+	build := &v1alpha1.IntentRun{Spec: v1alpha1.IntentRunSpec{Stage: v1alpha1.IntentStageBuild, Round: 1,
+		Attempt: 1}, Status: v1alpha1.IntentRunStatus{Phase: complete, Outcome: "ok"}}
+	for _, tc := range []struct {
+		name               string
+		runs               []*v1alpha1.IntentRun
+		revisions, checkFx int32
+	}{
+		{"none", nil, 0, 0},
+		{"builds and plans are not rounds", []*v1alpha1.IntentRun{build}, 0, 0},
+		{"a failed review round counts", []*v1alpha1.IntentRun{
+			reviseRun(1, 1, review, failed, "runtime_error"),
+			reviseRun(1, 2, review, failed, "timeout"),
+		}, 1, 0},
+		{"a running round counts", []*v1alpha1.IntentRun{reviseRun(1, 1, command, running, "")}, 1, 0},
+		{"failed check-fix rounds count", []*v1alpha1.IntentRun{
+			reviseRun(1, 1, checks, failed, "timeout"),
+			reviseRun(2, 1, checks, failed, "runtime_error"),
+			reviseRun(3, 1, checks, complete, "ok"),
+		}, 0, 3},
+		{"no usable feedback spends no revision", []*v1alpha1.IntentRun{
+			reviseRun(1, 1, review, failed, "no_usable_feedback"),
+			reviseRun(2, 1, command, complete, "ok"),
+		}, 1, 0},
+		{"only the latest attempt's outcome decides", []*v1alpha1.IntentRun{
+			reviseRun(1, 2, review, failed, "no_usable_feedback"),
+			reviseRun(1, 1, review, failed, "head_moved"),
+			reviseRun(2, 1, review, failed, "no_usable_feedback"),
+			reviseRun(2, 2, review, failed, "runtime_error"),
+		}, 1, 0},
+	} {
+		if got := RevisionRounds(tc.runs); got != tc.revisions {
+			t.Errorf("%s: RevisionRounds = %d, want %d", tc.name, got, tc.revisions)
+		}
+		if got := CheckFixRounds(tc.runs); got != tc.checkFx {
+			t.Errorf("%s: CheckFixRounds = %d, want %d", tc.name, got, tc.checkFx)
 		}
 	}
 }

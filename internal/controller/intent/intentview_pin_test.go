@@ -57,6 +57,66 @@ func TestIntentviewMicroUSDPinned(t *testing.T) {
 	}
 }
 
+// randomRuns is a random Intent's runs for the pins below: plan and build
+// runs beside revise rounds of every trigger, each round's attempts unique
+// and in no order, with outcomes the rules single out.
+func randomRuns(r *rand.Rand) []*v1alpha1.IntentRun {
+	phases := []v1alpha1.RunPhase{"", v1alpha1.RunPending, v1alpha1.RunRunning, v1alpha1.RunComplete,
+		v1alpha1.RunFailed, v1alpha1.RunFailed, v1alpha1.RunFailed}
+	outcomes := []string{"", "ok", OutcomeNoUsableFeedback, OutcomeHeadMoved, OutcomeImageRequired,
+		OutcomeHoldExpired, OutcomeUnschedulable, OutcomeEvicted, string(envelope.OutcomeTimeout),
+		string(envelope.OutcomeRuntimeError)}
+	triggers := []v1alpha1.IntentRunTrigger{v1alpha1.IntentRunTriggerReview, v1alpha1.IntentRunTriggerCommand,
+		v1alpha1.IntentRunTriggerChecks}
+	stages := []v1alpha1.IntentStage{v1alpha1.IntentStagePlan, v1alpha1.IntentStageBuild,
+		v1alpha1.IntentStageRevise, v1alpha1.IntentStageRevise}
+	repos := []string{"https://github.com/acme/app", "https://github.com/Acme/App.git", "https://github.com/acme/api"}
+	var runs []*v1alpha1.IntentRun
+	rounds := int32(r.Intn(6))
+	for round := int32(1); round <= rounds; round++ {
+		stage, trigger := stages[r.Intn(len(stages))], v1alpha1.IntentRunTrigger("")
+		if stage == v1alpha1.IntentStageRevise {
+			trigger = triggers[r.Intn(len(triggers))]
+		}
+		repo := repos[r.Intn(len(repos))]
+		for _, attempt := range r.Perm(1 + r.Intn(4)) {
+			run := &v1alpha1.IntentRun{
+				Spec: v1alpha1.IntentRunSpec{Stage: stage, Round: round, Attempt: int32(attempt + 1),
+					Trigger: trigger, Repository: v1alpha1.IntentRunRepository{URL: repo}},
+				Status: v1alpha1.IntentRunStatus{Phase: phases[r.Intn(len(phases))],
+					Outcome: outcomes[r.Intn(len(outcomes))]},
+			}
+			if r.Intn(8) == 0 {
+				run.Status.Conditions = []metav1.Condition{{Type: v1alpha1.ConditionSandboxRefused,
+					Status: metav1.ConditionTrue, Reason: "SandboxUnenforced"}}
+			}
+			runs = append(runs, run)
+		}
+	}
+	r.Shuffle(len(runs), func(i, j int) { runs[i], runs[j] = runs[j], runs[i] })
+	return runs
+}
+
+// The dashboard's revision and check-fix counts are the rounds this package
+// enforces the limits with, for any runs: a card or a limit-reached reason
+// never disagrees with what blocked the intent.
+func TestIntentviewRoundCountsPinned(t *testing.T) {
+	cfg := &quick.Config{
+		MaxCount: 3000,
+		Rand:     rand.New(rand.NewSource(20261006)),
+		Values: func(args []reflect.Value, r *rand.Rand) {
+			args[0] = reflect.ValueOf(randomRuns(r))
+		},
+	}
+	if err := quick.Check(func(runs []*v1alpha1.IntentRun) bool {
+		p := &pass{runs: runs}
+		return intentview.RevisionRounds(runs) == p.revisionRounds() &&
+			intentview.CheckFixRounds(runs) == p.checkFixRounds()
+	}, cfg); err != nil {
+		t.Error(err)
+	}
+}
+
 // The two outcomes whose detail names cluster nodes are worded on the issue
 // without it; the dashboard says the same words.
 func TestIntentviewSharedWordingPinned(t *testing.T) {
@@ -109,7 +169,7 @@ func TestIntentviewWordsEveryBlockReason(t *testing.T) {
 		in := &v1alpha1.Intent{Status: v1alpha1.IntentStatus{Conditions: []metav1.Condition{
 			{Type: typ, Status: metav1.ConditionTrue, Reason: r},
 		}}}
-		got := intentview.BlockedReasons(in, intentview.Limits{})
+		got := intentview.BlockedReasons(in, intentview.Limits{}, nil)
 		if len(got) != 1 {
 			t.Fatalf("BlockedReasons(%s/%s) = %v", typ, r, got)
 		}

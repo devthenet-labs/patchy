@@ -5,6 +5,7 @@ package agentrun
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -244,7 +245,7 @@ func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.
 	// per-Job timeout reaches the pod (a new key would change the
 	// repository-image Job), so the intent controller sets each stage's on
 	// the Env of the jobs Client it launches that stage with.
-	res, idle, runErr := a.run(ctx, h, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
+	sr := a.newStage(h, cli, harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.InvestigateModel, a.cfg.InvestigateHarness),
 		MaxTurns:  maxTurns,
@@ -252,7 +253,8 @@ func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.
 		SessionID: a.newSessionID(),
 		AddDirs:   []string{a.cfg.Workspace},
 		Env:       env,
-	}), cli), a.cfg.InvestigateTimeout, a.cfg.InvestigateIdleTimeout, budget)
+	}, a.cfg.InvestigateTimeout, a.cfg.InvestigateIdleTimeout, budget)
+	res, idle, runErr := a.start(ctx, sr)
 	a.fillStage(&ev.Stage, h, res)
 
 	if idle != "" {
@@ -269,21 +271,21 @@ func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.
 		return ev
 	}
 
-	raw, err := readReport(a.cfg.planPath())
-	if err != nil {
-		ev.Outcome = envelope.OutcomeReportMissing
-		ev.Detail = err.Error()
-		return ev
-	}
-	p, err := report.ParsePlan(raw)
-	if err != nil {
-		ev.Outcome = envelope.OutcomeReportInvalid
-		ev.Detail = err.Error()
-		return ev
-	}
-	if reason := outsideManifest(p.Repositories, repos); reason != "" {
-		ev.Outcome = envelope.OutcomeReportInvalid
-		ev.Detail = reason
+	// A plan naming a repository outside the manifest is as invalid as one
+	// that does not parse, so a repair is held to both.
+	p, raw, outcome, detail := settleReport(ctx, a, sr, &ev.Stage, a.cfg.planPath(), readReport,
+		func(raw []byte) (*report.Plan, error) {
+			p, err := report.ParsePlan(raw)
+			if err != nil {
+				return nil, err
+			}
+			if reason := outsideManifest(p.Repositories, repos); reason != "" {
+				return nil, errors.New(reason)
+			}
+			return p, nil
+		})
+	if outcome != envelope.OutcomeOK {
+		ev.Outcome, ev.Detail = outcome, detail
 		return ev
 	}
 	ev.Outcome = envelope.OutcomeOK
@@ -371,7 +373,7 @@ func (a *Agent) build(ctx context.Context, params remediationParams, scope build
 	// The remediate timeout and idle limit, for a build and a revise round
 	// alike: the intent controller launches each with its stage's in those
 	// keys (see the plan stage).
-	res, idle, runErr := a.run(ctx, h, pinCLI(h.PromptSpec(a.cfg.repoDir(), harness.PromptRequest{
+	sr := a.newStage(h, cli, harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.RemediateModel, a.cfg.RemediateHarness),
 		MaxTurns:  params.maxTurns,
@@ -379,7 +381,8 @@ func (a *Agent) build(ctx context.Context, params remediationParams, scope build
 		SessionID: a.newSessionID(),
 		AddDirs:   []string{a.cfg.Workspace},
 		Env:       env,
-	}), cli), a.cfg.RemediateTimeout, a.cfg.RemediateIdleTimeout, params.budget)
+	}, a.cfg.RemediateTimeout, a.cfg.RemediateIdleTimeout, params.budget)
+	res, idle, runErr := a.start(ctx, sr)
 	a.fillStage(&ev.Stage, h, res)
 
 	if idle != "" {
@@ -396,16 +399,9 @@ func (a *Agent) build(ctx context.Context, params remediationParams, scope build
 		return ev
 	}
 
-	raw, err := readReport(a.cfg.buildPath())
-	if err != nil {
-		ev.Outcome = envelope.OutcomeReportMissing
-		ev.Detail = err.Error()
-		return ev
-	}
-	b, err := report.ParseBuild(raw)
-	if err != nil {
-		ev.Outcome = envelope.OutcomeReportInvalid
-		ev.Detail = err.Error()
+	b, raw, outcome, detail := settleReport(ctx, a, sr, &ev.Stage, a.cfg.buildPath(), readReport, report.ParseBuild)
+	if outcome != envelope.OutcomeOK {
+		ev.Outcome, ev.Detail = outcome, detail
 		return ev
 	}
 	// Raw, frontmatter included, as a remediation's. The controller records

@@ -163,7 +163,8 @@ func TestObserveWithoutEitherCapabilityIsNil(t *testing.T) {
 	ws := newWorkspace(t)
 	var out bytes.Buffer
 	a := New(newConfig(t, ws, &out), &fakeExec{})
-	onLine, rec := a.observe(bareHarness{}, 0, nil)
+	rec := a.recorder(bareHarness{})
+	onLine := a.observe(bareHarness{}, rec, 0, nil)
 	if onLine != nil || rec != nil {
 		t.Errorf("observe(bare) = (%v, %v), want (nil, nil)", onLine != nil, rec != nil)
 	}

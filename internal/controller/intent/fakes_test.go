@@ -1099,6 +1099,7 @@ type fakeJobs struct {
 	defaultOn bool // report the default image even when the spec pinned one
 	output    func(spec jobs.Spec) jobs.RunOutput
 	createErr error
+	deleteErr error
 	// results counts the Result calls: each reads a Job's whole log.
 	results int
 	// gone are the Jobs that no longer exist (their TTL ran out).
@@ -1159,6 +1160,9 @@ func (j *fakeJobs) Status(_ context.Context, name string) (jobs.Status, error) {
 func (j *fakeJobs) Delete(_ context.Context, name string) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.deleteErr != nil {
+		return j.deleteErr
+	}
 	j.deleted = append(j.deleted, name)
 	return nil
 }

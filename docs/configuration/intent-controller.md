@@ -199,8 +199,9 @@ carries none. The class list is the spend ceiling: a Project can pick only a siz
   then runs; a revise or check-fix round ends, its notice on the pull request saying no node could fit the agent. This
   holds for every intent run, on a class or on the default.
 - **An agent that stopped without a result** says why in the run's detail when the Job does: OOM-killed, naming the
-  memory limit and the class and what to raise; evicted; or past its deadline. An OOM kill counts as an attempt: the
-  agent ran.
+  memory limit and the class and what to raise; evicted; or past its deadline. An eviction records outcome `evicted`;
+  its raw Kubernetes pod message stays on the run for operators, while the intent issue says only that the pod was
+  evicted. An OOM kill and an eviction count as attempts: the agent may have run.
 
 Every agent pod, on a class or not, carries `karpenter.sh/do-not-disrupt: "true"`, so Karpenter (EKS Auto Mode's node
 manager) does not evict a running agent to consolidate its node: an agent Job runs once (`backoffLimit: 0`), and an

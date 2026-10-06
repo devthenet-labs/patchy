@@ -71,6 +71,11 @@ const (
 	// intent-controller restarts; a revise or check-fix round ends, as one
 	// that had no image to run on does.
 	OutcomeUnschedulable = "unschedulable"
+	// OutcomeEvicted: Kubernetes evicted the agent pod before it reported a
+	// result. Its pod message may describe private cluster nodes, so it is
+	// kept on the run and summarized without the message on the issue.
+	// The agent may have run, so this outcome counts as an attempt.
+	OutcomeEvicted = "evicted"
 )
 
 // roundRuns are one stage's runs of one round on one repository, by attempt.

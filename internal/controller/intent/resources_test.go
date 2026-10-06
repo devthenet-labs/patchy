@@ -521,6 +521,72 @@ func (e *env) stopUnschedulable(name string, run v1alpha1.IntentRun) v1alpha1.In
 	return got
 }
 
+// TestUnschedulableStatusWriteBeforeDelete: if the API server refuses the
+// terminal write, the Job must still be there for the next pass to reach
+// the same uncounted outcome. A missing Job would instead settle aborted
+// and spend the attempt, even though the agent never ran.
+func TestUnschedulableStatusWriteBeforeDelete(t *testing.T) {
+	e := newEnv(t, testProject())
+	e.unschedulableFor("build")
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	run := e.buildLaunched(name)
+	ctx := context.Background()
+	if _, err := e.runs.Reconcile(ctx, req(run.Name)); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.Advance(UnschedulableGrace + time.Second)
+	e.failRunEvery = 1
+	if _, err := e.runs.Reconcile(ctx, req(run.Name)); err == nil {
+		t.Fatal("terminal status write succeeded despite the injected API failure")
+	}
+	if slices.Contains(e.jobs.deleted, run.Status.JobRef.Name) {
+		t.Fatal("the Job was deleted before its uncounted outcome was durable")
+	}
+	if got := e.runsOf(name, v1alpha1.IntentStageBuild)[0]; got.Status.Phase != v1alpha1.RunRunning {
+		t.Fatalf("run phase = %s after the refused write, want Running", got.Status.Phase)
+	}
+	e.failRunEvery = 0
+	if _, err := e.runs.Reconcile(ctx, req(run.Name)); err != nil {
+		t.Fatal(err)
+	}
+	got := e.runsOf(name, v1alpha1.IntentStageBuild)[0]
+	if got.Status.Outcome != OutcomeUnschedulable || !uncounted(&got) ||
+		!slices.Contains(e.jobs.deleted, run.Status.JobRef.Name) {
+		t.Fatalf("retry = %s, uncounted %v, Job deleted %v; want unschedulable, true, true",
+			got.Status.Outcome, uncounted(&got), slices.Contains(e.jobs.deleted, run.Status.JobRef.Name))
+	}
+}
+
+// TestUnschedulableDeleteRetries: a delete failure after settlement does not
+// leave an unschedulable pod occupying capacity until its Job deadline.
+func TestUnschedulableDeleteRetries(t *testing.T) {
+	e := newEnv(t, testProject())
+	e.unschedulableFor("build")
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	run := e.buildLaunched(name)
+	ctx := context.Background()
+	if _, err := e.runs.Reconcile(ctx, req(run.Name)); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.Advance(UnschedulableGrace + time.Second)
+	e.jobs.deleteErr = errTransient
+	if _, err := e.runs.Reconcile(ctx, req(run.Name)); err == nil {
+		t.Fatal("Job delete succeeded despite the injected failure")
+	}
+	if got := e.runsOf(name, v1alpha1.IntentStageBuild)[0]; got.Status.Outcome != OutcomeUnschedulable {
+		t.Fatalf("run outcome = %s after the failed delete, want unschedulable", got.Status.Outcome)
+	}
+	e.jobs.deleteErr = nil
+	if _, err := e.runs.Reconcile(ctx, req(run.Name)); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(e.jobs.deleted, run.Status.JobRef.Name) {
+		t.Fatal("terminal reconcile did not retry the Job delete")
+	}
+}
+
 // TestUnschedulablePlanBlocks: a plan no node fits (the default resources
 // larger than any node) blocks the Intent rather than spend its attempts,
 // and resumes once the Project changes.
@@ -609,6 +675,41 @@ func TestOOMKilledBuildSaysWhy(t *testing.T) {
 		"resource class large", "agentResourceClass"} {
 		if !strings.Contains(run.Status.Detail, want) {
 			t.Errorf("detail %q does not say %q", run.Status.Detail, want)
+		}
+	}
+}
+
+// TestEvictionDetailStaysOnRun: a pod message can name private cluster
+// infrastructure. Operators need it on the run, but the public intent
+// issue sees only a short cause and a pointer to that run.
+func TestEvictionDetailStaysOnRun(t *testing.T) {
+	e := newEnv(t, testProject())
+	e.jobs.output = func(spec jobs.Spec) jobs.RunOutput {
+		if spec.Phase == "plan" {
+			return defaultOutput(spec)
+		}
+		return jobs.RunOutput{}
+	}
+	e.jobs.statusFn = func(spec jobs.Spec) (jobs.Status, bool) {
+		if spec.Phase != "build" {
+			return jobs.Status{}, false
+		}
+		return jobs.Status{Done: true, Failed: 1, PodReason: "Evicted",
+			PodMessage: "private-node-identifier was low on memory"}, true
+	}
+	name := e.awaiting()
+	e.gh.label(1, "patchy:approved", approver)
+	e.drive(name, v1alpha1.IntentFailed, repoImage)
+	runs := e.runsOf(name, v1alpha1.IntentStageBuild)
+	if len(runs) != 2 || runs[1].Status.Outcome != OutcomeEvicted ||
+		!strings.Contains(runs[1].Status.Detail, "private-node-identifier") {
+		t.Fatalf("build runs = %+v, want two evictions with the pod message on their detail", runs)
+	}
+	e.mustIntent(name)
+	for _, c := range e.gh.withMarker("patchy:intent") {
+		if strings.Contains(c.Body, "private-node-identifier") ||
+			!strings.Contains(c.Body, "agent pod was evicted") {
+			t.Errorf("intent status comment = %q, want a redacted eviction cause", c.Body)
 		}
 	}
 }

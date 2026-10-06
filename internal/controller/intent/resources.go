@@ -227,6 +227,16 @@ func noResultDetail(base string, st jobs.Status) string {
 	return detail
 }
 
+// noResultOutcome distinguishes an eviction from an ordinary missing
+// result. The pod message stays in the run detail, where an operator can
+// read it, while issue projection can name the outcome without the message.
+func noResultOutcome(st jobs.Status) string {
+	if st.PodReason == "Evicted" && st.AgentTerminated != "OOMKilled" {
+		return OutcomeEvicted
+	}
+	return OutcomeAborted
+}
+
 // resourceClassesCondition is the ResourceClassesResolved condition of a
 // Project, given the classes defined, or nil when the Project picks no
 // class (the condition is then absent).

@@ -124,6 +124,9 @@ func failedRunReason(run *v1alpha1.IntentRun) string {
 	case run.Status.Outcome == OutcomeUnschedulable:
 		return run.Status.Outcome + ": no node in the cluster could fit its agent (run " + run.Name +
 			" records why)"
+	case run.Status.Outcome == OutcomeEvicted:
+		return run.Status.Outcome + ": the agent pod was evicted (run " + run.Name +
+			" records why)"
 	case run.Status.Detail == "":
 		return run.Status.Outcome
 	}

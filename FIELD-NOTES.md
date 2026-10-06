@@ -41,6 +41,16 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
 
 ## Running intents
 
+- **Pod eviction messages can expose cluster details through public intent issues** (resource-class review, 2026-10-05).
+  The first eviction detail copied Kubernetes' raw pod message to the run, then the Failed intent's status comment
+  copied it to GitHub. It may name nodes or other private infrastructure. The run keeps the message for operators; the
+  issue now says only that the pod was evicted and names the run to inspect.
+- **A scheduling fast-fail needs a durable outcome before deleting its Job** (resource-class review, 2026-10-05). PR
+  #122's first unschedulable path deleted the Job before writing the run's uncounted outcome. A transient status write
+  failure would make the retry see a missing Job and count an ordinary aborted attempt, even though the agent never ran.
+  The handler now settles first, then deletes; a terminal pass retries a failed delete. Regression tests cover both
+  failed writes and failed deletes.
+
 - **A timed-out run records no usage, so the cost ceiling cannot see it** (overdub-10, 2026-10-04). The second build
   attempt timed out after an hour; its run status has no usage, so the intent reports
   $3.65 while the broker counted

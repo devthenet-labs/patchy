@@ -297,6 +297,13 @@ func (r *RunReconciler) run(ctx context.Context, req ctrl.Request) (ctrl.Result,
 		}
 		return r.collect(ctx, &run)
 	case v1alpha1.RunComplete, v1alpha1.RunFailed:
+		// An unschedulable Job is deleted only after its outcome is
+		// durable. Retry cleanup if the delete failed after settlement.
+		if run.Status.Outcome == OutcomeUnschedulable {
+			if err := r.deleteUnschedulableJob(ctx, &run); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		// settle deletes a plan run's Repository after the terminal write;
 		// a delete that failed there is retried here, on every event, so
 		// no plan Repository outlives its collection.
@@ -867,17 +874,32 @@ func (r *RunReconciler) unfinished(ctx context.Context, run *v1alpha1.IntentRun,
 	}
 	unplaced, wait := unschedulable(st, r.now())
 	if unplaced != "" {
-		if err := r.Jobs.Delete(ctx, run.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
-			return ctrl.Result{}, fmt.Errorf("delete unschedulable job %s: %w", run.Status.JobRef.Name, err)
-		}
 		r.log().LogAttrs(ctx, slog.LevelWarn, "the agent pod could not be scheduled; the run stops",
 			slog.String("run", run.Name), slog.String("detail", unplaced))
-		return ctrl.Result{}, r.settle(ctx, run, result{outcome: OutcomeUnschedulable, detail: unplaced})
+		// A failed status write must leave the Job in place: otherwise the
+		// next pass sees a vanished Job and settles it aborted, spending an
+		// attempt the agent never ran. Terminal passes retry the delete.
+		if err := r.settle(ctx, run, result{outcome: OutcomeUnschedulable, detail: unplaced}); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.deleteUnschedulableJob(ctx, run)
 	}
 	if wait > 0 && (requeue == 0 || wait < requeue) {
 		requeue = wait
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// deleteUnschedulableJob stops a pod whose run already records that no node
+// could fit it. It is safe to repeat after an uncertain delete response.
+func (r *RunReconciler) deleteUnschedulableJob(ctx context.Context, run *v1alpha1.IntentRun) error {
+	if run.Status.JobRef == nil {
+		return nil
+	}
+	if err := r.Jobs.Delete(ctx, run.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
+		return fmt.Errorf("delete unschedulable job %s: %w", run.Status.JobRef.Name, err)
+	}
+	return nil
 }
 
 // settleMissingJob recovers a pre-fix revise run whose Job expired while the
@@ -1212,7 +1234,7 @@ func (r *RunReconciler) collectPlan(ctx context.Context, run *v1alpha1.IntentRun
 		}
 	}
 	if ev == nil {
-		return r.settle(ctx, run, result{outcome: OutcomeAborted,
+		return r.settle(ctx, run, result{outcome: noResultOutcome(st),
 			detail: noResultDetail("agent job produced no plan event", st), transcript: transcript})
 	}
 	res := result{stage: &ev.Stage, transcript: transcript}
@@ -1275,7 +1297,7 @@ func (r *RunReconciler) collectBuild(ctx context.Context, run *v1alpha1.IntentRu
 		}
 	}
 	if ev == nil {
-		return r.settle(ctx, run, result{outcome: OutcomeAborted,
+		return r.settle(ctx, run, result{outcome: noResultOutcome(st),
 			detail: noResultDetail("agent job produced no build event", st), transcript: transcript})
 	}
 	res := result{stage: &ev.Stage, transcript: transcript, report: ev.ReportMarkdown}

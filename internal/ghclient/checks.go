@@ -66,9 +66,12 @@ type WorkflowJob struct {
 	Conclusion string
 }
 
-// ListCheckRuns lists the latest check runs for a commit SHA.
+// ListCheckRuns lists every check run for a commit SHA, earlier attempts of
+// a re-run check included (filter=all): GitHub's default lists only each
+// check's latest run, which would hide a failure once its re-run starts. The
+// caller picks a check's latest run by id.
 func (c *Client) ListCheckRuns(ctx context.Context, repo Repo, sha string) ([]CheckRun, error) {
-	opts := &github.ListCheckRunsOptions{ListOptions: github.ListOptions{PerPage: listPageSize}}
+	opts := &github.ListCheckRunsOptions{Filter: new("all"), ListOptions: github.ListOptions{PerPage: listPageSize}}
 	var out []CheckRun
 	for range walkPageCap {
 		page, resp, err := c.gh.Checks.ListCheckRunsForRef(ctx, repo.Owner, repo.Name, sha, opts)

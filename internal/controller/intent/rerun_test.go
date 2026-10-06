@@ -266,3 +266,37 @@ func TestRerunThatNeverReportsStartsTheFixRound(t *testing.T) {
 		t.Errorf("revise runs %+v, re-runs %v; want one round on 71 and the one re-run", runs, e.gh.reruns)
 	}
 }
+
+// TestRerunStillRunningAtTheTimeoutStartsTheFixRound: a re-run GitHub
+// started (its check run reported, but not completed) and still running as
+// the checks timeout, counted from the re-run, passes does not settle the
+// head: the failure it re-ran stands, and the check-fix round starts on it.
+// A named check whose re-run already concluded is judged on that conclusion.
+func TestRerunStillRunningAtTheTimeoutStartsTheFixRound(t *testing.T) {
+	e, name, head := rerunEnv(t)
+	e.failActions(head, 71, 61, 81, "completed")
+	e.poll(name)
+	if !slices.Equal(e.gh.reruns, []int64{81}) {
+		t.Fatalf("re-runs = %v, want 81", e.gh.reruns)
+	}
+	e.gh.workflowRuns[61][0].Status, e.gh.workflowRuns[61][0].Conclusion = "in_progress", ""
+	e.gh.checks[head] = append(e.gh.checks[head], ghclient.CheckRun{ID: 72, Name: "test", HeadSHA: head,
+		Status: "in_progress", AppSlug: "github-actions", CheckSuiteID: 61})
+	e.poll(name)
+	if runs := e.runsOf(name, v1alpha1.IntentStageRevise); len(runs) != 0 {
+		t.Fatalf("while the re-run runs: %d revise runs, want none", len(runs))
+	}
+	e.clock.Advance(defaultChecksTimeout)
+	e.drive(name, v1alpha1.IntentRevising, repoImage)
+	runs := e.runsOf(name, v1alpha1.IntentStageRevise)
+	if len(runs) != 1 || runs[0].Spec.Trigger != v1alpha1.IntentRunTriggerChecks ||
+		!slices.Equal(runs[0].Spec.Inputs.CheckRunIDs, []int64{71}) {
+		t.Fatalf("revise runs = %+v, want one check-fix round on the re-ran failure 71", runs)
+	}
+	if pr := e.get(name).Status.PullRequests[0]; pr.ChecksObservedHeadSHA == head {
+		t.Errorf("head %s recorded as observed with its re-run unfinished", head)
+	}
+	if !slices.Equal(e.gh.reruns, []int64{81}) {
+		t.Errorf("re-runs = %v, want 81 once", e.gh.reruns)
+	}
+}

@@ -70,6 +70,9 @@ func TestHeadChecksAndJobLogs(t *testing.T) {
 		t.Fatal("job-log download has no deadline")
 	}
 	mux.HandleFunc("GET /repos/o/r/commits/abc/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("filter"); got != "all" {
+			t.Errorf("check runs listed with filter=%q, want all (a re-run hides the failure otherwise)", got)
+		}
 		writeJSON(t, w, `{"total_count":1,"check_runs":[{"id":41,"name":"test","head_sha":"abc",`+
 			`"status":"completed","conclusion":"failure","details_url":"https://github.com/o/r/actions/runs/77/job/88",`+
 			`"app":{"slug":"github-actions"},"check_suite":{"id":66},`+

@@ -51,6 +51,12 @@ func (p *pass) checkRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (
 	if !settled && !expired {
 		return false, nil
 	}
+	if expired {
+		// A re-run still running as its timeout passes leaves the failures
+		// it re-ran standing: the round starts on them rather than the head
+		// reading as settled with nothing failed.
+		failed = failed.withUnsettledRerun(rerun)
+	}
 	if !expired && rerunAwaited(rerun, failed) {
 		// A failure the re-run re-ran is still its check's latest run:
 		// GitHub has not yet replaced it with the re-run's.
@@ -68,10 +74,8 @@ func (p *pass) checkRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (
 	if p.checksConsumed(pr.Repository, failed) {
 		return false, nil
 	}
-	if p.proj.Spec.Checks.RerunFailed && rerun == nil {
-		if outcome, err := p.rerunFailedChecks(ctx, pr, failed, expired); err != nil || outcome != rerunSkipped {
-			return outcome == rerunRequested, err
-		}
+	if outcome, err := p.rerunFailedChecks(ctx, pr, failed, expired); err != nil || outcome != rerunSkipped {
+		return outcome == rerunRequested, err
 	}
 	diagnosis, err := p.checkDiagnostics(ctx, pr.Repository, pr.HeadSHA, failed)
 	if err != nil {
@@ -157,6 +161,41 @@ type failedChecks struct {
 	statusIDs []int64
 	// runs are the failed check runs, by id, as GitHub listed them.
 	runs map[int64]ghclient.CheckRun
+	// listed is every check run GitHub listed at the head, by id, and
+	// pending the named checks whose latest run has not completed.
+	listed  map[int64]ghclient.CheckRun
+	pending map[string]bool
+}
+
+// withUnsettledRerun adds to f each failure rerun re-ran whose check's
+// latest run (the re-run's own) has still not completed: once the checks
+// timeout counted from the re-run passes, that failure is the check's last
+// word at the head. A re-ran check that has since concluded is judged on its
+// own latest run, already in f. With no re-run, f is unchanged.
+func (f failedChecks) withUnsettledRerun(rerun *v1alpha1.IntentChecksRerun) failedChecks {
+	if rerun == nil {
+		return f
+	}
+	added := false
+	for _, id := range rerun.CheckRunIDs {
+		r, ok := f.listed[id]
+		if !ok || !f.pending[r.Name] || !failedConclusion(r.Conclusion) || slices.Contains(f.checkIDs, id) {
+			continue
+		}
+		if f.runs == nil {
+			f.runs = map[int64]ghclient.CheckRun{}
+		}
+		f.checkIDs = append(slices.Clone(f.checkIDs), id)
+		f.runs[id] = r
+		added = true
+	}
+	if added {
+		slices.Sort(f.checkIDs)
+		if len(f.checkIDs) > 32 {
+			f.checkIDs = f.checkIDs[:32]
+		}
+	}
+	return f
 }
 
 // rerunAt is the re-run recorded on pr's head, nil when there is none: one
@@ -208,6 +247,10 @@ const maxRerunRuns = 32
 // transient error, retried with the pass.
 func (p *pass) rerunFailedChecks(ctx context.Context, pr *v1alpha1.IntentPullRequest, failed failedChecks,
 	expired bool) (rerunOutcome, error) {
+	if !p.proj.Spec.Checks.RerunFailed || rerunAt(pr) != nil {
+		// Re-runs are off, or this head had its one re-run.
+		return rerunSkipped, nil
+	}
 	if len(failed.statusIDs) > 0 || len(failed.checkIDs) == 0 {
 		return rerunSkipped, nil
 	}
@@ -284,10 +327,12 @@ func (p *pass) failedNamedChecks(ctx context.Context, repo, sha string) (failedC
 		return failedChecks{}, false, err
 	}
 	byName := map[string]ghclient.CheckRun{}
+	listed := map[int64]ghclient.CheckRun{}
 	for _, r := range runs {
 		if r.HeadSHA != sha {
 			continue
 		}
+		listed[r.ID] = r
 		if current, ok := byName[r.Name]; !ok || r.ID > current.ID {
 			byName[r.Name] = r
 		}
@@ -299,11 +344,12 @@ func (p *pass) failedNamedChecks(ctx context.Context, repo, sha string) (failedC
 		}
 	}
 	settled := true
-	failures := failedChecks{runs: map[int64]ghclient.CheckRun{}}
+	failures := failedChecks{runs: map[int64]ghclient.CheckRun{}, listed: listed, pending: map[string]bool{}}
 	for _, name := range p.proj.Spec.Checks.Fix {
 		if r, ok := byName[name]; ok {
 			if !strings.EqualFold(r.Status, "completed") {
 				settled = false
+				failures.pending[name] = true
 			} else if failedConclusion(r.Conclusion) {
 				failures.checkIDs = append(failures.checkIDs, r.ID)
 				failures.runs[r.ID] = r

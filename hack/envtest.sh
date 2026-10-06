@@ -12,4 +12,4 @@ set -eu
 KUBEBUILDER_ASSETS=$(setup-envtest use --bin-dir "${HOME}/.cache/kubebuilder-envtest" -p path)
 export KUBEBUILDER_ASSETS
 go test ./api/... ./charts/patchy/... ./internal/action/... ./internal/controller/source/... \
-	./internal/controller/investigation/... ./internal/controller/remediation/... "$@"
+	./internal/controller/investigation/... ./internal/controller/remediation/... ./internal/web/authz/... "$@"

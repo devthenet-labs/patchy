@@ -86,7 +86,8 @@ func TestRepairPromptStatesTheRules(t *testing.T) {
 				t.Errorf("%s: repair prompt names %q; it quotes nothing but the reason", p.ReportPath, absent)
 			}
 		}
-		refuses := strings.Contains(got, "patchy refuses a\n  repair that changes any file but the report and `/workspace/commit.sh`")
+		refuses := strings.Contains(got,
+			"patchy refuses a\n  repair that changes any file but the report and `/workspace/commit.sh`")
 		if refuses != (p.CommitScriptPath != "") {
 			t.Errorf("%s: states the tree guard = %v, want it exactly on a stage with commit.sh:\n%s",
 				p.ReportPath, refuses, got)

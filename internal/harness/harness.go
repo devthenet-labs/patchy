@@ -55,6 +55,13 @@ type PromptRequest struct {
 	Sandbox            Sandbox  // filesystem/exec posture; each harness renders it natively
 	AddDirs            []string // extra directories the agent may access
 	Env                []string // extras appended to os.Environ() by the runner
+	// WriteDirs scopes a SandboxReadOnly run's writes: the directories (absolute,
+	// or relative to the run's workspace) it may create and change files in,
+	// and nowhere else. Empty keeps the posture's unscoped write, so a request
+	// that does not set it renders exactly as before; other postures ignore it.
+	// claude renders it as path-scoped edit rules; a harness with no path
+	// grammar ignores it, and the pod remains its boundary.
+	WriteDirs []string
 }
 
 // AgentResult is the parsed terminal result of one agent run.

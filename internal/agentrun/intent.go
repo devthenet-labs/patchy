@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/bitwise-media-group/patchy/internal/envelope"
 	"github.com/bitwise-media-group/patchy/internal/harness"
@@ -214,6 +215,7 @@ func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.
 		ev.Detail = err.Error()
 		return ev
 	}
+	maxTurns, budget := a.planLimits()
 	prompt, err := templates.RenderPlanPrompt(templates.PlanPrompt{
 		IssuePath:  a.cfg.issuePath(),
 		ReportPath: a.cfg.planPath(),
@@ -225,8 +227,12 @@ func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.
 		// than the runner's default ceiling.
 		BuildMaxTurns:    a.cfg.RemediateManualMaxTurns,
 		BuildTokenBudget: a.cfg.RemediateManualTokenBudget,
-		PreviousAttempt:  a.cfg.PreviousAttempt,
-		Trees:            planTrees(repos),
+		// The plan's own limits, exactly as this run is held to them below.
+		Limits: templates.StageLimits{
+			MaxTurns: maxTurns, TokenBudget: budget, Timeout: a.cfg.InvestigateTimeout,
+		},
+		PreviousAttempt: a.cfg.PreviousAttempt,
+		Trees:           planTrees(repos),
 	})
 	if err != nil {
 		ev.Outcome = envelope.OutcomeRuntimeError
@@ -240,11 +246,16 @@ func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.
 		return ev
 	}
 
-	maxTurns, budget := a.planLimits()
 	// The stage's wall clock and idle limit are the investigate stage's: no
 	// per-Job timeout reaches the pod (a new key would change the
 	// repository-image Job), so the intent controller sets each stage's on
 	// the Env of the jobs Client it launches that stage with.
+	//
+	// The posture is the investigation's, with its writes scoped to the
+	// report's directory: the planner can write and fix up its report and
+	// nothing else, which is what its prompt tells it. A Finding
+	// investigation sets no WriteDirs, so its invocation does not move. A
+	// report repair resumes with this same request, so it keeps the scope.
 	sr := a.newStage(h, cli, harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.InvestigateModel, a.cfg.InvestigateHarness),
@@ -253,6 +264,7 @@ func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.
 		SessionID: a.newSessionID(),
 		AddDirs:   []string{a.cfg.Workspace},
 		Env:       env,
+		WriteDirs: []string{filepath.Dir(a.cfg.planPath())},
 	}, a.cfg.InvestigateTimeout, a.cfg.InvestigateIdleTimeout, budget)
 	res, idle, runErr := a.start(ctx, sr)
 	a.fillStage(&ev.Stage, h, res)
@@ -360,9 +372,13 @@ func (a *Agent) build(ctx context.Context, params remediationParams, scope build
 		PlanPath:         a.cfg.inputInvestigation(),
 		ReportPath:       a.cfg.buildPath(),
 		CommitScriptPath: a.cfg.commitScript(),
-		PreviousAttempt:  a.cfg.PreviousAttempt,
-		ThisRepository:   scope.this,
-		Siblings:         scope.siblings,
+		// The run's own limits, exactly as it is held to them below.
+		Limits: templates.StageLimits{
+			MaxTurns: params.maxTurns, TokenBudget: params.budget, Timeout: a.cfg.RemediateTimeout,
+		},
+		PreviousAttempt: a.cfg.PreviousAttempt,
+		ThisRepository:  scope.this,
+		Siblings:        scope.siblings,
 	})
 	if err != nil {
 		ev.Outcome = envelope.OutcomeRuntimeError

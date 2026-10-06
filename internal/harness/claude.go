@@ -6,6 +6,7 @@ package harness
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -32,10 +33,12 @@ func NewClaude() *Claude {
 
 // claudeTools renders each sandbox posture into Claude Code's allow/deny tool
 // grammar. Network tools stay denied in both postures — the pod has no egress
-// and the stages never fetch; the read-only posture additionally denies edits
-// and subagents and narrows Bash to read-only git (Write stays allowed so the
-// agent can emit its report). SandboxDefault is absent by design: an unset
-// posture imposes no grammar and leaves the CLI's defaults.
+// and the stages never fetch; the read-only posture additionally denies
+// subagents, leaves Edit out of the allow list (in -p mode a tool that is not
+// allowed is refused) and narrows Bash to read-only git. Write stays allowed
+// so the agent can emit its report: anywhere the agent can reach, unless the
+// request scopes it with WriteDirs (claudeAllow). SandboxDefault is absent by
+// design: an unset posture imposes no grammar and leaves the CLI's defaults.
 //
 // A multi-repository intent's planner reads its other repositories' trees
 // with the same read-only tools: they sit under the workspace the stage adds
@@ -72,7 +75,7 @@ func (c *Claude) PromptSpec(ws string, req PromptRequest) runner.CommandSpec {
 		argv = append(argv, "--max-turns", strconv.Itoa(req.MaxTurns))
 	}
 	if t, ok := claudeTools[req.Sandbox]; ok {
-		argv = append(argv, "--allowedTools", strings.Join(t.allow, " "))
+		argv = append(argv, "--allowedTools", strings.Join(claudeAllow(ws, req, t.allow), " "))
 		argv = append(argv, "--disallowedTools", strings.Join(t.deny, " "))
 	}
 	for _, dir := range req.AddDirs {
@@ -106,6 +109,35 @@ func (c *Claude) ResumeSpec(ws, sessionID string, req PromptRequest) runner.Comm
 	spec := c.PromptSpec(ws, req)
 	spec.Argv = append(spec.Argv, "--resume", sessionID)
 	return spec
+}
+
+// claudeAllow is the posture's allow list for one request. A SandboxReadOnly
+// request with WriteDirs swaps the bare Write, at its place in the list, for
+// one Edit rule per directory: in Claude Code's grammar an Edit rule covers
+// every file-editing tool (Write and Edit alike), and a "//" prefix makes its
+// gitignore-style pattern absolute. The agent can then write and fix up files
+// in those directories and is refused everywhere else. The scope has to be an
+// allow rule: a deny overrides any allow, so a deny on the tree would stop
+// the report as well. A relative directory is resolved against ws, the
+// directory the CLI runs in. Every other request keeps the posture's list.
+func claudeAllow(ws string, req PromptRequest, allow []string) []string {
+	if req.Sandbox != SandboxReadOnly || len(req.WriteDirs) == 0 {
+		return allow
+	}
+	scoped := make([]string, 0, len(allow)+len(req.WriteDirs))
+	for _, tool := range allow {
+		if tool != "Write" {
+			scoped = append(scoped, tool)
+			continue
+		}
+		for _, dir := range req.WriteDirs {
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(ws, dir)
+			}
+			scoped = append(scoped, "Edit(/"+filepath.Clean(dir)+"/**)")
+		}
+	}
+	return scoped
 }
 
 // ParseResult reads the terminal result event from claude's stream-json

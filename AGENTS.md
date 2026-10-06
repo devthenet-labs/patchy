@@ -192,8 +192,9 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   transcripts beside them are never in its memory).
 - `forge` — the shared forge seam: resolve a repository URL to its covering `Forge` CR (host → orgs → repo
   regexes; most-constrained wins) and mint scoped read/write tokens. Consumers: source (read), remediation
-  (write), intent (a token per operation, one repository and one permission each: `TokenWith`). `ghclient`,
-  `ghpush`, `ghsecret` sit beneath it.
+  (write), intent (a token per operation, one repository and one permission each: `TokenWith`; opening a pull
+  request also reads contents, which GitHub needs in a private repository). `ghclient`, `ghpush`, `ghsecret` sit
+  beneath it.
 - `schedule`, `priority`, `stats` — pure logic: slot picking with anti-starvation aging, the 0–100 scheduling
   score, rollup delta arithmetic + OTel taps.
 - `labels` — the trimmed human-facing label vocabulary the issue projection renders (one-way; never parsed back

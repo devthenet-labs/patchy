@@ -3,7 +3,40 @@
 
 package templates
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
+
+// StageLimits are what one intent run may spend, as agent-runner resolved
+// them for it: its agent turns and output tokens once any grant has lowered
+// them (planLimits, buildLimits), and its stage's wall clock. A prompt
+// states them up front so the agent paces its own work: reaching any of
+// them ends the run with nothing to show for it.
+type StageLimits struct {
+	// MaxTurns is the run's agent-turn ceiling (claude's --max-turns).
+	MaxTurns int
+	// TokenBudget is the output tokens past which the runner kills the run.
+	TokenBudget int
+	// Timeout is the stage's wall clock, after which the runner kills the
+	// run (PATCHY_INVESTIGATE_TIMEOUT for a plan, PATCHY_REMEDIATE_TIMEOUT
+	// for every build run).
+	Timeout time.Duration
+}
+
+// WallClock is Timeout as a prompt states it: in minutes ("15 minutes")
+// when it is a whole number of them, in seconds otherwise.
+func (l StageLimits) WallClock() string {
+	n, unit := int(l.Timeout.Round(time.Second)/time.Second), "second"
+	if l.Timeout >= time.Minute && l.Timeout%time.Minute == 0 {
+		n, unit = int(l.Timeout/time.Minute), "minute"
+	}
+	if n != 1 {
+		unit += "s"
+	}
+	return fmt.Sprintf("%d %s", n, unit)
+}
 
 // PlanPrompt is the data for an intent's plan-stage prompt: read the request
 // and the repository, write a plan a human approves before anything is
@@ -29,6 +62,9 @@ type PlanPrompt struct {
 	// build will receive, so the number stated is the one the build gets.
 	BuildMaxTurns    int
 	BuildTokenBudget int
+	// Limits are the plan run's own, which the prompt states before the
+	// build's so the planner budgets its reading against them.
+	Limits StageLimits
 	// PreviousAttempt is the failed plan this one retries; nil omits the
 	// section.
 	PreviousAttempt *PreviousAttempt
@@ -92,6 +128,9 @@ type BuildPrompt struct {
 	PlanPath         string
 	ReportPath       string
 	CommitScriptPath string
+	// Limits are this run's own: a build's, a revise round's or a check-fix
+	// round's grant, and the stage's wall clock.
+	Limits StageLimits
 	// PreviousAttempt is the failed build this one retries; nil omits the
 	// section.
 	PreviousAttempt *PreviousAttempt

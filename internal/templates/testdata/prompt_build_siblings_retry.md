@@ -50,6 +50,8 @@ M go.sum
 
 ## The build
 
+- This run may take at most 120 agent turns, 600000 output tokens and 45 minutes.
+  A run that reaches any of them ends with nothing built, so leave room to write your outputs.
 - Implement the plan in the repository's working tree, matching the surrounding code's style and conventions.
 - Never create, change or delete anything under `.github/`, `.patchy/` or `.devcontainer/` — the CI definitions and
   the image you run in. A change that touches any of them is refused whole.

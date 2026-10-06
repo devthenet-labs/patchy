@@ -16,7 +16,9 @@
 # intentController.forgeSecrets; its agent-jobs Role can get, create, update
 # and delete any Secret in the agents namespace, including model keys,
 # image-pull credentials and other Jobs' handoffs. GitHub tokens are scoped
-# per operation to one repository and one permission. There is no ClusterRole.
+# per operation to one repository and one permission (opening a pull request
+# also reads contents, which a private repository requires). There is no
+# ClusterRole.
 {{- if .Values.intentController.enabled }}
 {{- $vals := .Values.intentController }}
 {{- $name := "intent-controller" }}

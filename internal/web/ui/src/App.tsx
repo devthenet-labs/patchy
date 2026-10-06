@@ -7,6 +7,7 @@ import {
   fetchConfig,
   fetchFinding,
   fetchFindings,
+  fetchMe,
   fetchRollups,
   postAction,
   postAdmin,
@@ -15,9 +16,10 @@ import {
   subscribeConfig,
 } from "./api";
 import { consumeLogoutMarker, readAuthError, readProvider, signInURL, signOut } from "./auth";
-import type { ActionVerb, AdminVerb, ConfigDataset, Dataset, Finding, Phase } from "./types";
+import type { ActionVerb, AdminVerb, ConfigDataset, Dataset, Finding, Me, Phase } from "./types";
 import { emptySelection, filterFindings, repoOptions, sortFindings, type Selection } from "./filters";
-import { useRoute } from "./router";
+import { isIntentsRoute, useRoute } from "./router";
+import { IntentsArea } from "./components/IntentsArea";
 import { DEFAULT_PERSONA, type Persona } from "./mock/personas";
 import { ConfigView } from "./components/ConfigView";
 import { FilterBar } from "./components/FilterBar";
@@ -80,6 +82,15 @@ export function App() {
   useEffect(() => {
     void load(persona);
   }, [load, persona]);
+
+  // The intents views exist only when the server has them on; /api/me
+  // answering is how the SPA knows, and which Projects it lists decides
+  // whether the nav link shows.
+  const [me, setMe] = useState<Me | null>(null);
+  useEffect(() => {
+    void fetchMe().then(setMe);
+  }, []);
+  const intentsNav = Boolean(me && me.projects.length > 0);
 
   // The detail view lazily fetches its finding: the list payload carries
   // trimmed summaries only. detail is null while loading or when the finding
@@ -305,7 +316,11 @@ export function App() {
   };
 
   let body;
-  if (findingsBlocked !== null && route.view !== "rollups") {
+  if (isIntentsRoute(route)) {
+    // The intents views gate themselves, per Project, never on the findings
+    // grant.
+    body = <IntentsArea route={route} />;
+  } else if (findingsBlocked !== null && route.view !== "rollups") {
     body = authPanel();
   } else if (error && !dataset) {
     body = panel("Cannot reach the status API", error);
@@ -359,6 +374,7 @@ export function App() {
         mode={mode}
         route={route}
         configView={configView}
+        intentsNav={intentsNav}
         themeMode={themeMode}
         onToggleTheme={toggleTheme}
         persona={persona}

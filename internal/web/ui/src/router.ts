@@ -5,6 +5,9 @@
 //   #/finding/{name}      finding detail (optional /{tab})
 //   #/rollups             rollups, optional /{scope}
 //   #/config              configuration, optional /{section}
+//   #/intents             intents board (when the server has the views on)
+//   #/intents/{name}      one intent's timeline
+//   #/intents/{name}/runs/{run}  one run's panel
 
 import { useEffect, useState } from "preact/hooks";
 import type { ScopeType } from "./types";
@@ -17,7 +20,16 @@ export type Route =
   | { view: "list" }
   | { view: "detail"; name: string; tab: TabId }
   | { view: "rollups"; scope: ScopeType }
-  | { view: "config"; section: ConfigSection };
+  | { view: "config"; section: ConfigSection }
+  | { view: "intents" }
+  | { view: "intent"; name: string }
+  | { view: "intentRun"; name: string; run: string };
+
+// isIntentsRoute reports a route of the intents views, which gate
+// themselves rather than on the findings grant.
+export function isIntentsRoute(route: Route): boolean {
+  return route.view === "intents" || route.view === "intent" || route.view === "intentRun";
+}
 
 const TABS: TabId[] = ["overview", "alerts", "timeline", "investigation", "remediation"];
 const SCOPES: ScopeType[] = ["total", "repository", "harness", "model"];
@@ -39,7 +51,26 @@ export function parseRoute(hash: string): Route {
       : "integrations";
     return { view: "config", section };
   }
+  if (parts[0] === "intents") {
+    if (parts[1] && parts[2] === "runs" && parts[3]) {
+      return { view: "intentRun", name: parts[1], run: parts[3] };
+    }
+    if (parts[1]) return { view: "intent", name: parts[1] };
+    return { view: "intents" };
+  }
   return { view: "list" };
+}
+
+export function hrefForIntents(): string {
+  return "#/intents";
+}
+
+export function hrefForIntent(name: string): string {
+  return `#/intents/${encodeURIComponent(name)}`;
+}
+
+export function hrefForIntentRun(name: string, run: string): string {
+  return `#/intents/${encodeURIComponent(name)}/runs/${encodeURIComponent(run)}`;
 }
 
 export function hrefForList(): string {

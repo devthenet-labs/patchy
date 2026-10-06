@@ -273,6 +273,22 @@ type RunActivity struct {
 	Capped bool `json:"capped,omitempty"`
 }
 
+// RunOutput is the run stream's output event: one chunk of what the command
+// the agent is running prints, for a tier 2 reader only. It is live only:
+// never persisted, never part of the transcript or the activity, and only
+// the latest command's output is replayed to a viewer who joins late. Line
+// is the number of Lines[0] in the command's output; a chunk starting past
+// the previous one's end means lines were left out. Done marks the
+// command's last chunk; Truncated says the agent stopped forwarding its
+// output at its budget.
+type RunOutput struct {
+	Task      string   `json:"task"`
+	Line      int      `json:"line"`
+	Lines     []string `json:"lines"`
+	Done      bool     `json:"done,omitempty"`
+	Truncated bool     `json:"truncated,omitempty"`
+}
+
 // StreamNotice is the run stream's unavailable and end events' payload.
 type StreamNotice struct {
 	Reason string `json:"reason,omitempty"`

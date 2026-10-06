@@ -1,38 +1,43 @@
 // One run's panel: what it is doing now and everything that will stop it,
 // in plain English, from the server's figures. Every tier sees the activity
 // (turn count, the open tool and for how long, the last activity); a
-// transcripts-tier reader also gets the report and the conversation, as
-// plain text. The live stream is stripped server-side: a viewer without the
-// tier never receives the text at all.
+// transcripts-tier reader also gets the report, the conversation and, while
+// the run is live, what the command it is running prints, as plain text.
+// The live stream is stripped server-side: a viewer without the tier never
+// receives the text at all.
 
 import { useEffect, useState } from "preact/hooks";
 import type { IntentRunDetail, RunActivity, TranscriptTurn } from "../types";
 import { streamRun } from "../api";
 import { formatDate, formatMicroUSD, formatTokens } from "../format";
-import { formatDuration, secondsSince, stopConditions } from "../intents";
+import { formatDuration, mergeRunOutput, secondsSince, stopConditions, type RunOutputState } from "../intents";
 import { hrefForIntent } from "../router";
 import { Icon } from "./icons";
+import { LiveOutput } from "./LiveOutput";
 import { PlainText } from "./PlainText";
 import { Pill } from "./Pills";
 
 function useRunStream(run: IntentRunDetail) {
   const [activity, setActivity] = useState<RunActivity | null>(null);
   const [turns, setTurns] = useState<TranscriptTurn[]>([]);
+  const [output, setOutput] = useState<RunOutputState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [ended, setEnded] = useState<string | null>(null);
   useEffect(() => {
     setActivity(null);
     setTurns([]);
+    setOutput(null);
     setNotice(null);
     setEnded(null);
     return streamRun(run.intent, run.name, {
       onActivity: setActivity,
       onTurn: (t) => setTurns((prev) => [...prev, t]),
+      onOutput: (o) => setOutput((prev) => mergeRunOutput(prev, o)),
       onUnavailable: setNotice,
       onEnd: (reason) => setEnded(reason),
     });
   }, [run.intent, run.name]);
-  return { activity, turns, notice, ended };
+  return { activity, turns, output, notice, ended };
 }
 
 function turnText(t: TranscriptTurn): string {
@@ -41,7 +46,7 @@ function turnText(t: TranscriptTurn): string {
 }
 
 export function RunPanel({ run, now }: { run: IntentRunDetail; now: number }) {
-  const { activity, turns, notice, ended } = useRunStream(run);
+  const { activity, turns, output, notice, ended } = useRunStream(run);
   const elapsed = run.startedAt
     ? run.finishedAt
       ? Math.max(0, Math.floor((Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000))
@@ -162,6 +167,15 @@ export function RunPanel({ run, now }: { run: IntentRunDetail; now: number }) {
 
       {run.tier === "transcripts" ? (
         <>
+          {output ? (
+            <section class="mt-6">
+              <h2 class="ps-heading mb-2">Live output</h2>
+              <LiveOutput output={output} following={ended === null && activity?.live !== false} />
+              <p class="mt-1.5 mb-0 text-[11.5px] text-faint">
+                The latest command only, as it runs. It is not recorded: a reload or a finished run shows none.
+              </p>
+            </section>
+          ) : null}
           {run.report ? (
             <section class="mt-6">
               <h2 class="ps-heading mb-2">Report</h2>

@@ -73,7 +73,7 @@ func TestIntentWireTypesMatchTypeScript(t *testing.T) {
 		Me{}, ProjectAccess{}, IntentBoard{}, BoardProject{}, ProjectRepo{}, IntentLimits{}, IntentCard{},
 		IntentPR{}, PreviewLink{}, RunningRun{}, AttemptCount{}, IntentDetail{}, IntentInputView{},
 		IntentPlanView{}, IntentApproval{}, IntentRunRow{}, RunGrant{}, IntentRunDetail{}, RunJobClock{},
-		IntentPlanText{}, RunActivity{}, StreamNotice{},
+		IntentPlanText{}, RunActivity{}, RunOutput{}, StreamNotice{},
 	} {
 		typ := reflect.TypeOf(v)
 		want, ok := ts[typ.Name()]

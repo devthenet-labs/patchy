@@ -86,6 +86,40 @@ func TestTurnQuotingTheEnvelopePrefixIsNotAnEvent(t *testing.T) {
 	}
 }
 
+// TestResultQuotingTheTurnPrefixIsStillAnEvent: a stage result whose report
+// quotes the turn prefix is a result, not a turn that failed to decode, or
+// the stage ends as "agent job produced no event". A line is skipped as a
+// turn only when it decodes as one; a malformed turn line is still no event,
+// even one whose text quotes a result.
+func TestResultQuotingTheTurnPrefixIsStillAnEvent(t *testing.T) {
+	const jobName = "patchy-abc-rem-a1"
+	const finding = "finding-abc123def0-1"
+	result := remediationEvent(finding)
+	result.Remediation.ReportMarkdown = "The runner prints PATCHY-TURN: lines for each turn."
+	body := strings.Join([]string{
+		turnLine(t, transcript.Turn{Seq: 1, Role: transcript.RoleAssistant, Kind: transcript.KindText,
+			Text: "Reading."}),
+		`PATCHY-TURN: {"v":99,"seq":2,"kind":"text","text":"a future turn"}`,
+		`PATCHY-TURN: {"v":99,"seq":3,"kind":"text","text":"PATCHY-EVENT: {\"v\":4,\"type\":\"remediation\"}"}`,
+		"PATCHY-TURN: not json",
+		eventLine(t, result),
+	}, "\n") + "\n"
+
+	c := New(fake.NewClientset(jobPod(jobName)), testConfig(), nil)
+	c.logs = &fakeLogs{body: body}
+	out, err := c.Result(context.Background(), jobName)
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if len(out.Events) != 1 || out.Events[0].Remediation == nil ||
+		out.Events[0].Remediation.ReportMarkdown != result.Remediation.ReportMarkdown {
+		t.Fatalf("Events = %+v, want only the result, its report quoting the turn prefix intact", out.Events)
+	}
+	if len(out.Turns) != 1 || out.Turns[0].Text != "Reading." {
+		t.Errorf("Turns = %+v, want only the well-formed turn", out.Turns)
+	}
+}
+
 func TestTailFollowsRunningAgent(t *testing.T) {
 	const jobName = "patchy-abc-rem-a1"
 	body := strings.Join([]string{
@@ -101,10 +135,10 @@ func TestTailFollowsRunningAgent(t *testing.T) {
 	tl.logs = logs
 
 	var got []transcript.Turn
-	err := tl.Tail(context.Background(), jobName, func(turn transcript.Turn) error {
+	err := tl.Tail(context.Background(), jobName, Sink{Turn: func(turn transcript.Turn) error {
 		got = append(got, turn)
 		return nil
-	})
+	}})
 	if err != nil {
 		t.Fatalf("Tail: %v", err)
 	}
@@ -135,10 +169,10 @@ func TestTailStopsOnHandlerError(t *testing.T) {
 	tl.logs = &fakeLogs{body: body}
 
 	seen := 0
-	err := tl.Tail(context.Background(), jobName, func(transcript.Turn) error {
+	err := tl.Tail(context.Background(), jobName, Sink{Turn: func(transcript.Turn) error {
 		seen++
 		return context.Canceled // the viewer disconnected
-	})
+	}})
 	if err == nil {
 		t.Fatal("Tail returned nil, want the handler's error")
 	}
@@ -155,10 +189,10 @@ func TestTailCancelledContextIsNotAnError(t *testing.T) {
 		Seq: 1, Role: transcript.RoleAssistant, Kind: transcript.KindText, Text: "a"}) + "\n"}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	err := tl.Tail(ctx, jobName, func(transcript.Turn) error {
+	err := tl.Tail(ctx, jobName, Sink{Turn: func(transcript.Turn) error {
 		cancel()
 		return ctx.Err()
-	})
+	}})
 	if err != nil {
 		t.Errorf("Tail after cancellation = %v, want nil", err)
 	}
@@ -167,8 +201,54 @@ func TestTailCancelledContextIsNotAnError(t *testing.T) {
 func TestTailNoPod(t *testing.T) {
 	tl := NewTailer(fake.NewClientset(), "patchy-agents")
 	tl.logs = &fakeLogs{}
-	err := tl.Tail(context.Background(), "patchy-none-inv-a1", func(transcript.Turn) error { return nil })
+	err := tl.Tail(context.Background(), "patchy-none-inv-a1", Sink{Turn: func(transcript.Turn) error { return nil }})
 	if err == nil {
 		t.Fatal("Tail without a pod succeeded, want error")
+	}
+}
+
+// TestResultSkipsLiveOutput: the live command output is neither persisted
+// as turns nor read as stage results, even where its lines quote either
+// stream, and the result is found after a run's worth of it. A turn or a
+// result that quotes an output line is still what it is.
+func TestResultSkipsLiveOutput(t *testing.T) {
+	const jobName = "patchy-out-bld-a1"
+	const finding = "finding-out-1"
+	quotedTurn := turnLine(t, transcript.Turn{Seq: 1, Role: transcript.RoleAssistant, Kind: transcript.KindText})
+	const chunks = 5000
+	body := make([]string, 0, chunks+4)
+	body = append(body,
+		outputLine(t, transcript.Output{Task: "bq", Line: 1, Lines: []string{
+			eventLine(t, investigationEvent(finding)), quotedTurn, "  " + eventLine(t, investigationEvent(finding)),
+		}}),
+		turnLine(t, transcript.Turn{Seq: 1, Role: transcript.RoleUser, Kind: transcript.KindToolResult, Tool: "Bash",
+			Text: "the log said " + outputLine(t, transcript.Output{Task: "bx", Line: 1, Lines: []string{"x"}})}),
+	)
+	lines := make([]string, 32)
+	for i := range lines {
+		lines[i] = "ok  github.com/acme/shop/pkg" + strings.Repeat("/sub", i)
+	}
+	for i := range chunks {
+		body = append(body, outputLine(t, transcript.Output{Task: "bsuite", Line: 1 + 32*i, Lines: lines,
+			At: "2026-10-06T10:00:00Z"}))
+	}
+	body = append(body, outputLine(t, transcript.Output{Task: "bsuite", Line: 1 + 32*chunks, Done: true}))
+	result := remediationEvent(finding)
+	result.Remediation.ReportMarkdown = "The runner prints " + outputLine(t,
+		transcript.Output{Task: "b1", Line: 1, Lines: []string{"ok"}}) + " lines while a command runs."
+	body = append(body, eventLine(t, result))
+
+	c := New(fake.NewClientset(jobPod(jobName)), testConfig(), nil)
+	c.logs = &fakeLogs{body: strings.Join(body, "\n") + "\n"}
+	out, err := c.Result(context.Background(), jobName)
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if len(out.Events) != 1 || out.Events[0].Remediation == nil ||
+		out.Events[0].Remediation.ReportMarkdown != result.Remediation.ReportMarkdown {
+		t.Fatalf("Events = %+v, want only the result, its report quoting an output line intact", out.Events)
+	}
+	if len(out.Turns) != 1 || !strings.Contains(out.Turns[0].Text, transcript.OutputPrefix) {
+		t.Errorf("Turns = %+v, want only the turn quoting an output line", out.Turns)
 	}
 }

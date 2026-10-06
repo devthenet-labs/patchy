@@ -215,3 +215,33 @@ version 4. Stage outcomes are `ok`, `runtime_error`, `timeout`, `budget_exceeded
 `commit_failed`, and `changeset_too_large` — only `ok` carries a trusted report. On claude, `report_missing` and
 `report_invalid` come only after the [report repair](#report-repair) failed. A fatal error also exits 2 so the Job is
 marked failed for the controller's orphan handling.
+
+## Live command output
+
+While an intent's plan or build stage runs a foreground shell command, agent-runner prints the command's output as it is
+produced, as `PATCHY-OUTPUT:` lines beside the transcript's `PATCHY-TURN:` lines, so a viewer of the intent's run panel
+can watch a long test suite while it runs rather than only when its tool result arrives. It reads the file the claude
+CLI keeps a running command's output in (under `CLAUDE_CODE_TMPDIR`, `/tmp` by default). A backgrounded command is not
+followed, and a Finding's investigate and remediate stages print none, since nothing shows it there.
+
+A line is shown as a terminal would show it, the text after its last carriage return, so a progress bar shows its latest
+state. Escape sequences are stripped, the pod's credentials and the broker caller token are redacted as in the
+transcript, and the line is cut at 1 KiB. A line longer than 8 KiB is never shown, not even in part, since it is cut
+before it can be redacted: a fixed placeholder stands in for it under its own line number. Lines go out in chunks about
+every half second. Commands are followed one at a time, so two commands' output never interleaves: one started while
+another is followed waits its turn and is shown from its first line once that one ends, unless it ends first. The volume
+is bounded, since the same pod log must also carry the stage result, which can run to several MiB, and the kubelet
+rotates a container's log at about 10 MiB; the bounds are fixed, not configurable:
+
+| Bound                      | Limit                   | Past it                                                                                                                                                         |
+| -------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One command                | 64 KiB at full fidelity | Sampled: its newest lines every 5 seconds, at most 10 lines and 2 KiB each time, under their own line numbers so a gap shows                                    |
+| One command's samples      | 64 KiB                  | One chunk marks the command's live output truncated, past its last line read; nothing more is printed for it until its last chunk, at its end                   |
+| One agent-runner, in total | 512 KiB                 | One chunk marks the command's live output truncated, past the lines it drops; nothing more is printed for any command but that command's last chunk, at its end |
+
+A sample is not a truncation: the gap in the line numbers shows what it left out, and the command's live output goes on.
+Only a limit that stops it for good, the samples' or the process's, marks a chunk truncated.
+
+The output is live only. No controller keeps it: the persisted transcript and the stage result are exactly what they
+would be without it. It is also not progress to the [idle watchdog](#the-idle-watchdog) and not spend against the token
+budget; both read the CLI's own stream alone.

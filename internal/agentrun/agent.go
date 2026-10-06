@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -43,6 +44,19 @@ type Agent struct {
 	// beyond what the environment heuristic finds — the broker caller token,
 	// whose env var name (ANTHROPIC_CUSTOM_HEADERS) is not credential-shaped.
 	scrub []string
+	// pace is the live command output's timing, replaceable for tests.
+	pace outputPace
+
+	// outMu serialises every line written to cfg.Out: the turns and events
+	// the stage's goroutine writes and the command output its followers do,
+	// so no two lines interleave. It also guards the process's output
+	// budget: outputUsed is what command output has printed, spent says the
+	// budget ran out, and owed is the last chunk of the command it ran out on
+	// while that command ran, printed once it ends (no Task when none is).
+	outMu      sync.Mutex
+	outputUsed int
+	spent      bool
+	owed       transcript.Output
 }
 
 // New builds an Agent.
@@ -50,7 +64,7 @@ func New(cfg Config, exec Executor) *Agent {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	return &Agent{cfg: cfg, exec: exec, newSessionID: sessionID}
+	return &Agent{cfg: cfg, exec: exec, newSessionID: sessionID, pace: defaultOutputPace}
 }
 
 // remediationParams are the clamped stage-2 knobs. The model and harness are
@@ -222,15 +236,23 @@ func (a *Agent) remediate(ctx context.Context, params remediationParams) *envelo
 // run executes one of a stage's runs — its first, or a repair — under the
 // given wall clock (timeout), the stage's idle watchdog and the given
 // output-token budget, observing its stream (observe) into the stage's one
-// transcript. idle is the watchdog's verdict: the detail of a run it ended
-// for making no progress, also left in the transcript as its last word, or
-// "" when it did not end the run.
+// transcript and following the commands it runs (followOutput). idle is the
+// watchdog's verdict: the detail of a run it ended for making no progress,
+// also left in the transcript as its last word, or "" when it did not end
+// the run.
+//
+// The commands followed are ended with the run, and their last chunks
+// printed, before it returns: nothing of a run's output is printed after
+// the stage's result.
 func (a *Agent) run(ctx context.Context, sr *stageRun, spec runner.CommandSpec, timeout time.Duration,
 	budget int) (res runner.Result, idle string, runErr error) {
 	ctx, watch := newIdleWatch(ctx, sr.idle)
-	onLine := a.observe(sr.h, sr.rec, budget, watch)
+	secrets := credentialValues(sr.h, a.scrub...)
+	output := a.followOutput(ctx, sr.h, spec, secrets)
+	onLine := a.observe(sr.h, sr.rec, budget, watch, output)
 	res, runErr = a.exec.Run(ctx, spec, timeout, onLine)
-	if idle = watch.end(runErr, credentialValues(sr.h, a.scrub...)); idle != "" {
+	output.end()
+	if idle = watch.end(runErr, secrets); idle != "" {
 		a.cfg.Log.Warn("the idle watchdog ended the run", "phase", a.cfg.Phase, "detail", idle)
 		if sr.rec != nil {
 			sr.rec.Notice("%s", idle)
@@ -240,23 +262,27 @@ func (a *Agent) run(ctx context.Context, sr *stageRun, spec runner.CommandSpec, 
 }
 
 // observe builds the runner's per-line observer: the transcript recorder, the
-// idle watchdog's progress and the output-token budget kill switch, over the
-// one pass the runner makes. Each may be absent — a harness that cannot report
-// usage, a budget of zero, a harness that cannot transcribe (rec nil), a
-// disabled watchdog — and when all are, the observer is nil and the runner
-// does no per-line work at all.
+// idle watchdog's progress, the output-token budget kill switch and the live
+// command output's events, over the one pass the runner makes. Each may be
+// absent — a harness that cannot report usage, a budget of zero, a harness
+// that cannot transcribe (rec nil), a disabled watchdog, a harness that
+// cannot follow commands (output nil) — and when all are, the observer is
+// nil and the runner does no per-line work at all.
 //
 // Recording happens before the budget check so the turn that tripped the limit
-// is in the transcript that explains why the run stopped.
+// is in the transcript that explains why the run stopped. A command's output
+// is printed by its own goroutine, never this one, and is neither a turn nor
+// progress.
 func (a *Agent) observe(h harness.Harness, rec *transcript.Recorder, budget int,
-	idle *idleWatch) func([]byte) (bool, string) {
+	idle *idleWatch, output *outputFollower) func([]byte) (bool, string) {
 	watch := budgetWatcher(h, budget)
-	if rec == nil && watch == nil && idle == nil {
+	if rec == nil && watch == nil && idle == nil && output == nil {
 		return nil
 	}
 
 	turns, _ := h.(harness.TurnScanner)
 	return func(line []byte) (bool, string) {
+		output.scan(line)
 		if turns != nil {
 			scanned := turns.ScanTurns(line)
 			if rec != nil {
@@ -774,9 +800,9 @@ func (a *Agent) emit(e envelope.Event) {
 		a.cfg.Log.Error("encode envelope event", "error", err)
 		return
 	}
-	if _, err := fmt.Fprintln(a.cfg.Out, line); err != nil {
-		a.cfg.Log.Error("emit envelope event", "error", err)
-	}
+	a.outMu.Lock()
+	defer a.outMu.Unlock()
+	a.writeLine(line, "envelope event")
 }
 
 // emitTurn writes one transcript turn to the runner's stdout. Turns share the
@@ -791,8 +817,86 @@ func (a *Agent) emitTurn(t transcript.Turn) {
 		a.cfg.Log.Error("encode transcript turn", "error", err)
 		return
 	}
+	a.outMu.Lock()
+	defer a.outMu.Unlock()
+	a.writeLine(line, "transcript turn")
+}
+
+// emitOutput writes one chunk of a command's output to the runner's stdout
+// and returns the bytes it wrote, or ok false once the process's output
+// budget is spent. The chunk that would overrun the budget is replaced by
+// one marking its command's live output truncated — with no lines, numbered
+// past the lines it carried so they read as left out, and Done only if the
+// chunk it replaces was the command's last, since the command may still run
+// — and nothing more is written for the rest of the process but, once that
+// command ends, its last chunk (endOutput). Like a turn, a chunk that cannot
+// be written is logged and dropped.
+func (a *Agent) emitOutput(o transcript.Output) (int, bool) {
+	line, err := transcript.EncodeOutput(o)
+	if err != nil {
+		a.cfg.Log.Error("encode command output", "error", err)
+		return 0, true
+	}
+	a.outMu.Lock()
+	defer a.outMu.Unlock()
+	if a.spent {
+		return 0, false
+	}
+	if a.outputUsed+len(line)+1 > outputProcessBytes-outputClosingBytes {
+		a.spent = true
+		o.Line, o.Lines, o.Truncated = o.Line+len(o.Lines), nil, true
+		a.writeClosing(o)
+		if !o.Done {
+			a.owed = o
+		}
+		a.cfg.Log.Info("live command output reached its budget; no more is shown", "bytes", outputProcessBytes)
+		return 0, false
+	}
+	a.outputUsed += len(line) + 1
+	a.writeLine(line, "command output")
+	return len(line) + 1, true
+}
+
+// endOutput writes the last chunk of the command the process's output budget
+// ran out on while it ran, once that command has ended: Done, with no lines,
+// at the number its truncated chunk had, so a viewer sees it finish. It
+// writes nothing for any other command, nor twice.
+func (a *Agent) endOutput(task string, at time.Time) {
+	a.outMu.Lock()
+	defer a.outMu.Unlock()
+	if a.owed.Task == "" || a.owed.Task != task {
+		return
+	}
+	o := a.owed
+	a.owed = transcript.Output{}
+	o.Done, o.At = true, at.UTC().Format(time.RFC3339)
+	a.writeClosing(o)
+}
+
+// writeClosing writes one of the line-less chunks that close the command the
+// budget ran out on, out of the room kept back for them; the caller holds
+// outMu.
+func (a *Agent) writeClosing(o transcript.Output) {
+	line, err := transcript.EncodeOutput(o)
+	if err != nil {
+		a.cfg.Log.Error("encode command output", "error", err)
+		return
+	}
+	a.outputUsed += len(line) + 1
+	a.writeLine(line, "command output")
+}
+
+// outputSpent reports whether the process's command output budget is spent.
+func (a *Agent) outputSpent() bool {
+	a.outMu.Lock()
+	defer a.outMu.Unlock()
+	return a.spent
+}
+
+// writeLine writes one line to the runner's stdout; the caller holds outMu.
+func (a *Agent) writeLine(line, what string) {
 	if _, err := fmt.Fprintln(a.cfg.Out, line); err != nil {
-		a.cfg.Log.Error("emit transcript turn", "error", err)
+		a.cfg.Log.Error("emit "+what, "error", err)
 	}
 }
 

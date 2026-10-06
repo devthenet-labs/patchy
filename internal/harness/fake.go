@@ -78,3 +78,15 @@ func (f *Fake) StreamUsage(stdout []byte) *Usage {
 func (f *Fake) ScanTurns(line []byte) []transcript.Turn {
 	return scanStreamTurns(line)
 }
+
+// ScanTasks reads fixture lines' command events exactly as Claude reads live
+// ones. A fixture's command never writes the file TaskOutputGlob names, so
+// following it finds nothing.
+func (f *Fake) ScanTasks(line []byte, answers bool) []TaskEvent {
+	return scanStreamTasks(line, answers)
+}
+
+// TaskOutputGlob is Claude's: see taskOutputGlob.
+func (f *Fake) TaskOutputGlob(env []string, uid int, session, task string) string {
+	return taskOutputGlob(env, uid, session, task)
+}

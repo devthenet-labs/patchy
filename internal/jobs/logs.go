@@ -106,27 +106,42 @@ func (c *Client) ResultLines(ctx context.Context, jobName string, fn func(line [
 	return nil
 }
 
-// scanLog splits the agent's log into its two prefixed streams, delivering
-// each line to the matching handler and ignoring everything else; a handler
-// error stops the scan. Either handler may be nil.
+// scanLog splits the agent's log into its two persisted prefixed streams,
+// delivering each line to the matching handler and ignoring everything else;
+// a handler error stops the scan. Either handler may be nil.
 //
-// Turn lines are tested first and never offered to envelope.Decode: that
-// decoder searches for its prefix anywhere in the line to survive log
-// wrapping, so a turn whose text quotes the envelope prefix would otherwise be
-// mis-scanned as a stage result.
+// Turns are tested first, and a line that decodes as one is never offered to
+// envelope.Decode: that decoder searches for its prefix anywhere in the line
+// to survive log wrapping, so a turn whose text quotes the envelope prefix
+// would otherwise be mis-scanned as a stage result.
+//
+// The live command output (PATCHY-OUTPUT chunks) is the log's third stream,
+// and nothing here keeps it: a chunk is skipped before envelope.Decode, so a
+// run's many chunks never pass through the result's decoder.
+//
+// A line is skipped as a turn or a chunk only when it decodes as one, not
+// merely because it holds the prefix: a stage result whose report quotes
+// either prefix must still be found. Neither stream's JSON-encoded text can
+// make its line decode as another stream's: a quoted line's own quotes are
+// escaped there, so what follows a prefix inside it is never a JSON value.
 func scanLog(r io.Reader, onEvent func(envelope.Event) error, onTurn func(transcript.Turn) error) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64<<10), maxEventLine)
 	for sc.Scan() {
 		if transcript.HasPrefix(sc.Bytes()) {
-			t, ok := transcript.Decode(sc.Bytes())
-			if !ok || onTurn == nil {
+			if t, ok := transcript.Decode(sc.Bytes()); ok {
+				if onTurn != nil {
+					if err := onTurn(t); err != nil {
+						return err
+					}
+				}
 				continue
 			}
-			if err := onTurn(t); err != nil {
-				return err
+		}
+		if transcript.HasOutputPrefix(sc.Bytes()) {
+			if _, ok := transcript.DecodeOutput(sc.Bytes()); ok {
+				continue
 			}
-			continue
 		}
 		e, ok := envelope.Decode(sc.Bytes())
 		if !ok || onEvent == nil {

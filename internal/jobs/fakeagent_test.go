@@ -20,13 +20,14 @@ import (
 )
 
 // hack/fake-agent is the credential-less agent stand-in the dev-fake overlay
-// runs (see its header). It hand-writes the two stdout schemas this package
-// decodes, so it can only be kept honest by decoding its real output: nothing
-// else in the build reaches a shell script. Both failure modes are silent at
-// the source — a stale envelope version fails every dev run with "agent job
-// produced no <stage> event", a stale turn version drops the conversation
-// while the run stays green — which is exactly why this is a test and not a
-// comment asking the next person to remember.
+// runs (see its header). It hand-writes the three stdout schemas the
+// controllers and the status server decode, so it can only be kept honest by
+// decoding its real output: nothing else in the build reaches a shell script.
+// Every failure mode is silent at the source — a stale envelope version fails
+// every dev run with "agent job produced no <stage> event", a stale turn
+// version drops the conversation while the run stays green, a stale output
+// version drops the live command output — which is exactly why this is a test
+// and not a comment asking the next person to remember.
 const fakeAgentScript = "../../hack/fake-agent/agent-runner"
 
 // fakeBaseSHA is the pinned base every run of the script is handed.
@@ -360,6 +361,66 @@ func TestFakeAgentTranscript(t *testing.T) {
 			}
 			if reported != len(out.Turns) {
 				t.Errorf("event reports %d turns, transcript carries %d", reported, len(out.Turns))
+			}
+		})
+	}
+}
+
+// TestFakeAgentOutput decodes the live command output the script prints
+// for an intent's build: each command's chunks are numbered from its first
+// line with none left out, the last one Done, and the log scan keeps none of
+// them, so the stage still has one result and the transcript only its turns.
+// A Finding's remediation prints none, as the real runner prints the output
+// for the intent stages alone.
+func TestFakeAgentOutput(t *testing.T) {
+	for _, phase := range []string{"remediate", "build"} {
+		t.Run(phase, func(t *testing.T) {
+			stdout, err := execFakeAgent(t, phase, phaseInputs[phase])
+			if err != nil {
+				t.Fatalf("run fake agent (%s): %v", phase, err)
+			}
+			if phase == "remediate" {
+				if bytes.Contains(stdout, []byte(transcript.OutputPrefix)) {
+					t.Errorf("the remediate run printed command output; only an intent's stages do")
+				}
+				return
+			}
+			byTask := map[string][]transcript.Output{}
+			var order []string
+			for line := range bytes.SplitSeq(stdout, []byte("\n")) {
+				if !transcript.HasOutputPrefix(line) {
+					continue
+				}
+				o, ok := transcript.DecodeOutput(line)
+				if !ok {
+					t.Fatalf("an output line does not decode (stale output version in %s?): %s",
+						fakeAgentScript, line)
+				}
+				if byTask[o.Task] == nil {
+					order = append(order, o.Task)
+				}
+				byTask[o.Task] = append(byTask[o.Task], o)
+			}
+			if len(order) == 0 {
+				t.Fatalf("no command output in the %s run", phase)
+			}
+			for _, task := range order {
+				next := 1
+				for i, o := range byTask[task] {
+					if o.Line != next || o.At == "" || o.Done != (i == len(byTask[task])-1) {
+						t.Errorf("%s chunk %d = %+v, want line %d, stamped, done only on the last", task, i, o, next)
+					}
+					next += len(o.Lines)
+				}
+			}
+			out := scanFakeAgent(t, phase, stdout)
+			if len(out.Events) != 1 {
+				t.Errorf("events = %d, want the one result beside the output", len(out.Events))
+			}
+			for _, tn := range out.Turns {
+				if strings.Contains(tn.Text, transcript.OutputPrefix) {
+					t.Errorf("turn %d carries command output", tn.Seq)
+				}
 			}
 		})
 	}

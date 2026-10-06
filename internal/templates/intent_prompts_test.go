@@ -30,6 +30,7 @@ func renderTestPlanPrompt(intent string, prev *PreviousAttempt) (string, error) 
 		Intent:           intent,
 		BuildMaxTurns:    150,
 		BuildTokenBudget: 800000,
+		Limits:           testPlanLimits,
 		PreviousAttempt:  prev,
 	})
 }
@@ -39,6 +40,7 @@ func renderTestBuildPrompt(prev *PreviousAttempt) (string, error) {
 		PlanPath:         "/workspace/input/investigation.md",
 		ReportPath:       "/workspace/reports/build.md",
 		CommitScriptPath: "/workspace/commit.sh",
+		Limits:           testBuildLimits,
 		PreviousAttempt:  prev,
 	})
 }

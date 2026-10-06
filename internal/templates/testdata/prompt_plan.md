@@ -21,9 +21,19 @@ The service should report which build is running.
 
 ## How to plan
 
+This stage may take at most 40 agent turns, 250000 output tokens and 20 minutes.
+A run that reaches any of them ends with no plan, so read what the plan needs and no more, and write the report well
+before then. A turn is one response from you, however many tool calls it makes: when you know of several files to read
+or searches to run, make all of those Read, Glob and Grep calls together in one response, not one call per turn.
+
+This stage is read-only, and the sandbox holds you to it. You cannot run commands, tests, builds, package managers or
+scripts: the only shell commands allowed are `git log`, `git show`, `git blame` and `git diff`, in the current
+directory, and anything else is refused and wastes a turn. Find and read files with Glob, Grep and Read. Create, change
+or delete no file except your report, `/workspace/reports/plan.md`: a write anywhere else is refused. Do not try to reach the
+network: your only output is the report described below.
+
 Read the repository as deeply as the plan needs: the code the change touches, how it is built and tested, and the
-conventions it follows. Do **not** modify any repository file, and do not try to reach the network: your only output
-is the report described below.
+conventions it follows.
 
 Write a plan a reviewer can judge without reading the repository, and a build agent can follow step by step without
 guessing. The build agent is given your plan and nothing of the request, so the plan must carry everything the build
@@ -37,9 +47,14 @@ needs from it:
   only the dependencies already in that image. Name every new dependency the plan needs, with its version: a human
   must add each one to the image on the default branch before approving. Prefer a plan that needs none.
 
-Keep the plan to what was asked. Never plan changes under `.github/`, `.patchy/` or `.devcontainer/`: the build is
-refused any change there. Where the request is ambiguous, plan the most reasonable reading and list what you assumed
-as questions for the approver.
+Take the test plan from the repository's own guidance, since you cannot run anything to find out: its guides for
+contributors and agents (CLAUDE.md, AGENTS.md, CONTRIBUTING.md, the README's development notes) and its CI workflows
+under `.github/workflows/`. Name the test command its CI runs, and leave out tests that guidance says are slow, flaky,
+platform-specific or not run in CI. Read `.github/` for this, but never plan changes under `.github/`, `.patchy/` or
+`.devcontainer/`: the build is refused any change there.
+
+Keep the plan to what was asked. Where the request is ambiguous, plan the most reasonable reading and list what you
+assumed as questions for the approver.
 
 A build of this plan can be granted at most 150 agent turns and 800000 output tokens.
 Plan work that fits; if the whole request cannot, plan the part that can and say what is left.
@@ -62,12 +77,23 @@ estimated_token_budget: <integer>   # ESTIMATED output tokens the build needs
 ---
 ```
 
-The summary and every list item must be a double-quoted YAML string on a single line (escape embedded double quotes
-as `\"`), and each list item at most 500 characters, each new dependency at most 200 bytes — unquoted prose
-containing a colon is invalid YAML and fails the entire run, and so does a YAML-tagged value (`!!binary`, `!!str`).
-`repositories` names at least one repository and at most 8. `confidence` is the probability that a build following
-this plan exactly delivers the request with its tests passing. The two estimates are what you expect the build to
-spend, not a request for budget: they never change what it is granted.
+Each field has a type and hard limits, and a frontmatter that breaks any of them is refused, failing the run with no
+plan:
+
+- `summary`: a double-quoted string on one line, not empty, at most 200 characters.
+- `repositories`: 1 to 8 double-quoted `https://<host>/<owner>/<name>` URLs, each exactly as the request lists it, and
+  none twice.
+- `new_dependencies`: at most 16 double-quoted one-line strings (`[]` for none), each new dependency at most 200 bytes.
+- `questions`: at most 10 double-quoted one-line strings (`[]` for none), each at most 500 characters.
+- `confidence`: a bare number from 0.0 to 1.0 (`0.8`, not `"0.8"` or `80%`): the probability that a build following
+  this plan exactly delivers the request with its tests passing.
+- `estimated_max_turns` and `estimated_token_budget`: positive whole numbers in plain digits (`200000`, not `200k` or
+  `200,000`). They are what you expect the build to spend, not a request for budget: they never change what it is
+  granted.
+
+Escape a double quote inside a string as `\"`. Unquoted prose containing a colon is invalid YAML and fails the entire
+run, and so does a YAML-tagged value (`!!binary`, `!!str`). To correct the report once it is written, Edit it in place
+rather than writing it again.
 
 After the frontmatter, write the plan in markdown under the headings Approach, Steps, Test plan and Risks, in at most
 48 KiB; the whole report, frontmatter included, is at most 56 KiB. It is posted to the request for a human to

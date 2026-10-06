@@ -575,7 +575,7 @@ func TestLiveStreamUnavailableWhenFollowsExhausted(t *testing.T) {
 	defer close(hold)
 	s, _ := intentsServer(t, &fakeTailer{hold: hold})
 	for i := range maxLiveTails {
-		sub, err := s.tails.subscribe("other-job-" + string(rune('a'+i)))
+		sub, err := s.tails.subscribe("other-job-"+string(rune('a'+i)), false)
 		if err != nil {
 			t.Fatal(err)
 		}

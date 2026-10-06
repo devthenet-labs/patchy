@@ -8,6 +8,7 @@ import type {
   IntentPhase,
   IntentRunDetail,
   RunActivity,
+  RunOutput,
 } from "./types";
 
 export const INTENT_COLUMNS: { id: IntentColumn; label: string }[] = [
@@ -147,6 +148,86 @@ export function stopConditions(run: IntentRunDetail, activity: RunActivity | nul
   return out;
 }
 
+// OUTPUT_KEEP bounds the command-output lines a run panel holds: the
+// newest ones, past which the oldest are let go.
+export const OUTPUT_KEEP = 500;
+
+// RunOutputState is what a run panel knows of the latest command's output:
+// the lines it holds by number (ascending, at most OUTPUT_KEEP), the number
+// after the last line known to exist (held or not), and whether the command
+// finished or its output was cut at the agent's budget.
+export interface RunOutputState {
+  task: string;
+  lines: { n: number; text: string }[];
+  end: number;
+  done: boolean;
+  truncated: boolean;
+}
+
+// mergeRunOutput folds one output chunk into the panel's state. A chunk for
+// another command replaces the state; a line already held is kept as it is,
+// so the replay a reconnect brings adds only what was missed (and can fill a
+// gap a dropped chunk left). A malformed chunk changes nothing.
+export function mergeRunOutput(state: RunOutputState | null, chunk: RunOutput): RunOutputState | null {
+  const valid = chunk && typeof chunk.task === "string" && chunk.task !== "";
+  if (!valid || !Number.isInteger(chunk.line) || chunk.line < 1) return state;
+  const lines = Array.isArray(chunk.lines) ? chunk.lines : [];
+  const base: RunOutputState =
+    state && state.task === chunk.task ? state : { task: chunk.task, lines: [], end: 0, done: false, truncated: false };
+  const held = new Set(base.lines.map((l) => l.n));
+  const fresh = lines.map((text, i) => ({ n: chunk.line + i, text: String(text) })).filter((l) => !held.has(l.n));
+  let merged = base.lines;
+  if (fresh.length > 0) {
+    merged = [...base.lines, ...fresh].sort((a, b) => a.n - b.n);
+    if (merged.length > OUTPUT_KEEP) merged = merged.slice(merged.length - OUTPUT_KEEP);
+  }
+  return {
+    task: base.task,
+    lines: merged,
+    end: Math.max(base.end, chunk.line + lines.length),
+    done: base.done || chunk.done === true,
+    truncated: base.truncated || chunk.truncated === true,
+  };
+}
+
+// OutputSegment is a stretch of the live output box: consecutive lines, or
+// a count of lines not shown (cut by the panel's bound, left out by the
+// agent or the server, or dropped on the way).
+export type OutputSegment = { kind: "lines"; text: string } | { kind: "skipped"; count: number };
+
+// outputSegments lays the held lines out with a marker wherever numbers
+// jump: before the first held line, between two, and after the last when
+// lines past it are known to exist.
+export function outputSegments(state: RunOutputState): OutputSegment[] {
+  const out: OutputSegment[] = [];
+  let next = 1;
+  let run: string[] = [];
+  const flush = () => {
+    if (run.length > 0) out.push({ kind: "lines", text: run.join("\n") });
+    run = [];
+  };
+  for (const l of state.lines) {
+    if (l.n > next) {
+      flush();
+      out.push({ kind: "skipped", count: l.n - next });
+    }
+    run.push(l.text);
+    next = l.n + 1;
+  }
+  flush();
+  if (state.end > next) out.push({ kind: "skipped", count: state.end - next });
+  return out;
+}
+
+// outputStatus names the command's state for the live output header. The
+// agent's budget ending the output outranks the command finishing; a stream
+// that ended before either knows neither.
+export function outputStatus(state: RunOutputState, following: boolean): string {
+  if (state.truncated) return "output limit reached";
+  if (state.done) return "finished";
+  return following ? "running" : "no longer followed";
+}
+
 // INTENTS_VIEW_FILES are the components that render intent data. They must
 // never import Markdown: agent text is shown as plain text only
 // (tests/intents.test.mjs checks the imports).
@@ -154,6 +235,7 @@ export const INTENTS_VIEW_FILES = [
   "src/components/IntentsBoard.tsx",
   "src/components/IntentTimeline.tsx",
   "src/components/RunPanel.tsx",
+  "src/components/LiveOutput.tsx",
   "src/components/PlainText.tsx",
   "src/components/IntentsArea.tsx",
 ];

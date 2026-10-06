@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
+	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/kube"
 	"github.com/bitwise-media-group/patchy/internal/transcript"
 	"github.com/bitwise-media-group/patchy/internal/transcriptstore"
@@ -78,19 +79,26 @@ func runningInvestigation() []client.Object {
 	}
 }
 
-// fakeTailer replays canned turns, optionally blocking until released.
+// fakeTailer replays canned turns, then canned command output, optionally
+// blocking until released.
 type fakeTailer struct {
 	turns   []transcript.Turn
+	output  []transcript.Output
 	hold    chan struct{}
 	started chan struct{}
 }
 
-func (f *fakeTailer) Tail(ctx context.Context, _ string, fn func(transcript.Turn) error) error {
+func (f *fakeTailer) Tail(ctx context.Context, _ string, sink jobs.Sink) error {
 	if f.started != nil {
 		close(f.started)
 	}
 	for _, t := range f.turns {
-		if err := fn(t); err != nil {
+		if err := sink.Turn(t); err != nil {
+			return err
+		}
+	}
+	for _, o := range f.output {
+		if err := sink.Output(o); err != nil {
 			return err
 		}
 	}

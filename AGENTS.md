@@ -247,7 +247,9 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   you may do (SubjectAccessReviews for the custom verbs approve/retry/expedite/suspend/resume + native get, and
   `ProjectReviewer`'s per-Project read tiers). The intents side (`intents*.go`, `envelope.go`) reads every ConfigMap
   through `guardedConfigMap` (the intent's label and a controller reference to its very owner), strips the live run
-  stream per subscriber, and pins its wire types to `types.ts` by parsing it (`TestIntentWireTypesMatchTypeScript`).
+  stream per subscriber (turns, and the `PATCHY-OUTPUT` command output the tail hub keeps on its own replay ring and
+  channel: tier 2 only, live only, never part of the activity), and pins its wire types to `types.ts` by parsing it
+  (`TestIntentWireTypesMatchTypeScript`).
 - `intentview` — the pure public projection of intents for the status page: board columns, fixed public wording
   for outcomes and block reasons (never a run's detail or a condition's message), limits with schema defaults, cost
   parsing, and `Text` (templates.VisibleText plus a cap) for every shown string. Copies of intent-controller facts

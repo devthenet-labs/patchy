@@ -12,8 +12,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-
-	"github.com/bitwise-media-group/patchy/internal/transcript"
 )
 
 // jobNameLabel is set on pods by the Job controller.
@@ -37,17 +35,19 @@ func NewTailer(cs kubernetes.Interface, namespace string) *Tailer {
 	return &Tailer{cs: cs, namespace: namespace, logs: podLogs{cs: cs, namespace: namespace}}
 }
 
-// Tail follows a running agent's log and delivers each transcript turn as it
-// is emitted, returning when the container exits, the context is cancelled, or
-// fn errors. Unlike Result it waits only for the agent container to start, so
-// a caller can join a run already in progress. The follow sets no SinceTime or
-// TailLines, so it reads the log from its start: the turns already emitted
+// Tail follows a running agent's log and delivers each transcript turn and
+// each chunk of command output to sink as it is emitted, returning when the
+// container exits, the context is cancelled, or a handler errors. Unlike
+// Result it waits only for the agent container to start, so a caller can
+// join a run already in progress. The follow sets no SinceTime or TailLines,
+// so it reads the log from its start: the turns and output already emitted
 // arrive first, then the live ones.
 //
 // Envelope events are skipped, and so is any line over maxTailLine, without
-// being buffered whole: a live viewer wants the conversation, and the stage
-// result is the owning controller's to apply.
-func (t *Tailer) Tail(ctx context.Context, jobName string, fn func(transcript.Turn) error) error {
+// being buffered whole: a live viewer wants the conversation and what the
+// command it is waiting on prints, and the stage result is the owning
+// controller's to apply.
+func (t *Tailer) Tail(ctx context.Context, jobName string, sink Sink) error {
 	pod, err := t.waitForAgent(ctx, jobName, false)
 	if err != nil {
 		return err
@@ -58,7 +58,7 @@ func (t *Tailer) Tail(ctx context.Context, jobName string, fn func(transcript.Tu
 	}
 	defer func() { _ = stream.Close() }()
 
-	if err := scanTurns(stream, fn); err != nil {
+	if err := scanFollow(stream, sink); err != nil {
 		// A cancelled follow is the normal end of a viewer's session, not a
 		// failure worth reporting up.
 		if ctx.Err() != nil {

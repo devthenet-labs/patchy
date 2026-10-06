@@ -200,7 +200,7 @@ func (s *Server) streamTranscript(
 func (s *Server) followTranscript(
 	ctx context.Context, w http.ResponseWriter, flusher http.Flusher, run runRef, recheck func(context.Context) bool,
 ) {
-	sub, err := s.tails.subscribe(run.jobName)
+	sub, err := s.tails.subscribe(run.jobName, false)
 	if err != nil {
 		// Out of follow budget. The run is still live, so ending the stream
 		// cleanly beats an error: the client retries and meanwhile shows

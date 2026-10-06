@@ -35,12 +35,15 @@ run's transcript, which stops recording at its cap (500 entries or 512 KiB) whil
 panel says the activity is not known rather than show the last tool and time frozen there.
 
 **Live output.** While a run is live, a reader with the transcripts tier also sees what the command the agent is waiting
-on prints (a test suite, a build), as it prints it. It is the latest command only: when the agent starts another, the
-block switches to it. It is live only and never stored: a viewer who opens the panel while the command runs starts from
-its last 200 lines, and a reload after the run ends, or a finished run, shows none. Each line is plain text, with
-invisible characters shown as their code point like the rest of the agent's text, cut at 1 KiB; the panel keeps the
-newest 500 lines and marks with a count wherever lines were left out (by the agent's output budget, the server's bounds
-or a slow connection). Its header says whether the command is running, finished, or reached the agent's output limit.
+on prints (a test suite, a build), as it prints it. It is one command at a time, the latest: when the agent starts
+another, the block switches to it. It is live only and never stored: a viewer who opens the panel while the command runs
+starts from its last 200 lines, and a reload after the run ends, or a finished run, shows none. Each line is plain text,
+with invisible characters shown as their code point like the rest of the agent's text, cut at 1 KiB; a line the agent
+cut at 8 KiB shows as a placeholder. The panel keeps the newest 500 lines and marks with a count wherever lines were
+left out (by the agent sampling a long command past its first 64 KiB, the server's bounds or a slow connection). Its
+header says whether the command is running or finished, or that the stream stopped before it finished, and adds "live
+output limit reached" once one of the agent's limits
+([agent-runner](../configuration/agent-runner.md#live-command-output)) stopped the command's live output for good.
 Command output is not activity: the turn count, the last activity and the idle watchdog count model turns and tool
 results only, so a command printing steadily does not make a stuck agent look busy. A reader with only the intents tier
 receives none of it.

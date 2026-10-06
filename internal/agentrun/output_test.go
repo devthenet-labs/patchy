@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -480,6 +481,29 @@ func TestOutputProcessBudget(t *testing.T) {
 	}
 	if task := got[at].Task; task == "bcmd9" || task == "bcmd1" {
 		t.Errorf("the budget ran out on %s; the test meant it to run out midway", task)
+	}
+}
+
+// TestOutputBudgetClosingChunk: the chunk the process's budget runs out on
+// is replaced by one closing its command past every line it carried, Done
+// and Truncated, so the lines it would have shown read as left out rather
+// than as never printed; nothing is printed after it.
+func TestOutputBudgetClosingChunk(t *testing.T) {
+	out := &syncBuffer{}
+	a := New(Config{Out: out, Log: slog.New(slog.DiscardHandler)}, nil)
+	a.outputUsed = outputProcessBytes - outputClosingBytes - 10
+	if _, ok := a.emitOutput(transcript.Output{Task: "b1", Line: 5, Lines: []string{"e", "f", "g"}}); ok {
+		t.Fatal("a chunk past the budget was printed")
+	}
+	want := []transcript.Output{{V: transcript.OutputVersion, Task: "b1", Line: 8, Done: true, Truncated: true}}
+	if got := chunks(out.String()); !reflect.DeepEqual(got, want) {
+		t.Errorf("chunks = %+v, want %+v: the closing chunk past lines 5 to 7", got, want)
+	}
+	if _, ok := a.emitOutput(transcript.Output{Task: "b1", Line: 8, Done: true}); ok {
+		t.Error("a chunk was printed after the budget ran out")
+	}
+	if got := chunks(out.String()); len(got) != 1 {
+		t.Errorf("chunks after the budget ran out = %+v, want only the closing one", got)
 	}
 }
 

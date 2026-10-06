@@ -823,9 +823,10 @@ func (a *Agent) emitTurn(t transcript.Turn) {
 // emitOutput writes one chunk of a command's output to the runner's stdout
 // and returns the bytes it wrote, or ok false once the process's output
 // budget is spent. The chunk that would overrun the budget is replaced by
-// one closing its command — Done and Truncated, with no lines — and nothing
-// more is written for the rest of the process. Like a turn, a chunk that
-// cannot be written is logged and dropped.
+// one closing its command — Done and Truncated, with no lines, numbered past
+// the lines it carried so they read as left out — and nothing more is
+// written for the rest of the process. Like a turn, a chunk that cannot be
+// written is logged and dropped.
 func (a *Agent) emitOutput(o transcript.Output) (int, bool) {
 	line, err := transcript.EncodeOutput(o)
 	if err != nil {
@@ -839,7 +840,7 @@ func (a *Agent) emitOutput(o transcript.Output) (int, bool) {
 	}
 	if a.outputUsed+len(line)+1 > outputProcessBytes-outputClosingBytes {
 		a.spent = true
-		o.Lines, o.Done, o.Truncated = nil, true, true
+		o.Line, o.Lines, o.Done, o.Truncated = o.Line+len(o.Lines), nil, true, true
 		if closing, err := transcript.EncodeOutput(o); err == nil {
 			a.writeLine(closing, "command output")
 		}

@@ -122,6 +122,10 @@ sweep deletes owned orphans left by a lost CR, while the queue refuses to reuse 
 resources. Reducing `slotCount` while a Preview owns a removed slot deliberately blocks finalizer removal: restore the
 count and drain first.
 
+intent-controller reads a Preview's status, never writes it, to link the preview from the intent's issue and its pull
+requests once it is `Ready` at their heads; it never posts the status `message`. See
+[The preview link](intent-controller.md#the-preview-link).
+
 With `previewController.config.targetHealth: true` (the chart's default; `--preview-target-health` on the binary, whose
 own default is still off), `Ready` also means the load balancer's target is healthy, so the host does not answer 404 or
 nothing for the seconds after `Ready` while a new target registers. The chart then labels the slot namespaces

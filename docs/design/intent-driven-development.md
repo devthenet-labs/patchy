@@ -1042,6 +1042,20 @@ preview image path prefix.
   - _No Preview yet_ until every component has a revision and at least one revision comes from a PR.
   - _When a Preview exists:_ only in `InReview` or `Revising`, or `Blocked` from one of them, and only while at least
     one PR is open.
+- **The preview link.** With the projection on, the intent reconciler reads the Intent's Preview (one uncached `get` per
+  pass, no watch, so no new RBAC) and tells reviewers where it stands.
+  - _Where:_ a `Preview` line in the issue's status comment, and one sticky comment per previewed PR (notice key
+    `preview`). The PR comment is posted only once the preview is first live at that PR's head, recorded by id and
+    digest on the PR record (`previewCommentID`, `previewDigest`), edited in place on every change (live at a new head,
+    redeploying, failed, expired), and last edited to say the preview was removed when the intent ends. The PR body is
+    never edited, since a squash merge can copy it onto the default branch.
+  - _When live:_ the Preview is this Intent's (UID), not deleting, has observed its generation, its spec and its Ready
+    components equal `DesiredPreviewComponents`, and `status.url` is `https://<intent>.<suffix>` with nothing else. A
+    Ready preview at any other URL shows as one patchy does not link.
+  - _Never posted:_ `status.message`, which can quote the cluster; a failure names the Preview resource instead.
+  - _Best effort:_ each write asks its own repository's rate floor, a departed repository gets nothing, a refusal is
+    retried only once the comment would say something else, a failed read shows no link, and an ended intent's last edit
+    never holds its hand-off.
 - **Unchanged repositories run main.**
   - _Recording:_ the intent reconciler reads each previewed repository that has no PR at its default-branch head, and
     records that head once per intent in `status.previewBases[]{repository, sha}`. This happens on the first review
@@ -1141,9 +1155,9 @@ that means for a CRD rollback). `mise run codegen` regenerates both CRD copies a
   left blocks before any build is spent. Nothing is forced or deleted.
 - **Scoped tokens.** Every write (push, PR, sibling comment, notice) uses a token scoped to its one repository.
 - **One writer per field.**
-  - Intent status, `previewBases` included: the intent reconciler.
+  - Intent status, `previewBases` and each pull request's preview comment record included: the intent reconciler.
   - Preview spec: the preview-source reconciler.
-  - Preview status: the preview-controller.
+  - Preview status: the preview-controller. The intent reconciler only reads it, uncached, for the preview link.
   - IntentRun status: the run reconciler.
 - **Preview isolation.**
   - The slot NetworkPolicy, node isolation and the IP-restricted edge are unchanged.

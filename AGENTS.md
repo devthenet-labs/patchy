@@ -84,8 +84,10 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   periodic orphan sweep. Intent-controller projects the operator's Project preview config and recorded PR head into
   Preview spec only when explicitly enabled: one component per previewed repository (at most four, path-routed on one
   host), a repository with no PR running its default-branch head from `status.previewBases`, all derived by the one
-  pure `v1alpha1.DesiredPreviewComponents` the writer and the controller's re-check share. See
-  `docs/configuration/preview-controller.md`.
+  pure `v1alpha1.DesiredPreviewComponents` the writer and the controller's re-check share. The intent reconciler reads
+  Preview status (one uncached get per pass, never written) to link the preview from the issue's status comment and one
+  sticky comment per previewed PR, only once it checks out (`preview_view.go`: UID, observed generation, derived
+  revisions, a bare `https://<intent>.<suffix>`). See `docs/configuration/preview-controller.md`.
 - `cmd/status-server` — the human-facing status page (NOT a controller: no reconcilers, no leases): the embedded
   SPA + JSON projection of Findings/FindingRollups, SSE refetch signal, OIDC sign-in, the access-review-gated
   approve/retry/expedite/suspend/resume actions, and the user-menu demo tooling (replay → Integration
@@ -206,10 +208,11 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   OTHER piece of agent text bound for GitHub takes (hidden markup shown literally, tables as text, characters that
   render as nothing as their code point; mentions, issue references on any host and so closing keywords made inline
   code); both with seeded properties checked against goldmark as a stand-in for GitHub; and the intent status comment,
-  notices, PR body ("Part of", never a closing keyword), PR title and commit message, over plain values. The last three
-  can land on the default branch as plain text (a squash commit copies the title and, if the repo says so, the body),
-  where inline code protects nothing, so each also `defang`s every reference and mention, code spans included; seeded
-  properties read them raw.
+  notices, the preview comment (`intent_preview.go`: the host linked only while live and only as bare DNS labels, the
+  preview controller's message never shown), PR body ("Part of", never a closing keyword), PR title and commit message,
+  over plain values. The last three can land on the default branch as plain text (a squash commit copies the title
+  and, if the repo says so, the body), where inline code protects nothing, so each also `defang`s every reference and
+  mention, code spans included; seeded properties read them raw.
 - `webhook`, `telemetry`, `cli`, `version` — service plumbing (the webhook server is used by
   integration-controller only).
 - `action` — the human-action vocabulary (the custom verbs) and the state-machine gating behind each one:

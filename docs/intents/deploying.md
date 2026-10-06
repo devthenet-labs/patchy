@@ -748,6 +748,10 @@ its image the same way, re-running the pull request's latest `test` run (`--bran
 above). A cold preview node takes about three minutes the first time. A new push to the pull request redeploys it, and
 merging or closing the pull request deletes it; the node goes soon after.
 
+Reviewers need not ask for the URL: within a minute of a preview going live, the issue's status comment links it, and
+the pull request gets one comment linking it at its head, which patchy edits as the head moves, the preview redeploys or
+fails, and once the intent ends ([The preview link](../configuration/intent-controller.md#the-preview-link)).
+
 ## Several repositories in one Project
 
 An application whose changes span repositories, a web front end and its API say, can be one Project over all of them.

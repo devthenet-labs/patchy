@@ -270,7 +270,9 @@ request's head, in the same image as its build, pushed as a fast-forward of the 
   same failure read as a new one, which costs a round, up to `limits.maxCheckFixes`.
 
 Each round posts one comment on the pull request saying what kind of round it was ("Revision round", or "CI-fix round
-for `test`") and what it pushed, and when it pushed, asks the approvers to review again. The summary patchy posts when
+for `test`") and what it pushed, and when it pushed, asks the approvers to review again. Once the intent has a pull
+request, the issue's status comment counts its revision rounds against `limits.maxRevisions` ("Revisions: 1 of 3") as
+the limit counts them: a round that failed counts, and a CI-fix round is not a revision. The summary patchy posts when
 the intent ends counts revisions and CI-fix rounds apart.
 
 ### The preview link

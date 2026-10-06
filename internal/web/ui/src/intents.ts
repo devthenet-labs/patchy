@@ -1,6 +1,5 @@
 // Pure helpers behind the intents views: column grouping, durations, a run
-// row's link text and click rule, and the plain-English stop conditions of a
-// run. No DOM, no fetches, so the node test runner exercises them directly
+// row's link text, and the plain-English stop conditions of a run. No DOM, no fetches, so the node test runner exercises them directly
 // (tests/intents.test.mjs).
 
 import type {
@@ -80,35 +79,16 @@ export function costShare(cost: number, ceiling: number): { share: number; over:
 
 // runLinkLabel is the visible text of a timeline row's link to its run
 // panel: what that panel will show this viewer. The conversation is there
-// only for a transcripts-tier reader, and only while the run is live or once
-// it recorded one; otherwise the panel shows the run's clock, activity and
-// stop conditions, so the link says no more than "Open run".
-export function runLinkLabel(tier: IntentTier, run: Pick<IntentRunRow, "running" | "transcript">): string {
-  return tier === "transcripts" && (run.running || run.transcript) ? "View conversation" : "Open run";
-}
-
-// RowClick is what a click on a timeline row carried, read off the DOM event
-// by the component so the decision stays pure.
-export interface RowClick {
-  button: number;
-  // modified: ctrl, meta, shift or alt was held.
-  modified: boolean;
-  defaultPrevented: boolean;
-  // onInteractive: the click landed on, or inside, a link or a control.
-  onInteractive: boolean;
-  // selecting: the press left a text selection behind (a drag over a
-  // digest to copy it, say).
-  selecting: boolean;
-}
-
-// followsRowClick reports whether a click on a run row should open its run
-// panel: a plain primary click on the row's own surface. A click on the
-// row's link is the link's to handle (it navigates itself, and a modified
-// click opens a tab as any link's does), so a modified click elsewhere on
-// the row does nothing rather than guess; and a drag that selected text is
-// not a request to navigate.
-export function followsRowClick(c: RowClick): boolean {
-  return c.button === 0 && !c.modified && !c.defaultPrevented && !c.onInteractive && !c.selecting;
+// only for a transcripts-tier reader, and only once the agent has launched
+// (a Pending run is still waiting for a run slot) or once it recorded one;
+// otherwise the panel shows the run's clock, activity and stop conditions,
+// so the link says no more than "Open run".
+export function runLinkLabel(
+  tier: IntentTier,
+  run: Pick<IntentRunRow, "running" | "phase" | "transcript">,
+): string {
+  const launched = run.running === true && run.phase !== "Pending";
+  return tier === "transcripts" && (launched || run.transcript) ? "View conversation" : "Open run";
 }
 
 function usd(micro: number): string {

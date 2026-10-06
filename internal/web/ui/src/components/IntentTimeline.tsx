@@ -8,8 +8,8 @@ import { useEffect, useState } from "preact/hooks";
 import type { IntentDetail, IntentPlanText, IntentRunRow, IntentTier } from "../types";
 import { fetchIntentPlan } from "../api";
 import { formatDate, formatMicroUSD } from "../format";
-import { INTENT_PHASE_LABELS, followsRowClick, formatDuration, runLinkLabel, secondsSince } from "../intents";
-import { hrefForIntentRun, hrefForIntents, navigate } from "../router";
+import { INTENT_PHASE_LABELS, formatDuration, runLinkLabel, secondsSince } from "../intents";
+import { hrefForIntentRun, hrefForIntents } from "../router";
 import { Icon } from "./icons";
 import { PlainText } from "./PlainText";
 import { Pill } from "./Pills";
@@ -63,34 +63,19 @@ function PlanText({ intent, revisions }: { intent: string; revisions: number[] }
   );
 }
 
-// RunRow is one run in the timeline's table, and a way into its run panel.
-// The run name, the row header, is the row's one link in the tab order and
-// the accessibility tree; its accessible name says what opening it shows.
-// The trailing "View conversation →" (or "Open run →") repeats it for the
-// pointer: a real link, so a middle or modified click opens a tab, but kept
-// out of the tab order and the accessibility tree so each row is one stop,
-// not two. A plain click anywhere else on the row follows it too; a drag that
-// selects text does not (followsRowClick).
+// RunRow is one run in the timeline's table, and a way into its run panel:
+// the run name, the row header, styled as the link it is, and a trailing
+// "View conversation →" (or "Open run →") link whose accessible name says
+// which run it opens. Both are plain links, so a middle or modified click
+// opens a tab and a click on any other cell selects text as usual.
 function RunRow({ intent, tier, run, now }: { intent: string; tier: IntentTier; run: IntentRunRow; now: number }) {
   const href = hrefForIntentRun(intent, run.name);
   const label = runLinkLabel(tier, run);
-  const onClick = (e: MouseEvent) => {
-    const target = e.target instanceof Element ? e.target : null;
-    const click = {
-      button: e.button,
-      modified: e.ctrlKey || e.metaKey || e.shiftKey || e.altKey,
-      defaultPrevented: e.defaultPrevented,
-      onInteractive: target?.closest("a, button, input, select, textarea, summary, label") != null,
-      selecting: (window.getSelection()?.toString() ?? "") !== "",
-    };
-    if (followsRowClick(click)) navigate(href);
-  };
   return (
-    <tr class="ps-hover-row group cursor-pointer" onClick={onClick}>
+    <tr class="ps-hover-row group">
       <th scope="row" class="px-3 py-2 text-left font-mono font-normal whitespace-nowrap">
         <a href={href} class="text-ink underline decoration-1 underline-offset-2 group-hover:decoration-2">
           {run.name}
-          <span class="sr-only"> ({label.toLowerCase()})</span>
         </a>
       </th>
       <td class="px-3 py-2">
@@ -116,8 +101,7 @@ function RunRow({ intent, tier, run, now }: { intent: string; tier: IntentTier; 
       <td class="px-3 py-2 text-right whitespace-nowrap">
         <a
           href={href}
-          tabIndex={-1}
-          aria-hidden="true"
+          aria-label={`${label} for ${run.name}`}
           class="text-[11.5px] font-semibold text-ink no-underline group-hover:underline"
         >
           {label} →
@@ -275,7 +259,7 @@ export function IntentTimeline({ detail, now }: { detail: IntentDetail; now: num
 
       <section class="mt-6">
         <h2 class="ps-heading mb-2">Runs</h2>
-        {/* relative: the screen-reader-only labels inside are absolutely
+        {/* relative: the screen-reader-only header inside is absolutely
             positioned, and must scroll and clip with the table rather than
             widen the page on a narrow screen. */}
         <div class="relative overflow-x-auto rounded-[11px] border border-line bg-surface">

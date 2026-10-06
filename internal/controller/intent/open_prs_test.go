@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -197,6 +198,35 @@ func TestOtherOpenPullRequestsBounds(t *testing.T) {
 	}
 	if g, l := e.gh.calls["GetPullRequest"], e.gh.calls["ListPullRequestFiles"]; g != 5 || l != 5 {
 		t.Errorf("GitHub asked %d pull requests and listed %d files, want 5 of each", g, l)
+	}
+}
+
+// TestOtherOpenPullRequestsCreationOrder: which intents' pull requests make
+// the bounded list is decided by how long each intent has been open, not by
+// its name: intents created in the reverse of their names' order list the
+// first-created ones, and the last-created (lowest-named) ones fall off.
+func TestOtherOpenPullRequestsCreationOrder(t *testing.T) {
+	e := newEnv(t, testProject())
+	own := e.newIntent(approver)
+	for n := int64(8); n >= 2; n-- {
+		e.seedIntent(v1alpha1.IntentName("target", n), "target", v1alpha1.IntentInReview, openPR(appRepoURL, n))
+		e.seedPR(n, "acme/app", "open", fmt.Sprintf("change %d", n), 1, ghclient.PullRequestFile{Path: "a.go"})
+	}
+	p, _ := e.openPRsPass(own, testProject())
+	got := decodeOpen(t, p.otherOpenPullRequests(context.Background()))
+	numbers := make([]int64, 0, len(got))
+	for _, pr := range got {
+		numbers = append(numbers, pr.Number)
+	}
+	want := []int64{8, 7, 6, 5, 4}
+	if len(want) != templates.OpenPullRequestsMax {
+		t.Fatalf("test assumes templates.OpenPullRequestsMax = %d, it is %d", len(want), templates.OpenPullRequestsMax)
+	}
+	if !slices.Equal(numbers, want) {
+		t.Errorf("listed pull requests %v, want %v: the longest-open intents', not the lowest-named", numbers, want)
+	}
+	if g := e.gh.calls["GetPullRequest"]; g != len(want) {
+		t.Errorf("GitHub asked %d pull requests, want %d: the newest intents are never read", g, len(want))
 	}
 }
 

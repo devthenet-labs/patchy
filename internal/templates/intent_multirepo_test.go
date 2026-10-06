@@ -60,6 +60,7 @@ func renderTestTreesPlanPrompt(prev *PreviousAttempt) (string, error) {
 		Intent:           testPlanRequest,
 		BuildMaxTurns:    150,
 		BuildTokenBudget: 800000,
+		Limits:           testPlanLimits,
 		PreviousAttempt:  prev,
 		Trees: []PlanTree{
 			{URL: testWebURL, Path: "/workspace/repo"},
@@ -73,6 +74,7 @@ func renderTestSiblingBuildPrompt(prev *PreviousAttempt, siblings ...string) (st
 		PlanPath:         "/workspace/input/investigation.md",
 		ReportPath:       "/workspace/reports/build.md",
 		CommitScriptPath: "/workspace/commit.sh",
+		Limits:           testBuildLimits,
 		PreviousAttempt:  prev,
 		ThisRepository:   testAPIURL,
 		Siblings:         siblings,
@@ -215,7 +217,8 @@ func TestOneRepositoryRendersUnchanged(t *testing.T) {
 		return func() (string, error) {
 			return RenderPlanPrompt(PlanPrompt{
 				IssuePath: "/workspace/input/issue.md", ReportPath: "/workspace/reports/plan.md",
-				Intent: testPlanRequest, BuildMaxTurns: 150, BuildTokenBudget: 800000, Trees: trees,
+				Intent: testPlanRequest, BuildMaxTurns: 150, BuildTokenBudget: 800000, Limits: testPlanLimits,
+				Trees: trees,
 			})
 		}
 	}
@@ -223,7 +226,8 @@ func TestOneRepositoryRendersUnchanged(t *testing.T) {
 		return func() (string, error) {
 			return RenderBuildPrompt(BuildPrompt{
 				PlanPath: "/workspace/input/investigation.md", ReportPath: "/workspace/reports/build.md",
-				CommitScriptPath: "/workspace/commit.sh", ThisRepository: this, Siblings: siblings,
+				CommitScriptPath: "/workspace/commit.sh", Limits: testBuildLimits, ThisRepository: this,
+				Siblings: siblings,
 			})
 		}
 	}

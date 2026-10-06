@@ -167,9 +167,10 @@ func TestPlanRunsReadOnly(t *testing.T) {
 		}
 		return argv[i+1]
 	}
-	if got := flag("--allowedTools"); got != "Read Glob Grep Write Bash(git log:*) Bash(git show:*) "+
-		"Bash(git blame:*) Bash(git diff:*)" {
-		t.Errorf("--allowedTools = %q, want the read-only posture", got)
+	// The read-only posture with its writes scoped to the report's directory.
+	if got := flag("--allowedTools"); got != "Read Glob Grep Edit(/"+filepath.Join(ws, "reports")+"/**) "+
+		"Bash(git log:*) Bash(git show:*) Bash(git blame:*) Bash(git diff:*)" {
+		t.Errorf("--allowedTools = %q, want the read-only posture writing only under reports/", got)
 	}
 	if got := flag("--max-turns"); got != "30" {
 		t.Errorf("--max-turns = %s, want the grant below the stage's limit", got)

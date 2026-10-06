@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12.18](https://github.com/devthenet-labs/patchy/compare/v0.12.17...v0.12.18) (2026-10-06)
+
+
+### Features
+
+* named agent resource classes, picked per repository on a Project ([#122](https://github.com/devthenet-labs/patchy/issues/122)) ([8abf38c](https://github.com/devthenet-labs/patchy/commit/8abf38cc59cc8ea83718b2a22aafa75b7b060ef2))
+
+
+### Bug Fixes
+
+* end an agent run that makes no progress for too long ([#119](https://github.com/devthenet-labs/patchy/issues/119)) ([b74acc5](https://github.com/devthenet-labs/patchy/commit/b74acc5ccff8be1d7f83ba68ab914d9a0dfd2461))
+* record agent usage for every outcome, timeouts included ([#118](https://github.com/devthenet-labs/patchy/issues/118)) ([4a64a12](https://github.com/devthenet-labs/patchy/commit/4a64a129b0e57116dc5496067fdf928f8bf16b0b))
+
 ## [0.12.17](https://github.com/devthenet-labs/patchy/compare/v0.12.16...v0.12.17) (2026-10-03)
 
 

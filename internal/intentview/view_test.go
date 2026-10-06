@@ -94,7 +94,9 @@ func TestMicroUSDAndFormat(t *testing.T) {
 			t.Errorf("MicroUSD(%q) = %d, want %d", in, got, want)
 		}
 	}
-	for in, want := range map[int64]string{0: "$0.00", 1: "$0.00", 12_345_678: "$12.34", 10_000_000: "$10.00", -5: "$0.00"} {
+	for in, want := range map[int64]string{
+		0: "$0.00", 1: "$0.00", 12_345_678: "$12.34", 10_000_000: "$10.00", -5: "$0.00",
+	} {
 		if got := FormatUSD(in); got != want {
 			t.Errorf("FormatUSD(%d) = %q, want %q", in, got, want)
 		}
@@ -178,6 +180,21 @@ func TestSafeURL(t *testing.T) {
 	} {
 		if got := SafeURL(raw); (got != "") != ok {
 			t.Errorf("SafeURL(%q) = %q, want accepted=%v", raw, got, ok)
+		}
+	}
+}
+
+func TestRepoSlug(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://github.com/acme/app":      "acme/app",
+		"https://github.com/acme/app.git":  "acme/app",
+		"https://github.com/acme/app/":     "acme/app",
+		"https://github.com/acme":          "",
+		"https://github.com/acme/app/pull": "",
+		"not a url":                        "",
+	} {
+		if got := RepoSlug(in); got != want {
+			t.Errorf("RepoSlug(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

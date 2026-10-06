@@ -87,9 +87,13 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+	if s.hardened() && s.broker.count() >= maxEventSubscribers {
+		http.Error(w, "too many open streams", http.StatusServiceUnavailable)
+		return
+	}
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
-	h.Set("Cache-Control", "no-cache")
+	h.Set("Cache-Control", s.streamCacheControl())
 	h.Set("Connection", "keep-alive")
 
 	ch := s.broker.subscribe()

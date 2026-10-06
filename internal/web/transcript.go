@@ -18,6 +18,7 @@ import (
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/transcript"
 	"github.com/bitwise-media-group/patchy/internal/transcriptstore"
+	"github.com/bitwise-media-group/patchy/internal/web/auth"
 )
 
 // Transcript SSE event names. Turns arrive one per event and the stream always
@@ -55,7 +56,8 @@ func wireTurn(t transcript.Turn) Turn {
 // unlike /events, which is public precisely because it carries no content —
 // a transcript is finding data and is gated exactly like /api/findings.
 func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorize(w, r); !ok {
+	v, ok := s.authorize(w, r)
+	if !ok {
 		return
 	}
 	finding := r.PathValue("name")
@@ -83,11 +85,24 @@ func (s *Server) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	}
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
-	h.Set("Cache-Control", "no-cache")
+	h.Set("Cache-Control", s.streamCacheControl())
 	h.Set("Connection", "keep-alive")
 	flusher.Flush()
 
-	s.streamTranscript(w, r, flusher, run)
+	s.streamTranscript(w, r, flusher, run, s.findingsRecheck(v.id))
+}
+
+// findingsRecheck re-checks, for a live transcript stream, that its viewer
+// may still view findings. nil (never re-checked, as before) unless the
+// hardened envelope is on.
+func (s *Server) findingsRecheck(id auth.Identity) func(context.Context) bool {
+	if !s.hardened() {
+		return nil
+	}
+	return func(ctx context.Context) bool {
+		g, err := s.granter.Grants(ctx, id)
+		return err == nil && g.View
+	}
 }
 
 // runRef is the resolved run a transcript request names.
@@ -152,7 +167,7 @@ func (s *Server) findRun(
 // persisted transcript wins over a live follow: once a run is collected its
 // stored record is complete, while its pod log is already being reaped.
 func (s *Server) streamTranscript(
-	w http.ResponseWriter, r *http.Request, flusher http.Flusher, run runRef,
+	w http.ResponseWriter, r *http.Request, flusher http.Flusher, run runRef, recheck func(context.Context) bool,
 ) {
 	ctx := r.Context()
 	if run.transcript != nil {
@@ -176,13 +191,14 @@ func (s *Server) streamTranscript(
 		writeEnd(w, flusher)
 		return
 	}
-	s.followTranscript(ctx, w, flusher, run)
+	s.followTranscript(ctx, w, flusher, run, recheck)
 }
 
 // followTranscript replays what a running agent has said and then streams the
-// rest until the run ends or the viewer leaves.
+// rest until the run ends or the viewer leaves. With recheck, the viewer's
+// grant is re-checked every reauth period and the stream ends without it.
 func (s *Server) followTranscript(
-	ctx context.Context, w http.ResponseWriter, flusher http.Flusher, run runRef,
+	ctx context.Context, w http.ResponseWriter, flusher http.Flusher, run runRef, recheck func(context.Context) bool,
 ) {
 	sub, err := s.tails.subscribe(run.jobName)
 	if err != nil {
@@ -202,6 +218,12 @@ func (s *Server) followTranscript(
 
 	ping := time.NewTicker(keepalivePeriod)
 	defer ping.Stop()
+	var reauth <-chan time.Time
+	if recheck != nil {
+		t := time.NewTicker(s.intents.reauth)
+		defer t.Stop()
+		reauth = t.C
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -212,6 +234,11 @@ func (s *Server) followTranscript(
 				return
 			}
 			if !writeTurn(w, flusher, t) {
+				return
+			}
+		case <-reauth:
+			if !recheck(ctx) {
+				writeEnd(w, flusher)
 				return
 			}
 		case <-ping.C:

@@ -53,6 +53,11 @@ type Server struct {
 	tails *tailHub
 	// debounce overrides the watch coalescing window (tests).
 	debounce time.Duration
+	// intents is the intents views' state, nil while they are off. Its
+	// presence also turns on the hardened browser envelope (envelope.go).
+	intents *intentsState
+	// csp is the Content-Security-Policy the hardened envelope sends.
+	csp string
 }
 
 // NewServer builds the backend over the manager's cached client. log may be
@@ -100,6 +105,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/integrations/{name}/actions/backfill", s.handleBackfill)
 	mux.HandleFunc("GET /api/findings/{name}/runs/{kind}/{attempt}/transcript", s.handleTranscript)
 	mux.HandleFunc("GET /events", s.handleEvents)
+	if s.intents != nil {
+		s.registerIntents(mux)
+		assets, _ := uiAssets()
+		s.csp = buildCSP(assets)
+	}
 	s.auth.Register(mux)
 	mux.Handle("/", s.staticHandler())
 	return s.middleware(mux)
@@ -108,7 +118,8 @@ func (s *Server) Handler() http.Handler {
 // middleware applies the security envelope to every response: conservative
 // browser headers, no caching on the data surface, a body cap, and a
 // same-origin check on mutations (defense in depth on top of SameSite=Lax
-// cookies).
+// cookies). With the intents views on, the hardened envelope (envelope.go)
+// runs first.
 func (s *Server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -117,6 +128,9 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "same-origin")
 		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/events" {
 			h.Set("Cache-Control", "no-store")
+		}
+		if s.hardened() && !s.hardenedRequest(w, r) {
+			return
 		}
 		if r.Method == http.MethodPost {
 			if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {

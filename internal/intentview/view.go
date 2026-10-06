@@ -297,6 +297,20 @@ func SafeURL(raw string) string {
 	return raw
 }
 
+// RepoSlug is "owner/name" of a repository URL (https://host/owner/name,
+// a .git suffix dropped), or "" when it is not one.
+func RepoSlug(raw string) string {
+	u, err := url.Parse(strings.TrimSuffix(strings.TrimRight(raw, "/"), ".git"))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	return Text(parts[0]+"/"+parts[1], 200)
+}
+
 // DigestHex is the hex of a sha256 digest reference, cut to the first 12
 // characters, for display; "" when ref holds none.
 func DigestHex(ref string) string {

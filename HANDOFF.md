@@ -31,7 +31,7 @@ status line, per-Project turn limits) are deferred until the owner asks.
   stream, scrubbed and bounded (1 KiB lines; 64 KiB per command then samples, 64 KiB of samples; 512 KiB per pod), never
   persisted. status-server follows it beside the turns with its own replay ring and channel, to transcripts-tier readers
   only. Review (13 findings, all fixed and re-verified) also fixed an older bug: a stage result whose report quoted
-  `PATCHY-TURN: ` was dropped, and a tail-hub race could cancel a viewer's stream as another left. Live: on the real CLI
+  `PATCHY-TURN:` was dropped, and a tail-hub race could cancel a viewer's stream as another left. Live: on the real CLI
   in a repository-image pod, a command's first chunk arrived at 20:31:19Z and its last, with Done, at 20:31:41Z, while
   it ran.
 - Broker spend limits are on in terraform-devthenet (#46): `tokensPerPod` 15M, `tokensPerHour` 60M, `requestsPerPod`

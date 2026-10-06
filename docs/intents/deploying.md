@@ -822,6 +822,90 @@ once, two cross-linked pull requests and one preview of both; the intent stayed 
 [intent-controller](../configuration/intent-controller.md#several-repositories) and, for previews,
 [preview-controller](../configuration/preview-controller.md).
 
+## Sizing agents
+
+Agent Jobs request no CPU or memory unless you set some. They are then BestEffort pods: the scheduler puts them on any
+node with room, a small one shared with patchy's controllers included, and they get only what that node has spare. That
+suits plans and the security pipeline's Jobs, which mostly wait on the model. It starves a build that runs a heavy test
+suite.
+
+overdub, a browser app tested with Chromium, found this out. Its build ran the app's CI subset (`npm run test:ci`, 11
+browser suites, three at a time) on the cluster's one `c6a.large`, shared with the controllers: 2 vCPU and 3.7 GiB, of
+which pods get about 1.8 CPUs and 3 GiB. The command never returned, and the agent waited until the build's one-hour
+timeout. The same subset takes under two minutes on a 2-vCPU CI runner running two suites at a time.
+
+The fix is a **resource class**: a named size you define in the `patchy` chart and a Project picks for one repository.
+That repository's builds, revise rounds and check-fix rounds run on it; plans, the Project's other repositories and the
+security pipeline stay on the default.
+
+```yaml
+# patchy-values.yaml
+agent:
+  resources:
+    classes:
+      large:
+        requests:
+          cpu: 4
+          memory: 8Gi
+        limits:
+          memory: 10Gi # above the request, and no CPU limit: see below
+```
+
+```yaml
+# patchy-config-values.yaml
+projects:
+  - name: shop-web
+    spec:
+      # intentRepository, approvers and checks as in step 9
+      repositories:
+        - name: shop-web
+          url: https://github.com/acme/Shop.Web
+          agentResourceClass: large
+```
+
+Upgrade `patchy` first, then `patchy-config`. The `patchy` upgrade adds the field to the Project CRD and defines the
+class, and restarts intent-controller alone; an older CRD would drop `agentResourceClass` without a word, and a Project
+that picks a class intent-controller does not define holds that repository's builds (see below). Each class must set
+`requests.cpu`, `requests.memory` and `limits.memory`; every one is checked when intent-controller starts (positive, at
+most 64 CPUs and 512 GiB, each request at or below its limit), and a bad one stops it from starting, its log naming the
+class. Check `kubectl -n patchy get pods` after the upgrade.
+
+The classes are the spend ceiling: a Project can pick only a class you defined, so the largest is the most any one agent
+Job can request, and nothing in a repository, an issue or an agent's output can pick one. To choose the numbers:
+
+- **Requests are what you pay for.** EKS Auto Mode launches nodes to fit pods' requests, and a node gives its pods less
+  than its nominal size, because the kubelet, the system and the DaemonSets take a share: a `c6a.large` offers about
+  1780m of its 2 vCPU. A request of 4 CPUs therefore needs an instance with more than 4 vCPUs, in practice an 8-vCPU
+  one. To fit a 4-vCPU, 8-GiB instance instead, ask for about `3500m` and `6Gi`.
+- **No CPU limit.** A CPU limit throttles a build whenever it bursts, and browsers and Node test runners burst. The
+  request alone reserves the CPU, and the pod may still use idle cores.
+- **A memory limit somewhat above the request.** On cgroup v2 a container that reaches its memory limit is OOM-killed
+  whole, the agent with the build, and the attempt is spent; the run's detail then says so, naming the limit and the
+  class. A memory-backed `/dev/shm` for Chromium, if your agent image mounts one, counts against the same limit.
+- **Both containers get the class.** The prepare init container runs before the agent, so the pod reserves the class
+  once, not twice.
+- **Start from the app's CI.** Pick a class at least as large as the CI runner its tests pass on, then judge it by real
+  builds (EKS Auto Mode installs no metrics-server): their timings, and any run whose detail reports an OOM kill.
+
+`agent.resources.default` sizes every agent Job without a class: the security pipeline's Jobs, plans, evaluation units
+and the builds of repositories that pick none. Leave it `{}` unless you want each of them reserved: once it is set,
+every agent Job is Burstable and may launch a node of its own. At worst, agents together request the default times the
+agent Jobs that can run at once (investigations, remediations and evaluation units) plus the largest class times
+`intentController.config.maxConcurrentRuns`. patchy caps neither total; a ResourceQuota on `patchy-agents` can, once a
+default is set (a quota on CPU or memory refuses pods that request none).
+
+What patchy does when something goes wrong:
+
+| When                                                                                             | What happens                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The Project picks a class intent-controller does not define (a typo, a class removed or renamed) | That repository's run waits `Pending` with no Job, no slot and no attempt spent. The intent is `Blocked` with `ResourcesUnavailable` (`UnknownResourceClass`), naming the class and the classes defined; the Project stays `Ready` and reports `ResourceClassesResolved: False`, so plans and the other repositories carry on. Defining the class or changing the pick lifts the block, and the same run launches.                                  |
+| No node can fit the pod (a class larger than any instance the cluster launches)                  | After 10 minutes `Unschedulable`, long enough for Auto Mode to add a node that fits, patchy deletes the Job and ends the run `unschedulable`, with the scheduler's message in its detail. No attempt is spent, and nothing is retried until something changes: a plan or build blocks its intent (`ResourcesUnavailable`, `Unschedulable`) until the Project changes or intent-controller restarts; a revise or check-fix round ends with a notice. |
+| The build runs out of memory                                                                     | The agent container is OOM-killed and the run fails, its detail naming the kill, the memory limit and the class to raise. The attempt counts: the agent ran.                                                                                                                                                                                                                                                                                        |
+| Auto Mode consolidates its nodes                                                                 | Nothing: every agent pod carries `karpenter.sh/do-not-disrupt: "true"`, so a running agent is never evicted to consolidate or replace its node. A node failure or a spot interruption can still end a run.                                                                                                                                                                                                                                          |
+
+Auto Mode removes an empty node within a minute, so a build on a large class may start on a fresh node and pull its
+agent image again; expect that in the time from the Job's creation to the agent's start.
+
 ## TLS: ACM only, for previews
 
 The preview edge terminates TLS with ACM and nothing else. Every preview host is one label under the wildcard, served by
@@ -883,6 +967,9 @@ What it **cannot** prove, and where to look instead:
 
 - **One release, three artifacts.** Upgrade the chart, the CLI and the module ref together: `helm_values` carries chart
   keys, and `patchy init app` scaffolds against its own release.
+- **A new resource class goes into `patchy` before `patchy-config` picks it**, and a class leaves `patchy-config` before
+  it leaves `patchy`; out of order, the repository's builds wait (they are never lost) until both agree. See
+  [Sizing agents](#sizing-agents).
 - **Record the rollback point** (both releases' revisions) before each `helm upgrade`, and read `helm status` before
   retrying one that failed: an upgrade interrupted by a network drop may have applied part of a revision.
 - **Re-run the isolation probe** after every EKS, Auto Mode or VPC CNI upgrade, and before relying on previews again. An
@@ -938,6 +1025,8 @@ In this order; each step depends on the one before it.
   limited to 250m CPU and 256 MiB of memory; none of it is configurable yet.
 - **One container per Pod**, one port, no volumes (a read-only root filesystem and no writable `/tmp`), and the runtime
   contract in [Onboarding an application](onboarding-app.md#the-runtime-contract).
+- **A resource class sizes a pod, not where it runs.** Agent Jobs carry no node selector or toleration, so every class
+  lands on Auto Mode's general-purpose pool, which has no limits of its own.
 - **amd64 by default.** The generated publishers build and accept `linux/amd64` images only, the preview NodePool is
   `amd64` by default, and agent Jobs carry no node selector, so the nodes they land on must run amd64 images (Auto
   Mode's built-in general-purpose pool launches amd64 nodes).

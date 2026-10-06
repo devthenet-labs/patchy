@@ -22,7 +22,7 @@ import (
 var blockingConditions = []string{
 	v1alpha1.ConditionBudgetExhausted, v1alpha1.ConditionImageRequired, v1alpha1.ConditionBranchConflict,
 	v1alpha1.ConditionRevisionLimitReached, v1alpha1.ConditionChecksFailing,
-	v1alpha1.ConditionUnsupportedRepositories,
+	v1alpha1.ConditionUnsupportedRepositories, v1alpha1.ConditionResourcesUnavailable,
 }
 
 // BranchConflict reasons.
@@ -251,8 +251,9 @@ func (p *pass) resumePlan(ctx context.Context) (*v1alpha1.IntentRun, error) {
 }
 
 // resumeBuilds launches, for a resume, the next attempt of each approved
-// repository whose latest build had no accepted image to run on (while it
-// has attempts left), and returns the run that resumes active: the first so
+// repository whose latest build had no accepted image to run on, or no node
+// that could fit it (while it has attempts left), and returns the run that
+// resumes active: the first so
 // launched, else the first build still in flight.
 func (p *pass) resumeBuilds(ctx context.Context) (*v1alpha1.IntentRun, error) {
 	repos, gone := p.approvedRepositories()
@@ -270,7 +271,8 @@ func (p *pass) resumeBuilds(ctx context.Context) (*v1alpha1.IntentRun, error) {
 			if inFlight == nil {
 				inFlight = latest
 			}
-		case imageBlocked(latest) && rs.counted(nil) < p.set.MaxAttempts && rs.next() <= v1alpha1.MaxIntentRunAttempt:
+		case (imageBlocked(latest) || resourcesBlocked(latest)) && rs.counted(nil) < p.set.MaxAttempts &&
+			rs.next() <= v1alpha1.MaxIntentRunAttempt:
 			run, err := p.createRun(ctx, v1alpha1.IntentStageBuild, repo, round, rs.next(), p.previousAttempt(latest))
 			if err != nil {
 				return nil, err
@@ -287,7 +289,9 @@ func (p *pass) resumeBuilds(ctx context.Context) (*v1alpha1.IntentRun, error) {
 }
 
 // blockHolds reports whether any block still holds: the spend still at the
-// ceiling; the intent branch still not patchy's to use; a repository-image
+// ceiling; a run still waiting on a resource class intent-controller does
+// not define, or an unschedulable pod's block made under the Project's
+// current generation; the intent branch still not patchy's to use; a repository-image
 // block still in force (the Project still requires the image, and repository
 // images are still off or the breaker still tripped, or else neither the
 // Project nor the default branch changed since the block).
@@ -326,6 +330,9 @@ func (p *pass) blockHolds(ctx context.Context) (bool, error) {
 				return true, nil
 			}
 		}
+	}
+	if p.resourceBlockHolds() {
+		return true, nil
 	}
 	if holds, err := p.branchBlockHolds(ctx); holds || err != nil {
 		return holds, err

@@ -61,6 +61,18 @@ supports it, refusing to start otherwise.
 | `--model-allowlist`               | `PATCHY_MODEL_ALLOWLIST`               | canonical ids          | Canonical model ids the investigation may request for remediation (comma-separated)                                                                                                  |
 | `--repository-images`             | `PATCHY_REPOSITORY_IMAGES`             | `false`                | Run a Repository's pinned [repository-declared image](#repository-declared-runner-images) (brokered claude runner only); off runs every Job on its harness's image — the kill switch |
 | `--agent-ephemeral-storage`       | `PATCHY_AGENT_EPHEMERAL_STORAGE`       | —                      | Ephemeral-storage request and limit on both agent containers, a quantity such as `8Gi`; unset leaves Jobs without one; **required** with `--repository-images`                       |
+| `--agent-cpu-request`             | `PATCHY_AGENT_CPU_REQUEST`             | —                      | CPU request on both containers of every agent Job, a quantity such as `500m`; unset requests none                                                                                    |
+| `--agent-memory-request`          | `PATCHY_AGENT_MEMORY_REQUEST`          | —                      | Memory request on both containers of every agent Job, such as `1Gi`; unset requests none                                                                                             |
+| `--agent-cpu-limit`               | `PATCHY_AGENT_CPU_LIMIT`               | —                      | CPU limit, at or above the request; unset sets none, and none is best: a limit throttles test suites                                                                                 |
+| `--agent-memory-limit`            | `PATCHY_AGENT_MEMORY_LIMIT`            | —                      | Memory limit, at or above the request; unset sets none                                                                                                                               |
+
+The four `--agent-*` CPU and memory flags are the default every agent Job gets (Helm `agent.resources.default`), shared
+with the remediation-, intent- and evaluation-controller. All unset, which is the default, a Job requests and limits
+neither, exactly as before the flags existed. Each one set is checked at startup (positive, between `10m` and `64` CPUs
+or `128Mi` and `512Gi`, each request at or below its limit), and a bad value stops the controller from starting. A
+Finding never picks a size of its own; only an intent's Project can, from the operator's classes
+([intent-controller](intent-controller.md#resource-classes)). Every agent pod carries
+`karpenter.sh/do-not-disrupt: "true"`, so a node autoscaler consolidating nodes never evicts a running agent.
 
 ### Repository-declared runner images
 

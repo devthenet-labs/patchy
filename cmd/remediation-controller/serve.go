@@ -58,6 +58,7 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.String("agent-service-account", "patchy-agent", "service account for the agent Jobs")
 	runnercfg.RegisterFlags(f)
 	runnercfg.RegisterRepositoryImageFlags(f)
+	runnercfg.RegisterAgentResourceFlags(f)
 	f.Duration("job-deadline", time.Hour, "activeDeadlineSeconds for an agent Job")
 	f.Duration("job-ttl", time.Hour, "ttlSecondsAfterFinished for a finished agent Job")
 
@@ -125,6 +126,11 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	if err != nil {
 		return err
 	}
+	agentResources, err := runnercfg.AgentResources(opts)
+	if err != nil {
+		return err
+	}
+	cpuRequest, memoryRequest, cpuLimit, memoryLimit := agentResources.Strings()
 	if opts.Int("changeset-max-entries") <= 0 {
 		return errors.New("--changeset-max-entries must be positive")
 	}
@@ -172,6 +178,11 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		Runners:        runners,
 		Env:            agentEnv(opts),
 		BrokerAudience: opts.String("broker-token-audience"),
+
+		CPURequest:    cpuRequest,
+		MemoryRequest: memoryRequest,
+		CPULimit:      cpuLimit,
+		MemoryLimit:   memoryLimit,
 
 		EphemeralStorage:      ephemeralStorage,
 		AllowRepositoryImages: repositoryImages,

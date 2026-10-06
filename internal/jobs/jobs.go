@@ -93,6 +93,31 @@ const (
 	labelRunnerImageSource      = "patchy.bitwisemedia.uk/runner-image-source"
 )
 
+// AnnotationResourceClass records, on a Job and its pod, the operator's
+// resource class whose CPU and memory the Job runs with (Spec.Resources). A
+// Job on the controller's default resources carries none.
+const AnnotationResourceClass = "patchy.bitwisemedia.uk/resource-class"
+
+// annotationDoNotDisrupt keeps Karpenter (EKS Auto Mode's node manager) from
+// evicting an agent pod to consolidate or replace its node. Every agent pod
+// carries it: a Job runs with backoffLimit 0, so one voluntary eviction
+// would end the run with no result, its attempt spent. The node is held only
+// while the pod runs; involuntary disruption (a node failure, a spot
+// interruption) is unaffected, and so is a cluster without Karpenter, which
+// ignores the annotation.
+const annotationDoNotDisrupt = "karpenter.sh/do-not-disrupt"
+
+// podAnnotations are a Job's annotations plus the ones only its pod
+// carries.
+func podAnnotations(job map[string]string) map[string]string {
+	ann := maps.Clone(job)
+	if ann == nil {
+		ann = map[string]string{}
+	}
+	ann[annotationDoNotDisrupt] = "true"
+	return ann
+}
+
 // ExitSandboxUnenforced is the prepare init container's exit status when
 // the sandbox probe found egress still open at the end of its window. The
 // collectors map it to a SandboxUnenforced failure that consumes no attempt.
@@ -204,7 +229,10 @@ type Config struct {
 	// BrokerAudience is the audience brokered runners' projected caller
 	// tokens are bound to (default DefaultBrokerAudience).
 	BrokerAudience string
-	// Resource strings (Kubernetes quantities), optional.
+	// Resource strings (Kubernetes quantities), optional: the controller's
+	// default CPU and memory requests and limits, on both containers of
+	// every Job it builds. None set is a Job with no CPU or memory requests
+	// or limits at all. A Spec's Resources replaces all four for that Job.
 	CPURequest, MemoryRequest, CPULimit, MemoryLimit string
 	// EphemeralStorage, when set, is the ephemeral-storage request AND
 	// limit on both containers, so a pod that fills its emptyDirs is
@@ -302,6 +330,23 @@ type Spec struct {
 	// without.
 	RepoKey string
 	RepoURL string
+	// Resources, when set, replaces Config's CPU and memory requests and
+	// limits for this one Job: an intent build's resource class. Nil (every
+	// Finding Job, every plan, a build whose repository picks no class)
+	// leaves the Job exactly as Config shapes it.
+	Resources *Resources
+}
+
+// Resources is one Job's CPU and memory (Spec.Resources). The four
+// quantities replace Config's as a whole, an empty one leaving that
+// quantity unset, on both containers alike: the pod requests the larger of
+// the prepare init's and the agent's, never their sum. Ephemeral storage
+// always comes from Config, so the repository-image wall on disk is never
+// moved by a class. Class names the operator's class the quantities came
+// from, recorded on the Job and its pod as AnnotationResourceClass.
+type Resources struct {
+	Class                                            string
+	CPURequest, MemoryRequest, CPULimit, MemoryLimit string
 }
 
 // Client creates and observes agent Jobs in one namespace. It embeds the
@@ -547,7 +592,7 @@ func (c *Client) buildJob(name string, spec Spec) (*batchv1.Job, error) {
 	if err := treesRefusal(spec); err != nil {
 		return nil, err
 	}
-	res, err := c.cfg.resources()
+	res, err := c.cfg.resources(spec.Resources)
 	if err != nil {
 		return nil, err
 	}
@@ -557,6 +602,9 @@ func (c *Client) buildJob(name string, spec Spec) (*batchv1.Job, error) {
 	}
 	lbls := jobLabels(spec)
 	ann := map[string]string{annotationRepo: spec.Repo}
+	if spec.Resources != nil && spec.Resources.Class != "" {
+		ann[AnnotationResourceClass] = spec.Resources.Class
+	}
 	inject := c.injects(runner, spec)
 	if inject {
 		if err := c.injectionRefusal(spec.Harness, runner, spec); err != nil {
@@ -580,7 +628,7 @@ func (c *Client) buildJob(name string, spec Spec) (*batchv1.Job, error) {
 			// controller's.
 			BackoffLimit: new(int32(0)),
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: maps.Clone(lbls), Annotations: maps.Clone(ann)},
+				ObjectMeta: metav1.ObjectMeta{Labels: maps.Clone(lbls), Annotations: podAnnotations(ann)},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: c.cfg.ServiceAccount,
 					RestartPolicy:      corev1.RestartPolicyNever,
@@ -1120,17 +1168,23 @@ func sanitizeLabelValue(s string) string {
 	return out
 }
 
-// resources renders the per-container requests and limits. Ephemeral
+// resources renders the per-container requests and limits: Config's CPU
+// and memory, or over's in their place when a Job carries one. Ephemeral
 // storage, when configured, is both a request and a limit of the same
 // quantity: the limit is the wall on disk (the kubelet evicts a pod that
-// fills its emptyDirs), and requesting it keeps the scheduler honest.
-func (c Config) resources() (corev1.ResourceRequirements, error) {
+// fills its emptyDirs), and requesting it keeps the scheduler honest. It is
+// always Config's.
+func (c Config) resources(over *Resources) (corev1.ResourceRequirements, error) {
+	cpuReq, memReq, cpuLim, memLim := c.CPURequest, c.MemoryRequest, c.CPULimit, c.MemoryLimit
+	if over != nil {
+		cpuReq, memReq, cpuLim, memLim = over.CPURequest, over.MemoryRequest, over.CPULimit, over.MemoryLimit
+	}
 	var rr corev1.ResourceRequirements
 	var err error
-	if rr.Requests, err = resourceList(c.CPURequest, c.MemoryRequest, c.EphemeralStorage); err != nil {
+	if rr.Requests, err = resourceList(cpuReq, memReq, c.EphemeralStorage); err != nil {
 		return rr, err
 	}
-	rr.Limits, err = resourceList(c.CPULimit, c.MemoryLimit, c.EphemeralStorage)
+	rr.Limits, err = resourceList(cpuLim, memLim, c.EphemeralStorage)
 	return rr, err
 }
 

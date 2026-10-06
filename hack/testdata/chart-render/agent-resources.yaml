@@ -1,0 +1,32 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# chart-render-test fixture: agent resources set on both sides. The default
+# sets all four quantities in the spellings operators write unquoted (a
+# fractional cpu, a cpu of 2, a memory of 1073741824 bytes), so the render must
+# keep each integral one an integer rather than helm's float form. The classes
+# carry an unquoted cpu: 4, which toJson renders as the JSON number 4 that
+# intent-controller's strict decoder reads as a quantity.
+agent:
+    resources:
+        default:
+            requests:
+                cpu: 0.5
+                memory: 1073741824
+            limits:
+                cpu: 2
+                memory: 4Gi
+        classes:
+            large:
+                requests:
+                    cpu: 4
+                    memory: 8Gi
+                limits:
+                    memory: 10Gi
+            medium:
+                requests:
+                    cpu: 1500m
+                    memory: 3Gi
+                limits:
+                    cpu: "3"
+                    memory: 4Gi

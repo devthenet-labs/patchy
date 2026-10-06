@@ -30,6 +30,7 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/ghclient"
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/report"
+	"github.com/bitwise-media-group/patchy/internal/resourceclass"
 	"github.com/bitwise-media-group/patchy/internal/runnerguard"
 	"github.com/bitwise-media-group/patchy/internal/schedule"
 	"github.com/bitwise-media-group/patchy/internal/templates"
@@ -83,6 +84,10 @@ type RunReconciler struct {
 	// Images decides whether a build runs the Repository's pinned image
 	// (PinFor), with this controller's own breaker.
 	Images runnerguard.Guard
+	// Classes are the operator's resource classes a Project picks from per
+	// repository for its build, revise and check-fix runs (runResources).
+	// Held here rather than in Settings, which stays comparable.
+	Classes resourceclass.Set
 	// MaxChangesetEntries caps a build changeset's entries; <= 0 means
 	// changeset.DefaultMaxEntries.
 	MaxChangesetEntries int
@@ -175,7 +180,10 @@ func pushHeld(run *v1alpha1.IntentRun) bool {
 // pull request still open: roundEnded); its Project present, not suspended,
 // one this controller runs intents of (Settings.multiRepoOff), and, for a
 // build or a revise round, still listing the run's repository
-// (repositoryLeft). A run waiting on any of them holds no slot.
+// (repositoryLeft) and picking no resource class this controller does not
+// define (runResources). A run waiting on any of them holds no slot, and is
+// never granted one: granting it would only hand the slot back, and every
+// pass would grant it again ahead of the runs that could launch.
 func (r *RunReconciler) launchable(ctx context.Context, run *v1alpha1.IntentRun) bool {
 	var in v1alpha1.Intent
 	if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.IntentRef.Name}, &in); err != nil ||
@@ -185,6 +193,9 @@ func (r *RunReconciler) launchable(ctx context.Context, run *v1alpha1.IntentRun)
 	var proj v1alpha1.Project
 	if err := r.Get(ctx, types.NamespacedName{Namespace: run.Namespace, Name: in.Spec.Project}, &proj); err != nil ||
 		proj.Spec.Suspend || r.Settings.multiRepoOff(&proj) || repositoryLeft(&proj, run) {
+		return false
+	}
+	if _, unknown := runResources(r.Classes, &proj, run); unknown != "" {
 		return false
 	}
 	var cm corev1.ConfigMap
@@ -286,6 +297,13 @@ func (r *RunReconciler) run(ctx context.Context, req ctrl.Request) (ctrl.Result,
 		}
 		return r.collect(ctx, &run)
 	case v1alpha1.RunComplete, v1alpha1.RunFailed:
+		// An unschedulable Job is deleted only after its outcome is
+		// durable. Retry cleanup if the delete failed after settlement.
+		if run.Status.Outcome == OutcomeUnschedulable {
+			if err := r.deleteUnschedulableJob(ctx, &run); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		// settle deletes a plan run's Repository after the terminal write;
 		// a delete that failed there is retried here, on every event, so
 		// no plan Repository outlives its collection.
@@ -443,13 +461,26 @@ func repositoryLeftDetail(run *v1alpha1.IntentRun) string {
 // launches nothing), with an empty request, and runs only on an accepted
 // repository-declared image when its Project requires one: if none is
 // usable, or the Job reports it ran the default image, the Job is deleted
-// and the run fails image_required, which blocks its Intent.
+// and the run fails image_required, which blocks its Intent. A build,
+// revise or check-fix run runs on its repository's resource class when the
+// Project picks one; a class this controller does not define launches
+// nothing, and the run waits Pending.
 func (r *RunReconciler) launch(ctx context.Context, run *v1alpha1.IntentRun) error {
 	proj, wait, err := r.launchProject(ctx, run)
 	switch {
 	case err != nil:
 		return err
 	case wait:
+		return r.requeuePending(ctx, run)
+	}
+	// Before anything is read for the launch (a revise round's head, from
+	// GitHub): a run granted a moment before its class became unknown hands
+	// the slot back and waits, launchable keeping it ungranted, its attempt
+	// unspent.
+	resources, unknown := runResources(r.Classes, proj, run)
+	if unknown != "" {
+		r.log().LogAttrs(ctx, slog.LevelWarn, "the run's resource class is not defined; it waits",
+			slog.String("run", run.Name), slog.String("class", unknown))
 		return r.requeuePending(ctx, run)
 	}
 	var repo v1alpha1.Repository
@@ -504,6 +535,9 @@ func (r *RunReconciler) launch(ctx context.Context, run *v1alpha1.IntentRun) err
 		MaxTurns:        run.Spec.Grant.MaxTurns,
 		TokenBudget:     run.Spec.Grant.TokenBudget,
 		PreviousAttempt: agentresult.EncodePreviousAttempt(run.Spec.PreviousAttempt),
+		// A build, revise or check-fix run of a repository that picks a
+		// class runs on it; every other run on the default (nil).
+		Resources: resources,
 	}
 	if len(run.Spec.Trees) > 0 {
 		ready, refusal, err := r.treesSpec(ctx, run, proj, &spec)
@@ -798,15 +832,7 @@ func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (c
 			sandboxRefused: true})
 	}
 	if !st.Done {
-		requeue, pullFailure := runnerguard.Pending(st, r.now())
-		if pullFailure != "" {
-			if err := r.Jobs.Delete(ctx, run.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
-				r.log().LogAttrs(ctx, slog.LevelWarn, "delete agent job after pull failure",
-					slog.String("job", run.Status.JobRef.Name), slog.Any("error", err))
-			}
-			return ctrl.Result{}, r.settle(ctx, run, result{outcome: OutcomeAborted, detail: pullFailure})
-		}
-		return ctrl.Result{RequeueAfter: requeue}, nil
+		return r.unfinished(ctx, run, st)
 	}
 	out, err := r.Jobs.Result(ctx, run.Status.JobRef.Name)
 	if err != nil {
@@ -825,9 +851,55 @@ func (r *RunReconciler) collect(ctx context.Context, run *v1alpha1.IntentRun) (c
 			slog.String("run", run.Name), slog.Any("error", err))
 	}
 	if run.Spec.Stage == v1alpha1.IntentStagePlan {
-		return ctrl.Result{}, r.collectPlan(ctx, run, out.Events, transcript)
+		return ctrl.Result{}, r.collectPlan(ctx, run, out.Events, transcript, st)
 	}
-	return r.heldOr(r.collectBuild(ctx, run, out.Events, transcript))
+	return r.heldOr(r.collectBuild(ctx, run, out.Events, transcript, st))
+}
+
+// unfinished judges a launched run whose Job has not finished. A
+// repository-image pod that cannot pull its image is stopped at once
+// (runnerguard.Pending), and a pod no node fits once it has been
+// unschedulable past UnschedulableGrace, since either would otherwise hold
+// its slot until the Job's deadline; the latter's attempt is not counted.
+// Otherwise the run is looked at again when either check next needs to.
+func (r *RunReconciler) unfinished(ctx context.Context, run *v1alpha1.IntentRun, st jobs.Status) (
+	ctrl.Result, error) {
+	requeue, pullFailure := runnerguard.Pending(st, r.now())
+	if pullFailure != "" {
+		if err := r.Jobs.Delete(ctx, run.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
+			r.log().LogAttrs(ctx, slog.LevelWarn, "delete agent job after pull failure",
+				slog.String("job", run.Status.JobRef.Name), slog.Any("error", err))
+		}
+		return ctrl.Result{}, r.settle(ctx, run, result{outcome: OutcomeAborted, detail: pullFailure})
+	}
+	unplaced, wait := unschedulable(st, r.now())
+	if unplaced != "" {
+		r.log().LogAttrs(ctx, slog.LevelWarn, "the agent pod could not be scheduled; the run stops",
+			slog.String("run", run.Name), slog.String("detail", unplaced))
+		// A failed status write must leave the Job in place: otherwise the
+		// next pass sees a vanished Job and settles it aborted, spending an
+		// attempt the agent never ran. Terminal passes retry the delete.
+		if err := r.settle(ctx, run, result{outcome: OutcomeUnschedulable, detail: unplaced}); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, r.deleteUnschedulableJob(ctx, run)
+	}
+	if wait > 0 && (requeue == 0 || wait < requeue) {
+		requeue = wait
+	}
+	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// deleteUnschedulableJob stops a pod whose run already records that no node
+// could fit it. It is safe to repeat after an uncertain delete response.
+func (r *RunReconciler) deleteUnschedulableJob(ctx context.Context, run *v1alpha1.IntentRun) error {
+	if run.Status.JobRef == nil {
+		return nil
+	}
+	if err := r.Jobs.Delete(ctx, run.Status.JobRef.Name); err != nil && !kerrors.IsNotFound(err) {
+		return fmt.Errorf("delete unschedulable job %s: %w", run.Status.JobRef.Name, err)
+	}
+	return nil
 }
 
 // settleMissingJob recovers a pre-fix revise run whose Job expired while the
@@ -1147,9 +1219,11 @@ type result struct {
 
 // collectPlan settles a plan run from its plan event. The plan is re-derived
 // from its report (agentresult.FromPlan), and one naming a repository
-// outside the Project is invalid.
+// outside the Project is invalid. A run with no plan event says why its
+// agent stopped when the Job does (st: an OOM kill, an eviction, the
+// deadline).
 func (r *RunReconciler) collectPlan(ctx context.Context, run *v1alpha1.IntentRun, events []envelope.Event,
-	transcript *v1alpha1.TranscriptRef) error {
+	transcript *v1alpha1.TranscriptRef, st jobs.Status) error {
 	var ev *envelope.Plan
 	for _, e := range events {
 		switch e.Type {
@@ -1160,8 +1234,8 @@ func (r *RunReconciler) collectPlan(ctx context.Context, run *v1alpha1.IntentRun
 		}
 	}
 	if ev == nil {
-		return r.settle(ctx, run, result{outcome: OutcomeAborted, detail: "agent job produced no plan event",
-			transcript: transcript})
+		return r.settle(ctx, run, result{outcome: noResultOutcome(st),
+			detail: noResultDetail("agent job produced no plan event", st), transcript: transcript})
 	}
 	res := result{stage: &ev.Stage, transcript: transcript}
 	plan, err := agentresult.FromPlan(ev)
@@ -1209,9 +1283,10 @@ func (r *RunReconciler) outsideProject(ctx context.Context, run *v1alpha1.Intent
 // collectBuild settles a build run from its remediation event: a build the
 // agent reports unbuilt fails; a changeset is validated against the intent
 // rules (the pinned base, path shape, and never .github, .patchy or
-// .devcontainer) before any forge call, then pushed in two phases.
+// .devcontainer) before any forge call, then pushed in two phases. A run
+// with no build event says why its agent stopped when the Job does (st).
 func (r *RunReconciler) collectBuild(ctx context.Context, run *v1alpha1.IntentRun, events []envelope.Event,
-	transcript *v1alpha1.TranscriptRef) error {
+	transcript *v1alpha1.TranscriptRef, st jobs.Status) error {
 	var ev *envelope.Remediation
 	for _, e := range events {
 		switch e.Type {
@@ -1222,8 +1297,8 @@ func (r *RunReconciler) collectBuild(ctx context.Context, run *v1alpha1.IntentRu
 		}
 	}
 	if ev == nil {
-		return r.settle(ctx, run, result{outcome: OutcomeAborted, detail: "agent job produced no build event",
-			transcript: transcript})
+		return r.settle(ctx, run, result{outcome: noResultOutcome(st),
+			detail: noResultDetail("agent job produced no build event", st), transcript: transcript})
 	}
 	res := result{stage: &ev.Stage, transcript: transcript, report: ev.ReportMarkdown}
 	if run.Spec.Stage == v1alpha1.IntentStageRevise && ev.Outcome == envelope.OutcomeOK && !ev.Success {

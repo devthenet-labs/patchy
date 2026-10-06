@@ -99,13 +99,13 @@ func (p *pass) building(ctx context.Context) (bool, error) {
 			complete++
 		case latest.Status.Phase != v1alpha1.RunFailed:
 			inFlight = append(inFlight, latest)
-		case imageBlocked(latest):
+		case imageBlocked(latest) || resourcesBlocked(latest):
 			if rs.next() > v1alpha1.MaxIntentRunAttempt {
-				// No attempt is left to try the image again with: a block
-				// could never lift, and resuming from it would only block
-				// again.
-				p.r.log().LogAttrs(ctx, slog.LevelWarn, "the build's attempts are spent on image blocks; the intent fails",
-					slog.String("intent", p.in.Name), slog.String("run", latest.Name))
+				// No attempt is left to try again with: a block could never
+				// lift, and resuming from it would only block again.
+				p.r.log().LogAttrs(ctx, slog.LevelWarn, "the build's attempts are spent on blocks; the intent fails",
+					slog.String("intent", p.in.Name), slog.String("run", latest.Name),
+					slog.String("outcome", latest.Status.Outcome))
 				return true, p.fail(ctx)
 			}
 			if blocked == nil {
@@ -118,9 +118,13 @@ func (p *pass) building(ctx context.Context) (bool, error) {
 		}
 	}
 	if blocked != nil {
-		return true, p.block(ctx, v1alpha1.ConditionImageRequired, imageReason(blocked),
-			fmt.Sprintf("the build%s could not run on an accepted repository image: %s",
-				p.inRepository(blocked.Spec.Repository.URL), blocked.Status.Detail))
+		return true, p.blockBuild(ctx, blocked)
+	}
+	// A build waiting on a resource class intent-controller does not define
+	// blocks the Intent once it exists (never before: the other
+	// repositories' builds are created, and run, beside it).
+	if held, err := p.blockOnClass(ctx, inFlight); held || err != nil {
+		return held, err
 	}
 	if complete == len(repos) {
 		return p.openPullRequests(ctx, ap.PlanRevision, repos)
@@ -193,6 +197,18 @@ func (p *pass) pullRequestsOpened() bool {
 // pullRequest is the recorded pull request in repoURL, or nil.
 func (p *pass) pullRequest(repoURL string) *v1alpha1.IntentPullRequest {
 	return recordedPullRequest(p.in, repoURL)
+}
+
+// blockBuild blocks the Intent on a build that could not run: on its
+// resources when no node could fit its pod (resourcesBlocked), else on its
+// repository image (imageBlocked).
+func (p *pass) blockBuild(ctx context.Context, run *v1alpha1.IntentRun) error {
+	if resourcesBlocked(run) {
+		return p.blockUnschedulable(ctx, run)
+	}
+	return p.block(ctx, v1alpha1.ConditionImageRequired, imageReason(run),
+		fmt.Sprintf("the build%s could not run on an accepted repository image: %s",
+			p.inRepository(run.Spec.Repository.URL), run.Status.Detail))
 }
 
 // recordedPullRequest is in's recorded pull request in repoURL, or nil: how

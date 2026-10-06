@@ -62,6 +62,20 @@ const (
 	// legacy already-launched rounds may be classified here at collection.
 	// The round does not spend the Project's maxRevisions allowance.
 	OutcomeNoUsableFeedback = "no_usable_feedback"
+	// OutcomeUnschedulable: the run's agent pod stayed unschedulable past
+	// UnschedulableGrace (no node could fit its requests: a resource class
+	// larger than any node the cluster will add), so its Job was deleted.
+	// The agent never ran, so the attempt does not count, and a retry would
+	// wait the same way: a plan or build blocks its Intent
+	// (ResourcesUnavailable, Unschedulable) until the Project changes or
+	// intent-controller restarts; a revise or check-fix round ends, as one
+	// that had no image to run on does.
+	OutcomeUnschedulable = "unschedulable"
+	// OutcomeEvicted: Kubernetes evicted the agent pod before it reported a
+	// result. Its pod message may describe private cluster nodes, so it is
+	// kept on the run and summarized without the message on the issue.
+	// The agent may have run, so this outcome counts as an attempt.
+	OutcomeEvicted = "evicted"
 )
 
 // roundRuns are one stage's runs of one round on one repository, by attempt.
@@ -133,15 +147,17 @@ func (rs roundRuns) counted(refused func(*v1alpha1.IntentRun) bool) int32 {
 // image_required or hold_expired (podOutcome).
 func uncounted(run *v1alpha1.IntentRun) bool {
 	return run.Status.Outcome == OutcomeImageRequired || run.Status.Outcome == OutcomeHoldExpired ||
-		run.Status.Outcome == OutcomeHeadMoved ||
+		run.Status.Outcome == OutcomeHeadMoved || run.Status.Outcome == OutcomeUnschedulable ||
 		runnerguard.Refused(run.Status.Conditions)
 }
 
 // imageBlocked reports a failed build run that blocks its Intent on the
 // repository image: none usable, the default image ran, or the sandbox
-// probe refused it.
+// probe refused it. A run no node could fit blocks it on its resources
+// instead (resourcesBlocked).
 func imageBlocked(run *v1alpha1.IntentRun) bool {
-	return run.Status.Phase == v1alpha1.RunFailed && run.Status.Outcome != OutcomeHoldExpired && uncounted(run)
+	return run.Status.Phase == v1alpha1.RunFailed && run.Status.Outcome != OutcomeHoldExpired &&
+		run.Status.Outcome != OutcomeUnschedulable && uncounted(run)
 }
 
 // previousAttempt is what the next attempt is told about latest when its

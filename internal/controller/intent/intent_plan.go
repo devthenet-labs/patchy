@@ -234,6 +234,15 @@ func (p *pass) planning(ctx context.Context) (bool, error) {
 			}
 		}
 	case v1alpha1.RunFailed:
+		if resourcesBlocked(latest) {
+			// No node could fit the plan's pod (the default resources are
+			// larger than any node): another attempt would wait the same
+			// way, so the Intent is held until something changes.
+			if rs.next() > v1alpha1.MaxIntentRunAttempt {
+				return true, p.fail(ctx)
+			}
+			return true, p.blockUnschedulable(ctx, latest)
+		}
 	default:
 		return p.ensureActive(ctx, latest)
 	}

@@ -28,6 +28,7 @@ import (
 	"github.com/bitwise-media-group/patchy/internal/jobs"
 	"github.com/bitwise-media-group/patchy/internal/model"
 	"github.com/bitwise-media-group/patchy/internal/provider"
+	"github.com/bitwise-media-group/patchy/internal/resourceclass"
 )
 
 // RegisterFlags adds the per-harness runner flags shared by both job
@@ -184,12 +185,17 @@ func RegisterRepositoryImageFlags(f *pflag.FlagSet) {
 // RepositoryImages reads those flags: whether repository images are on,
 // and the ephemeral-storage quantity for every agent Job (empty leaves the
 // Job without one, exactly as before the flag existed). A repository image
-// without the wall on disk is refused at startup rather than at every Job.
+// without the wall on disk is refused at startup rather than at every Job,
+// and so is a quantity of zero or less, a wall no pod could write under.
 func RepositoryImages(opts *cli.Options) (enabled bool, ephemeralStorage string, err error) {
 	enabled, ephemeralStorage = opts.Bool("repository-images"), opts.String("agent-ephemeral-storage")
 	if ephemeralStorage != "" {
-		if _, err := resource.ParseQuantity(ephemeralStorage); err != nil {
+		q, err := resource.ParseQuantity(ephemeralStorage)
+		if err != nil {
 			return false, "", fmt.Errorf("--agent-ephemeral-storage %q: %w", ephemeralStorage, err)
+		}
+		if q.Sign() <= 0 {
+			return false, "", fmt.Errorf("--agent-ephemeral-storage %q must be positive", ephemeralStorage)
 		}
 	}
 	if enabled && ephemeralStorage == "" {
@@ -197,6 +203,55 @@ func RepositoryImages(opts *cli.Options) (enabled bool, ephemeralStorage string,
 			"it bounds the disk a repository-declared image can fill through the pod's emptyDirs")
 	}
 	return enabled, ephemeralStorage, nil
+}
+
+// agentResourceFlags are the default's flags, in resourceclass's order:
+// requests.cpu, requests.memory, limits.cpu, limits.memory.
+var agentResourceFlags = []string{"agent-cpu-request", "agent-memory-request", "agent-cpu-limit",
+	"agent-memory-limit"}
+
+// RegisterAgentResourceFlags adds the agent Jobs' default CPU and memory,
+// shared by every controller that launches them (investigation,
+// remediation, intent and evaluation): each a quantity on both containers
+// of every Job, unset leaving that one off. All unset is today's Jobs, with
+// no CPU or memory requests or limits at all. An intent build, revise or
+// check-fix run whose repository picks a resource class replaces all four
+// with the class's (intent-controller's --intent-resource-classes).
+func RegisterAgentResourceFlags(f *pflag.FlagSet) {
+	f.String("agent-cpu-request", "", "CPU request on both containers of every agent Job, a quantity such as 500m; "+
+		"unset requests none")
+	f.String("agent-memory-request", "", "memory request on both containers of every agent Job, a quantity such "+
+		"as 2Gi; unset requests none")
+	f.String("agent-cpu-limit", "", "CPU limit on both containers of every agent Job; unset sets none (a limit "+
+		"throttles browser and Node test suites)")
+	f.String("agent-memory-limit", "", "memory limit on both containers of every agent Job, at or above the "+
+		"request; unset sets none")
+}
+
+// AgentResources reads the default's flags into the resources every agent
+// Job gets. Each set quantity must parse and pass resourceclass's checks
+// (positive, within the sanity bounds, each request at or below its limit),
+// or startup fails naming it: a size the API server would refuse is never
+// discovered by a Job.
+func AgentResources(opts *cli.Options) (resourceclass.Resources, error) {
+	var r resourceclass.Resources
+	targets := []**resource.Quantity{&r.Requests.CPU, &r.Requests.Memory, &r.Limits.CPU, &r.Limits.Memory}
+	for i, name := range agentResourceFlags {
+		v := strings.TrimSpace(opts.String(name))
+		if v == "" {
+			continue
+		}
+		q, err := resource.ParseQuantity(v)
+		if err != nil {
+			return resourceclass.Resources{}, fmt.Errorf("--%s %q: %w", name, v, err)
+		}
+		*targets[i] = &q
+	}
+	if err := r.Validate(); err != nil {
+		return resourceclass.Resources{}, fmt.Errorf("agent resources (--%s): %w",
+			strings.Join(agentResourceFlags, ", --"), err)
+	}
+	return r, nil
 }
 
 // EvolveRunners builds the evolve-runner fleet from the flags, mirroring

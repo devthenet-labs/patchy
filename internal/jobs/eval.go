@@ -143,7 +143,9 @@ func buildEvalSecret(name, namespace string, spec EvalSpec) *corev1.Secret {
 }
 
 func (c *Client) buildEvalJob(name string, spec EvalSpec) (*batchv1.Job, error) {
-	res, err := c.cfg.resources()
+	// An evaluation Job always runs on the controller's default resources:
+	// no selector picks a class for one.
+	res, err := c.cfg.resources(nil)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +178,7 @@ func (c *Client) buildEvalJob(name string, spec EvalSpec) (*batchv1.Job, error) 
 			// controller's.
 			BackoffLimit: new(int32(0)),
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: maps.Clone(lbls)},
+				ObjectMeta: metav1.ObjectMeta{Labels: maps.Clone(lbls), Annotations: podAnnotations(nil)},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: c.cfg.ServiceAccount,
 					RestartPolicy:      corev1.RestartPolicyNever,

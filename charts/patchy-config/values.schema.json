@@ -849,6 +849,13 @@
                     "items": {
                         "description": "ProjectRepository is one application repository the Project's intents may\nbuild in.",
                         "properties": {
+                            "agentResourceClass": {
+                                "description": "AgentResourceClass names the operator's resource class this\nrepository's intent build, revise and check-fix runs get: the CPU and\nmemory the patchy chart defines under agent.resources.classes\n(intent-controller's --intent-resource-classes), in place of the\ndefault every other agent Job gets. Unset, the runs get the default.\nPlan runs always get the default, whatever this says. A Project can\nonly pick a class the operator defined, so the largest class is the\nmost any one agent Job can request. A class intent-controller does not\ndefine launches nothing: the run waits, holding no slot, its Intent\nBlocked with ResourcesUnavailable naming the class, and the Project's\nResourceClassesResolved condition False, until the class is defined or\nthis is changed. Plans and the other repositories are unaffected.",
+                                "maxLength": 32,
+                                "minLength": 1,
+                                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                                "type": "string"
+                            },
                             "name": {
                                 "description": "Name is the repository's short key within the Project, used in the\nnames of the IntentRuns and Repositories created for it\n(<intent>-bld-r<round>-<name>-a<n>), hence a DNS label of at most 16\ncharacters (MaxRepositoryKeyLength; see the name budget).",
                                 "maxLength": 16,

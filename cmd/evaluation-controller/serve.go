@@ -58,6 +58,7 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.String("internal-upload-token-file", "",
 		"file holding the shared bearer token for the internal blob endpoint (optional)")
 	runnercfg.RegisterEvolveFlags(f)
+	runnercfg.RegisterAgentResourceFlags(f)
 	return cmd
 }
 
@@ -73,6 +74,13 @@ func serviceURL(opts *cli.Options, flag, namespace string, port int) string {
 // set (credential Secrets probed in the agents namespace).
 func resolveFleet(ctx context.Context, opts *cli.Options, agentNS string,
 	runners map[string]jobs.Runner, log *slog.Logger) (*jobs.Client, []string, error) {
+	// The default resources are checked first: a size the API server would
+	// refuse fails startup before any cluster call.
+	agentResources, err := runnercfg.AgentResources(opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	cpuRequest, memoryRequest, cpuLimit, memoryLimit := agentResources.Strings()
 	cfg, err := kube.RestConfig(opts.String("kubeconfig"))
 	if err != nil {
 		return nil, nil, err
@@ -96,6 +104,10 @@ func resolveFleet(ctx context.Context, opts *cli.Options, agentNS string,
 		TTL:            opts.Duration("job-ttl"),
 		Runners:        runners,
 		BrokerAudience: opts.String("broker-token-audience"),
+		CPURequest:     cpuRequest,
+		MemoryRequest:  memoryRequest,
+		CPULimit:       cpuLimit,
+		MemoryLimit:    memoryLimit,
 	}, log)
 	return runner, enabled, nil
 }

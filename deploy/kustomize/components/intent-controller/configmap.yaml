@@ -81,6 +81,18 @@ data:
     PATCHY_INTENT_REVISE_TIMEOUT: 45m
     PATCHY_INTENT_REVISE_IDLE_TIMEOUT: 20m
 
+    # ---- resource classes ---------------------------------------------------
+    # Named sizes a Project picks per repository
+    # (spec.repositories[].agentResourceClass) for that repository's build,
+    # revise and check-fix runs, as JSON: name to {requests: {cpu, memory},
+    # limits: {memory[, cpu]}}. Plans run on the shared PATCHY_AGENT_* default.
+    # The list is the spend ceiling: a Project cannot pick a size not defined
+    # here. Each class is checked at startup (a request at or below its limit,
+    # sanity bounds, at most 16 classes); a bad one stops the controller from
+    # starting. Unset defines none.
+    #
+    # PATCHY_INTENT_RESOURCE_CLASSES: '{"large":{"requests":{"cpu":"4","memory":"8Gi"},"limits":{"memory":"10Gi"}}}'
+
     # ---- repository-declared images -----------------------------------------
     # A build runs only on an accepted repository-declared image. The base
     # does not configure repository images for source-controller; once your

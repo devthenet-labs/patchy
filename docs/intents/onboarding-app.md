@@ -278,6 +278,7 @@ projects:
       repositories:
         - name: shop-web
           url: https://github.com/acme/Shop.Web
+          # agentResourceClass: large # a heavy test suite: one of the operator's classes
       preview: # leave out for intents without previews
         imageRepository: 123456789012.dkr.ecr.us-west-2.amazonaws.com/patchy/previews/shop-web
         port: 8080
@@ -287,6 +288,10 @@ projects:
       # labels: {trigger: patchy:shop-web, approve: patchy:approved}   the defaults
       # limits: {maxActiveIntents: 2, maxCostMicroUSD: 10000000}        $10 per intent
 ```
+
+An application whose tests need more than a small shared node (a browser suite, a large compile) should pick a resource
+class the operator defined: its builds otherwise run with no CPU or memory reserved. See
+[Sizing agents](deploying.md#sizing-agents).
 
 `checks.fix` names check runs or commit statuses (`test` is the generated CI's job); the App then needs checks, statuses
 and actions read on the repository. Under `--existing` there is no `test` check from patchy (`runtime-image.yml`'s job

@@ -17,6 +17,7 @@ spec:
   template:
     metadata:
       annotations:
+        karpenter.sh/do-not-disrupt: "true"
         patchy.bitwisemedia.uk/repo: devthenet-labs/marigold-web
       labels:
         app.kubernetes.io/managed-by: patchy

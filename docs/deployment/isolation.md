@@ -65,8 +65,9 @@ The posture is built so that none of that reaches further than a default-image r
 
 - **Same pod, same walls.** The pod security above is forced by patchy whatever the image says: uid 65532, read-only
   root, no capabilities, the image's `USER` and `ENTRYPOINT` ignored, an image-declared `VOLUME` rejected at resolution
-  so only patchy's emptyDirs are writable, and both containers bounded by an ephemeral-storage limit. The image is
-  pinned to a digest once per Repository and only allowlisted, and by default signed, images are admitted
+  so only patchy's emptyDirs are writable, and both containers bounded by an ephemeral-storage limit (CPU and memory by
+  `agent.resources` only, which sets none by default). The image is pinned to a digest once per Repository and only
+  allowlisted, and by default signed, images are admitted
   ([source-controller](../configuration/source-controller.md#repository-runner-images)).
 - **No Kubernetes identity.** The `patchy-agent` ServiceAccount has no Role and the pods run with
   `automountServiceAccountToken: false`; the one projected token is bound to the broker's audience, is pod-bound, and is

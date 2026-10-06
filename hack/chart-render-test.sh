@@ -1082,6 +1082,88 @@ render intent-proxy -f "$ifx" --set proxy.httpsProxy=http://proxy.example.com:31
 cm intent-proxy intent-controller HTTPS_PROXY http://proxy.example.com:3128
 cm intent-proxy intent-controller NO_PROXY localhost,127.0.0.1,.svc,.cluster.local
 
+# ---- agent resources: rendered only where bound, and only when set -----------
+# Unset (the default), no ConfigMap carries a CPU, memory or class key, so
+# every agent Job, and every checksum/config, is what it was before the
+# setting existed.
+resource_keys="PATCHY_AGENT_CPU_REQUEST PATCHY_AGENT_MEMORY_REQUEST PATCHY_AGENT_CPU_LIMIT PATCHY_AGENT_MEMORY_LIMIT
+PATCHY_INTENT_RESOURCE_CLASSES"
+render res-off -f "$ifx" -f "$ef"
+for key in $resource_keys; do
+  expect default "select(.kind == \"ConfigMap\") | .data.$key | select(. != null)" ""
+  expect res-off "select(.kind == \"ConfigMap\") | .data.$key | select(. != null)" ""
+done
+# The default reaches every controller that launches agent Jobs, its
+# unquoted quantities as integers (never helm's 1.073741824e+09), and the
+# classes reach intent-controller alone, as JSON whose unquoted cpu stays a
+# number (resourceclass.Parse reads it as the quantity 4).
+render res -f "$ifx" -f "$ef" -f "$fixtures/agent-resources.yaml"
+for c in investigation-controller remediation-controller intent-controller evaluation-controller; do
+  cm res "$c" PATCHY_AGENT_CPU_REQUEST 0.5
+  cm res "$c" PATCHY_AGENT_MEMORY_REQUEST 1073741824
+  cm res "$c" PATCHY_AGENT_CPU_LIMIT 2
+  cm res "$c" PATCHY_AGENT_MEMORY_LIMIT 4Gi
+done
+cm res intent-controller PATCHY_INTENT_RESOURCE_CLASSES \
+  '{"large":{"limits":{"memory":"10Gi"},"requests":{"cpu":4,"memory":"8Gi"}},"medium":{"limits":{"cpu":"3","memory":"4Gi"},"requests":{"cpu":"1500m","memory":"3Gi"}}}'
+for c in investigation-controller remediation-controller evaluation-controller; do
+  cm res "$c" PATCHY_INTENT_RESOURCE_CLASSES null
+done
+for c in integration-controller source-controller context-controller egress-broker status-server; do
+  for key in $resource_keys; do
+    cm res "$c" "$key" null
+  done
+done
+# Setting the default rolls exactly the four controllers that bind it;
+# setting only the classes rolls intent-controller alone.
+render res-classes -f "$ifx" -f "$ef" \
+  --set-json 'agent.resources.classes={"large":{"requests":{"cpu":4,"memory":"8Gi"},"limits":{"memory":"10Gi"}}}'
+for c in integration-controller source-controller context-controller investigation-controller remediation-controller \
+  intent-controller evaluation-controller; do
+  csum="select(.kind == \"Deployment\" and .metadata.name == \"patchy-$c\") | .spec.template.metadata.annotations[\"checksum/config\"]"
+  off=$(get res-off "$csum")
+  case $c in
+  investigation-controller | remediation-controller | intent-controller | evaluation-controller)
+    if [ "$off" = "$(get res "$csum")" ]; then
+      fail "res: $c's checksum/config did not change, so setting agent.resources.default would not roll it"
+    fi
+    ;;
+  *)
+    if [ "$off" != "$(get res "$csum")" ]; then
+      fail "res: agent.resources changed $c's config, which binds none of it"
+    fi
+    ;;
+  esac
+  if [ "$c" = intent-controller ]; then
+    if [ "$off" = "$(get res-classes "$csum")" ]; then
+      fail "res-classes: intent-controller's checksum/config did not change, so new classes would not roll it"
+    fi
+  elif [ "$off" != "$(get res-classes "$csum")" ]; then
+    fail "res-classes: agent.resources.classes changed $c's config"
+  fi
+done
+# The schema refuses what the controllers would refuse at startup, where it
+# can say so: the wrong key (ephemeral storage lives under repositoryImages),
+# a zero, negative or empty quantity, a key other than cpu and memory, a class
+# without the quantities every class needs, a name no Project could pick, and
+# more classes than intent-controller accepts.
+expect_fail "agent.resources.ephemeralStorage" "additional properties 'ephemeralStorage' not allowed" \
+  --set agent.resources.ephemeralStorage=8Gi
+expect_fail "a zero cpu" "/agent/resources/default/requests/cpu" --set agent.resources.default.requests.cpu=0
+expect_fail "a negative cpu" "/agent/resources/default/requests/cpu" \
+  --set-string agent.resources.default.requests.cpu=-1
+expect_fail "an empty memory limit" "/agent/resources/default/limits/memory" \
+  --set-string agent.resources.default.limits.memory=
+expect_fail "a gpu request" "additional properties 'gpu' not allowed" --set agent.resources.default.requests.gpu=1
+expect_fail "a class with no memory limit" "/agent/resources/classes/large/limits" \
+  --set-json 'agent.resources.classes={"large":{"requests":{"cpu":4,"memory":"8Gi"},"limits":{}}}'
+expect_fail "a class with no memory request" "/agent/resources/classes/large/requests" \
+  --set-json 'agent.resources.classes={"large":{"requests":{"cpu":4},"limits":{"memory":"8Gi"}}}'
+expect_fail "a class name that is not a DNS label" "invalid propertyName 'Large'" \
+  --set-json 'agent.resources.classes={"Large":{"requests":{"cpu":4,"memory":"8Gi"},"limits":{"memory":"8Gi"}}}'
+seventeen=$(for i in $(seq 1 17); do printf '"c%s":{"requests":{"cpu":1,"memory":"1Gi"},"limits":{"memory":"1Gi"}},' "$i"; done)
+expect_fail "seventeen classes" "/agent/resources/classes" --set-json "agent.resources.classes={${seventeen%,}}"
+
 # ---- intent controller on: claude everywhere it runs ------------------------
 # Intents run on claude even when the finding fleet does not: the broker
 # deploys, the agent egress admits it, and each egress dialect keeps a claude
@@ -1268,6 +1350,14 @@ expect_fail_cfg "a preview path outside the grammar" "projects/0/spec/repositori
   --set-json "projects=[$(project ".spec.repositories[0].preview = $webpreview | .spec.repositories[0].preview.path = \"/API\"")]"
 expect_fail_cfg "an unknown repository preview field" "projects/0/spec/repositories/0/preview" \
   --set-json "projects=[$(project ".spec.repositories[0].preview = $webpreview | .spec.repositories[0].preview.dockerfile = \"x\"")]"
+
+# A repository picks one of the operator's resource classes by name: rendered
+# verbatim; a name no class could have is refused client-side, the same
+# DNS-label rule as the patchy chart's class names.
+render_cfg cfg-repo-class --set-json "projects=[$(project '.spec.repositories[0].agentResourceClass = "large"')]"
+expect cfg-repo-class 'select(.kind == "Project") | .spec.repositories[0].agentResourceClass' "large"
+expect_fail_cfg "a resource class that is not a DNS label" "projects/0/spec/repositories/0/agentResourceClass" \
+  --set-json "projects=[$(project '.spec.repositories[0].agentResourceClass = "Large"')]"
 
 if [ "$failures" -gt 0 ]; then
   echo "chart-render-test: $failures assertion(s) failed" >&2

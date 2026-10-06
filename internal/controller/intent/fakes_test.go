@@ -1099,10 +1099,14 @@ type fakeJobs struct {
 	defaultOn bool // report the default image even when the spec pinned one
 	output    func(spec jobs.Spec) jobs.RunOutput
 	createErr error
+	deleteErr error
 	// results counts the Result calls: each reads a Job's whole log.
 	results int
 	// gone are the Jobs that no longer exist (their TTL ran out).
 	gone map[string]bool
+	// statusFn, when set, answers Status for a Job from its spec (ok
+	// false: the status map, then a finished Job, as without it).
+	statusFn func(spec jobs.Spec) (jobs.Status, bool)
 }
 
 func newFakeJobs() *fakeJobs {
@@ -1142,6 +1146,11 @@ func (j *fakeJobs) Status(_ context.Context, name string) (jobs.Status, error) {
 	if j.gone[name] {
 		return jobs.Status{}, kerrors.NewNotFound(batchv1.Resource("jobs"), name)
 	}
+	if spec, ok := j.specs[name]; ok && j.statusFn != nil {
+		if st, ok := j.statusFn(spec); ok {
+			return st, nil
+		}
+	}
 	if st, ok := j.status[name]; ok {
 		return st, nil
 	}
@@ -1151,6 +1160,9 @@ func (j *fakeJobs) Status(_ context.Context, name string) (jobs.Status, error) {
 func (j *fakeJobs) Delete(_ context.Context, name string) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.deleteErr != nil {
+		return j.deleteErr
+	}
 	j.deleted = append(j.deleted, name)
 	return nil
 }

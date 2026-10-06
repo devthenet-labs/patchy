@@ -423,7 +423,7 @@ func TestEphemeralStorage(t *testing.T) {
 
 	// Ephemeral storage alone still renders a resource list.
 	only := Config{Namespace: "n", Runners: testConfig().Runners, EphemeralStorage: "1Gi"}
-	rr, err := only.resources()
+	rr, err := only.resources(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,7 +520,23 @@ func TestStatusReadsPod(t *testing.T) {
 			newJob(map[string]string{annotationRunnerImageSource: "repository"}),
 			withInit(jobPodInState("j", corev1.PodSucceeded, corev1.ContainerState{
 				Terminated: &corev1.ContainerStateTerminated{}}), 0),
-			Status{AgentStarted: true, InitExitCode: new(int32(0)), RunnerImageSource: "repository"},
+			Status{AgentStarted: true, InitExitCode: new(int32(0)), RunnerImageSource: "repository",
+				AgentExitCode: new(int32(0))},
+		},
+		{
+			"agent OOM-killed",
+			newJob(nil),
+			withInit(jobPodInState("j", corev1.PodFailed, corev1.ContainerState{
+				Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137}}), 0),
+			Status{AgentStarted: true, InitExitCode: new(int32(0)), RunnerImageSource: "default",
+				AgentTerminated: "OOMKilled", AgentExitCode: new(int32(137))},
+		},
+		{
+			"pod evicted",
+			newJob(nil),
+			evicted(jobPodInState("j", corev1.PodFailed, corev1.ContainerState{})),
+			Status{RunnerImageSource: "default", PodReason: "Evicted",
+				PodMessage: "Pod ephemeral local storage usage exceeds the total limit of containers 8Gi."},
 		},
 		{
 			"pod with no container status yet",
@@ -550,12 +566,26 @@ func TestStatusReadsPod(t *testing.T) {
 				(got.InitExitCode != nil && *got.InitExitCode != *tt.want.InitExitCode) {
 				t.Errorf("InitExitCode = %v, want %v", deref32(got.InitExitCode), deref32(tt.want.InitExitCode))
 			}
+			if (got.AgentExitCode == nil) != (tt.want.AgentExitCode == nil) ||
+				(got.AgentExitCode != nil && *got.AgentExitCode != *tt.want.AgentExitCode) {
+				t.Errorf("AgentExitCode = %v, want %v", deref32(got.AgentExitCode), deref32(tt.want.AgentExitCode))
+			}
 			got.InitExitCode, tt.want.InitExitCode = nil, nil
+			got.AgentExitCode, tt.want.AgentExitCode = nil, nil
 			if got != tt.want {
 				t.Errorf("Status = %+v, want %+v", got, tt.want)
 			}
 		})
 	}
+}
+
+// evicted marks the pod evicted by the kubelet, as it records one that
+// filled its ephemeral-storage limit.
+func evicted(pod *corev1.Pod) *corev1.Pod {
+	pod.Status.ContainerStatuses = nil
+	pod.Status.Reason = "Evicted"
+	pod.Status.Message = "Pod ephemeral local storage usage exceeds the total limit of containers 8Gi."
+	return pod
 }
 
 // unreported strips the pod's container statuses, as the kubelet leaves a

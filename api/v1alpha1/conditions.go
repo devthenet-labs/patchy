@@ -104,6 +104,26 @@ const (
 	// so a build cannot take its name; the block lifts once the Project
 	// changes.
 	ConditionUnsupportedRepositories = "UnsupportedRepositories"
+	// ConditionResourcesUnavailable blocks an Intent whose run cannot get
+	// the CPU and memory it needs. Reason UnknownResourceClass: the Project
+	// picks a resource class (spec.repositories[].agentResourceClass)
+	// intent-controller does not define, so that repository's run waits
+	// Pending, holding no slot and spending no attempt, while the other
+	// repositories' runs go on; the block lifts once the class is defined
+	// or the pick changes. Reason Unschedulable: a run's agent pod stayed
+	// unschedulable (no node could fit its requests) past the grace, so it
+	// was stopped, its attempt not counted; the block lifts once the
+	// Project changes or intent-controller restarts (a chart upgrade that
+	// changes the classes restarts it), and the next attempt then runs.
+	ConditionResourcesUnavailable = "ResourcesUnavailable"
+	// ConditionResourceClassesResolved reports, on a Project that picks a
+	// resource class for any of its repositories, whether intent-controller
+	// defines every class it picks: False (reason UnknownResourceClass)
+	// names each repository whose class is unknown. It never affects Ready,
+	// so discovery and plans carry on; only the builds of those
+	// repositories wait. Absent on a Project that picks no class. Set by
+	// intent-controller's project reconciler.
+	ConditionResourceClassesResolved = "ResourceClassesResolved"
 	// ConditionSiblingsLinked reports, on an Intent that opened more than
 	// one pull request, whether the comment cross-linking them was posted on
 	// every one whose repository the Project still holds: True once it was

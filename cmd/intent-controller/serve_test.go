@@ -151,6 +151,48 @@ func TestComponentConfigReachesSettings(t *testing.T) {
 	}
 }
 
+// TestResourceClasses: the classes reach intent-controller as the chart
+// renders them, toJson leaving an unquoted cpu: 4 a JSON number; none set
+// defines none, and the agent Jobs' default stays empty; a class the API
+// server would refuse fails startup, naming it.
+func TestResourceClasses(t *testing.T) {
+	opts, root, _ := command(t)
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	classes, err := resourceClasses(opts)
+	if err != nil || classes != nil {
+		t.Fatalf("no classes set = %v, %v; want none", classes, err)
+	}
+	if r, err := runnercfg.AgentResources(opts); err != nil || !r.IsZero() {
+		t.Errorf("agent resources with no flags = %s, %v; want none", r, err)
+	}
+
+	t.Setenv("PATCHY_INTENT_RESOURCE_CLASSES",
+		`{"large":{"limits":{"memory":"10Gi"},"requests":{"cpu":4,"memory":"8Gi"}}}`)
+	opts, root, _ = command(t)
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	classes, err = resourceClasses(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if large, ok := classes.Lookup("large"); !ok || large.String() != "requests cpu 4, memory 8Gi; limits memory 10Gi" {
+		t.Errorf("classes = %s, want large", classes.Encode())
+	}
+
+	t.Setenv("PATCHY_INTENT_RESOURCE_CLASSES",
+		`{"large":{"limits":{"memory":"6Gi"},"requests":{"cpu":4,"memory":"8Gi"}}}`)
+	opts, root, _ = command(t)
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resourceClasses(opts); err == nil || !strings.Contains(err.Error(), `class "large"`) {
+		t.Errorf("a class with its memory limit under its request = %v, want a startup error naming it", err)
+	}
+}
+
 // TestSettingsRefusesADeadlineShorterThanAStage pins the startup check the
 // chart and the component document: the Job deadline bounds every stage.
 func TestSettingsRefusesADeadlineShorterThanAStage(t *testing.T) {

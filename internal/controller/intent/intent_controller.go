@@ -23,6 +23,7 @@ import (
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/ghclient"
+	"github.com/bitwise-media-group/patchy/internal/resourceclass"
 	"github.com/bitwise-media-group/patchy/internal/runnerguard"
 )
 
@@ -50,6 +51,10 @@ type IntentReconciler struct {
 	// Images is the repository-image launch policy the run scheduler
 	// enforces; a Blocked intent reads it to know whether its block holds.
 	Images runnerguard.Guard
+	// Classes are the operator's resource classes: an Intent whose run
+	// waits on one it does not define is Blocked (ResourcesUnavailable).
+	// Held here rather than in Settings, which stays comparable.
+	Classes resourceclass.Set
 	// Nudger delivers discovery's hand-offs of ended Intents.
 	Nudger *Nudger
 	Now    func() time.Time

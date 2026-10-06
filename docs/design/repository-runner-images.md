@@ -67,7 +67,8 @@ workspace, the handoff markdown and the projected broker caller token; call the 
 bypassing `agent-runner`'s output-token kill switch; write forged `PATCHY-EVENT:` lines to `/proc/1/fd/1` (a fabricated
 verdict or changeset); wrap `git`/`bash` from its own PATH; supply the dynamic loader, libc and `/etc/ld.so.preload`
 that `claude` links against, so the CLI's behaviour and everything it reports (usage, cost, turns) is image-controlled;
-burn CPU, memory and ephemeral storage up to the Job limits.
+burn ephemeral storage up to its wall, and CPU and memory up to whatever the operator set for agent Jobs
+(`agent.resources`; none by default, when only the node bounds them).
 
 **What it cannot do.** Reach anything but DNS, the artifact server and the allowlisted surface of the broker, verified
 per Job by the sandbox probe below rather than assumed from the CNI; obtain a forge or model credential (none exists in
@@ -258,8 +259,8 @@ One chart block, `agent.repositoryImages`, rendered into the controllers' Config
   `critical.image.docker-manifest-digest` must equal the recorded digest. Repository owners run `cosign sign --key`; the
   docs state that v3 writes bundles and that `patchy mirror sign` output verifies.
 - **Size**: `maxBytes` (default `4Gi`) bounds compressed layers only, per platform child. Writable space is bounded
-  separately: `agent.resources.ephemeralStorage` renders an ephemeral-storage request and limit onto both containers, so
-  a fill is evicted by the kubelet rather than filling the node.
+  separately: `agent.repositoryImages.ephemeralStorage` renders an ephemeral-storage request and limit onto both
+  containers, so a fill is evicted by the kubelet rather than filling the node.
 - **Root images**: no knob; `containerSecurity()` forces the UID.
 - **Pull credentials**: `pullSecret` names a dockerconfigjson Secret in the release namespace. source-controller mounts
   it with `items: [{key: .dockerconfigjson, path: config.json}]` at `DOCKER_CONFIG=/etc/patchy/registry` (the key name
@@ -718,8 +719,8 @@ Accepted findings of the 2026-09-22 review and where each one now lives:
   notes state that the alert stays open in the scanner until a human resolves it there; a `dismiss` verb is deferred to
   Open questions.
 - **Image-declared VOLUMEs become writable host-backed mounts (medium).** `internal/runnerimage` rejects a config with
-  `Volumes`; the image contract says no `VOLUME`; `agent.resources.ephemeralStorage` bounds both containers; `maxBytes`
-  is documented as compressed layers only.
+  `Volumes`; the image contract says no `VOLUME`; `agent.repositoryImages.ephemeralStorage` bounds both containers;
+  `maxBytes` is documented as compressed layers only.
 - **A changeset of many tiny files exhausts the installation token's budget (medium).** The remediation collector
   validates every changeset before any forge call: `--changeset-max-entries` (500), path length and shape;
   `changeset_rejected` names the limit; the same validator hosts the CI-path deny.

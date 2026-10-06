@@ -47,37 +47,45 @@ suspension that is lifted while its Project is gone says `ProjectGone`.
 The [shared flags](index.md#shared-flags-every-controller), plus the settings below. They carry an `intent-` prefix no
 other binary binds, so the shared kustomize ConfigMap cannot set one by accident.
 
-| Flag                              | Env                                    | Default                     | Purpose                                                                                                 |
-| --------------------------------- | -------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `--intent-poll-interval`          | `PATCHY_INTENT_POLL_INTERVAL`          | `60s`                       | How often each Project's intent repository and each active intent's issue are polled                    |
-| `--intent-approval-poll-interval` | `PATCHY_INTENT_APPROVAL_POLL_INTERVAL` | `30s`                       | How often an intent awaiting approval polls its issue's events                                          |
-| `--intent-pr-poll-interval`       | `PATCHY_INTENT_PR_POLL_INTERVAL`       | `60s`                       | How often an intent in review polls its pull request                                                    |
-| `--intent-previews-enabled`       | `PATCHY_INTENT_PREVIEWS_ENABLED`       | `false`                     | PRs, and unchanged repositories' main heads, into Preview CRs; Helm: `previewController.enabled`        |
-| `--intent-multi-repo`             | `PATCHY_INTENT_MULTI_REPO`             | `false`                     | Run intents of Projects listing several repositories; off, their intents are held `Blocked`             |
-| `--intent-max-concurrent-runs`    | `PATCHY_INTENT_MAX_CONCURRENT_RUNS`    | `1`                         | Intent agent Jobs at once, a pool apart from remediation's; a multi-repository intent's builds share it |
-| `--intent-rate-limit-floor`       | `PATCHY_INTENT_RATE_LIMIT_FLOOR`       | `1000`                      | Pause intent polling while the installation has fewer core requests left than this; `0` disables        |
-| `--intent-ttl`                    | `PATCHY_INTENT_TTL`                    | `336h` (14 days)            | How long an ended intent is kept, with everything it owns; `0` keeps it forever                         |
-| `--intent-job-deadline`           | `PATCHY_INTENT_JOB_DEADLINE`           | `90m`                       | `activeDeadlineSeconds` on every intent Job; at least both stage timeouts                               |
-| `--intent-plan-model`             | `PATCHY_INTENT_PLAN_MODEL`             | `anthropic/claude-sonnet-5` | Canonical model the plan stage runs                                                                     |
-| `--intent-plan-max-turns`         | `PATCHY_INTENT_PLAN_MAX_TURNS`         | `40`                        | Most agent turns a plan run may take                                                                    |
-| `--intent-plan-token-budget`      | `PATCHY_INTENT_PLAN_TOKEN_BUDGET`      | `200000`                    | Most output tokens a plan run may spend                                                                 |
-| `--intent-plan-timeout`           | `PATCHY_INTENT_PLAN_TIMEOUT`           | `20m`                       | Wall-clock limit of a plan run                                                                          |
-| `--intent-plan-idle-timeout`      | `PATCHY_INTENT_PLAN_IDLE_TIMEOUT`      | `20m`                       | End a plan run that makes no progress for this long; `0s` disables                                      |
-| `--intent-build-model`            | `PATCHY_INTENT_BUILD_MODEL`            | `anthropic/claude-sonnet-5` | Canonical model the build stage runs                                                                    |
-| `--intent-build-max-turns`        | `PATCHY_INTENT_BUILD_MAX_TURNS`        | `150`                       | Most agent turns a build run may take                                                                   |
-| `--intent-build-token-budget`     | `PATCHY_INTENT_BUILD_TOKEN_BUDGET`     | `800000`                    | Most output tokens a build run may spend                                                                |
-| `--intent-build-timeout`          | `PATCHY_INTENT_BUILD_TIMEOUT`          | `60m`                       | Wall-clock limit of a build run                                                                         |
-| `--intent-build-idle-timeout`     | `PATCHY_INTENT_BUILD_IDLE_TIMEOUT`     | `20m`                       | End a build run that makes no progress for this long; `0s` disables                                     |
-| `--intent-revise-max-turns`       | `PATCHY_INTENT_REVISE_MAX_TURNS`       | `80`                        | Most agent turns a revise or check-fix run may take                                                     |
-| `--intent-revise-token-budget`    | `PATCHY_INTENT_REVISE_TOKEN_BUDGET`    | `400000`                    | Most output tokens a revise or check-fix run may spend                                                  |
-| `--intent-revise-timeout`         | `PATCHY_INTENT_REVISE_TIMEOUT`         | `45m`                       | Wall-clock limit of a revise or check-fix run                                                           |
-| `--intent-revise-idle-timeout`    | `PATCHY_INTENT_REVISE_IDLE_TIMEOUT`    | `20m`                       | End a revise or check-fix run that makes no progress for this long; `0s` disables                       |
-| `--agent-namespace`               | `PATCHY_AGENT_NAMESPACE`               | `patchy-agents`             | Namespace the agent Jobs run in                                                                         |
-| `--agent-service-account`         | `PATCHY_AGENT_SERVICE_ACCOUNT`         | `patchy-agent`              | Service account the agent Jobs run as                                                                   |
-| `--job-ttl`                       | `PATCHY_JOB_TTL`                       | `1h`                        | `ttlSecondsAfterFinished` on a finished agent Job                                                       |
-| `--repository-images`             | `PATCHY_REPOSITORY_IMAGES`             | `false`                     | Run a Repository's pinned repository-declared image; a build requires one (see below)                   |
-| `--agent-ephemeral-storage`       | `PATCHY_AGENT_EPHEMERAL_STORAGE`       | —                           | Ephemeral-storage request and limit on both agent containers; **required** with the flag above          |
-| `--changeset-max-entries`         | `PATCHY_CHANGESET_MAX_ENTRIES`         | `500`                       | Most files a build's changeset may touch; more is rejected before any forge call                        |
+| Flag                                            | Env                                                       | Default                     | Purpose                                                                                                                                                                                                                                               |
+| ----------------------------------------------- | --------------------------------------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--intent-poll-interval`                        | `PATCHY_INTENT_POLL_INTERVAL`                             | `60s`                       | How often each Project's intent repository and each active intent's issue are polled                                                                                                                                                                  |
+| `--intent-approval-poll-interval`               | `PATCHY_INTENT_APPROVAL_POLL_INTERVAL`                    | `30s`                       | How often an intent awaiting approval polls its issue's events                                                                                                                                                                                        |
+| `--intent-pr-poll-interval`                     | `PATCHY_INTENT_PR_POLL_INTERVAL`                          | `60s`                       | How often an intent in review polls its pull request                                                                                                                                                                                                  |
+| `--intent-previews-enabled`                     | `PATCHY_INTENT_PREVIEWS_ENABLED`                          | `false`                     | PRs, and unchanged repositories' main heads, into Preview CRs; Helm: `previewController.enabled`                                                                                                                                                      |
+| `--intent-multi-repo`                           | `PATCHY_INTENT_MULTI_REPO`                                | `false`                     | Run intents of Projects listing several repositories; off, their intents are held `Blocked`                                                                                                                                                           |
+| `--intent-max-concurrent-runs`                  | `PATCHY_INTENT_MAX_CONCURRENT_RUNS`                       | `1`                         | Intent agent Jobs at once, a pool apart from remediation's; a multi-repository intent's builds share it                                                                                                                                               |
+| `--intent-rate-limit-floor`                     | `PATCHY_INTENT_RATE_LIMIT_FLOOR`                          | `1000`                      | Pause intent polling while the installation has fewer core requests left than this; `0` disables                                                                                                                                                      |
+| `--intent-ttl`                                  | `PATCHY_INTENT_TTL`                                       | `336h` (14 days)            | How long an ended intent is kept, with everything it owns; `0` keeps it forever                                                                                                                                                                       |
+| `--intent-job-deadline`                         | `PATCHY_INTENT_JOB_DEADLINE`                              | `90m`                       | `activeDeadlineSeconds` on every intent Job; at least both stage timeouts                                                                                                                                                                             |
+| `--intent-plan-model`                           | `PATCHY_INTENT_PLAN_MODEL`                                | `anthropic/claude-sonnet-5` | Canonical model the plan stage runs                                                                                                                                                                                                                   |
+| `--intent-plan-max-turns`                       | `PATCHY_INTENT_PLAN_MAX_TURNS`                            | `40`                        | Most agent turns a plan run may take                                                                                                                                                                                                                  |
+| `--intent-plan-token-budget`                    | `PATCHY_INTENT_PLAN_TOKEN_BUDGET`                         | `200000`                    | Most output tokens a plan run may spend                                                                                                                                                                                                               |
+| `--intent-plan-timeout`                         | `PATCHY_INTENT_PLAN_TIMEOUT`                              | `20m`                       | Wall-clock limit of a plan run                                                                                                                                                                                                                        |
+| `--intent-plan-idle-timeout`                    | `PATCHY_INTENT_PLAN_IDLE_TIMEOUT`                         | `20m`                       | End a plan run that makes no progress for this long; `0s` disables                                                                                                                                                                                    |
+| `--intent-build-model`                          | `PATCHY_INTENT_BUILD_MODEL`                               | `anthropic/claude-sonnet-5` | Canonical model the build stage runs                                                                                                                                                                                                                  |
+| `--intent-build-max-turns`                      | `PATCHY_INTENT_BUILD_MAX_TURNS`                           | `150`                       | Most agent turns a build run may take                                                                                                                                                                                                                 |
+| `--intent-build-token-budget`                   | `PATCHY_INTENT_BUILD_TOKEN_BUDGET`                        | `800000`                    | Most output tokens a build run may spend                                                                                                                                                                                                              |
+| `--intent-build-timeout`                        | `PATCHY_INTENT_BUILD_TIMEOUT`                             | `60m`                       | Wall-clock limit of a build run                                                                                                                                                                                                                       |
+| `--intent-build-idle-timeout`                   | `PATCHY_INTENT_BUILD_IDLE_TIMEOUT`                        | `20m`                       | End a build run that makes no progress for this long; `0s` disables                                                                                                                                                                                   |
+| `--intent-revise-max-turns`                     | `PATCHY_INTENT_REVISE_MAX_TURNS`                          | `80`                        | Most agent turns a revise or check-fix run may take                                                                                                                                                                                                   |
+| `--intent-revise-token-budget`                  | `PATCHY_INTENT_REVISE_TOKEN_BUDGET`                       | `400000`                    | Most output tokens a revise or check-fix run may spend                                                                                                                                                                                                |
+| `--intent-revise-timeout`                       | `PATCHY_INTENT_REVISE_TIMEOUT`                            | `45m`                       | Wall-clock limit of a revise or check-fix run                                                                                                                                                                                                         |
+| `--intent-revise-idle-timeout`                  | `PATCHY_INTENT_REVISE_IDLE_TIMEOUT`                       | `20m`                       | End a revise or check-fix run that makes no progress for this long; `0s` disables                                                                                                                                                                     |
+| `--agent-namespace`                             | `PATCHY_AGENT_NAMESPACE`                                  | `patchy-agents`             | Namespace the agent Jobs run in                                                                                                                                                                                                                       |
+| `--agent-service-account`                       | `PATCHY_AGENT_SERVICE_ACCOUNT`                            | `patchy-agent`              | Service account the agent Jobs run as                                                                                                                                                                                                                 |
+| `--job-ttl`                                     | `PATCHY_JOB_TTL`                                          | `1h`                        | `ttlSecondsAfterFinished` on a finished agent Job                                                                                                                                                                                                     |
+| `--repository-images`                           | `PATCHY_REPOSITORY_IMAGES`                                | `false`                     | Run a Repository's pinned repository-declared image; a build requires one (see below)                                                                                                                                                                 |
+| `--agent-ephemeral-storage`                     | `PATCHY_AGENT_EPHEMERAL_STORAGE`                          | —                           | Ephemeral-storage request and limit on both agent containers; **required** with the flag above                                                                                                                                                        |
+| `--changeset-max-entries`                       | `PATCHY_CHANGESET_MAX_ENTRIES`                            | `500`                       | Most files a build's changeset may touch; more is rejected before any forge call                                                                                                                                                                      |
+| `--intent-resource-classes`                     | `PATCHY_INTENT_RESOURCE_CLASSES`                          | —                           | The operator's resource classes as JSON, name to `{"requests": {"cpu", "memory"}, "limits": {"memory", "cpu"}}` (the CPU limit optional); a Project picks one per repository ([Resource classes](#resource-classes)). Helm: `agent.resources.classes` |
+| `--agent-cpu-request`, `--agent-memory-request` | `PATCHY_AGENT_CPU_REQUEST`, `PATCHY_AGENT_MEMORY_REQUEST` | —                           | The default CPU and memory request on both containers of every agent Job without a class; unset requests none. Helm: `agent.resources.default`                                                                                                        |
+| `--agent-cpu-limit`, `--agent-memory-limit`     | `PATCHY_AGENT_CPU_LIMIT`, `PATCHY_AGENT_MEMORY_LIMIT`     | —                           | The default CPU and memory limit, at or above its request; unset sets none                                                                                                                                                                            |
+
+Every resource quantity is checked at startup: positive, between `10m` and `64` CPUs or `128Mi` and `512Gi` of memory,
+and each request at or below its limit; each class must also set `requests.cpu`, `requests.memory` and `limits.memory`,
+and at most 16 are accepted. A value that fails stops the controller from starting, naming the class and the quantity,
+rather than becoming a Job the API server refuses or a pod no node fits.
 
 The per-stage limits are ceilings. A Project's `limits` may lower them for its own intents, never raise them. The idle
 timeouts are the runner's no-progress watchdog ([agent-runner](agent-runner.md#the-idle-watchdog)), set per stage and
@@ -139,6 +147,7 @@ projects:
       repositories: # one, or up to eight with --intent-multi-repo
         - name: target # the key: a DNS label of at most 16 characters
           url: https://github.com/acme/target
+          # agentResourceClass: large  # one of the operator's classes; see Resource classes below
       # labels: {trigger: patchy:target, approve: patchy:approved}  (the defaults)
       # limits: {maxActiveIntents: 2, maxCostMicroUSD: 10000000, plan: {...}, build: {...}}
       # requireRepositoryImage: true
@@ -164,6 +173,40 @@ already has an Intent, patchy removes the second trigger and reports the conflic
 `/patchy approve` is accepted only when the issue has one Intent; an anomalous issue with two Intents refuses both
 approvals without removing the shared label. Resolve the conflict, then remove and reapply the label or post a new
 command.
+
+### Resource classes
+
+`spec.repositories[].agentResourceClass` names one of the classes the operator defines (`--intent-resource-classes`,
+Helm `agent.resources.classes`). That repository's build, revise and check-fix runs get the class's CPU and memory, on
+both containers, in place of the default (`--agent-*`, Helm `agent.resources.default`); the ephemeral-storage wall is
+unchanged. Plans always run on the default, whatever the Project picks, and so does every repository that picks none.
+The class is read from the live Project at each launch, so an edit applies from the next run; a running Job keeps its
+size. A Job on a class records it in its `patchy.bitwisemedia.uk/resource-class` annotation; a Job on the default
+carries none. The class list is the spend ceiling: a Project can pick only a size the operator defined.
+
+- **A class intent-controller does not define** launches nothing. The run waits `Pending`: it holds no slot of the run
+  pool and spends no attempt, and the scheduler never grants it one, so it cannot hold up other runs. Its intent is
+  `Blocked` with `ResourcesUnavailable` (reason `UnknownResourceClass`), naming the repository, the class and the
+  classes defined. The Project stays `Ready` and reports `ResourceClassesResolved: False`, naming each repository whose
+  class is unknown (`True` once every pick is defined; absent when it picks none), so discovery, plans and the other
+  repositories carry on. Defining the class, or changing the pick, lifts the block, and the same run launches.
+- **A pod no node can fit.** An agent pod whose `PodScheduled` condition stays `False` with reason `Unschedulable` for
+  10 minutes, long enough for a node autoscaler to add a node that fits, has its Job deleted, and the run ends
+  `unschedulable` with what the pod asked for and the scheduler's message in its detail (which never reaches GitHub).
+  The agent never ran, so the attempt does not count; it is not retried either, because a retry would wait the same way.
+  A plan or build blocks its intent with `ResourcesUnavailable` (reason `Unschedulable`) until the Project's spec
+  changes or intent-controller restarts (a chart upgrade that changes the classes restarts it), and the next attempt
+  then runs; a revise or check-fix round ends, its notice on the pull request saying no node could fit the agent. This
+  holds for every intent run, on a class or on the default.
+- **An agent that stopped without a result** says why in the run's detail when the Job does: OOM-killed, naming the
+  memory limit and the class and what to raise; evicted; or past its deadline. An eviction records outcome `evicted`;
+  its raw Kubernetes pod message stays on the run for operators, while the intent issue says only that the pod was
+  evicted. An OOM kill and an eviction count as attempts: the agent may have run.
+
+Every agent pod, on a class or not, carries `karpenter.sh/do-not-disrupt: "true"`, so Karpenter (EKS Auto Mode's node
+manager) does not evict a running agent to consolidate its node: an agent Job runs once (`backoffLimit: 0`), and an
+eviction would end the run with nothing to show for it. Sizing advice, with a worked example, is in
+[Deploying intents](../intents/deploying.md#sizing-agents).
 
 ## On the issue
 

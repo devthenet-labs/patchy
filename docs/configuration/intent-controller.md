@@ -279,9 +279,12 @@ request's head, in the same image as its build, pushed as a fast-forward of the 
   Each new head patchy pushes (a round's fix included) gets its one re-run. A run whose other jobs are still running is
   waited for, since GitHub re-runs only a completed run. The round starts at once, with no re-run, when a failure has no
   Actions run to re-run (a commit status, or a check another App reports), when GitHub refuses the re-run (a run too old
-  to re-run, say), or when the Actions run is still running as `checks.timeout` passes. It needs the App's **Actions**
-  permission at **Read and write** on every app repository (`patchy setup github-app --rerun-failed` asks for it), and
-  the Project is not `Ready` without it.
+  to re-run, say), or when the Actions run is still running as `checks.timeout` passes. A re-run that GitHub started but
+  that is still running when `checks.timeout`, counted from the re-run, passes does not settle the head either: the
+  failure it re-ran stands, and the CI-fix round starts on it. It needs the App's **Actions** permission at **Read and
+  write** on every app repository (`patchy setup github-app --rerun-failed` asks for it). Without it the Project is not
+  `Ready` (`AppNotInstalled`), which stops discovery: no new intent is picked up from the intent repository. Intents
+  already in flight keep running; their re-run requests are refused, and each falls back to the CI-fix round at once.
 
 Each round posts one comment on the pull request saying what kind of round it was ("Revision round", or "CI-fix round
 for `test`") and what it pushed, and when it pushed, asks the approvers to review again. The summary patchy posts when

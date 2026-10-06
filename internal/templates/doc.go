@@ -41,4 +41,10 @@
 // told by its own notice (IntentPartialNotice), as is an ending while the
 // pull requests were still being opened, on each one already opened
 // (IntentUntrackedNotice).
+//
+// The repair prompt (RenderRepairPrompt) is the one message agent-runner
+// sends a stage's agent, in its own session, when patchy refused the report
+// it wrote or found none. It quotes the refusal reason as a previous
+// attempt's detail is quoted — bounded, stripped and fenced as data — and
+// nothing else: not the request, the plan or the report.
 package templates

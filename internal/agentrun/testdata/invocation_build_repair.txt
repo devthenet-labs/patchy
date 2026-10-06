@@ -49,12 +49,24 @@ Read Glob Grep Edit Write NotebookEdit Bash
 --- argv[13]
 WebFetch WebSearch
 --- argv[14]
---add-dir
+--setting-sources
 --- argv[15]
-/workspace
+user
 --- argv[16]
---resume
+--strict-mcp-config
 --- argv[17]
+--add-dir
+--- argv[18]
+/workspace/repo
+--- argv[19]
+--add-dir
+--- argv[20]
+/workspace
+--- argv[21]
+--resume
+--- argv[22]
 5e3f9a1c-8b2d-4f6e-9c7a-1d2e3f4a5b6c
 --- env
 ANTHROPIC_CUSTOM_HEADERS=X-Patchy-Broker-Token: caller-token-first-0001
+--- env
+CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1

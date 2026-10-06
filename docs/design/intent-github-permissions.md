@@ -18,7 +18,7 @@ validation, not that a real write succeeded. No workflow files were touched.
 | Round notices and command replies                                          | `pull_requests:write`                          | Missing body: 422; `issues:write` returned 403                                 |
 | Eyes reaction on a PR conversation comment                                 | `pull_requests:write`                          | Invalid enum: 422; `issues:write` returned 403                                 |
 | Find/get PR, including merge/close checks before pushes                    | `pull_requests:read`                           | 200 for both                                                                   |
-| Create PR                                                                  | `pull_requests:write`                          | Missing head/base: 422                                                         |
+| Create PR                                                                  | `pull_requests:write` + `contents:read`        | Missing head/base: 422; private repo without contents read: 422 (refs)         |
 | List reviews and inline review comments                                    | `pull_requests:read`                           | 200 for both                                                                   |
 | GraphQL review and inline-comment edit history                             | `pull_requests:read`                           | 200 with edit facts for both                                                   |
 | Request reviewers                                                          | `pull_requests:write`                          | Invalid reviewers type: 422; `issues:write` returned 403                       |

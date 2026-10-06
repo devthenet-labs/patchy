@@ -72,6 +72,9 @@ type GitHub interface {
 	GetPullRequestComment(ctx context.Context, repoURL string, id int64) (*ghclient.Comment, error)
 	PullRequestCommentEdited(ctx context.Context, repoURL, nodeID string) (bool, error)
 	CreatePullRequestComment(ctx context.Context, repoURL string, number int64, body string) (*ghclient.Comment, error)
+	// EditPullRequestComment replaces the body of patchy's own comment on a
+	// pull request conversation: the sticky preview comment.
+	EditPullRequestComment(ctx context.Context, repoURL string, id int64, body string) error
 	ReactPullRequestComment(ctx context.Context, repoURL string, commentID int64) error
 	ListPullRequestReviews(ctx context.Context, repoURL string, number int64) ([]ghclient.Review, error)
 	ListPullRequestReviewComments(ctx context.Context, repoURL string, number int64) ([]ghclient.ReviewComment, error)
@@ -86,13 +89,13 @@ type GitHub interface {
 	GetJobLogTail(ctx context.Context, repoURL string, jobID int64, tailBytes int) (string, error)
 }
 
-// The permission set of each token. Every token requests exactly one
-// permission on exactly one repository; GitHub adds metadata read on its own,
-// which is what the collaborator-permission and rate-limit reads need. A
-// token must still request something, so those two request issues read, on
-// an application repository too: intentperm.RepositoryReads lists it there,
-// and Ready proves it. Every token is a grant of the intentperm table for
-// the repository it is used on (TestEveryTokenIsInTheTable), but for one
+// The permission set of each token. Every token requests exactly one permission
+// on exactly one repository, but for pullsCreate (below); GitHub adds metadata
+// read on its own, which is what the collaborator-permission and rate-limit
+// reads need. A token must still request something, so those two request issues
+// read, on an application repository too: intentperm.RepositoryReads lists it
+// there, and Ready proves it. Every token is a grant of the intentperm table
+// for the repository it is used on (TestEveryTokenIsInTheTable), but for one
 // read-only exception: an open intent's pull request in a repository its
 // Project no longer lists, read with pullsRead and its rate budget with
 // issuesRead (readDepartedPullRequest).
@@ -106,6 +109,14 @@ var (
 	checksRead    = ghclient.TokenPerms{Checks: ghclient.PermRead}
 	statusesRead  = ghclient.TokenPerms{Statuses: ghclient.PermRead}
 	actionsRead   = ghclient.TokenPerms{Actions: ghclient.PermRead}
+
+	// pullsCreate opens a pull request: pull requests write plus contents
+	// read, the one token with two permissions. GitHub refuses to open a pull
+	// request in a private repository whose head and base the token cannot
+	// read ("not all refs are readable"); in a public one the refs are
+	// readable anyway, so pull requests write alone only ever worked there.
+	// Both are grants of the application repository's row.
+	pullsCreate = ghclient.TokenPerms{PullRequests: ghclient.PermWrite, Contents: ghclient.PermRead}
 )
 
 // rateCacheTTL is how long one rate-limit reading stands for its
@@ -506,7 +517,7 @@ func (g *forgeGitHub) FindPullRequest(ctx context.Context, repoURL, head, base s
 
 func (g *forgeGitHub) CreatePullRequest(ctx context.Context, repoURL string, req ghclient.PRRequest) (
 	*ghclient.PR, error) {
-	c, repo, err := g.client(ctx, repoURL, pullsWrite)
+	c, repo, err := g.client(ctx, repoURL, pullsCreate)
 	if err != nil {
 		return nil, err
 	}

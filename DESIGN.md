@@ -223,7 +223,8 @@ repositories per project.
   - has `secrets get` restricted by `resourceNames` to the Forge Secrets in the release namespace, but its agent-jobs
     Role can get, create, update and delete any Secret in the agents namespace, including model keys, image-pull
     credentials and other Jobs' handoffs;
-  - a GitHub token per operation, scoped to one repository and one permission;
+  - a GitHub token per operation, scoped to one repository and one permission (opening a pull request adds contents
+    read, without which GitHub refuses one in a private repository);
   - writes only to the repositories a Project lists, plus the intent issues;
   - no ClusterRole;
   - no inbound surface.

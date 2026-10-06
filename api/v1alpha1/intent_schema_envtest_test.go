@@ -618,6 +618,7 @@ func fullIntentStatus() patchyv1.IntentStatus {
 			URL: "https://github.com/acme/shop/pull/7", NodeID: "PR_kwDOAbCdEf", HeadSHA: schemaSHA,
 			State: "merged", MergedAt: schemaNow.DeepCopy(), MergeCommitSHA: schemaSHA,
 			ChecksObservedHeadSHA: schemaSHA, ChecksObservedProjectGeneration: 3,
+			PreviewCommentID: 1002, PreviewDigest: schemaDigest,
 		}},
 		PreviewBases: []patchyv1.IntentPreviewBase{
 			{Repository: "https://github.com/acme/web", SHA: strings.Repeat("b", 40)},
@@ -835,6 +836,13 @@ func testIntentSchema(ctx context.Context, t *testing.T, c client.Client) {
 		}, true},
 		{"a negative per-PR checks generation", func(s *patchyv1.IntentStatus) {
 			s.PullRequests[0].ChecksObservedProjectGeneration = -1
+		}, true},
+		// The sticky preview comment's record on its pull request.
+		{"a negative preview comment id", func(s *patchyv1.IntentStatus) {
+			s.PullRequests[0].PreviewCommentID = -1
+		}, true},
+		{"a bare-hex preview digest", func(s *patchyv1.IntentStatus) {
+			s.PullRequests[0].PreviewDigest = strings.Repeat("d", 64)
 		}, true},
 		{"8 preview bases", func(s *patchyv1.IntentStatus) { s.PreviewBases = bases(8) }, false},
 		{"9 preview bases", func(s *patchyv1.IntentStatus) { s.PreviewBases = bases(9) }, true},

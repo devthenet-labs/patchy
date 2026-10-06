@@ -41,4 +41,18 @@
 // told by its own notice (IntentPartialNotice), as is an ending while the
 // pull requests were still being opened, on each one already opened
 // (IntentUntrackedNotice).
+//
+// An intent's preview is told in the status comment's Preview line and in
+// one sticky comment on each previewed pull request (IntentPreviewComment),
+// both from plain values: the preview's host is linked only while it is
+// live and only when it is bare lowercase DNS labels, and the preview
+// controller's own words never reach GitHub (a failure names the Preview
+// resource instead). No preview renders no line, so the status comment of an
+// intent without one is byte-identical to what it was before.
+//
+// The repair prompt (RenderRepairPrompt) is the one message agent-runner
+// sends a stage's agent, in its own session, when patchy refused the report
+// it wrote or found none. It quotes the refusal reason as a previous
+// attempt's detail is quoted — bounded, stripped and fenced as data — and
+// nothing else: not the request, the plan or the report.
 package templates

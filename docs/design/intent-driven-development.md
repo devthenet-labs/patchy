@@ -80,7 +80,8 @@ within:
 - **It runs the agents.** Plan, build and revise agent Jobs run through the existing jobs package, in the controller's
   own slot pool.
 - **It does the intent-side GitHub writes.** Each write uses a token minted for that one operation and scoped to one
-  repository and one permission.
+  repository and one permission. Opening a pull request also reads contents: in a private repository GitHub refuses one
+  whose head and base the token cannot read.
 - **State lives in three new CRDs:**
   - `Project` holds operator config.
   - `Intent` is one per intent issue, with a local phase enum.
@@ -118,7 +119,9 @@ within:
 - **source-controller** is unchanged. It pins intent Repositories exactly as it pins Finding ones. A revise Repository
   sets `spec.ref.branch` to the PR branch, which `HeadSHA` already resolves (ghclient/repos.go:23).
 - **agent-runner** gains two phases:
-  - `plan`: `SandboxReadOnly`. It writes `reports/plan.md` and emits a new, additive envelope type `plan` at Version 4.
+  - `plan`: `SandboxReadOnly`, with its writes scoped to `reports/` (`PromptRequest.WriteDirs`, rendered by claude as a
+    path-scoped `Edit` rule in place of the bare `Write`; a Finding investigation sets none). It writes
+    `reports/plan.md` and emits a new, additive envelope type `plan` at Version 4.
   - `build`: used for the initial build and for revisions. `SandboxWorkspaceWrite`. It follows the remediation path
     (`commit.sh`, `verifyCommitted`, `buildChangeset`) and emits the existing `remediation` payload with its Changeset.
 
@@ -382,6 +385,10 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
      and output sanitisation") refuses padding and stacked combining marks, with where they start. The build report
      follows the visible-text rule but not the layout rule: no approver reads it in a code block, and patchy renders the
      pull request's description itself.
+   - A report the pod refuses for any of these rules, or does not find, is first repaired: agent-runner asks the agent,
+     in its own session, to fix it, for at most two rounds within what the stage has left, and a build's repair may
+     change nothing in the working tree. Only a report still refused reaches the controller as `report_invalid` or
+     `report_missing` (agent-runner's "Report repair").
    - Reject a plan that names repositories outside the Project.
    - Store the raw report in the immutable ConfigMap `<intent>-plan-r1`. Its digest is the sha256 of those bytes.
    - Delete the plan Repository.
@@ -621,7 +628,8 @@ The body is at most 48 KiB: approach, per-repo steps, test plan and risks. The w
 that every plan `report.ParsePlan` accepts fits in its approval comment: GitHub caps a comment at 65,536 characters, and
 the comment's header repeats the summary and the new dependencies above the plan (hence their byte bound) and fences the
 plan one backtick longer than its longest run (hence no run of more than 16 backticks). A plan too large to show for
-approval is therefore `report_invalid` in the pod, where a retry is told why, rather than refused once recorded.
+approval is therefore refused in the pod, where the planner is first asked to repair it in its own session and a retry
+of a plan still refused (`report_invalid`) is told why, rather than refused once recorded.
 
 The plan is read in a code block, which GitHub does not wrap, so its layout is bounded too: no gap of more than 16
 columns of blank characters before more text on a line (a tab counts as 8, and any blank character but a space as 2), no
@@ -922,8 +930,9 @@ preview image path prefix.
 - **agent-runner.**
   - When the manifest exists, it checks every listed directory before any agent runs; a missing one is fatal.
   - It renders the plan prompt's trees section.
-  - After `ParsePlan`, a plan naming a repository outside the manifest is `report_invalid`, and the retry is told why.
-    The controller's `outsideProject` check stays.
+  - After `ParsePlan`, a plan naming a repository outside the manifest is refused like any invalid report: the planner
+    is asked to repair it in its own session, and one still naming such a repository is `report_invalid`, and the retry
+    is told why. The controller's `outsideProject` check stays.
 - **Prompt.** `PlanPrompt.Trees` is rendered under `{{with}}`, so one-repository prompts are byte-identical. It says:
   - each repository is built separately, by its own agent, in its own image, and that agent sees only its own tree and
     the whole plan;
@@ -1042,6 +1051,20 @@ preview image path prefix.
   - _No Preview yet_ until every component has a revision and at least one revision comes from a PR.
   - _When a Preview exists:_ only in `InReview` or `Revising`, or `Blocked` from one of them, and only while at least
     one PR is open.
+- **The preview link.** With the projection on, the intent reconciler reads the Intent's Preview (one uncached `get` per
+  pass, no watch, so no new RBAC) and tells reviewers where it stands.
+  - _Where:_ a `Preview` line in the issue's status comment, and one sticky comment per previewed PR (notice key
+    `preview`). The PR comment is posted only once the preview is first live at that PR's head, recorded by id and
+    digest on the PR record (`previewCommentID`, `previewDigest`), edited in place on every change (live at a new head,
+    redeploying, failed, expired), and last edited to say the preview was removed when the intent ends. The PR body is
+    never edited, since a squash merge can copy it onto the default branch.
+  - _When live:_ the Preview is this Intent's (UID), not deleting, has observed its generation, its spec and its Ready
+    components equal `DesiredPreviewComponents`, and `status.url` is `https://<intent>.<suffix>` with nothing else. A
+    Ready preview at any other URL shows as one patchy does not link.
+  - _Never posted:_ `status.message`, which can quote the cluster; a failure names the Preview resource instead.
+  - _Best effort:_ each write asks its own repository's rate floor, a departed repository gets nothing, a refusal is
+    retried only once the comment would say something else, a failed read shows no link, and an ended intent's last edit
+    never holds its hand-off.
 - **Unchanged repositories run main.**
   - _Recording:_ the intent reconciler reads each previewed repository that has no PR at its default-branch head, and
     records that head once per intent in `status.previewBases[]{repository, sha}`. This happens on the first review
@@ -1141,9 +1164,9 @@ that means for a CRD rollback). `mise run codegen` regenerates both CRD copies a
   left blocks before any build is spent. Nothing is forced or deleted.
 - **Scoped tokens.** Every write (push, PR, sibling comment, notice) uses a token scoped to its one repository.
 - **One writer per field.**
-  - Intent status, `previewBases` included: the intent reconciler.
+  - Intent status, `previewBases` and each pull request's preview comment record included: the intent reconciler.
   - Preview spec: the preview-source reconciler.
-  - Preview status: the preview-controller.
+  - Preview status: the preview-controller. The intent reconciler only reads it, uncached, for the preview link.
   - IntentRun status: the run reconciler.
 - **Preview isolation.**
   - The slot NetworkPolicy, node isolation and the IP-restricted edge are unchanged.
@@ -1226,7 +1249,10 @@ Both serve `/healthz`, so the health check works even if Auto Mode ignores per-S
   affected component then fails after the rollout retries. A publish-status check is a follow-up.
 - **Stale branches after a partial failure.** These block a revival until a human deletes them.
 - **Host-wide redeploys.** Every component change takes the whole preview host down for the redeploy (about 160 s
-  today).
+  today). _Later resolved with target health on (the chart's default):_ the Ingress stays across a redeploy, and since
+  2026-10-06 each Deployment rolls out with `maxSurge: 1` and `maxUnavailable: 0` instead of `Recreate`, so the previous
+  revision serves until the new one's target is healthy, including while a pull request's runtime image is still being
+  published. A rollout that misses its deadline is still retried by deleting the Deployments.
 - **Plan pod storage.** A planner pod holds up to 8 trees under one ephemeral-storage limit.
 - **Serialised rounds.** They add latency when several PRs are under review at once.
 
@@ -1424,7 +1450,7 @@ class JSON later; its strict decoder makes a new field an additive change.
    - `secrets get` restricted by `resourceNames` in the release namespace; its agent-jobs Role can get, create, update
      and delete any Secret in the agents namespace, including model keys, image-pull credentials and other Jobs'
      handoffs;
-   - a token per operation, scoped to one repository and one permission;
+   - a token per operation, scoped to one repository and one permission (opening a pull request adds contents read);
    - writes only to repos listed in a Project, plus issue operations on the intent repo;
    - branches only under `patchy-intent/`, created once and then only fast-forwarded;
    - never the default branch; humans merge.

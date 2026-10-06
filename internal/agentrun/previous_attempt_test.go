@@ -71,8 +71,14 @@ func TestRetryPromptCarriesPreviousAttempt(t *testing.T) {
 			}
 			var out bytes.Buffer
 			cfg.Out, cfg.Log = &out, slog.New(slog.DiscardHandler)
-			// The stage's outputs do not matter here, only what it was told.
-			fx := &fakeExec{steps: []step{{ws: ws, stdout: streamSuccess}}}
+			// The stage's outputs do not matter here, only what it was told;
+			// a valid report keeps the stage to its one run (a missing one
+			// would be repaired in the same session).
+			outputs := map[string]string{"reports/investigation.md": goodInvestigation}
+			if tt.phase == PhaseRemediate {
+				outputs = map[string]string{"reports/remediation.md": "---\nsuccess: false\nconfidence: 0.2\n---\n"}
+			}
+			fx := &fakeExec{steps: []step{{ws: ws, stdout: streamSuccess, writes: outputs}}}
 			if err := New(cfg, fx).Run(context.Background()); err != nil {
 				t.Fatalf("Run: %v", err)
 			}

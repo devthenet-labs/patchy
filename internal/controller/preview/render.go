@@ -191,7 +191,18 @@ func (s Settings) deployment(p *v1alpha1.Preview, i int, slot int32) *appsv1.Dep
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
-			Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
+			// A new revision's Pod starts beside the serving one, which stops
+			// only once the new one is available: Ready, so with target health
+			// once its load balancer target is healthy. A redeploy, often of
+			// a pull request head whose image the app's CI is still
+			// publishing, never takes the host down. The slot quota holds one
+			// surge Pod per component.
+			Strategy: appsv1.DeploymentStrategy{
+				Type: appsv1.RollingUpdateDeploymentStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateDeployment{
+					MaxSurge: ptr(intstr.FromInt32(1)), MaxUnavailable: ptr(intstr.FromInt32(0)),
+				},
+			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{

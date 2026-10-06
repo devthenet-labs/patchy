@@ -12,4 +12,8 @@
 // brokers both vendors' models and so is every model's fallback rather than any
 // model's preferred harness) and Fake (replays a fixture file through cat, for
 // tests and the agent-runner's --fake mode).
+//
+// Claude and Fake can also continue a session an earlier run left behind
+// (Resumer), which agentrun's report repair is built on; codex and copilot
+// cannot, so a stage on them keeps a refused report refused.
 package harness

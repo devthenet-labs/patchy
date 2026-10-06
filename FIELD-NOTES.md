@@ -41,6 +41,29 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
 
 ## Running intents
 
+- **The first private repository could not get its pull request** (overdub-12, 2026-10-06). The build succeeded and
+  pushed `patchy-intent/overdub-12`, then GitHub refused the pull request: `422 ... not all refs are readable`. Patchy
+  opened pull requests with a pull-requests-write token only; in a public repository the refs are readable anyway, so
+  Hello.Web, preview-demo and marigold never showed it. The intent parks Blocked (`PullRequestRefused`) and retries when
+  the Project changes or the controller restarts. The fix (for 0.12.19) opens pull requests with contents read added.
+  Docs: test onboarding against a private repository; patchy: e2e has no notion of a private repository.
+- **A report can still fail on the last attempt, so it was fixed by hand** (overdub-12 attempt 2, operator, owner
+  approved). Attempt 1 failed `report_invalid` ($3.70: a sentence where the schema wants a list). Attempt 2's report had
+  a 664-character note (limit 500); the agent had checked its YAML parsed but did not know the limit. The operator split
+  that note at a sentence boundary inside the pod, wording unchanged, before the agent finished; the report then passed.
+  Report repair (give the validation error back to the same session) makes this automatic.
+- **Claude's Bash tool backgrounds a command after 10 minutes** (overdub-12). The agent ran the app's full 63-suite run;
+  at 10 minutes the CLI moved it to the background and returned, and the agent went on (CI subset, screenshots, report)
+  while polling it. So one long command does not trip the 20-minute idle watchdog. Docs: an agent can leave a long
+  command running; patchy: nothing to change.
+- **On the large class, overdub's build behaved** (overdub-12 attempt 2): 38 s for the transport browser test, about a
+  minute for the 11-suite CI subset, $3.56 and about 37 minutes, most of it fitting the new toggle into the transport
+  bar at 1280/1366/1440 px. Auto Mode picked a `c6a.2xlarge` in under a minute. The intent's total was $9.48 of its $10
+  ceiling (plan $2.22, two builds).
+- **Hello.Web is the quick demo** (hello-web-13, 2026-10-06). "Greet visitors by time of day on a styled card": plan
+  $0.47 (3.5 minutes), build $0.42, PR about 7 minutes after filing, preview Ready about 3 minutes later, serving the
+  greeting with the stylesheet allowed by its `sha256` hash in the CSP. Patchy did not post the preview link anywhere
+  (intent-controller never reads Preview status); a fix is going into 0.12.19.
 - **With 100 turns the replan finished** (overdub-12, 2026-10-06): about 67 turns, $2.22, 10 minutes, a 243-line plan
   with 3 questions. It also showed the planner's sandbox is uneven. It tried to run the transport browser test 4 times
   (each refused; plans are read-only) before going back to reading, and its Write tool was not refused: it created a

@@ -55,6 +55,13 @@ func TestScopedTokenPermissionSets(t *testing.T) {
 			perms: TokenPerms{Actions: PermRead},
 			want:  map[string]any{"actions": "read"},
 		},
+		{
+			name:  "actions write alone, as a check re-run asks",
+			perms: TokenPerms{Actions: PermWrite},
+			want:  map[string]any{"actions": "write"},
+		},
+		{name: "actions write with another permission", perms: TokenPerms{Actions: PermWrite, Issues: PermRead},
+			wantErr: true},
 		// Minting with no permissions key would grant everything the
 		// installation holds — the widening the design rules out.
 		{name: "none requested", perms: TokenPerms{}, wantErr: true},
@@ -117,7 +124,14 @@ func TestTokenPermsValidate(t *testing.T) {
 		{name: "actions read", perms: TokenPerms{Actions: PermRead}},
 		{name: "checks write denied", perms: TokenPerms{Checks: PermWrite}, wantErr: true},
 		{name: "statuses write denied", perms: TokenPerms{Statuses: PermWrite}, wantErr: true},
-		{name: "actions write denied", perms: TokenPerms{Actions: PermWrite}, wantErr: true},
+		// Actions write re-runs failed jobs, and is only ever minted alone.
+		{name: "actions write alone", perms: TokenPerms{Actions: PermWrite}},
+		{name: "actions write beside contents denied", perms: TokenPerms{Actions: PermWrite, Contents: PermRead},
+			wantErr: true},
+		{name: "actions write beside checks denied", perms: TokenPerms{Actions: PermWrite, Checks: PermRead},
+			wantErr: true},
+		{name: "actions write beside pull requests denied",
+			perms: TokenPerms{Actions: PermWrite, PullRequests: PermWrite}, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

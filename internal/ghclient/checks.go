@@ -27,7 +27,10 @@ type CheckRun struct {
 	Conclusion string
 	DetailsURL string
 	AppSlug    string
-	Output     CheckOutput
+	// CheckSuiteID is the check suite the run belongs to: for a GitHub
+	// Actions check run, its workflow run's (ListWorkflowRunsForCheckSuite).
+	CheckSuiteID int64
+	Output       CheckOutput
 }
 
 // CheckAnnotation is one source annotation attached to a check run.
@@ -43,6 +46,15 @@ type CommitStatus struct {
 	Context     string
 	State       string
 	Description string
+}
+
+// WorkflowRun is one GitHub Actions workflow run: the run behind the check
+// runs of one check suite.
+type WorkflowRun struct {
+	ID         int64
+	HeadSHA    string
+	Status     string
+	Conclusion string
 }
 
 // WorkflowJob relates an Actions job to its check run by CheckRunID.
@@ -70,8 +82,8 @@ func (c *Client) ListCheckRuns(ctx context.Context, repo Repo, sha string) ([]Ch
 			o := v.GetOutput()
 			out = append(out, CheckRun{ID: v.GetID(), Name: v.GetName(), HeadSHA: v.GetHeadSHA(),
 				Status: v.GetStatus(), Conclusion: v.GetConclusion(), DetailsURL: v.GetDetailsURL(),
-				AppSlug: v.GetApp().GetSlug(),
-				Output:  CheckOutput{Title: o.GetTitle(), Summary: o.GetSummary(), Text: o.GetText()}})
+				AppSlug: v.GetApp().GetSlug(), CheckSuiteID: v.GetCheckSuite().GetID(),
+				Output: CheckOutput{Title: o.GetTitle(), Summary: o.GetSummary(), Text: o.GetText()}})
 		}
 		if resp.NextPage == 0 {
 			return out, nil
@@ -146,6 +158,42 @@ func (c *Client) ListWorkflowJobs(ctx context.Context, repo Repo, runID int64) (
 		opts.Page = resp.NextPage
 	}
 	return nil, fmt.Errorf("ghclient: jobs for %s Actions run %d run past %d pages", repo, runID, walkPageCap)
+}
+
+// ListWorkflowRunsForCheckSuite lists the Actions workflow runs of one check
+// suite: the run (in practice one) whose jobs a GitHub Actions check run of
+// that suite reports.
+func (c *Client) ListWorkflowRunsForCheckSuite(ctx context.Context, repo Repo, suiteID int64) ([]WorkflowRun, error) {
+	opts := &github.ListWorkflowRunsOptions{CheckSuiteID: suiteID, ListOptions: github.ListOptions{PerPage: listPageSize}}
+	var out []WorkflowRun
+	for range walkPageCap {
+		page, resp, err := c.gh.Actions.ListRepositoryWorkflowRuns(ctx, repo.Owner, repo.Name, opts)
+		if err != nil {
+			return nil, fmt.Errorf("ghclient: list Actions runs of %s check suite %d: %w", repo, suiteID, err)
+		}
+		for _, v := range page.WorkflowRuns {
+			if v == nil {
+				continue
+			}
+			out = append(out, WorkflowRun{ID: v.GetID(), HeadSHA: v.GetHeadSHA(), Status: v.GetStatus(),
+				Conclusion: v.GetConclusion()})
+		}
+		if resp.NextPage == 0 {
+			return out, nil
+		}
+		opts.Page = resp.NextPage
+	}
+	return nil, fmt.Errorf("ghclient: Actions runs of %s check suite %d run past %d pages", repo, suiteID, walkPageCap)
+}
+
+// RerunFailedJobs re-runs the failed jobs of one completed Actions workflow
+// run, and the jobs that depend on them, as a new attempt of that run.
+// GitHub refuses a run that is still running or has no failed job.
+func (c *Client) RerunFailedJobs(ctx context.Context, repo Repo, runID int64) error {
+	if _, err := c.gh.Actions.RerunFailedJobsByID(ctx, repo.Owner, repo.Name, runID); err != nil {
+		return fmt.Errorf("ghclient: re-run the failed jobs of %s Actions run %d: %w", repo, runID, err)
+	}
+	return nil
 }
 
 func checkRunID(raw string) int64 {

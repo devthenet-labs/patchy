@@ -25,6 +25,9 @@ const OutputVersion = 1
 // a later chunk whose Line is past the end of the previous one means the
 // emitter left lines out. Done is set on a task's last chunk, which may carry
 // no lines; Truncated says the emitter's budget cut the task's output short.
+// An emitter follows one task at a time: the chunks of one task are never
+// interleaved with another's, so a reader may start over at each new task id
+// and hold one task's state alone.
 type Output struct {
 	V         int      `json:"v"`
 	Task      string   `json:"task"`

@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -59,10 +60,10 @@ const (
 	// kept back for the chunk that closes the command the budget ran out on.
 	outputProcessBytes = 1 << 20
 	outputClosingBytes = 512
-	// outputMaxTasks bounds the commands followed at once. The CLI runs its
-	// foreground commands one at a time; this only bounds a stream that
-	// says otherwise.
-	outputMaxTasks = 4
+	// outputQueued bounds the commands waiting while another is followed.
+	// The CLI runs its foreground commands one at a time; this only bounds
+	// a stream that says otherwise.
+	outputQueued = 8
 	// outputReadBytes bounds what one read pass takes from a command's file,
 	// so a command that floods it costs each pass a bounded amount.
 	outputReadBytes = 4 << 20
@@ -88,11 +89,16 @@ var defaultOutputPace = outputPace{
 }
 
 // outputFollower follows the commands one run of a stage's CLI runs and
-// prints their output live. The runner's line observer hands it every
-// stream line (scan), which only starts and signals goroutines and never
-// waits; each command followed gets one goroutine, bound to the run's
-// context, that reads the command's file. end, once the run is over, ends
-// every command still followed and waits for each to print its last chunk,
+// prints their output live, one command at a time: a viewer is shown one
+// command's output at a time (transcript.Output), so two commands' chunks
+// must never interleave. A command that starts while another is followed
+// waits in a queue, in start order, and is followed once that one ends,
+// from its first line, as long as it has not ended first; one that ends
+// while it waits is never shown. The runner's line observer hands the
+// follower every stream line (scan), which only starts and signals the
+// goroutine and never waits; the command followed has that one goroutine,
+// bound to the run's context, reading its file. end, once the run is over,
+// ends the command followed, drops the queue and waits for the last chunk,
 // so no goroutine outlives its run and no chunk is printed after the
 // stage's result.
 type outputFollower struct {
@@ -106,12 +112,14 @@ type outputFollower struct {
 	wg      sync.WaitGroup
 
 	mu      sync.Mutex
-	session string // the run's session, off its init event
-	tasks   map[string]*followedTask
-	over    bool // the run is over: no command is followed from now on
+	session string                   // the run's session, off its init event
+	current *followedTask            // the command followed, or nil
+	queue   []*followedTask          // the commands waiting their turn, oldest first
+	known   map[string]*followedTask // current and queue, by task id
+	over    bool                     // the run is over: no command is followed from now on
 }
 
-// followedTask is one command being followed.
+// followedTask is one command followed or waiting to be.
 type followedTask struct {
 	id, toolUse, pattern string
 	ended                chan struct{} // closed when the command or the run ends
@@ -141,13 +149,13 @@ func (a *Agent) followOutput(ctx context.Context, h harness.Harness, spec runner
 		// The runner runs the CLI with its own environment and the spec's
 		// after it, so a later assignment wins, as it does here.
 		env:   append(os.Environ(), spec.Env...),
-		tasks: map[string]*followedTask{},
+		known: map[string]*followedTask{},
 	}
 }
 
 // scan applies one stream line's command events. It runs on the runner's
 // reading goroutine for every line of the CLI's stream, so it never waits on
-// a command: it starts and signals goroutines, under locks only ever held
+// a command: it starts and signals a goroutine, under locks only ever held
 // for a map update or one stdout line.
 func (f *outputFollower) scan(line []byte) {
 	if f == nil {
@@ -162,20 +170,24 @@ func (f *outputFollower) scan(line []byte) {
 		case harness.TaskStarted:
 			f.start(ev)
 		case harness.TaskEnded:
-			f.endWhere(func(t *followedTask) bool { return t.id == ev.Task })
+			f.mu.Lock()
+			f.endTask(f.known[ev.Task])
+			f.mu.Unlock()
 		case harness.TaskAnswered:
-			f.endWhere(func(t *followedTask) bool { return t.toolUse != "" && t.toolUse == ev.ToolUse })
+			f.mu.Lock()
+			f.endTask(f.answered(ev.ToolUse))
+			f.mu.Unlock()
 		}
 	}
 }
 
-// start follows a command that started, unless the run is over, it is
-// already followed, outputMaxTasks are, the process's output budget is
-// spent, or there is no file to look for.
+// start follows a command that started, or queues it while another is
+// followed, unless the run is over, it is already known, the queue is full,
+// the process's output budget is spent, or there is no file to look for.
 func (f *outputFollower) start(ev harness.TaskEvent) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.over || f.tasks[ev.Task] != nil || len(f.tasks) >= outputMaxTasks || f.a.outputSpent() {
+	if f.over || f.known[ev.Task] != nil || len(f.queue) >= outputQueued || f.a.outputSpent() {
 		return
 	}
 	session := ev.Session
@@ -187,55 +199,104 @@ func (f *outputFollower) start(ev harness.TaskEvent) {
 		return
 	}
 	t := &followedTask{id: ev.Task, toolUse: ev.ToolUse, pattern: pattern, ended: make(chan struct{})}
-	f.tasks[t.id] = t
+	f.known[t.id] = t
+	if f.current != nil {
+		f.queue = append(f.queue, t)
+		return
+	}
+	f.followNow(t)
+}
+
+// followNow starts the goroutine following t; the caller holds f.mu.
+func (f *outputFollower) followNow(t *followedTask) {
+	f.current = t
 	f.wg.Add(1)
 	go f.follow(t)
 }
 
-// endWhere ends every command followed that match picks.
-func (f *outputFollower) endWhere(match func(*followedTask) bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, t := range f.tasks {
-		if match(t) {
-			t.end()
+// answered is the command, followed or queued, that tool call toolUse ran,
+// or nil; the caller holds f.mu.
+func (f *outputFollower) answered(toolUse string) *followedTask {
+	if toolUse == "" {
+		return nil
+	}
+	if f.current != nil && f.current.toolUse == toolUse {
+		return f.current
+	}
+	for _, t := range f.queue {
+		if t.toolUse == toolUse {
+			return t
 		}
+	}
+	return nil
+}
+
+// endTask ends a command: the one followed has its goroutine print its last
+// chunk, and a queued one is dropped, never shown. The caller holds f.mu.
+func (f *outputFollower) endTask(t *followedTask) {
+	switch t {
+	case nil:
+	case f.current:
+		t.end()
+	default:
+		f.queue = slices.DeleteFunc(f.queue, func(q *followedTask) bool { return q == t })
+		delete(f.known, t.id)
 	}
 }
 
-// end is called once the run is over: it ends every command still
-// followed, as the CLI that ran them is gone, and waits for each to print
-// its last chunk. That wait is bounded by the drain time.
+// end is called once the run is over: it ends the command followed, as the
+// CLI that ran it is gone, drops the commands queued, and waits for the last
+// chunk. That wait is bounded by the drain time.
 func (f *outputFollower) end() {
 	if f == nil {
 		return
 	}
 	f.mu.Lock()
 	f.over = true
-	for _, t := range f.tasks {
-		t.end()
+	if f.current != nil {
+		f.current.end()
 	}
+	f.dropQueue()
 	f.mu.Unlock()
 	f.wg.Wait()
 }
 
-// forget drops a command whose goroutine is done.
-func (f *outputFollower) forget(t *followedTask) {
+// dropQueue forgets every command waiting its turn; the caller holds f.mu.
+func (f *outputFollower) dropQueue() {
+	for _, t := range f.queue {
+		delete(f.known, t.id)
+	}
+	f.queue = nil
+}
+
+// next lets go of the command whose goroutine is done and follows the
+// oldest one queued, from its first line, unless the run is over or the
+// process's budget is spent, when the queue is dropped unseen.
+func (f *outputFollower) next(done *followedTask) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.tasks[t.id] == t {
-		delete(f.tasks, t.id)
+	delete(f.known, done.id)
+	f.current = nil
+	if f.over || f.a.outputSpent() {
+		f.dropQueue()
+		return
+	}
+	if len(f.queue) > 0 {
+		t := f.queue[0]
+		f.queue = f.queue[1:]
+		f.followNow(t)
 	}
 }
 
-// follow is one command's goroutine. It waits for the command's file, then
-// reads what is appended to it every poll until the command or the run ends,
-// when it reads the rest and prints the last chunk. A command whose file is
+// follow is the goroutine of the command followed. It waits for the
+// command's file, then reads what is appended to it every poll until the
+// command or the run ends, when it reads the rest and prints the last chunk;
+// then it hands over to the next command queued. A command whose file is
 // never seen — a fixture's, or one over before the first look — prints
 // nothing at all.
 func (f *outputFollower) follow(t *followedTask) {
 	defer f.wg.Done()
-	defer f.forget(t)
+	defer f.next(t)
 	file := f.await(t)
 	if file == nil {
 		return

@@ -572,6 +572,134 @@ func TestOutputEnds(t *testing.T) {
 	}
 }
 
+// byTask splits chunks by command, and checks no command's chunks are
+// interleaved with another's: each command's are one run of stdout.
+func byTask(t *testing.T, got []transcript.Output) map[string][]transcript.Output {
+	t.Helper()
+	tasks := map[string][]transcript.Output{}
+	last := ""
+	for _, o := range got {
+		if o.Task != last && tasks[o.Task] != nil {
+			t.Errorf("a chunk of %s follows one of %s after its own: the commands' chunks interleave", o.Task, last)
+		}
+		tasks[o.Task] = append(tasks[o.Task], o)
+		last = o.Task
+	}
+	return tasks
+}
+
+// hasLine reports a chunk of task showing text.
+func hasLine(task, text string) func([]transcript.Output) bool {
+	return func(got []transcript.Output) bool {
+		return slices.ContainsFunc(got, func(o transcript.Output) bool {
+			return o.Task == task && slices.Contains(o.Lines, text)
+		})
+	}
+}
+
+// TestOutputFollowsOneCommandAtATime: a command that starts while another
+// is followed waits its turn, so a viewer, who sees one command at a time,
+// never sees two interleave. Once the first ends, the second is followed
+// from its first line, those printed while it waited included.
+func TestOutputFollowsOneCommandAtATime(t *testing.T) {
+	cfg, ws, tmp, out := outputSetup(t)
+	exec := &commandExec{ws: ws, runs: []commandRun{{writes: reported, script: func(feed func(string)) {
+		first, firstPath := commandFile(t, tmp, "bfirst")
+		feed(startedLine("bfirst", "toolu_a"))
+		put(t, first, "a1\na2\n")
+		waitFor(t, out, "the first command's lines", hasLine("bfirst", "a2"))
+		second, secondPath := commandFile(t, tmp, "bsecond")
+		feed(startedLine("bsecond", "toolu_b"))
+		put(t, second, "b1\nb2\n")
+		put(t, first, "a3\n")
+		time.Sleep(10 * fastPace.poll) // were the second followed, its lines would print now
+		put(t, second, "b3\n")
+		_ = os.Remove(firstPath)
+		feed(notifiedLine("bfirst", "toolu_a"))
+		feed(answeredLine("toolu_a", "a"))
+		waitFor(t, out, "the second command's lines", hasLine("bsecond", "b3"))
+		put(t, second, "b4")
+		_ = os.Remove(secondPath)
+		feed(notifiedLine("bsecond", "toolu_b"))
+	}}}}
+	runStage(t, cfg, exec, fastPace, out)
+
+	tasks := byTask(t, chunks(out.String()))
+	if lines := joined(t, tasks["bfirst"]); !slices.Equal(lines, []string{"a1", "a2", "a3"}) {
+		t.Errorf("first command lines = %q", lines)
+	}
+	if lines := joined(t, tasks["bsecond"]); !slices.Equal(lines, []string{"b1", "b2", "b3", "b4"}) {
+		t.Errorf("second command lines = %q, want every line from its first", lines)
+	}
+}
+
+// TestOutputSkipsAQueuedCommandThatEnded: a command that starts and ends
+// while another is followed is never shown; the next one still waiting is
+// followed once the first ends.
+func TestOutputSkipsAQueuedCommandThatEnded(t *testing.T) {
+	cfg, ws, tmp, out := outputSetup(t)
+	exec := &commandExec{ws: ws, runs: []commandRun{{writes: reported, script: func(feed func(string)) {
+		first, firstPath := commandFile(t, tmp, "bfirst")
+		feed(startedLine("bfirst", "toolu_a"))
+		put(t, first, "a1\n")
+		waitFor(t, out, "the first command's line", hasLine("bfirst", "a1"))
+		brief, briefPath := commandFile(t, tmp, "bbrief")
+		feed(startedLine("bbrief", "toolu_b"))
+		put(t, brief, "brief\n")
+		time.Sleep(10 * fastPace.poll)
+		_ = os.Remove(briefPath)
+		feed(notifiedLine("bbrief", "toolu_b"))
+		third, thirdPath := commandFile(t, tmp, "bthird")
+		feed(startedLine("bthird", "toolu_c"))
+		put(t, third, "c1\n")
+		_ = os.Remove(firstPath)
+		feed(notifiedLine("bfirst", "toolu_a"))
+		waitFor(t, out, "the third command's line", hasLine("bthird", "c1"))
+		_ = os.Remove(thirdPath)
+		feed(notifiedLine("bthird", "toolu_c"))
+	}}}}
+	runStage(t, cfg, exec, fastPace, out)
+
+	tasks := byTask(t, chunks(out.String()))
+	if got := tasks["bbrief"]; got != nil {
+		t.Errorf("the command that ended while it waited was shown: %+v", got)
+	}
+	if lines := joined(t, tasks["bthird"]); !slices.Equal(lines, []string{"c1"}) {
+		t.Errorf("third command lines = %q", lines)
+	}
+}
+
+// TestOutputQueueIsBounded: a stream that starts command after command
+// while one is followed queues at most outputQueued of them, in start order;
+// the rest are never followed, and the run's end drops the queue.
+func TestOutputQueueIsBounded(t *testing.T) {
+	cfg, ws, _, _ := outputSetup(t)
+	a := New(cfg, &commandExec{ws: ws})
+	a.pace = fastPace
+	f := a.followOutput(context.Background(), harness.NewFake(), runner.CommandSpec{}, nil)
+	f.scan([]byte(initLine()))
+	for i := range outputQueued + 3 {
+		f.scan([]byte(startedLine(fmt.Sprintf("bq%d", i), fmt.Sprintf("toolu_q%d", i))))
+	}
+	f.mu.Lock()
+	current, queue := f.current.id, make([]string, 0, len(f.queue))
+	for _, q := range f.queue {
+		queue = append(queue, q.id)
+	}
+	f.mu.Unlock()
+	want := make([]string, 0, outputQueued)
+	for i := 1; i <= outputQueued; i++ {
+		want = append(want, fmt.Sprintf("bq%d", i))
+	}
+	if current != "bq0" || !slices.Equal(queue, want) {
+		t.Errorf("followed %s, queued %q; want bq0 followed and %q queued", current, queue, want)
+	}
+	f.end()
+	if f.current != nil || len(f.queue) != 0 || len(f.known) != 0 {
+		t.Errorf("after the run: followed %v, queued %d, known %d; want none", f.current, len(f.queue), len(f.known))
+	}
+}
+
 // TestOutputEndWaitsForTheLastChunk: once a run's end has returned, every
 // command it followed has printed its last chunk and nothing more is
 // printed, so the stage's result is the last line.
@@ -597,8 +725,8 @@ func TestOutputEndWaitsForTheLastChunk(t *testing.T) {
 		t.Error("stdout grew after end returned")
 	}
 	f.scan([]byte(startedLine("blate", "toolu_late")))
-	if len(f.tasks) != 0 {
-		t.Errorf("tasks followed after the run = %d, want none", len(f.tasks))
+	if f.current != nil || len(f.known) != 0 {
+		t.Errorf("tasks followed after the run = %v and %d known, want none", f.current, len(f.known))
 	}
 }
 

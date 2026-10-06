@@ -7,7 +7,29 @@
 > documentation values `111122223333` and `203.0.113.10/32`. The real ones are in terraform-devthenet's `k8s/` values
 > (private).
 
-## Current checkpoint — 2026-10-03 (source of truth; Claude resumed from Codex)
+## Current checkpoint — 2026-10-06
+
+**0.12.18 released, deployed and fresh-Finding gated.** PR #122 added operator-defined agent resource classes and fast
+failure for unschedulable Jobs, with fixes for durable run outcomes and public eviction messages. Its local `make pr`
+and `mise run e2e` gates passed, and every PR check concluded SUCCESS or SKIPPED before merge. Release-please PR #120
+contained only version stamps and CHANGELOG changes; its verified-head CI and the release workflow passed. The
+live-values render comparison found only the expected images, chart labels, controller configuration and CRD schema
+changes. Before upgrade, Helm rollback points were **patchy 53 / patchy-config 35**. Upgraded patchy first to **rev
+54**, then patchy-config to **rev 36**. All nine Deployments are Ready with zero restarts; all five Projects are Ready.
+Two controllers each logged one transient broker readiness fetch error during rollout, with no repeat after settling.
+
+The fresh gate used weak-key alert **#44** on patchy-target: Finding `finding-514becf18f-19`, tracking issue **#81**,
+`/patchy expedite`, and repair PR **#82**. The Remediation's pushed commit matched the PR head, the PR added a 2048-bit
+assertion, and every check passed. Squash merge `c9d9ac7d` led to Remediated, issue closed completed, one comment per
+patchy marker and exactly one Finding for the alert. Main CodeQL passed and marked alert #44 fixed.
+
+**Next:** prepare the `large` class in terraform-devthenet `k8s/` values (4 CPU and 8Gi requests, 10Gi memory limit, no
+CPU limit) and select it for overdub. Show the complete diff to the owner and **stop before applying**. On approval,
+upgrade patchy then patchy-config and confirm all Projects Ready. Re-add `patchy:overdub` to intents issue #10, tell the
+owner when its plan is posted, let the owner approve, then observe the build PR and preview. If that intent fails,
+report the cause and stop without retrying or changing anything. Broker limits and dashboard work are deferred.
+
+## Historical checkpoint — 2026-10-03
 
 **Previews are set up and ready for the first live demo; no preview has run yet.** Done today, each owner-approved
 separately, with rollback points recorded before each Helm revision:

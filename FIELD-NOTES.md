@@ -41,6 +41,14 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
 
 ## Running intents
 
+- **The 0.12.18 fresh-Finding gate passed** (2026-10-06). A new weak-key alert became one Finding and one tracking
+  issue. `/patchy expedite` took it through investigation and remediation to a repair PR. The agent raised the key size
+  and added a regression test; all PR and post-merge CodeQL checks passed. Patchy closed the issue as completed, emitted
+  each tracking marker once, and recorded no duplicate Finding.
+- **Broker replacement briefly affects controller startup** (0.12.18 rollout, 2026-10-05). During the patchy chart
+  upgrade, investigation-controller and remediation-controller each logged one broker readiness fetch error while the
+  broker pod was being replaced. All nine Deployments became Ready with zero restarts, and neither controller logged
+  another error in the following minute. Check the settled state after a rollout, as well as the first startup lines.
 - **Pod eviction messages can expose cluster details through public intent issues** (resource-class review, 2026-10-05).
   The first eviction detail copied Kubernetes' raw pod message to the run, then the Failed intent's status comment
   copied it to GitHub. It may name nodes or other private infrastructure. The run keeps the message for operators; the

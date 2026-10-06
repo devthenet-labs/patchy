@@ -273,7 +273,7 @@ Each round posts one comment on the pull request saying what kind of round it wa
 for `test`") and what it pushed, and when it pushed, asks the approvers to review again. Once the intent has a pull
 request, the issue's status comment counts its revision rounds against `limits.maxRevisions` ("Revisions: 1 of 3") as
 the limit counts them: a round that failed counts, and a CI-fix round is not a revision. The summary patchy posts when
-the intent ends counts revisions and CI-fix rounds apart.
+the intent ends counts revision and CI-fix rounds apart, the same way.
 
 ### The preview link
 

@@ -28,10 +28,9 @@ func (e *env) statusSays(name, want string) {
 }
 
 // requestChanges submits an approver's review asking for changes on pull
-// request n, read once its quiet period has passed.
+// request n, and lets its quiet period pass.
 func (e *env) requestChanges(n, id int64, body string) {
-	e.gh.reviews[n] = append(e.gh.reviews[n], ghclient.Review{ID: id, NodeID: fmt.Sprintf("review-%d", id),
-		Author: actorOf(approver), State: "CHANGES_REQUESTED", Body: body, SubmittedAt: e.clock.Now()})
+	e.reviewOn(n, id, body)
 	e.clock.Advance(3 * time.Minute)
 }
 
@@ -43,14 +42,13 @@ func (e *env) requestChanges(n, id int64, body string) {
 // unset) as the limit counts them, so a round that failed counts too, and a
 // CI-fix round, counted against its own limit, is not a revision.
 func TestStatusCommentCountsRevisionsAgainstTheLimit(t *testing.T) {
-	five := int32(5)
 	tests := []struct {
 		name  string
 		limit *int32
 		want  int32
 	}{
 		{"schema default", nil, v1alpha1.DefaultMaxRevisions},
-		{"project limit", &five, 5},
+		{"project limit", new(int32(5)), 5},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -95,4 +93,65 @@ func TestStatusCommentCountsRevisionsAgainstTheLimit(t *testing.T) {
 			e.statusSays(name, line(2))
 		})
 	}
+}
+
+// TestEndingCountsRoundsAsTheLimitsDo: the summary and the partial notice
+// count revision and CI-fix rounds as the limits, the status comment and the
+// dashboard do, a failed round included. Regression: they counted completed
+// rounds only, so an intent whose every round failed ended saying
+// "Revisions: 0" and no CI-fix round, under a status comment counting them.
+func TestEndingCountsRoundsAsTheLimitsDo(t *testing.T) {
+	t.Run("summary", func(t *testing.T) {
+		project := testProject()
+		project.Spec.Checks.Fix = []string{"changelog"}
+		e := newEnv(t, project)
+		name := e.awaiting()
+		e.gh.label(1, "patchy:approved", approver)
+		pr := e.drive(name, v1alpha1.IntentInReview, repoImage).Status.PullRequests[0]
+
+		e.jobs.output = failingBuild
+		e.requestChanges(pr.Number, 81, "Mention the endpoint too.")
+		e.drive(name, v1alpha1.IntentRevising, repoImage)
+		e.drive(name, v1alpha1.IntentInReview, repoImage)
+		e.gh.checks[pr.HeadSHA] = []ghclient.CheckRun{{ID: 82, Name: "changelog", HeadSHA: pr.HeadSHA,
+			Status: "completed", Conclusion: "failure", Output: ghclient.CheckOutput{Title: "no entry for #1"}}}
+		e.drive(name, v1alpha1.IntentRevising, repoImage)
+		in := e.drive(name, v1alpha1.IntentInReview, repoImage)
+		if in.Status.Revisions != 0 || in.Status.CheckFixes != 0 || in.Status.Rounds != 2 {
+			t.Fatalf("rounds %d, revisions %d, check fixes %d; want two rounds, neither completed",
+				in.Status.Rounds, in.Status.Revisions, in.Status.CheckFixes)
+		}
+
+		e.gh.closePR(true)
+		e.drive(name, v1alpha1.IntentMerged, repoImage)
+		summary := e.gh.withMarker(" summary ")
+		if len(summary) != 1 {
+			t.Fatalf("summaries = %d, want one", len(summary))
+		}
+		if body := summary[0].Body; !strings.Contains(body, "**Revisions:** 1\n") ||
+			!strings.Contains(body, "**CI-fix rounds:** 1\n") {
+			t.Errorf("summary = %q, want one revision and one CI-fix round, counted apart", body)
+		}
+	})
+	t.Run("partial notice", func(t *testing.T) {
+		e := newMultiEnv(t)
+		name := e.inReviewLinked()
+		e.jobs.output = failingBuild
+		e.requestChanges(2, 91, "Web: put it in the footer.")
+		e.drive(name, v1alpha1.IntentRevising, repoImage)
+		if in := e.drive(name, v1alpha1.IntentInReview, repoImage); in.Status.Revisions != 0 {
+			t.Fatalf("revisions = %d after a failed round, want 0 completed", in.Status.Revisions)
+		}
+
+		e.gh.closePRn(1, true)
+		e.gh.closePRn(2, false)
+		e.drive(name, v1alpha1.IntentClosed, repoImage)
+		notice := e.gh.withMarker(" partial ")
+		if len(notice) != 1 {
+			t.Fatalf("partial notices = %d, want one", len(notice))
+		}
+		if body := notice[0].Body; !strings.Contains(body, "**Revisions:** 1\n") {
+			t.Errorf("partial notice = %q, want it to count the failed revision round", body)
+		}
+	})
 }

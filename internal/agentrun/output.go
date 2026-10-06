@@ -164,12 +164,14 @@ func (a *Agent) followOutput(ctx context.Context, h harness.Harness, spec runner
 // scan applies one stream line's command events. It runs on the runner's
 // reading goroutine for every line of the CLI's stream, so it never waits on
 // a command: it starts and signals a goroutine, under locks only ever held
-// for a map update or one stdout line.
+// for a map update or one stdout line. A tool result can only end a command
+// followed or queued, so the harness decodes one only while there is such a
+// command (watching).
 func (f *outputFollower) scan(line []byte) {
 	if f == nil {
 		return
 	}
-	for _, ev := range f.tw.ScanTasks(line) {
+	for _, ev := range f.tw.ScanTasks(line, f.watching()) {
 		switch ev.Kind {
 		case harness.TaskSession:
 			f.mu.Lock()
@@ -187,6 +189,13 @@ func (f *outputFollower) scan(line []byte) {
 			f.mu.Unlock()
 		}
 	}
+}
+
+// watching reports whether a command is followed or queued.
+func (f *outputFollower) watching() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.current != nil || len(f.queue) > 0
 }
 
 // start follows a command that started, or queues it while another is

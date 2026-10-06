@@ -53,6 +53,7 @@ func TestScanTasks(t *testing.T) {
 		}},
 		{"a prompt as a plain string", `{"type":"user","message":{"role":"user","content":"tool_result"}}`, nil},
 		{"another system event", `{"type":"system","subtype":"task_updated","task_id":"b578qoc1g"}`, nil},
+		{"a system event of no task", `{"type":"system","subtype":"api_retry","attempt":1}`, nil},
 		{"an assistant turn", `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01",` +
 			`"name":"Bash","input":{"command":"go test ./..."}}]}}`, nil},
 		{"the result", `{"type":"result","subtype":"success","session_id":"` + session + `"}`, nil},
@@ -61,12 +62,45 @@ func TestScanTasks(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Without a command to answer, a line yields what it would
+			// otherwise, its answers aside.
+			var unanswered []TaskEvent
+			for _, ev := range tt.want {
+				if ev.Kind != TaskAnswered {
+					unanswered = append(unanswered, ev)
+				}
+			}
 			for _, h := range []TaskWatcher{NewClaude(), NewFake()} {
-				if got := h.ScanTasks([]byte(tt.line)); !reflect.DeepEqual(got, tt.want) {
-					t.Errorf("%T.ScanTasks = %+v, want %+v", h, got, tt.want)
+				if got := h.ScanTasks([]byte(tt.line), true); !reflect.DeepEqual(got, tt.want) {
+					t.Errorf("%T.ScanTasks(answers) = %+v, want %+v", h, got, tt.want)
+				}
+				if got := h.ScanTasks([]byte(tt.line), false); !reflect.DeepEqual(got, unanswered) {
+					t.Errorf("%T.ScanTasks(no answers) = %+v, want %+v", h, got, unanswered)
 				}
 			}
 		})
+	}
+}
+
+// TestScanTasksPassesOverWithoutADecode: the runner's reading goroutine
+// hands every stream line to ScanTasks, so a line that cannot carry a
+// command event costs no decode: a tool result while no command waits on
+// its answer, and any line naming neither init nor a task.
+func TestScanTasksPassesOverWithoutADecode(t *testing.T) {
+	c := NewClaude()
+	for _, line := range []string{
+		lineToolResults,
+		`{"type":"system","subtype":"api_retry","attempt":1}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"Reading."}]}}`,
+	} {
+		b := []byte(line)
+		if allocs := testing.AllocsPerRun(50, func() { c.ScanTasks(b, false) }); allocs != 0 {
+			t.Errorf("ScanTasks(%.50s, no answers) allocates %.0f times, want none: no decode", line, allocs)
+		}
+	}
+	b := []byte(lineToolResults)
+	if allocs := testing.AllocsPerRun(10, func() { c.ScanTasks(b, true) }); allocs == 0 {
+		t.Error("ScanTasks of a tool result with answers wanted did not decode it")
 	}
 }
 

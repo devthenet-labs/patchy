@@ -172,8 +172,12 @@ type TaskWatcher interface {
 	// ScanTasks returns the command events one stream line carries, in
 	// order, or nil for a line that carries none. Only foreground shell
 	// commands are reported started: a backgrounded one outlives the call
-	// that ran it, and other task types write no output file.
-	ScanTasks(line []byte) []TaskEvent
+	// that ran it, and other task types write no output file. answers says
+	// whether the caller has a command whose tool call may still be
+	// answered; without one, a tool result is passed over undecoded, as is
+	// every line that cannot carry a command event: the caller runs this on
+	// every line of the stream.
+	ScanTasks(line []byte, answers bool) []TaskEvent
 	// TaskOutputGlob returns the filepath.Glob pattern matching the file a
 	// running command's output is written to, for command task of session,
 	// run by a CLI with environment env (its effective one: the last

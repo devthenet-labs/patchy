@@ -857,6 +857,30 @@ func TestOutputQueueIsBounded(t *testing.T) {
 	}
 }
 
+// TestOutputScanIsCheapWhenIdle: the observer hands the follower every line
+// of the CLI's stream on the runner's reading goroutine. A tool result can
+// only end a command followed or queued, so with none it is passed over
+// without a decode, as is every line that carries no command event.
+func TestOutputScanIsCheapWhenIdle(t *testing.T) {
+	cfg, ws, _, _ := outputSetup(t)
+	a := New(cfg, &commandExec{ws: ws})
+	f := a.followOutput(context.Background(), harness.NewFake(), runner.CommandSpec{}, nil)
+	f.scan([]byte(initLine()))
+	for _, line := range []string{
+		answeredLine("toolu_1", "ok  ./..."),
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"Reading."}]}}`,
+		`{"type":"system","subtype":"api_retry","attempt":1}`,
+		resultLine,
+	} {
+		b := []byte(line)
+		if allocs := testing.AllocsPerRun(50, func() { f.scan(b) }); allocs != 0 {
+			t.Errorf("scan(%.50s) with nothing followed allocates %.0f times a line, want none: no decode",
+				line, allocs)
+		}
+	}
+	f.end()
+}
+
 // TestOutputEndWaitsForTheLastChunk: once a run's end has returned, every
 // command it followed has printed its last chunk and nothing more is
 // printed, so the stage's result is the last line.

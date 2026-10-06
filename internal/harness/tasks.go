@@ -50,7 +50,9 @@ type claudeTaskEvent struct {
 
 // ScanTasks reads the command events off one stream-json line; see
 // scanStreamTasks.
-func (c *Claude) ScanTasks(line []byte) []TaskEvent { return scanStreamTasks(line) }
+func (c *Claude) ScanTasks(line []byte, answers bool) []TaskEvent {
+	return scanStreamTasks(line, answers)
+}
 
 // TaskOutputGlob is where claude writes a running command's output; see
 // taskOutputGlob.
@@ -58,20 +60,24 @@ func (c *Claude) TaskOutputGlob(env []string, uid int, session, task string) str
 	return taskOutputGlob(env, uid, session, task)
 }
 
-// Markers a line must hold to carry a command event: every system event
-// is one candidate, and a user event only when it answers a tool call.
+// Markers a line must hold to carry a command event: a system event whose
+// subtype is init or a task's, and a user event only when it answers a tool
+// call. A line holding one is only a candidate; the decode decides.
 var (
-	markSystem     = []byte(`"system"`)
+	markInit       = []byte(`"init"`)
+	markTask       = []byte(`"task_`)
 	markToolResult = []byte(`"tool_result"`)
 )
 
 // scanStreamTasks projects one stream-json line onto the command events: the
 // init event's session, a foreground local_bash command's start, a command's
-// end, and the tool calls a user event answers. Every other line, a
-// backgrounded command and every other task type among them, yields nothing.
-// A line that cannot hold one is passed over without a decode.
-func scanStreamTasks(line []byte) []TaskEvent {
-	if !bytes.Contains(line, markSystem) && !bytes.Contains(line, markToolResult) {
+// end, and, when answers is set, the tool calls a user event answers. Every
+// other line, a backgrounded command and every other task type among them,
+// yields nothing. A line that cannot hold one is passed over without a
+// decode, and so is a tool result when answers is not set.
+func scanStreamTasks(line []byte, answers bool) []TaskEvent {
+	if !bytes.Contains(line, markTask) && !bytes.Contains(line, markInit) &&
+		(!answers || !bytes.Contains(line, markToolResult)) {
 		return nil
 	}
 	var ev claudeTaskEvent
@@ -95,6 +101,9 @@ func scanStreamTasks(line []byte) []TaskEvent {
 			}
 		}
 	case "user":
+		if !answers {
+			return nil
+		}
 		var out []TaskEvent
 		for _, b := range ev.Message.Content {
 			if b.Type == "tool_result" && b.ToolUseID != "" {

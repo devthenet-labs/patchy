@@ -215,3 +215,25 @@ version 4. Stage outcomes are `ok`, `runtime_error`, `timeout`, `budget_exceeded
 `commit_failed`, and `changeset_too_large` — only `ok` carries a trusted report. On claude, `report_missing` and
 `report_invalid` come only after the [report repair](#report-repair) failed. A fatal error also exits 2 so the Job is
 marked failed for the controller's orphan handling.
+
+## Live command output
+
+While a claude stage runs a foreground shell command, agent-runner prints the command's output as it is produced, as
+`PATCHY-OUTPUT:` lines beside the transcript's `PATCHY-TURN:` lines, so a viewer following the pod log can watch a long
+test suite while it runs rather than only when its tool result arrives. It reads the file the claude CLI keeps a running
+command's output in (under `CLAUDE_CODE_TMPDIR`, `/tmp` by default). A backgrounded command is not followed, and codex
+and copilot stages print none.
+
+A line is shown as a terminal would show it, the text after its last carriage return, so a progress bar shows its latest
+state. Escape sequences are stripped, the pod's credentials and the broker caller token are redacted as in the
+transcript, and the line is cut at 1 KiB. Lines go out in chunks about every half second. The volume is bounded, since
+the same pod log must also carry the stage result, which can run to several MiB; the bounds are fixed, not configurable:
+
+| Bound                      | Limit                    | Past it                                                                          |
+| -------------------------- | ------------------------ | -------------------------------------------------------------------------------- |
+| One command                | 256 KiB at full fidelity | Its newest 10 lines every 5 seconds, under their own line numbers so a gap shows |
+| One agent-runner, in total | 1 MiB                    | One last chunk marks the command truncated, then nothing more is printed         |
+
+The output is live only. No controller keeps it: the persisted transcript and the stage result are exactly what they
+would be without it. It is also not progress to the [idle watchdog](#the-idle-watchdog) and not spend against the token
+budget; both read the CLI's own stream alone.

@@ -45,9 +45,10 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   Jobs, changeset push + PR via the forge write seam (the finding flow's only write credential), and hosts the
   rollup/TTL loop.
 - `cmd/agent-runner` — the in-pod coding-agent runtime: one stage per Job (`investigate` or `remediate`) via
-  `claude -p`, results emitted as a `PATCHY-EVENT:` JSONL stream on stdout. Never talks to GitHub or the
-  Kubernetes API; a claude pod holds no credential at all (model traffic goes through the egress broker,
-  authenticated by a projected SA token read fresh per stage), a codex/copilot pod only its model key.
+  `claude -p`, results emitted as a `PATCHY-EVENT:` JSONL stream on stdout, beside the `PATCHY-TURN:` transcript and the
+  live, never-persisted `PATCHY-OUTPUT:` command output. Never talks to GitHub or the Kubernetes API; a claude pod holds
+  no credential at all (model traffic goes through the egress broker, authenticated by a projected SA token read fresh
+  per stage), a codex/copilot pod only its model key.
 - `cmd/egress-broker` — the egress credential broker (NOT a controller: no reconcilers, no leases): the reverse
   proxy all claude model traffic goes through, one route per provider (anthropic — key or `claude setup-token`
   bearer via `--anthropic-auth` — plus bedrock SigV4, vertex OAuth, foundry key/entra). Validates caller
@@ -264,7 +265,10 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   others at v4); `agentresult` converts envelope results onto CR status (`FromPlan` re-derives a plan from its
   report). A missing or refused report is first repaired in the agent's own session (`repair.go`: the optional
   `harness.Resumer`, claude and fake only; at most 2 bounded rounds; one transcript per stage; a writable stage's
-  clone fingerprinted so a repair may change only the report and commit.sh).
+  clone fingerprinted so a repair may change only the report and commit.sh). A running foreground command's output is
+  printed live as `PATCHY-OUTPUT:` chunks (`output.go`: read from the file the CLI keeps it in, via the optional
+  `harness.TaskWatcher`; bounded per command and per process by constants; never persisted, never a turn, never
+  idle-watchdog progress; `jobs.scanLog` skips it), and one lock serialises every stdout line.
 - `jobs` — the Kubernetes Job the agent runs in. The isolation model lives here, and it STRENGTHENED with the
   broker: a brokered (claude) pod holds no credential of any kind — its projected SA token (audience-bound,
   agent container only, never the init) is an identity document, not a capability; its fixed, non-secret

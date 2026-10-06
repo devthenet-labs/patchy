@@ -1205,18 +1205,21 @@ func TestOutputNeverShowsAnOverlongLine(t *testing.T) {
 // cap holds before and after a secret, and wherever the secret sits in it,
 // no chunk shows any piece of the secret 8 bytes long.
 func TestOutputSecretsAroundTheCapProperty(t *testing.T) {
-	fillers := []string{"a", "z", " ", "é", "-", "\x1b[0m", "\x1b[1;31m"}
+	plain := []string{"a", "z", " ", "é", "-"}
+	// The last three are malformed: stripping takes the byte after them as
+	// their final, which may be the secret's first.
+	escapes := []string{"\x1b[0m", "\x1b[1;31m", "\x1b", "\x1b[", "\x1b[1"}
 	property := func(seed int64) bool {
 		r := rand.New(rand.NewSource(seed))
 		secret := secretOf(r, 8+r.Intn(1200))
-		escapes := r.Float64() // how much of the filler is escape sequences
+		share := r.Float64() // how much of the filler is escape sequences
 		fill := func(n int) string {
 			var b strings.Builder
 			for b.Len() < n {
-				if r.Float64() < escapes {
-					b.WriteString(fillers[5+r.Intn(2)])
+				if r.Float64() < share {
+					b.WriteString(escapes[r.Intn(len(escapes))])
 				} else {
-					b.WriteString(fillers[r.Intn(5)])
+					b.WriteString(plain[r.Intn(len(plain))])
 				}
 			}
 			return b.String()
@@ -1240,6 +1243,30 @@ func TestOutputSecretsAroundTheCapProperty(t *testing.T) {
 	cfg := &quick.Config{MaxCount: 300, Rand: rand.New(rand.NewSource(20261007))}
 	if err := quick.Check(property, cfg); err != nil {
 		t.Error(err)
+	}
+}
+
+// TestOutputScrubsAroundBrokenEscapes: a secret printed straight after a
+// bare ESC or a malformed escape sequence loses its first byte to stripping,
+// taken as the sequence's final, so a scrub after stripping alone would miss
+// it; none of it is shown. A secret split by escape codes, whole only once
+// they are stripped, is still scrubbed.
+func TestOutputScrubsAroundBrokenEscapes(t *testing.T) {
+	secret := secretOf(rand.New(rand.NewSource(20261009)), 40)
+	tests := []struct{ name, line string }{
+		{"after a malformed CSI", "token: \x1b[" + secret},
+		{"after a bare ESC", "\x1b" + secret},
+		{"after a CSI's parameter", "\x1b[1" + secret},
+		{"split by escape codes", "token: " + secret[:3] + "\x1b[0m" + secret[3:20] + "\x1b[1;31m" + secret[20:]},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, content := range []string{tt.line + "\n", tt.line} { // ended, and the output's last
+				if piece := leaked(streamed(t, []string{secret}, content), secret); piece != "" {
+					t.Errorf("%q: a chunk shows %q of the secret", content, piece)
+				}
+			}
+		})
 	}
 }
 
@@ -1391,6 +1418,7 @@ func TestOutputClean(t *testing.T) {
 		{"escapes", "\x1b[1;32mok\x1b[0m done", "ok done", false},
 		{"invalid utf-8", "bad \xff\xfe bytes", "bad \uFFFD bytes", false},
 		{"a secret", "token=SECRETVALUE1;", "token=" + transcript.Redacted + ";", false},
+		{"a secret split by escapes", "token=SEC\x1b[0mRETVALUE1;", "token=" + transcript.Redacted + ";", false},
 		{"at the cap", strings.Repeat("a", outputLineBytes), strings.Repeat("a", outputLineBytes), false},
 		{"over the cap", strings.Repeat("a", 2000), strings.Repeat("a", outputLineBytes-3) + "…", false},
 		{"over the cap, mid-rune", strings.Repeat("漢", 400), strings.Repeat("漢", 340) + "…", false},

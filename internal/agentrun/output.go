@@ -397,16 +397,24 @@ func openOutputFile(pattern string) *os.File {
 	return nil
 }
 
-// clean is one raw line as it is shown: its terminal escapes stripped, made
-// valid UTF-8, the run's secrets scrubbed out, and capped at outputLineBytes,
-// a cut marked with an ellipsis. A line the splitter cut (over) is shown as
-// outputOverlong alone: what was held of it was cut before it was stripped
-// or scrubbed.
+// clean is one raw line as it is shown: the run's secrets scrubbed out, its
+// terminal escapes stripped, made valid UTF-8, scrubbed again, and capped at
+// outputLineBytes, a cut marked with an ellipsis. The scrub before stripping
+// catches a secret printed straight after a bare ESC or a malformed escape
+// sequence, whose first byte stripping takes as the sequence's final; the
+// one after catches a secret split by escape codes. A secret a command
+// prints in pieces on purpose, such as split by a carriage return so the
+// line shows only its last piece, is not caught: like the transcript
+// recorder's, the scrub guards against exposing a secret by accident, not
+// against a command hiding one from it. A line the splitter cut (over) is
+// shown as outputOverlong alone: what was held of it was cut before it was
+// stripped or scrubbed.
 func (f *outputFollower) clean(raw []byte, over bool) string {
 	if over {
 		return outputOverlong
 	}
-	text := strings.ToValidUTF8(string(ansi.Strip(raw)), "�")
+	text := transcript.Scrub(string(raw), f.secrets)
+	text = strings.ToValidUTF8(string(ansi.Strip([]byte(text))), "�")
 	text = transcript.Scrub(text, f.secrets)
 	if len(text) > outputLineBytes {
 		text, _ = transcript.Truncate(text, outputLineBytes-len(outputEllipsis))

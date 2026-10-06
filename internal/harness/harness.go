@@ -156,6 +156,19 @@ type TurnScanner interface {
 	ScanTurns(line []byte) []transcript.Turn
 }
 
+// Resumer is the optional capability of continuing a session an earlier run
+// left behind, with one more prompt. agentrun uses it to have the agent that
+// wrote a report patchy refused repair it in the same conversation, which
+// still holds everything it did. A harness without it has no repair.
+type Resumer interface {
+	// ResumeSpec builds the headless command that continues session
+	// sessionID in workspace ws with req.Prompt as the next message, under
+	// the rest of req exactly as PromptSpec renders it: model, turn cap,
+	// sandbox posture, directories, environment. req.SessionID is ignored;
+	// sessionID names the session.
+	ResumeSpec(ws, sessionID string, req PromptRequest) runner.CommandSpec
+}
+
 // All returns the builtin harness set.
 func All() []Harness {
 	return []Harness{NewClaude(), NewCodex(), NewCopilot(), NewFake()}

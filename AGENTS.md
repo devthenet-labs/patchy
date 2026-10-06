@@ -147,7 +147,10 @@ e2e/                SEPARATE Go module: envtest carries the CRDs, the real binar
                     Finding Jobs never run there; the intent tests register a fake kubelet
                     (kubelet_test.go) that runs hack/fake-agent for run-kind=intent Jobs (staging
                     the working tree, a plan Job's trees and the handoff as the prepare init
-                    does), beside an in-memory OCI registry (registry_test.go) serving the
+                    does) — or, for the phases a test opts into (useAgentRunner), the real
+                    agent-runner driving hack/fake-agent/claude, a scripted claude CLI, so
+                    in-pod behaviour such as report repair runs end to end — beside an
+                    in-memory OCI registry (registry_test.go) serving the
                     repository runner image. fakegithub's refs and PR listings are per
                     repository, so intent_multirepo_test.go runs multi-repository intents end to
                     end; cluster.stoppableController restarts a binary with other flags.
@@ -244,7 +247,9 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   reuse investigate's and remediate's configuration and helpers and run on brokered claude only);
   `report`/`envelope` are its contracts (frontmatter schemas in, JSONL events out — a `plan` event beside the
   others at v4); `agentresult` converts envelope results onto CR status (`FromPlan` re-derives a plan from its
-  report).
+  report). A missing or refused report is first repaired in the agent's own session (`repair.go`: the optional
+  `harness.Resumer`, claude and fake only; at most 2 bounded rounds; one transcript per stage; a writable stage's
+  clone fingerprinted so a repair may change only the report and commit.sh).
 - `jobs` — the Kubernetes Job the agent runs in. The isolation model lives here, and it STRENGTHENED with the
   broker: a brokered (claude) pod holds no credential of any kind — its projected SA token (audience-bound,
   agent container only, never the init) is an identity document, not a capability; its fixed, non-secret

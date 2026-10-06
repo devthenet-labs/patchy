@@ -68,6 +68,36 @@ in the GitHub comment that shows it for approval. The build report and the build
 only: the build report is recorded on its run, patchy renders the pull request's description from the approved plan, and
 the tool output a build quotes routinely aligns its columns past the plan's bounds.
 
+## Report repair
+
+A stage whose report is missing, or refused by its parser (any rule above, and a plan naming a repository outside its
+manifest), is not given up at once on claude or the fake harness. agent-runner asks the agent that wrote the report to
+repair it in the same session. It resumes the session the run left under `HOME` (`claude -p --resume <id>`, from the
+same working directory, with every flag the first run had, so a plan stays read-only) with one message: patchy's fixed
+text and the refusal reason, quoted as data in a fence. The message asks for the report alone, and asks for an untrue
+claim (tests that failed, a step not built) to be corrected rather than hidden.
+
+- At most **2 rounds**, each of at most **6 turns** and **10 minutes**, and never more than the stage has left of its
+  turns, output tokens (its token budget or grant) and wall clock (its `_TIMEOUT`). No round starts with less than **2
+  minutes** of the wall clock left, with no turns or output tokens left, or after the stage is cancelled. These are
+  constants: no configuration key exists for them.
+- The output-token kill switch and the idle watchdog apply to a repair run as they do to the first. The broker token is
+  read afresh for it and registered with the transcript scrubber.
+- All the runs of a stage write one transcript: a repair's turns follow the first run's, after a notice saying why it
+  was asked for.
+- A repair's spend is added to the stage's. Its tokens, turns and time are summed, since a resumed claude run reports
+  its own. Its `total_cost_usd` is not, since claude reports that cumulatively over the session: the repair's tokens are
+  priced at the model's rates and added to the cost the first run reported.
+- On `remediate` and `build`, which write the working tree, a repair may change only the report and `commit.sh`. The
+  clone is fingerprinted around each round (`HEAD`, what is staged, and every working file that is not ignored), and a
+  repair that changed any of it is refused whole: the stage ends `report_invalid`, with the original reason followed by
+  `(repair refused in round N: it changed the working tree: <paths>, …)`.
+- A report still refused after the rounds ends the stage as before, `report_missing` or `report_invalid`, with the last
+  reason followed by how the repair went: `(not repaired in 2 rounds)`, how the last repair run ended when it did not
+  end `ok`, or why no round ran, such as `(not repaired: less than 2m of the stage's 1m wall clock left)`.
+
+codex and copilot cannot resume a session, so a stage on them ends on the first refusal, exactly as before.
+
 ## Stage configuration
 
 Mirrors of the controllers' stage flags: `PATCHY_INVESTIGATE_TIMEOUT` (`15m`), `PATCHY_INVESTIGATE_IDLE_TIMEOUT`
@@ -173,5 +203,6 @@ Progress and results are emitted as one JSON object per line, prefixed `PATCHY-E
 tails the pod log and applies them. The event types are `investigation`, `remediation` (a fix or an intent build),
 `plan` (an intent plan, carrying the report byte-exact beside its parsed frontmatter) and `fatal`, all at envelope
 version 4. Stage outcomes are `ok`, `runtime_error`, `timeout`, `budget_exceeded`, `report_missing`, `report_invalid`,
-`commit_failed`, and `changeset_too_large` — only `ok` carries a trusted report. A fatal error also exits 2 so the Job
-is marked failed for the controller's orphan handling.
+`commit_failed`, and `changeset_too_large` — only `ok` carries a trusted report. On claude, `report_missing` and
+`report_invalid` come only after the [report repair](#report-repair) failed. A fatal error also exits 2 so the Job is
+marked failed for the controller's orphan handling.

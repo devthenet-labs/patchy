@@ -382,6 +382,10 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
      and output sanitisation") refuses padding and stacked combining marks, with where they start. The build report
      follows the visible-text rule but not the layout rule: no approver reads it in a code block, and patchy renders the
      pull request's description itself.
+   - A report the pod refuses for any of these rules, or does not find, is first repaired: agent-runner asks the agent,
+     in its own session, to fix it, for at most two rounds within what the stage has left, and a build's repair may
+     change nothing in the working tree. Only a report still refused reaches the controller as `report_invalid` or
+     `report_missing` (agent-runner's "Report repair").
    - Reject a plan that names repositories outside the Project.
    - Store the raw report in the immutable ConfigMap `<intent>-plan-r1`. Its digest is the sha256 of those bytes.
    - Delete the plan Repository.
@@ -621,7 +625,8 @@ The body is at most 48 KiB: approach, per-repo steps, test plan and risks. The w
 that every plan `report.ParsePlan` accepts fits in its approval comment: GitHub caps a comment at 65,536 characters, and
 the comment's header repeats the summary and the new dependencies above the plan (hence their byte bound) and fences the
 plan one backtick longer than its longest run (hence no run of more than 16 backticks). A plan too large to show for
-approval is therefore `report_invalid` in the pod, where a retry is told why, rather than refused once recorded.
+approval is therefore refused in the pod, where the planner is first asked to repair it in its own session and a retry
+of a plan still refused (`report_invalid`) is told why, rather than refused once recorded.
 
 The plan is read in a code block, which GitHub does not wrap, so its layout is bounded too: no gap of more than 16
 columns of blank characters before more text on a line (a tab counts as 8, and any blank character but a space as 2), no
@@ -922,8 +927,9 @@ preview image path prefix.
 - **agent-runner.**
   - When the manifest exists, it checks every listed directory before any agent runs; a missing one is fatal.
   - It renders the plan prompt's trees section.
-  - After `ParsePlan`, a plan naming a repository outside the manifest is `report_invalid`, and the retry is told why.
-    The controller's `outsideProject` check stays.
+  - After `ParsePlan`, a plan naming a repository outside the manifest is refused like any invalid report: the planner
+    is asked to repair it in its own session, and one still naming such a repository is `report_invalid`, and the retry
+    is told why. The controller's `outsideProject` check stays.
 - **Prompt.** `PlanPrompt.Trees` is rendered under `{{with}}`, so one-repository prompts are byte-identical. It says:
   - each repository is built separately, by its own agent, in its own image, and that agent sees only its own tree and
     the whole plan;

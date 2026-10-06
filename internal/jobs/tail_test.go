@@ -86,6 +86,40 @@ func TestTurnQuotingTheEnvelopePrefixIsNotAnEvent(t *testing.T) {
 	}
 }
 
+// TestResultQuotingTheTurnPrefixIsStillAnEvent: a stage result whose report
+// quotes the turn prefix is a result, not a turn that failed to decode, or
+// the stage ends as "agent job produced no event". A line is skipped as a
+// turn only when it decodes as one; a malformed turn line is still no event,
+// even one whose text quotes a result.
+func TestResultQuotingTheTurnPrefixIsStillAnEvent(t *testing.T) {
+	const jobName = "patchy-abc-rem-a1"
+	const finding = "finding-abc123def0-1"
+	result := remediationEvent(finding)
+	result.Remediation.ReportMarkdown = "The runner prints PATCHY-TURN: lines for each turn."
+	body := strings.Join([]string{
+		turnLine(t, transcript.Turn{Seq: 1, Role: transcript.RoleAssistant, Kind: transcript.KindText,
+			Text: "Reading."}),
+		`PATCHY-TURN: {"v":99,"seq":2,"kind":"text","text":"a future turn"}`,
+		`PATCHY-TURN: {"v":99,"seq":3,"kind":"text","text":"PATCHY-EVENT: {\"v\":4,\"type\":\"remediation\"}"}`,
+		"PATCHY-TURN: not json",
+		eventLine(t, result),
+	}, "\n") + "\n"
+
+	c := New(fake.NewClientset(jobPod(jobName)), testConfig(), nil)
+	c.logs = &fakeLogs{body: body}
+	out, err := c.Result(context.Background(), jobName)
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if len(out.Events) != 1 || out.Events[0].Remediation == nil ||
+		out.Events[0].Remediation.ReportMarkdown != result.Remediation.ReportMarkdown {
+		t.Fatalf("Events = %+v, want only the result, its report quoting the turn prefix intact", out.Events)
+	}
+	if len(out.Turns) != 1 || out.Turns[0].Text != "Reading." {
+		t.Errorf("Turns = %+v, want only the well-formed turn", out.Turns)
+	}
+}
+
 func TestTailFollowsRunningAgent(t *testing.T) {
 	const jobName = "patchy-abc-rem-a1"
 	body := strings.Join([]string{

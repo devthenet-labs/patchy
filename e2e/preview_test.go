@@ -282,6 +282,106 @@ func TestPreviewTargetHealthRuntime(t *testing.T) {
 		return cl.client.Get(ctx, client.ObjectKeyFromObject(p), &current) == nil &&
 			current.Status.Phase == v1alpha1.PreviewReady && current.Status.URL != ""
 	})
+
+	// A revision round pushes a new PR head whose runtime image the app's CI
+	// has not published yet. The API server stores the rolling strategy, so
+	// the Deployment controller keeps the serving Pod until the new one is
+	// available; the Ingress stays; and the Preview reports the redeploy:
+	// Deploying at the new head, with no URL.
+	head := strings.Repeat("b", 40)
+	headImage := "registry.example/patchy/previews/demo:sha-" + head
+	if err := cl.client.Get(ctx, client.ObjectKeyFromObject(in), in); err != nil {
+		t.Fatal(err)
+	}
+	in.Status.PullRequests[0].HeadSHA = head
+	if err := cl.client.Status().Update(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.client.Get(ctx, client.ObjectKeyFromObject(p), p); err != nil {
+		t.Fatal(err)
+	}
+	p.Spec.Components[0].Revision = head
+	if err := cl.client.Update(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "a rolling redeploy to the new head, reported as Deploying", func() bool {
+		if cl.client.Get(ctx, key, &dep) != nil || cl.client.Get(ctx, client.ObjectKeyFromObject(p), &current) != nil {
+			return false
+		}
+		rolling := dep.Spec.Strategy.RollingUpdate
+		return dep.Spec.Template.Spec.Containers[0].Image == headImage &&
+			dep.Spec.Strategy.Type == appsv1.RollingUpdateDeploymentStrategyType && rolling != nil &&
+			rolling.MaxSurge != nil && rolling.MaxSurge.IntValue() == 1 &&
+			rolling.MaxUnavailable != nil && rolling.MaxUnavailable.IntValue() == 0 &&
+			current.Status.Phase == v1alpha1.PreviewDeploying && current.Status.URL == "" &&
+			current.Status.ObservedRevision == head
+	})
+	if err := cl.client.Get(ctx, key, &ingress); err != nil {
+		t.Fatalf("Ingress withdrawn by a redeploy with target health on: %v", err)
+	}
+	next := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "preview-demo-1-next", Namespace: key.Namespace,
+		Labels: dep.Spec.Template.Labels}, Spec: dep.Spec.Template.Spec}
+	next.Spec.ReadinessGates = []corev1.PodReadinessGate{{ConditionType: gate}}
+	if err := cl.client.Create(ctx, next); err != nil {
+		t.Fatal(err)
+	}
+	// setNext plays the kubelet and the load balancer on the new Pod, and the
+	// Deployment controller counting replicas: while the image is not
+	// published, the old Pod is the one available beside the waiting new one;
+	// once it is pulled and its target healthy, the old one is scaled down.
+	setNext := func(pulled bool) {
+		t.Helper()
+		next.Status.Phase = corev1.PodPending
+		next.Status.Conditions = []corev1.PodCondition{
+			{Type: corev1.PodReady, Status: corev1.ConditionFalse}, {Type: gate, Status: corev1.ConditionFalse}}
+		next.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "demo", Image: headImage,
+			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff"}}}}
+		replicas := int32(2)
+		if pulled {
+			next.Status.Phase = corev1.PodRunning
+			next.Status.Conditions = []corev1.PodCondition{
+				{Type: corev1.PodReady, Status: corev1.ConditionTrue}, {Type: gate, Status: corev1.ConditionTrue}}
+			next.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "demo", Image: headImage, Ready: true,
+				ImageID: "repo@sha256:456", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}
+			replicas = 1
+		}
+		if err := cl.client.Status().Update(ctx, next); err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, "the Deployment's rollout status", func() bool {
+			if cl.client.Get(ctx, key, &dep) != nil {
+				return false
+			}
+			dep.Status.ObservedGeneration = dep.Generation
+			dep.Status.Replicas, dep.Status.UpdatedReplicas = replicas, 1
+			dep.Status.ReadyReplicas, dep.Status.AvailableReplicas = 1, 1
+			return cl.client.Status().Update(ctx, &dep) == nil
+		})
+	}
+	setNext(false)
+	time.Sleep(3 * time.Second) // several one-second polls while the image is being published
+	if err := cl.client.Get(ctx, client.ObjectKeyFromObject(p), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.Phase != v1alpha1.PreviewDeploying || current.Status.Retries != 0 || current.Status.URL != "" {
+		t.Fatalf("status = %+v while the new head's image is not published, want Deploying with no retry",
+			current.Status)
+	}
+	if err := cl.client.Get(ctx, key, &appsv1.Deployment{}); err != nil {
+		t.Fatalf("Deployment gone while the previous revision served: %v", err)
+	}
+	setNext(true)
+	eventually(t, "Ready at the new head once its target is healthy", func() bool {
+		return cl.client.Get(ctx, client.ObjectKeyFromObject(p), &current) == nil &&
+			current.Status.Phase == v1alpha1.PreviewReady && current.Status.URL != "" &&
+			len(current.Status.Components) == 1 && current.Status.Components[0].Revision == head &&
+			current.Status.Components[0].ImageID == "repo@sha256:456"
+	})
+	// envtest has no Deployment controller or garbage collector to remove
+	// the old revision's Pod or, later, the new one.
+	if err := cl.client.Delete(ctx, next); err != nil {
+		t.Fatal(err)
+	}
 	if err := cl.client.Delete(ctx, pod); err != nil {
 		t.Fatal(err)
 	}

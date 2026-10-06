@@ -44,9 +44,10 @@ owner's first sign-in (one "Authorize" click at GitHub) is still to do. Anonymou
 CSP and HSTS are set; the webhook and previews were checked after each step.
 
 Live test intent: preview-demo-15 (intents#15) planned, built, opened PR #11, had its changelog fixed by an automatic
-CI-fix round, and merged ($0.72); its preview stayed Queued because both slots were in use. Open for the owner:
-Hello.Web#2 (hello-web-13) and overdub#2 (overdub-12, $9.48 of its $10 ceiling, preview live, checks green after a
-re-run of the known-flaky studio test).
+CI-fix round, and merged
+($0.72); its preview stayed Queued because both slots were in use. Open for the owner:
+Hello.Web#2 (hello-web-13) and overdub#2 (overdub-12, $9.48
+of its $10 ceiling, preview live, checks green after a re-run of the known-flaky studio test).
 
 **0.12.18 released, deployed and fresh-Finding gated.** PR #122 added operator-defined agent resource classes and fast
 failure for unschedulable Jobs, with fixes for durable run outcomes and public eviction messages. Its local `make pr`
@@ -110,15 +111,16 @@ fix.
 
 **First live preview demo: PASSED (2026-10-03).** The owner opened intent `devthenet-labs/intents#4` ("Hello from
 patchy", teal card) with the preview-demo form. An approve label added before the plan existed was correctly ignored and
-removed when the plan was posted (80 s, $0.26); the owner re-approved after reading it. The build (100 s) opened
+removed when the plan was posted (80 s,
+$0.26); the owner re-approved after reading it. The build (100 s) opened
 `devthenet-labs/patchy-preview-demo#7`; the PR CI built the runtime image, the trusted publisher pushed it, and the
 Preview reached Ready in ~170 s (cold preview node `t3a.medium` from zero) at
 `https://preview-demo-4.preview.patchy.devthe.net`, serving the PR head SHA. The owner's "Request changes" review
-(purple) started a revision round after the quiet window ($0.24), a fast-forward push (`e2256900`, parent `3ffe8b96`),
-and the Preview redeployed at the new head in ~160 s (one brief empty response during the ALB target switch). After the
-owner merged: Intent Merged (merge `0f6d1a94`), issue closed completed, Preview and slot workloads deleted within ~10 s,
-the preview node terminated ~40 s later (pool resources all zero), and the old host returns 404. Total agent cost for
-the intent: $0.81.
+(purple) started a revision round after the quiet window ($0.24),
+a fast-forward push (`e2256900`, parent `3ffe8b96`), and the Preview redeployed at the new head in ~160 s (one brief
+empty response during the ALB target switch). After the owner merged: Intent Merged (merge `0f6d1a94`), issue closed
+completed, Preview and slot workloads deleted within ~10 s, the preview node terminated ~40 s later (pool resources all
+zero), and the old host returns 404. Total agent cost for the intent: $0.81.
 
 **Fresh-Finding gate after enabling previews: PASSED.** Weak-key alert #38 → `finding-514becf18f-13` → issue #69 →
 `/patchy expedite` → PR #70 (pushedCommit = PR head `1c553a4c`), checks green, merged `4a3dd6f0` → Remediated, issue
@@ -424,9 +426,11 @@ setting. The standing permission for these run approvals is recorded below; it d
 
 Slice 1a/1b code is merged and live on **0.12.6**, patchy revision **33**, patchy-config revision **19**, intents
 enabled. PR #65 fixed PR-comment permissions and durable notices; the missing round-1 notice on target PR #46 was
-recovered exactly once. The new human review completed a successful revision ($0.295620), the owner merged PR #46,
+recovered exactly once. The new human review completed a successful revision
+($0.295620), the owner merged PR #46,
 target-2 reached Merged, and intents issue #2 closed as completed with one summary. Its total reported cost was
-$1.150306. The automatic check-fix path remains **unexercised live**: the revision's checks passed on its first push.
+$1.150306.
+The automatic check-fix path remains **unexercised live**: the revision's checks passed on its first push.
 
 The post-demo fresh-Finding gate passed: alert 30, `finding-514becf18f-5`, issue #53, repair PR #54, merge
 `bf707b46c24c68889288e6b3d91e1709ffaef247`. Go/CodeQL checks were green, the Finding reached Remediated with its merge

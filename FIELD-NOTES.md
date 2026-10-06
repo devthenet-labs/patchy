@@ -86,8 +86,10 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
   while polling it. So one long command does not trip the 20-minute idle watchdog. Docs: an agent can leave a long
   command running; patchy: nothing to change.
 - **On the large class, overdub's build behaved** (overdub-12 attempt 2): 38 s for the transport browser test, about a
-  minute for the 11-suite CI subset, $3.56 and about 37 minutes, most of it fitting the new toggle into the transport
-  bar at 1280/1366/1440 px. Auto Mode picked a `c6a.2xlarge` in under a minute. The intent's total was $9.48 of its $10
+  minute for the 11-suite CI subset,
+  $3.56 and about 37 minutes, most of it fitting the new toggle into the transport
+  bar at 1280/1366/1440 px. Auto Mode picked a `c6a.2xlarge` in under a minute. The intent's total was $9.48
+  of its $10
   ceiling (plan $2.22, two builds).
 - **Hello.Web is the quick demo** (hello-web-13, 2026-10-06). "Greet visitors by time of day on a styled card": plan
   $0.47 (3.5 minutes), build $0.42, PR about 7 minutes after filing, preview Ready about 3 minutes later, serving the
@@ -130,13 +132,14 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
   failed writes and failed deletes.
 
 - **A timed-out run records no usage, so the cost ceiling cannot see it** (overdub-10, 2026-10-04). The second build
-  attempt timed out after an hour; its run status has no usage, so the intent reports $3.65 while the broker counted
-  another 2.9 million tokens for that pod (about $1.50 to $2.00 more; the real total is about $5.50). The ceiling is
-  checked against the reported usage, so spend in killed runs is invisible to it. Patchy: record usage for every outcome
-  (from the stream read so far, or the broker's per-pod count). Fixed in
-  [#118](https://github.com/devthenet-labs/patchy/pull/118): every outcome now records the usage its stream reported,
-  input and cache tokens exactly and output tokens as a floor (claude streams each call's output count before it is
-  final), so the broker's count remains the authoritative one.
+  attempt timed out after an hour; its run status has no usage, so the intent reports
+  $3.65 while the broker counted
+  another 2.9 million tokens for that pod (about $1.50 to
+  $2.00 more; the real total is about $5.50). The ceiling is checked against the reported usage, so spend in killed runs
+  is invisible to it. Patchy: record usage for every outcome (from the stream read so far, or the broker's per-pod
+  count). Fixed in [#118](https://github.com/devthenet-labs/patchy/pull/118): every outcome now records the usage its
+  stream reported, input and cache tokens exactly and output tokens as a floor (claude streams each call's output count
+  before it is final), so the broker's count remains the authoritative one.
 - **An agent can wait on one command until the stage times out** (overdub-10 attempt 2). After ten minutes of work it
   ran `npm run test:ci` (11 browser suites, three at a time) on the 2 vCPU, 3.7 GiB node; the command never returned and
   the agent sat idle for 50 minutes until the one-hour timeout. The same subset takes under two minutes on a 2 vCPU CI
@@ -163,7 +166,8 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
   count cached re-reads: overdub-10's build passed 5 million tokens through the broker (almost all cache reads) without
   tripping it. Patchy/docs: say plainly which limit bounds spend; set broker limits from observed runs.
 - **Spend on a real app, for scale** (overdub-10, Sonnet 5): plan $1.45 (~7 min), first build attempt $2.20 (31 min on 2
-  vCPU, about 20 of them waiting on browser tests). Hello.Web's whole intent was $0.55; marigold's two-repo intent
+  vCPU, about 20 of them waiting on browser tests). Hello.Web's whole intent was
+  $0.55; marigold's two-repo intent
   $1.51.
 - **Agent Jobs request no CPU or memory, so heavy builds starve** (overdub-10, 2026-10-04). Pods set only
   ephemeral-storage, so EKS Auto Mode placed an overdub build (Chromium + audio rendering) on a `c6a.large`: 2 vCPU,

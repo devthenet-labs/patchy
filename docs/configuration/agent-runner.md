@@ -233,11 +233,11 @@ another is followed waits its turn and is shown from its first line once that on
 is bounded, since the same pod log must also carry the stage result, which can run to several MiB, and the kubelet
 rotates a container's log at about 10 MiB; the bounds are fixed, not configurable:
 
-| Bound                      | Limit                   | Past it                                                                                                                                       |
-| -------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| One command                | 64 KiB at full fidelity | Sampled: its newest lines every 5 seconds, at most 10 lines and 2 KiB each time, under their own line numbers so a gap shows                  |
-| One command's samples      | 64 KiB                  | One chunk marks the command's live output truncated, past its last line read; nothing more is printed for it until its last chunk, at its end |
-| One agent-runner, in total | 512 KiB                 | One last chunk marks the command truncated, past the lines it drops, then nothing more is printed for any command                             |
+| Bound                      | Limit                   | Past it                                                                                                                                                         |
+| -------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One command                | 64 KiB at full fidelity | Sampled: its newest lines every 5 seconds, at most 10 lines and 2 KiB each time, under their own line numbers so a gap shows                                    |
+| One command's samples      | 64 KiB                  | One chunk marks the command's live output truncated, past its last line read; nothing more is printed for it until its last chunk, at its end                   |
+| One agent-runner, in total | 512 KiB                 | One chunk marks the command's live output truncated, past the lines it drops; nothing more is printed for any command but that command's last chunk, at its end |
 
 A sample is not a truncation: the gap in the line numbers shows what it left out, and the command's live output goes on.
 Only a limit that stops it for good, the samples' or the process's, marks a chunk truncated.

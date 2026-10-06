@@ -7,6 +7,7 @@ import { test } from "node:test";
 import {
   INTENTS_VIEW_FILES,
   OUTPUT_KEEP,
+  OUTPUT_LIMIT_NOTE,
   costShare,
   formatDuration,
   groupByColumn,
@@ -243,6 +244,18 @@ test("outputStatus ranks finished, no longer followed, the limit, then running",
   // Samples leave gaps and are not truncated: still just running.
   const sampled = fold([chunk(1, ["a"]), chunk(50, ["x"]), chunk(90, ["y"])]);
   assert.equal(outputStatus(sampled, true), "running");
+});
+
+// The agent's process budget running out on a running command: one chunk
+// marks its live output truncated past the lines it dropped, not done, and a
+// second, once the command ends, marks it done at the same number.
+test("outputStatus follows a budget cut from running to finished", () => {
+  const cut = fold([chunk(1, ["a", "b"]), chunk(9, [], { truncated: true })]);
+  assert.equal(outputStatus(cut, true), `running · ${OUTPUT_LIMIT_NOTE}`);
+  const ended = mergeRunOutput(cut, chunk(9, [], { done: true, truncated: true }));
+  assert.equal(outputStatus(ended, true), `finished · ${OUTPUT_LIMIT_NOTE}`);
+  assert.equal(ended.end, 9);
+  assert.deepEqual(outputSegments(ended).at(-1), { kind: "skipped", count: 6 });
 });
 
 test("mergeRunOutput ignores a malformed chunk", () => {

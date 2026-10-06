@@ -581,12 +581,13 @@ func TestOutputSamplingKeepsUpWithAFlood(t *testing.T) {
 }
 
 // TestOutputProcessBudget: commands printing more than a process may are
-// cut off once its budget is spent: one chunk closes the command it ran out
-// on, Done and Truncated, past the lines it dropped, and nothing more is
-// printed for any command.
+// cut off once its budget is spent: one chunk marks the live output of the
+// command it ran out on truncated, past the lines it dropped, one more closes
+// that command, Done, unless the chunk it ran out on was the command's last,
+// and nothing more is printed for any command.
 func TestOutputProcessBudget(t *testing.T) {
 	cfg, ws, tmp, out := outputSetup(t)
-	closing := func(o transcript.Output) bool { return o.Done && o.Truncated && len(o.Lines) == 0 }
+	spent := func(o transcript.Output) bool { return o.Truncated }
 	const commands, lines = 12, 150
 	exec := &commandExec{ws: ws, runs: []commandRun{{writes: reported, script: func(feed func(string)) {
 		line := strings.Repeat("y", 999) + "\n"
@@ -596,7 +597,7 @@ func TestOutputProcessBudget(t *testing.T) {
 			feed(startedLine(task, "toolu_"+task))
 			put(t, f, strings.Repeat(line, lines))
 			feed(notifiedLine(task, "toolu_"+task))
-			if slices.ContainsFunc(chunks(out.String()), closing) {
+			if slices.ContainsFunc(chunks(out.String()), spent) {
 				continue // spent: nothing more is followed
 			}
 			waitFor(t, out, task+" to end", func(got []transcript.Output) bool {
@@ -616,52 +617,165 @@ func TestOutputProcessBudget(t *testing.T) {
 	if total > outputProcessBytes {
 		t.Errorf("command output = %d bytes, over the process's %d", total, outputProcessBytes)
 	}
-	at := slices.IndexFunc(got, closing)
-	if at != len(got)-1 {
-		t.Fatalf("the closing chunk is at %d of %d chunks, want exactly one, last", at, len(got))
-	}
-	for _, o := range got[:at] {
-		if o.Truncated {
-			t.Errorf("chunk %+v is truncated before the budget ran out", o)
-		}
-	}
-	end := got[at]
-	if end.Task == "bcmd1" || end.Task == fmt.Sprintf("bcmd%d", commands) {
-		t.Errorf("the budget ran out on %s; the test meant it to run out midway", end.Task)
+	at := budgetClose(t, got)
+	cut := got[at]
+	if cut.Task == "bcmd1" || cut.Task == fmt.Sprintf("bcmd%d", commands) {
+		t.Errorf("the budget ran out on %s; the test meant it to run out midway", cut.Task)
 	}
 	shown := 0
 	for _, o := range got[:at] {
-		if o.Task == end.Task && len(o.Lines) > 0 {
+		if o.Task == cut.Task && len(o.Lines) > 0 {
 			shown = o.Line + len(o.Lines) - 1
 		}
 	}
-	if end.Line <= shown || end.Line > lines+1 {
-		t.Errorf("the closing chunk is at line %d after line %d was shown; want past it, at most %d", end.Line,
+	if cut.Line <= shown || cut.Line > lines+1 {
+		t.Errorf("the closing chunk is at line %d after line %d was shown; want past it, at most %d", cut.Line,
 			shown, lines+1)
 	}
 }
 
+// budgetClose checks the chunks the process's budget closed the output with
+// and returns the index of the first: the cut, truncated with no lines, then
+// its command's end, Done at the same number, unless the cut was that end.
+// They are the last chunks, and the first truncated.
+func budgetClose(t *testing.T, got []transcript.Output) int {
+	t.Helper()
+	at := slices.IndexFunc(got, func(o transcript.Output) bool { return o.Truncated })
+	if at < 0 {
+		t.Fatalf("no chunk is truncated; the test meant the budget to run out: %d chunks", len(got))
+	}
+	cut, closing := got[at], got[at:]
+	want := 2
+	if cut.Done {
+		want = 1
+	}
+	if len(closing) != want {
+		t.Fatalf("the budget's closing chunks = %+v, want %d, last: the cut, then its command's end unless "+
+			"the cut was it", closing, want)
+	}
+	for _, o := range closing {
+		if o.Task != cut.Task || o.Line != cut.Line || len(o.Lines) > 0 || !o.Truncated {
+			t.Errorf("closing chunk %+v; want %s's, at line %d, truncated, with no lines", o, cut.Task, cut.Line)
+		}
+	}
+	if !closing[len(closing)-1].Done {
+		t.Errorf("the last chunk %+v is not done", closing[len(closing)-1])
+	}
+	return at
+}
+
 // TestOutputBudgetClosingChunk: the chunk the process's budget runs out on
-// is replaced by one closing its command past every line it carried, Done
-// and Truncated, so the lines it would have shown read as left out rather
-// than as never printed; nothing is printed after it.
+// is replaced by one marking its command's live output truncated past every
+// line it carried, so the lines it would have shown read as left out rather
+// than as never printed. It is not Done, since the command may still run:
+// once the command ends, one line-less Done chunk closes it, and nothing else
+// is printed after the budget ran out. Both fit in the room kept back for
+// them, whatever the task id.
 func TestOutputBudgetClosingChunk(t *testing.T) {
+	task := strings.Repeat("b", 128) // the longest id the harness follows
+	at := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	out := &syncBuffer{}
 	a := New(Config{Out: out, Log: slog.New(slog.DiscardHandler)}, nil)
-	a.outputUsed = outputProcessBytes - outputClosingBytes - 10
-	if _, ok := a.emitOutput(transcript.Output{Task: "b1", Line: 5, Lines: []string{"e", "f", "g"}}); ok {
+	a.outputUsed = outputProcessBytes - outputClosingBytes
+	const last = 1 << 40
+	if _, ok := a.emitOutput(transcript.Output{Task: task, Line: last - 3, Lines: []string{"e", "f", "g"}}); ok {
 		t.Fatal("a chunk past the budget was printed")
 	}
-	want := []transcript.Output{{V: transcript.OutputVersion, Task: "b1", Line: 8, Done: true, Truncated: true}}
-	if got := chunks(out.String()); !reflect.DeepEqual(got, want) {
-		t.Errorf("chunks = %+v, want %+v: the closing chunk past lines 5 to 7", got, want)
+	cut := transcript.Output{V: transcript.OutputVersion, Task: task, Line: last, Truncated: true}
+	if got := chunks(out.String()); !reflect.DeepEqual(got, []transcript.Output{cut}) {
+		t.Errorf("chunks = %+v, want %+v: the cut past the three lines, not done", got, cut)
 	}
-	if _, ok := a.emitOutput(transcript.Output{Task: "b1", Line: 8, Done: true}); ok {
+	if _, ok := a.emitOutput(transcript.Output{Task: task, Line: last}); ok {
 		t.Error("a chunk was printed after the budget ran out")
 	}
-	if got := chunks(out.String()); len(got) != 1 {
-		t.Errorf("chunks after the budget ran out = %+v, want only the closing one", got)
+	a.endOutput("bother", at) // another command's end
+	a.endOutput(task, at)
+	a.endOutput(task, at) // a second end
+	end := transcript.Output{V: transcript.OutputVersion, Task: task, Line: last, Done: true, Truncated: true,
+		At: "2026-10-06T12:00:00Z"}
+	if got := chunks(out.String()); !reflect.DeepEqual(got, []transcript.Output{cut, end}) {
+		t.Errorf("chunks = %+v, want the cut, then once its command's end: %+v", got, end)
 	}
+	if n := len(out.String()); n > outputClosingBytes {
+		t.Errorf("the closing chunks are %d bytes, over the %d kept back for them", n, outputClosingBytes)
+	}
+
+	// A chunk the budget runs out on that is its command's last stands for
+	// it: the cut is Done, and nothing is owed.
+	out = &syncBuffer{}
+	a = New(Config{Out: out, Log: slog.New(slog.DiscardHandler)}, nil)
+	a.outputUsed = outputProcessBytes - outputClosingBytes
+	a.emitOutput(transcript.Output{Task: "b1", Line: 5, Lines: []string{"e"}, Done: true})
+	a.endOutput("b1", at)
+	want := []transcript.Output{{V: transcript.OutputVersion, Task: "b1", Line: 6, Done: true, Truncated: true}}
+	if got := chunks(out.String()); !reflect.DeepEqual(got, want) {
+		t.Errorf("chunks = %+v, want only %+v", got, want)
+	}
+}
+
+// TestOutputBudgetRunsOutWhileACommandRuns: a command the process's budget
+// runs out on while it runs is shown truncated, not finished, until it ends;
+// its end is then shown, the one chunk printed past the budget, before the
+// stage's result. A command started meanwhile is not followed.
+func TestOutputBudgetRunsOutWhileACommandRuns(t *testing.T) {
+	cfg, ws, tmp, out := outputSetup(t)
+	baseline := runtime.NumGoroutine()
+	truncated := func(got []transcript.Output) bool {
+		return slices.ContainsFunc(got, func(o transcript.Output) bool { return o.Truncated })
+	}
+	var running []transcript.Output
+	exec := &commandExec{ws: ws, runs: []commandRun{{writes: reported, script: func(feed func(string)) {
+		f, _ := commandFile(t, tmp, "bspent")
+		feed(startedLine("bspent", "toolu_spent"))
+		put(t, f, strings.Repeat(numbered(0)+"\n", 100))
+		waitFor(t, out, "the budget to run out", truncated)
+		g, _ := commandFile(t, tmp, "blate")
+		put(t, g, "never shown\n")
+		feed(startedLine("blate", "toolu_late"))
+		time.Sleep(10 * fastPace.poll)
+		running = chunks(out.String())
+		feed(notifiedLine("blate", "toolu_late"))
+		feed(notifiedLine("bspent", "toolu_spent"))
+		waitFor(t, out, "the command's end", func(got []transcript.Output) bool {
+			return slices.ContainsFunc(got, func(o transcript.Output) bool { return o.Done })
+		})
+	}}}}
+	a := New(cfg, exec)
+	a.pace = fastPace
+	const used = outputProcessBytes - outputClosingBytes - 4000 // a chunk or so left
+	a.outputUsed = used
+	if err := a.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for _, o := range running {
+		if o.Done {
+			t.Errorf("chunk %+v is done while its command still ran", o)
+		}
+	}
+	got := chunks(out.String())
+	at := budgetClose(t, got)
+	if at == 0 || got[at].Done {
+		t.Errorf("the cut %+v is chunk %d; want it not done, after some lines", got[at], at)
+	}
+	for _, o := range got {
+		if o.Task != "bspent" {
+			t.Errorf("chunk %+v; nothing is followed once the budget is spent", o)
+		}
+	}
+	for _, o := range got[:at] {
+		if o.Done {
+			t.Errorf("chunk %+v before the cut is done", o)
+		}
+	}
+	if printed := printedBytes(got); used+printed > outputProcessBytes {
+		t.Errorf("command output = %d bytes, over the process's %d", used+printed, outputProcessBytes)
+	}
+	text := out.String()
+	if strings.LastIndex(text, transcript.OutputPrefix) > strings.Index(text, envelope.Prefix) {
+		t.Error("a chunk follows the stage's result")
+	}
+	settled(t, baseline)
 }
 
 // TestOutputIsQuietWithoutAFile: a command whose file never appears — a

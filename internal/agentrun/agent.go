@@ -50,11 +50,13 @@ type Agent struct {
 	// outMu serialises every line written to cfg.Out: the turns and events
 	// the stage's goroutine writes and the command output its followers do,
 	// so no two lines interleave. It also guards the process's output
-	// budget: outputUsed is what command output has printed, and spent says
-	// the budget ran out.
+	// budget: outputUsed is what command output has printed, spent says the
+	// budget ran out, and owed is the last chunk of the command it ran out on
+	// while that command ran, printed once it ends (no Task when none is).
 	outMu      sync.Mutex
 	outputUsed int
 	spent      bool
+	owed       transcript.Output
 }
 
 // New builds an Agent.
@@ -823,10 +825,12 @@ func (a *Agent) emitTurn(t transcript.Turn) {
 // emitOutput writes one chunk of a command's output to the runner's stdout
 // and returns the bytes it wrote, or ok false once the process's output
 // budget is spent. The chunk that would overrun the budget is replaced by
-// one closing its command — Done and Truncated, with no lines, numbered past
-// the lines it carried so they read as left out — and nothing more is
-// written for the rest of the process. Like a turn, a chunk that cannot be
-// written is logged and dropped.
+// one marking its command's live output truncated — with no lines, numbered
+// past the lines it carried so they read as left out, and Done only if the
+// chunk it replaces was the command's last, since the command may still run
+// — and nothing more is written for the rest of the process but, once that
+// command ends, its last chunk (endOutput). Like a turn, a chunk that cannot
+// be written is logged and dropped.
 func (a *Agent) emitOutput(o transcript.Output) (int, bool) {
 	line, err := transcript.EncodeOutput(o)
 	if err != nil {
@@ -840,9 +844,10 @@ func (a *Agent) emitOutput(o transcript.Output) (int, bool) {
 	}
 	if a.outputUsed+len(line)+1 > outputProcessBytes-outputClosingBytes {
 		a.spent = true
-		o.Line, o.Lines, o.Done, o.Truncated = o.Line+len(o.Lines), nil, true, true
-		if closing, err := transcript.EncodeOutput(o); err == nil {
-			a.writeLine(closing, "command output")
+		o.Line, o.Lines, o.Truncated = o.Line+len(o.Lines), nil, true
+		a.writeClosing(o)
+		if !o.Done {
+			a.owed = o
 		}
 		a.cfg.Log.Info("live command output reached its budget; no more is shown", "bytes", outputProcessBytes)
 		return 0, false
@@ -850,6 +855,35 @@ func (a *Agent) emitOutput(o transcript.Output) (int, bool) {
 	a.outputUsed += len(line) + 1
 	a.writeLine(line, "command output")
 	return len(line) + 1, true
+}
+
+// endOutput writes the last chunk of the command the process's output budget
+// ran out on while it ran, once that command has ended: Done, with no lines,
+// at the number its truncated chunk had, so a viewer sees it finish. It
+// writes nothing for any other command, nor twice.
+func (a *Agent) endOutput(task string, at time.Time) {
+	a.outMu.Lock()
+	defer a.outMu.Unlock()
+	if a.owed.Task == "" || a.owed.Task != task {
+		return
+	}
+	o := a.owed
+	a.owed = transcript.Output{}
+	o.Done, o.At = true, at.UTC().Format(time.RFC3339)
+	a.writeClosing(o)
+}
+
+// writeClosing writes one of the line-less chunks that close the command the
+// budget ran out on, out of the room kept back for them; the caller holds
+// outMu.
+func (a *Agent) writeClosing(o transcript.Output) {
+	line, err := transcript.EncodeOutput(o)
+	if err != nil {
+		a.cfg.Log.Error("encode command output", "error", err)
+		return
+	}
+	a.outputUsed += len(line) + 1
+	a.writeLine(line, "command output")
 }
 
 // outputSpent reports whether the process's command output budget is spent.

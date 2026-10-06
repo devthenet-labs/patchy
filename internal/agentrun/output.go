@@ -62,9 +62,11 @@ const (
 	outputSampledBytes = 64 << 10
 	// outputProcessBytes bounds every chunk line one agent-runner prints,
 	// across all its commands, framing included; outputClosingBytes of it is
-	// kept back for the chunk that closes the command the budget ran out on.
-	// It keeps the pod log far below the kubelet's rotation beside a build's
-	// result line.
+	// kept back for the two line-less chunks that close the command the
+	// budget ran out on: the one marking its live output truncated, and its
+	// last once it ends. Each is under 256 bytes, as no task id over 128 is
+	// followed. It keeps the pod log far below the kubelet's rotation beside
+	// a build's result line.
 	outputProcessBytes = 512 << 10
 	outputClosingBytes = 512
 	// outputQueued bounds the commands waiting while another is followed.
@@ -310,7 +312,9 @@ func (f *outputFollower) next(done *followedTask) {
 // command or the run ends, when it reads the rest and prints the last chunk;
 // then it hands over to the next command queued. A command whose file is
 // never seen — a fixture's, or one over before the first look — prints
-// nothing at all.
+// nothing at all. One the process's budget ran out on is read no further,
+// but it stays the command followed until it ends, when its end is printed:
+// the one chunk printed past the budget.
 func (f *outputFollower) follow(t *followedTask) {
 	defer f.wg.Done()
 	defer f.next(t)
@@ -318,25 +322,39 @@ func (f *outputFollower) follow(t *followedTask) {
 	if file == nil {
 		return
 	}
-	defer func() { _ = file.Close() }()
+	stopped := f.readOut(t, file)
+	_ = file.Close()
+	if !stopped {
+		return
+	}
+	select {
+	case <-t.ended:
+	case <-f.ctx.Done():
+	}
+	f.a.endOutput(t.id, time.Now())
+}
 
+// readOut reads the command's file every poll until the command or the run
+// ends, when it reads the rest and prints the last chunk, or until the
+// process's budget is spent; it reports whether the budget stopped it.
+func (f *outputFollower) readOut(t *followedTask, file *os.File) bool {
 	s := f.newStream(t.id)
 	tick := time.NewTicker(f.pace.poll)
 	defer tick.Stop()
 	if !s.read(file, time.Now()) {
-		return
+		return true
 	}
 	for {
 		select {
 		case <-t.ended:
 			s.close(file)
-			return
+			return s.stopped
 		case <-f.ctx.Done():
 			s.close(file)
-			return
+			return s.stopped
 		case now := <-tick.C:
 			if !s.read(file, now) {
-				return
+				return true
 			}
 		}
 	}

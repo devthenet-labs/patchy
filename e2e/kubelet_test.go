@@ -85,6 +85,46 @@ type kubelet struct {
 	ran      map[string]bool   // Job names already run
 	runs     []agentRun        // in the order they ran
 	agentEnv map[string]string // set by setAgentEnv
+	// runner is the real agent-runner binary, and runnerPhases the phases
+	// whose Jobs it runs in hack/fake-agent's place (useAgentRunner).
+	runner       string
+	runnerPhases map[string]bool
+}
+
+// fakeClaudeScript is the scripted claude CLI the real agent-runner drives
+// in the model's place (useAgentRunner).
+const fakeClaudeScript = "../hack/fake-agent/claude"
+
+// useAgentRunner makes the kubelet run, for every Job of the given phases
+// from now on, the REAL agent-runner (cmd/agent-runner, built once) with
+// hack/fake-agent/claude as its claude CLI, instead of hack/fake-agent
+// whole: the stage flow around the CLI — the report check and its repair in
+// the same session, the tree guard, commit.sh and the changeset — is then
+// the product's own. setAgentEnv still reaches the agent, so a test chooses
+// what the scripted CLI does.
+func (k *kubelet) useAgentRunner(t *testing.T, phases ...string) {
+	t.Helper()
+	bin := build(t, "agent-runner")
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.runner = bin
+	if k.runnerPhases == nil {
+		k.runnerPhases = map[string]bool{}
+	}
+	for _, p := range phases {
+		k.runnerPhases[p] = true
+	}
+}
+
+// agentRunnerFor is the agent-runner binary to run a Job of phase with, or
+// "" for hack/fake-agent.
+func (k *kubelet) agentRunnerFor(phase string) string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.runnerPhases[phase] {
+		return k.runner
+	}
+	return ""
 }
 
 // agentRun is one Job as the kubelet ran it: the Job, the handoff its agent
@@ -277,7 +317,11 @@ func (k *kubelet) run(ctx context.Context, job *batchv1.Job) error {
 
 	// The agent container, when the prepare step let it start.
 	if prepareExit == 0 {
-		rec.Stdout, rec.ExitCode, err = k.runAgent(ctx, workspace, rec.Env)
+		if bin := k.agentRunnerFor(rec.Env["PATCHY_PHASE"]); bin != "" {
+			rec.Stdout, rec.ExitCode, err = k.runAgentRunner(ctx, bin, workspace, rec.Env)
+		} else {
+			rec.Stdout, rec.ExitCode, err = k.runAgent(ctx, workspace, rec.Env)
+		}
 		if err != nil {
 			return err
 		}
@@ -503,6 +547,12 @@ func (k *kubelet) runAgent(ctx context.Context, workspace string, env map[string
 	}
 	k.mu.Unlock()
 	cmd.Env = append(cmd.Env, "HOME="+workspace, "PATCHY_WORKSPACE="+workspace, "PATCHY_FAKE_TURN_DELAY=0")
+	return runContainer(cmd, "the fake agent")
+}
+
+// runContainer runs an agent container's process and returns its stdout and
+// exit code; an exit status is the container's, not an error.
+func runContainer(cmd *exec.Cmd, what string) ([]byte, int, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -511,9 +561,74 @@ func (k *kubelet) runAgent(ctx context.Context, workspace string, env map[string
 	case errors.As(err, &exit):
 		return stdout.Bytes(), exit.ExitCode(), nil
 	case err != nil:
-		return nil, 0, fmt.Errorf("run the fake agent: %w: %s", err, stderr.String())
+		return nil, 0, fmt.Errorf("run %s: %w: %s", what, err, stderr.String())
 	}
 	return stdout.Bytes(), 0, nil
+}
+
+// runAgentRunner runs the real agent-runner (bin) as the agent container,
+// pointed at the workspace, with the scripted claude CLI in the model's
+// place. It first does the rest of the prepare init's work the fake agent
+// never needed: the synthetic base commit over the working tree. The pod
+// paths outside the workspace — the injected binaries' directory and the
+// projected caller token — are stood in for by a directory beside it.
+func (k *kubelet) runAgentRunner(ctx context.Context, bin, workspace string, env map[string]string) ([]byte, int,
+	error) {
+	repo := filepath.Join(workspace, "repo")
+	gitEnv := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + workspace, "GIT_CONFIG_NOSYSTEM=1"}
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"add", "-A"},
+		{"-c", "user.name=patchy", "-c", "user.email=patchy@invalid", "-c", "commit.gpgsign=false",
+			"commit", "-qm", "base " + env["PATCHY_BASE_SHA"]},
+		{"checkout", "-q", "--detach", "HEAD"},
+	} {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir, cmd.Env = repo, gitEnv
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, 0, fmt.Errorf("the synthetic base commit: git %s: %w: %s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	pod := workspace + "-pod"
+	binDir := filepath.Join(pod, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return nil, 0, err
+	}
+	script, err := os.ReadFile(fakeClaudeScript)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "claude"), script, 0o755); err != nil {
+		return nil, 0, err
+	}
+	token := filepath.Join(pod, "token")
+	if err := os.WriteFile(token, []byte("e2e-projected-caller-token\n"), 0o600); err != nil {
+		return nil, 0, err
+	}
+
+	cmd := exec.CommandContext(ctx, bin)
+	cmd.Env = []string{"PATH=" + binDir + string(os.PathListSeparator) + os.Getenv("PATH")}
+	for name, value := range env {
+		switch name {
+		case "PATH", "HOME", "PATCHY_WORKSPACE", "PATCHY_BIN_DIR", "PATCHY_BROKER_TOKEN_FILE":
+			continue // the pod's own paths; stood in for below
+		}
+		cmd.Env = append(cmd.Env, name+"="+value)
+	}
+	if env["PATCHY_BIN_DIR"] != "" {
+		cmd.Env = append(cmd.Env, "PATCHY_BIN_DIR="+binDir)
+	}
+	if env["PATCHY_BROKER_TOKEN_FILE"] != "" {
+		cmd.Env = append(cmd.Env, "PATCHY_BROKER_TOKEN_FILE="+token)
+	}
+	k.mu.Lock()
+	for name, value := range k.agentEnv {
+		cmd.Env = append(cmd.Env, name+"="+value)
+	}
+	k.mu.Unlock()
+	cmd.Env = append(cmd.Env, "HOME="+workspace, "PATCHY_WORKSPACE="+workspace)
+	return runContainer(cmd, "agent-runner")
 }
 
 // createPod records the Job's pod, bound to the Node, as the Job controller

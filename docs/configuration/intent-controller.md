@@ -278,14 +278,16 @@ the intent ends counts revisions and CI-fix rounds apart.
 With `--intent-previews-enabled` and a Project that previews the pull request's repository, patchy tells reviewers where
 the preview is, in two places:
 
-- **The issue's status comment** gains a **Preview** line: the link once the preview is live, "being deployed" while
+- **The issue's status comment** gains a **Preview** line: the link once the preview is live, "waiting for a free
+  preview slot" while its Preview is `Queued` behind others (every slot is taken), "being deployed" while
   preview-controller rolls it out, or why it is not available (it could not be deployed, or it expired after its time to
   live). With several previewed repositories it lists what each path serves, at which commit.
 - **Each previewed pull request** gets one comment of its own, posted the first time the preview is live at that pull
   request's head. patchy then edits that same comment, never posting another: to "being deployed" when a round or a push
-  moves the head, back to live with the new commit once it is served, to say why when the preview fails or expires, and
-  last to say the preview was removed once the intent ends. Edits notify nobody; the round's own comment already asks
-  for the review. A pull request whose repository is not previewed (a library) gets no preview comment.
+  moves the head (or "waiting for a free preview slot" when there is none to deploy it in yet), back to live with the
+  new commit once it is served, to say why when the preview fails or expires, and last to say the preview was removed
+  once the intent ends. Edits notify nobody; the round's own comment already asks for the review. A pull request whose
+  repository is not previewed (a library) gets no preview comment.
 
 The link is posted only when it can be checked: the Preview is this intent's, has rolled out its current spec, serves
 exactly the commits the intent recorded (each pull request's head, or a preview base), and its address is a bare

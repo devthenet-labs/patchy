@@ -91,15 +91,17 @@ export function RunPanel({ run, now }: { run: IntentRunDetail; now: number }) {
         <div>
           <dt>Now</dt>
           <dd>
-            {activity?.openTool ? (
+            {activity?.live && activity.openTool ? (
               <>
                 running <span class="ps-mono-tag">{activity.openTool}</span> for{" "}
                 <span class="font-mono">{formatDuration(secondsSince(activity.openToolSince, now))}</span>
               </>
             ) : activity?.live ? (
               "thinking or between tools"
-            ) : (
+            ) : run.running ? (
               "—"
+            ) : (
+              "finished"
             )}
           </dd>
         </div>

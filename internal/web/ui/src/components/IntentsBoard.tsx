@@ -136,9 +136,9 @@ export function IntentsBoard({ board, now }: { board: IntentBoard; now: number }
           </span>
         ))}
       </div>
-      <div class="grid grid-cols-[repeat(6,minmax(210px,1fr))] gap-3 overflow-x-auto pb-2">
+      <div class="grid grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-x-3 gap-y-6 pb-2">
         {INTENT_COLUMNS.map((col) => (
-          <section key={col.id} aria-label={col.label} class="min-w-[210px]">
+          <section key={col.id} aria-label={col.label} class="min-w-0">
             <h2 class="ps-heading mb-2 flex items-center justify-between">
               {col.label}
               <span class="font-mono text-[10px] text-faint">{columns[col.id].length}</span>

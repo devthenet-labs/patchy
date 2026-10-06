@@ -957,13 +957,12 @@ func TestOutputOnlyInIntentStages(t *testing.T) {
 			tmp := t.TempDir()
 			t.Setenv("CLAUDE_CODE_TMPDIR", tmp)
 			out := &syncBuffer{}
-			cfg, ws := newConfig(t, newWorkspace(t), out), ""
+			ws := newWorkspace(t)
+			cfg := newConfig(t, ws, out)
 			writes := map[string]string{"reports/investigation.md": goodInvestigation}
 			if phase == PhaseRemediate {
 				cfg, ws = remediateConfig(t, goodInvestigation, out)
 				writes = map[string]string{"reports/remediation.md": goodRemediation}
-			} else {
-				ws = cfg.Workspace
 			}
 			exec := &commandExec{ws: ws, runs: []commandRun{{writes: writes, script: func(feed func(string)) {
 				f, _ := commandFile(t, tmp, "bfinding")

@@ -53,6 +53,7 @@ nav = [
     { "Deploying intents and previews" = "intents/deploying.md" },
     { "Onboarding an application" = "intents/onboarding-app.md" },
     { "The Terraform module" = "intents/terraform-module.md" },
+    { "The intents dashboard" = "intents/dashboard.md" },
   ] },
   { "Configuration" = [
     { "Overview" = "configuration/index.md" },

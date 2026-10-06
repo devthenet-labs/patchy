@@ -165,24 +165,7 @@ var tokenUses = map[string][]string{
 // for that repository to hold it to, nothing is written there, and once
 // refused there it is not asked again for departedRetry.
 func TestEveryTokenIsInTheTable(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
-	}))
-	t.Cleanup(srv.Close)
-	forgeObj := &v1alpha1.Forge{
-		ObjectMeta: metav1.ObjectMeta{Namespace: testNS, Name: "github"},
-		Spec: v1alpha1.ForgeSpec{Provider: v1alpha1.ForgeProviderGitHub, BaseURL: srv.URL,
-			SecretRef: v1alpha1.LocalSecretReference{Name: "cred"}},
-	}
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: testNS, Name: "cred"},
-		Data:       map[string][]byte{ghsecret.KeyToken: []byte("ghp_dev")},
-	}
-	store := forge.NewStore(fake.NewClientBuilder().WithScheme(kube.Scheme()).WithObjects(forgeObj, secret).Build())
-	spec := v1alpha1.ProjectSpec{IntentRepository: srv.URL + "/acme/intents",
-		Repositories: []v1alpha1.ProjectRepository{{Name: "app", URL: srv.URL + "/acme/app"}}}
+	store, spec := tokenFixture(t)
 
 	gh := reflect.TypeFor[GitHub]()
 	for i := range gh.NumMethod() {
@@ -208,6 +191,50 @@ func TestEveryTokenIsInTheTable(t *testing.T) {
 			t.Errorf("tokenUses declares %s, which GitHub has no method for", name)
 		}
 	}
+}
+
+// TestCreatePullRequestCanReadTheRefs pins the token that opens a pull
+// request. Pull requests write alone opens one only in a public repository:
+// in a private one GitHub refuses with "not all refs are readable", because
+// the token cannot read the head and base it names, so the token reads
+// contents too (overdub-12, the first intent built in a private repository).
+func TestCreatePullRequestCanReadTheRefs(t *testing.T) {
+	store, spec := tokenFixture(t)
+	m, ok := reflect.TypeFor[GitHub]().MethodByName("CreatePullRequest")
+	if !ok {
+		t.Fatal("GitHub has no CreatePullRequest")
+	}
+	minted := mintedBy(t, store, m, spec.Repositories[0].URL)
+	want := ghclient.TokenPerms{PullRequests: ghclient.PermWrite, Contents: ghclient.PermRead}
+	if len(minted) != 1 || minted[0].perms != want {
+		t.Fatalf("CreatePullRequest minted %+v, want one token with %+v", minted, want)
+	}
+}
+
+// tokenFixture is a Forge whose API answers everything with 404, its
+// credential Secret, the store minting tokens from them, and a Project spec
+// with an intent repository and one application repository on that Forge.
+func tokenFixture(t *testing.T) (*forge.Store, v1alpha1.ProjectSpec) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+	}))
+	t.Cleanup(srv.Close)
+	forgeObj := &v1alpha1.Forge{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNS, Name: "github"},
+		Spec: v1alpha1.ForgeSpec{Provider: v1alpha1.ForgeProviderGitHub, BaseURL: srv.URL,
+			SecretRef: v1alpha1.LocalSecretReference{Name: "cred"}},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: testNS, Name: "cred"},
+		Data:       map[string][]byte{ghsecret.KeyToken: []byte("ghp_dev")},
+	}
+	store := forge.NewStore(fake.NewClientBuilder().WithScheme(kube.Scheme()).WithObjects(forgeObj, secret).Build())
+	spec := v1alpha1.ProjectSpec{IntentRepository: srv.URL + "/acme/intents",
+		Repositories: []v1alpha1.ProjectRepository{{Name: "app", URL: srv.URL + "/acme/app"}}}
+	return store, spec
 }
 
 // tableFor is the repository URL and the intentperm grants of the
@@ -280,10 +307,30 @@ func checkTokensGranted(t *testing.T, method, use, url string, grants []intentpe
 	}
 }
 
-// granted reports whether one of grants covers perms, a token's permission
-// set: the same permission at the access the token asks for, or at write,
-// which includes read.
+// granted reports whether grants cover perms, a token's permission set: each
+// permission it asks for is one of grants at the access asked for, or at
+// write, which includes read.
 func granted(perms ghclient.TokenPerms, grants []intentperm.Grant) bool {
+	parts := []ghclient.TokenPerms{
+		{Contents: perms.Contents}, {Issues: perms.Issues}, {PullRequests: perms.PullRequests},
+		{Checks: perms.Checks}, {Statuses: perms.Statuses}, {Actions: perms.Actions},
+	}
+	asked := 0
+	for _, part := range parts {
+		if part == (ghclient.TokenPerms{}) {
+			continue
+		}
+		asked++
+		if !grantedOne(part, grants) {
+			return false
+		}
+	}
+	return asked > 0
+}
+
+// grantedOne reports whether one of grants covers perms, a single
+// permission: the same permission at the access asked for, or at write.
+func grantedOne(perms ghclient.TokenPerms, grants []intentperm.Grant) bool {
 	for _, g := range grants {
 		accesses := []string{g.Access}
 		if g.Access == intentperm.Write {

@@ -194,13 +194,15 @@ ClusterRole is installed. Its NetworkPolicy permits only DNS and the Kubernetes 
 internet or broker egress rule.
 
 The controller serializes slot leases, queues by creation time, waits for a Ready Pod with a recorded image ID before
-creating the `alb-preview` Ingress, and withdraws the old Ingress before a PR-head update. Each new head gets at most
-three rollout attempts (10 minutes each by default). Failed and expired Previews free their slot only after all rendered
-resources and Pod/ReplicaSet children are gone. An open PR's preview expires after 72 hours from its last successful
-deployment; a new PR head can start a new preview. Deletion uses a finalizer, and a periodic orphan sweep cleans owned
-resources even after a lost CR. **Do not reduce `slotCount` or disable the controller while a Preview owns a slot**:
-restore the old slot count and drain via the Preview finalizer first. Helm's `keep` annotations protect the namespace
-and guardrails but are not a substitute for that drain.
+creating the `alb-preview` Ingress, and withdraws the old Ingress before a PR-head update. With
+`previewController.config.targetHealth` (the default) the Ingress comes first and stays instead, and a PR-head update
+rolls out beside the serving revision, whose Pod stops only once the new one's target is healthy. Each new head gets at
+most three rollout attempts (10 minutes each by default). Failed and expired Previews free their slot only after all
+rendered resources and Pod/ReplicaSet children are gone. An open PR's preview expires after 72 hours from its last
+successful deployment; a new PR head can start a new preview. Deletion uses a finalizer, and a periodic orphan sweep
+cleans owned resources even after a lost CR. **Do not reduce `slotCount` or disable the controller while a Preview owns
+a slot**: restore the old slot count and drain via the Preview finalizer first. Helm's `keep` annotations protect the
+namespace and guardrails but are not a substitute for that drain.
 
 The chart renders the placeholder only when both `preview.enabled` and `preview.placeholder.enabled` are true. The
 separate ALB and the wildcard DNS record are staged with the infrastructure, in order:

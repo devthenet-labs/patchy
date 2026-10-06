@@ -80,7 +80,8 @@ within:
 - **It runs the agents.** Plan, build and revise agent Jobs run through the existing jobs package, in the controller's
   own slot pool.
 - **It does the intent-side GitHub writes.** Each write uses a token minted for that one operation and scoped to one
-  repository and one permission.
+  repository and one permission. Opening a pull request also reads contents: in a private repository GitHub refuses one
+  whose head and base the token cannot read.
 - **State lives in three new CRDs:**
   - `Project` holds operator config.
   - `Intent` is one per intent issue, with a local phase enum.
@@ -118,7 +119,9 @@ within:
 - **source-controller** is unchanged. It pins intent Repositories exactly as it pins Finding ones. A revise Repository
   sets `spec.ref.branch` to the PR branch, which `HeadSHA` already resolves (ghclient/repos.go:23).
 - **agent-runner** gains two phases:
-  - `plan`: `SandboxReadOnly`. It writes `reports/plan.md` and emits a new, additive envelope type `plan` at Version 4.
+  - `plan`: `SandboxReadOnly`, with its writes scoped to `reports/` (`PromptRequest.WriteDirs`, rendered by claude as a
+    path-scoped `Edit` rule in place of the bare `Write`; a Finding investigation sets none). It writes
+    `reports/plan.md` and emits a new, additive envelope type `plan` at Version 4.
   - `build`: used for the initial build and for revisions. `SandboxWorkspaceWrite`. It follows the remediation path
     (`commit.sh`, `verifyCommitted`, `buildChangeset`) and emits the existing `remediation` payload with its Changeset.
 
@@ -1240,7 +1243,10 @@ Both serve `/healthz`, so the health check works even if Auto Mode ignores per-S
   affected component then fails after the rollout retries. A publish-status check is a follow-up.
 - **Stale branches after a partial failure.** These block a revival until a human deletes them.
 - **Host-wide redeploys.** Every component change takes the whole preview host down for the redeploy (about 160 s
-  today).
+  today). _Later resolved with target health on (the chart's default):_ the Ingress stays across a redeploy, and since
+  2026-10-06 each Deployment rolls out with `maxSurge: 1` and `maxUnavailable: 0` instead of `Recreate`, so the previous
+  revision serves until the new one's target is healthy, including while a pull request's runtime image is still being
+  published. A rollout that misses its deadline is still retried by deleting the Deployments.
 - **Plan pod storage.** A planner pod holds up to 8 trees under one ephemeral-storage limit.
 - **Serialised rounds.** They add latency when several PRs are under review at once.
 
@@ -1438,7 +1444,7 @@ class JSON later; its strict decoder makes a new field an additive change.
    - `secrets get` restricted by `resourceNames` in the release namespace; its agent-jobs Role can get, create, update
      and delete any Secret in the agents namespace, including model keys, image-pull credentials and other Jobs'
      handoffs;
-   - a token per operation, scoped to one repository and one permission;
+   - a token per operation, scoped to one repository and one permission (opening a pull request adds contents read);
    - writes only to repos listed in a Project, plus issue operations on the intent repo;
    - branches only under `patchy-intent/`, created once and then only fast-forwarded;
    - never the default branch; humans merge.

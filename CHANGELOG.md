@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.12.20](https://github.com/devthenet-labs/patchy/compare/v0.12.19...v0.12.20) (2026-10-06)
+
+
+### Features
+
+* stream a running command's output live in the run panel ([#136](https://github.com/devthenet-labs/patchy/issues/136)) ([6e4ce85](https://github.com/devthenet-labs/patchy/commit/6e4ce854b5a978cfcc723538f9f10f8657880c4d))
+* **ui:** make the timeline's run rows obviously clickable ([#134](https://github.com/devthenet-labs/patchy/issues/134)) ([f71d5d9](https://github.com/devthenet-labs/patchy/commit/f71d5d9b00cd1a30a2dbaf80d9088529823313f9))
+
+
+### Bug Fixes
+
+* **harness:** pin claude's setting sources ([#132](https://github.com/devthenet-labs/patchy/issues/132)) ([50a45d4](https://github.com/devthenet-labs/patchy/commit/50a45d409337df09024bfeda7196f11d3f632aab))
+* **transcript:** scrub a turn before stripping its escapes too ([#135](https://github.com/devthenet-labs/patchy/issues/135)) ([bebaf40](https://github.com/devthenet-labs/patchy/commit/bebaf40ec8849fcdcb90601f9f5d1572f2f860a5))
+
 ## [0.12.19](https://github.com/devthenet-labs/patchy/compare/v0.12.18...v0.12.19) (2026-10-06)
 
 

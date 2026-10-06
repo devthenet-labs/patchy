@@ -173,15 +173,6 @@ func TestTailNoPod(t *testing.T) {
 	}
 }
 
-func outputLine(t *testing.T, o transcript.Output) string {
-	t.Helper()
-	line, err := transcript.EncodeOutput(o)
-	if err != nil {
-		t.Fatalf("encode output: %v", err)
-	}
-	return line
-}
-
 // TestResultSkipsLiveOutput: the live command output is neither persisted
 // as turns nor read as stage results, even where its lines quote either
 // stream, and the result is found after a run's worth of it. A turn or a

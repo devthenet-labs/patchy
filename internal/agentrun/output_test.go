@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -590,8 +591,8 @@ func TestOutputScrubsTheRepairsToken(t *testing.T) {
 	}
 	exec := &commandExec{ws: ws, runs: []commandRun{
 		{script: func(func(string)) {}, writes: map[string]string{
-			"reports/plan.md":           strings.Replace(goodPlan, "confidence: 0.8", "confidence: 7", 1),
-			"broker-token":              rotated + "\n",
+			"reports/plan.md": strings.Replace(goodPlan, "confidence: 0.8", "confidence: 7", 1),
+			"broker-token":    rotated + "\n",
 		}},
 		{writes: reported, script: func(feed func(string)) {
 			f, _ := commandFile(t, tmp, "benv")
@@ -646,18 +647,175 @@ func TestOutputOnlyInIntentStages(t *testing.T) {
 	}
 }
 
+// streamed reads content as a command's whole file, in one pass and then
+// its close, through the stream of a follower that scrubs secrets, and
+// returns the chunks it prints.
+func streamed(t *testing.T, secrets []string, content string) []transcript.Output {
+	t.Helper()
+	out := &syncBuffer{}
+	a := New(Config{Out: out, Log: slog.New(slog.DiscardHandler)}, nil)
+	f := &outputFollower{a: a, secrets: secrets, pace: fastPace}
+	path := filepath.Join(t.TempDir(), "bsecret.output")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = file.Close() }()
+	s := f.newStream("bsecret")
+	if s.read(file, time.Now()) {
+		s.close(file)
+	}
+	return chunks(out.String())
+}
+
+// leaked is the first piece of secret, minSecretPiece bytes long, that a
+// chunk shows, or "".
+func leaked(got []transcript.Output, secret string) string {
+	const minSecretPiece = 8
+	for _, o := range got {
+		for _, l := range o.Lines {
+			for i := 0; i+minSecretPiece <= len(secret); i++ {
+				if strings.Contains(l, secret[i:i+minSecretPiece]) {
+					return secret[i : i+minSecretPiece]
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// secretOf is n bytes of a secret's alphabet, which no filler, placeholder
+// or marker a test prints shares.
+func secretOf(r *rand.Rand, n int) string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = alphabet[r.Intn(len(alphabet))]
+	}
+	return string(b)
+}
+
+// TestOutputNeverShowsAnOverlongLine: a line longer than the splitter holds
+// is cut before its escapes are stripped and its secrets scrubbed, so a
+// secret straddling the cut would survive in part. Such a line is never
+// shown from what was held of it: a fixed placeholder stands in for it,
+// under its own number, at full fidelity and in a sample alike.
+func TestOutputNeverShowsAnOverlongLine(t *testing.T) {
+	r := rand.New(rand.NewSource(20261006))
+	secret := secretOf(r, 1200)
+	repeated := secretOf(r, 1000)
+	filler := strings.Repeat(numbered(0)+"\n", 1000) // past a command's full-fidelity budget
+	tests := []struct {
+		name, secret, line string
+		sampled            bool
+	}{
+		// The reviewer's case: escapes that strip to nothing push the
+		// secret across the cut.
+		{"escapes before a secret", secret, strings.Repeat("\x1b[0m", 1800) + secret, false},
+		{"escapes before a secret, sampled", secret, strings.Repeat("\x1b[0m", 1800) + secret, true},
+		// Every whole token is scrubbed; the one the cut splits is not.
+		{"a repeated token", repeated, strings.Repeat("T="+repeated+" ", 9), false},
+		{"a repeated token, sampled", repeated, strings.Repeat("T="+repeated+" ", 9), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if len(tt.line) <= outputHeldBytes {
+				t.Fatalf("the line is %d bytes, not past the %d held", len(tt.line), outputHeldBytes)
+			}
+			content := "before\n" + tt.line + "\nafter\n"
+			if tt.sampled {
+				content = filler + content
+			}
+			got := streamed(t, []string{tt.secret}, content)
+			if piece := leaked(got, tt.secret); piece != "" {
+				t.Fatalf("a chunk shows %q of the secret", piece)
+			}
+			at := strings.Count(content, "\n") - 1 // the overlong line's number
+			shown := false
+			for _, o := range got {
+				for k, l := range o.Lines {
+					if o.Line+k == at {
+						shown = true
+						if l != outputOverlong {
+							t.Errorf("line %d = %.40q, want the placeholder %q", at, l, outputOverlong)
+						}
+					}
+				}
+			}
+			if !shown {
+				t.Errorf("line %d is not shown at all; want the placeholder under its number: %+v", at, got)
+			}
+		})
+	}
+	if !strings.Contains(outputOverlong, strconv.Itoa(outputHeldBytes>>10)+" KiB") {
+		t.Errorf("the placeholder %q does not name the %d KiB a line may hold", outputOverlong, outputHeldBytes>>10)
+	}
+}
+
+// TestOutputSecretsAroundTheCapProperty: whatever a line around the held
+// cap holds before and after a secret, and wherever the secret sits in it,
+// no chunk shows any piece of the secret 8 bytes long.
+func TestOutputSecretsAroundTheCapProperty(t *testing.T) {
+	fillers := []string{"a", "z", " ", "é", "-", "\x1b[0m", "\x1b[1;31m"}
+	property := func(seed int64) bool {
+		r := rand.New(rand.NewSource(seed))
+		secret := secretOf(r, 8+r.Intn(1200))
+		escapes := r.Float64() // how much of the filler is escape sequences
+		fill := func(n int) string {
+			var b strings.Builder
+			for b.Len() < n {
+				if r.Float64() < escapes {
+					b.WriteString(fillers[5+r.Intn(2)])
+				} else {
+					b.WriteString(fillers[r.Intn(5)])
+				}
+			}
+			return b.String()
+		}
+		total := outputHeldBytes - 2048 + r.Intn(4096) // the line's length, around the cap
+		at := r.Intn(total)
+		line := fill(at) + secret + fill(total-at-len(secret))
+		if r.Intn(2) == 0 {
+			line += "\n" // or the output's last, unended line
+		}
+		if r.Intn(3) == 0 {
+			line = strings.Repeat(numbered(0)+"\n", 1000) + line // sampled
+		}
+		if piece := leaked(streamed(t, []string{secret}, line), secret); piece != "" {
+			t.Logf("seed %d: a chunk shows %q of a %d-byte secret at %d in a %d-byte line", seed, piece,
+				len(secret), at, len(line))
+			return false
+		}
+		return true
+	}
+	cfg := &quick.Config{MaxCount: 300, Rand: rand.New(rand.NewSource(20261007))}
+	if err := quick.Check(property, cfg); err != nil {
+		t.Error(err)
+	}
+}
+
 // splitAll runs a splitter over the pieces and returns every line, the
 // unended last one included.
 func splitAll(pieces ...string) []string {
-	var s lineSplitter
-	var lines []string
-	for _, p := range pieces {
-		s.write([]byte(p), func(l []byte) { lines = append(lines, string(l)) })
-	}
-	if rest, ok := s.rest(); ok {
-		lines = append(lines, string(rest))
-	}
+	lines, _ := split(pieces...)
 	return lines
+}
+
+// split is splitAll, and which of the lines the splitter cut.
+func split(pieces ...string) (lines []string, cut []bool) {
+	var s lineSplitter
+	for _, p := range pieces {
+		s.write([]byte(p), func(l []byte, over bool) {
+			lines, cut = append(lines, string(l)), append(cut, over)
+		})
+	}
+	if rest, over, ok := s.rest(); ok {
+		lines, cut = append(lines, string(rest)), append(cut, over)
+	}
+	return lines, cut
 }
 
 func TestLineSplitter(t *testing.T) {
@@ -687,13 +845,18 @@ func TestLineSplitter(t *testing.T) {
 	}
 
 	long := strings.Repeat("a", 3*outputHeldBytes)
-	if got := splitAll(long[:outputHeldBytes-1], long, "\nok\n"); len(got) != 2 ||
-		len(got[0]) != outputHeldBytes || got[1] != "ok" {
-		t.Errorf("an overlong line = %d lines, the first %d bytes; want it held to %d, then the next line",
-			len(got), len(got[0]), outputHeldBytes)
+	if got, cut := split(long[:outputHeldBytes-1], long, "\nok\n"); len(got) != 2 ||
+		len(got[0]) != outputHeldBytes || got[1] != "ok" || !slices.Equal(cut, []bool{true, false}) {
+		t.Errorf("an overlong line = %d lines, the first %d bytes, cut %v; want it held to %d and marked cut, "+
+			"then the next line", len(got), len(got[0]), cut, outputHeldBytes)
 	}
-	if got := splitAll(long, "\rshort\n"); !slices.Equal(got, []string{"short"}) {
-		t.Errorf("an overlong line redrawn = %q, want the redraw", got)
+	if got, cut := split(long[:outputHeldBytes], "\n", long[:outputHeldBytes+1]); len(got) != 2 ||
+		!slices.Equal(cut, []bool{false, true}) {
+		t.Errorf("a line of exactly %d bytes, then an unended one over it: cut %v, want [false true]",
+			outputHeldBytes, cut)
+	}
+	if got, cut := split(long, "\rshort\n"); !slices.Equal(got, []string{"short"}) || cut[0] {
+		t.Errorf("an overlong line redrawn = %q, cut %v; want the redraw, whole", got, cut)
 	}
 }
 
@@ -736,17 +899,19 @@ func TestOutputClean(t *testing.T) {
 	f := &outputFollower{secrets: []string{"SECRETVALUE1"}}
 	tests := []struct {
 		name, raw, want string
+		over            bool
 	}{
-		{"escapes", "\x1b[1;32mok\x1b[0m done", "ok done"},
-		{"invalid utf-8", "bad \xff\xfe bytes", "bad \uFFFD bytes"},
-		{"a secret", "token=SECRETVALUE1;", "token=" + transcript.Redacted + ";"},
-		{"at the cap", strings.Repeat("a", outputLineBytes), strings.Repeat("a", outputLineBytes)},
-		{"over the cap", strings.Repeat("a", 2000), strings.Repeat("a", outputLineBytes-3) + "…"},
-		{"over the cap, mid-rune", strings.Repeat("漢", 400), strings.Repeat("漢", 340) + "…"},
+		{"escapes", "\x1b[1;32mok\x1b[0m done", "ok done", false},
+		{"invalid utf-8", "bad \xff\xfe bytes", "bad \uFFFD bytes", false},
+		{"a secret", "token=SECRETVALUE1;", "token=" + transcript.Redacted + ";", false},
+		{"at the cap", strings.Repeat("a", outputLineBytes), strings.Repeat("a", outputLineBytes), false},
+		{"over the cap", strings.Repeat("a", 2000), strings.Repeat("a", outputLineBytes-3) + "…", false},
+		{"over the cap, mid-rune", strings.Repeat("漢", 400), strings.Repeat("漢", 340) + "…", false},
+		{"a line the splitter cut", "token=SECRETVAL", outputOverlong, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := f.clean([]byte(tt.raw))
+			got := f.clean([]byte(tt.raw), tt.over)
 			if got != tt.want {
 				t.Errorf("clean = %.60q (%d bytes), want %.60q", got, len(got), tt.want)
 			}

@@ -38,6 +38,11 @@ const (
 	outputLineBytes = 1024
 	// outputHeldBytes bounds the raw bytes held of a line not yet ended.
 	outputHeldBytes = 8 << 10
+	// outputOverlong stands in for a line longer than outputHeldBytes. The
+	// bytes held of it were cut before its escapes were stripped and its
+	// secrets scrubbed, so a secret straddling the cut would survive in
+	// part: none of it is shown.
+	outputOverlong = "[a line of more than 8 KiB, not shown]"
 	// outputChunkLines and outputChunkBytes (of line text) print a chunk
 	// before its flush interval is up.
 	outputChunkLines = 32
@@ -237,7 +242,7 @@ func (f *outputFollower) follow(t *followedTask) {
 	}
 	defer func() { _ = file.Close() }()
 
-	s := &outputStream{f: f, task: t.id, next: 1, buf: make([]byte, 32<<10)}
+	s := f.newStream(t.id)
 	tick := time.NewTicker(f.pace.poll)
 	defer tick.Stop()
 	if !s.read(file, time.Now()) {
@@ -298,8 +303,13 @@ func openOutputFile(pattern string) *os.File {
 
 // clean is one raw line as it is shown: its terminal escapes stripped, made
 // valid UTF-8, the run's secrets scrubbed out, and capped at outputLineBytes,
-// a cut marked with an ellipsis.
-func (f *outputFollower) clean(raw []byte) string {
+// a cut marked with an ellipsis. A line the splitter cut (over) is shown as
+// outputOverlong alone: what was held of it was cut before it was stripped
+// or scrubbed.
+func (f *outputFollower) clean(raw []byte, over bool) string {
+	if over {
+		return outputOverlong
+	}
 	text := strings.ToValidUTF8(string(ansi.Strip(raw)), "�")
 	text = transcript.Scrub(text, f.secrets)
 	if len(text) > outputLineBytes {
@@ -331,6 +341,11 @@ type outputStream struct {
 	newest   ring // the newest lines, once sampling
 	sampled  time.Time
 	stopped  bool // the process's budget is spent: nothing more is printed
+}
+
+// newStream is command task's output stream, from its first line.
+func (f *outputFollower) newStream(task string) *outputStream {
+	return &outputStream{f: f, task: task, next: 1, buf: make([]byte, 32<<10)}
 }
 
 // read takes what the command appended to its file since the last pass, up
@@ -366,8 +381,8 @@ func (s *outputStream) close(file *os.File) {
 	if s.stopped {
 		return
 	}
-	if raw, ok := s.split.rest(); ok && whole {
-		s.line(raw) // the last line, which the output did not end
+	if raw, over, ok := s.split.rest(); ok && whole {
+		s.line(raw, over) // the last line, which the output did not end
 	}
 	if s.stopped {
 		return
@@ -399,19 +414,20 @@ func (s *outputStream) readFile(file *os.File, limit int, deadline time.Time) bo
 	return false
 }
 
-// line takes one line of the command's output: into the batch at full
-// fidelity, or into the newest lines once sampling.
-func (s *outputStream) line(raw []byte) {
+// line takes one line of the command's output, over when the splitter cut
+// it: into the batch at full fidelity, or into the newest lines once
+// sampling.
+func (s *outputStream) line(raw []byte, over bool) {
 	n := s.next
 	s.next++
 	if s.stopped {
 		return
 	}
 	if s.sampling {
-		s.newest.keep(n, raw)
+		s.newest.keep(n, raw, over)
 		return
 	}
-	text := s.f.clean(raw)
+	text := s.f.clean(raw, over)
 	if len(s.batch) == 0 {
 		s.batchLine, s.batchSince = n, s.now
 	}
@@ -476,27 +492,29 @@ type ring struct {
 	count int
 }
 
-// rawLine is one line kept as it was read, and its number.
+// rawLine is one line kept as it was read, its number, and whether the
+// splitter cut it.
 type rawLine struct {
-	n   int
-	raw []byte
+	n    int
+	raw  []byte
+	over bool
 }
 
 // keep adds line n, dropping the oldest when full.
-func (r *ring) keep(n int, raw []byte) {
+func (r *ring) keep(n int, raw []byte, over bool) {
 	i := (r.head + r.count) % outputSampleLines
 	if r.count == outputSampleLines {
 		i, r.head = r.head, (r.head+1)%outputSampleLines
 	} else {
 		r.count++
 	}
-	r.lines[i].n, r.lines[i].raw = n, append(r.lines[i].raw[:0], raw...)
+	r.lines[i].n, r.lines[i].raw, r.lines[i].over = n, append(r.lines[i].raw[:0], raw...), over
 }
 
 // since returns the kept lines numbered after shown, cleaned, oldest first,
 // and the number of the first of them. The lines kept are consecutive, so
 // these are too.
-func (r *ring) since(shown int, clean func([]byte) string) (int, []string) {
+func (r *ring) since(shown int, clean func([]byte, bool) string) (int, []string) {
 	first := 0
 	var lines []string
 	for k := range r.count {
@@ -507,7 +525,7 @@ func (r *ring) since(shown int, clean func([]byte) string) (int, []string) {
 		if first == 0 {
 			first = l.n
 		}
-		lines = append(lines, clean(l.raw))
+		lines = append(lines, clean(l.raw, l.over))
 	}
 	return first, lines
 }
@@ -516,15 +534,16 @@ func (r *ring) since(shown int, clean func([]byte) string) (int, []string) {
 // what a terminal shows of it: the text after its last carriage return, as a
 // progress bar redraws its line that way, except that a carriage return just
 // before the newline ending a line only ends it. At most outputHeldBytes of
-// a line are held; the rest of it is dropped.
+// a line are held; the rest of it is dropped, and the line is marked over.
 type lineSplitter struct {
 	held []byte
+	over bool // bytes of the held line past outputHeldBytes were dropped
 	cr   bool // the last byte was a carriage return, which the next decides about
 }
 
-// write splits p, handing each line it ends to line; the slice line is
-// handed is valid only during the call.
-func (s *lineSplitter) write(p []byte, line func([]byte)) {
+// write splits p, handing each line it ends to line, with whether it was
+// cut; the slice line is handed is valid only during the call.
+func (s *lineSplitter) write(p []byte, line func(raw []byte, over bool)) {
 	for len(p) > 0 {
 		i := bytes.IndexAny(p, "\r\n")
 		if i < 0 {
@@ -533,8 +552,8 @@ func (s *lineSplitter) write(p []byte, line func([]byte)) {
 		}
 		s.hold(p[:i])
 		if p[i] == '\n' {
-			line(s.held)
-			s.held, s.cr = s.held[:0], false
+			line(s.held, s.over)
+			s.restart()
 		} else {
 			s.cr = true
 		}
@@ -549,15 +568,21 @@ func (s *lineSplitter) hold(b []byte) {
 		return
 	}
 	if s.cr {
-		s.held, s.cr = s.held[:0], false
+		s.restart()
 	}
 	if room := outputHeldBytes - len(s.held); len(b) > room {
-		b = b[:room]
+		b, s.over = b[:room], true
 	}
 	s.held = append(s.held, b...)
 }
 
-// rest is the line the output stopped in without ending, if there is one.
-func (s *lineSplitter) rest() ([]byte, bool) {
-	return s.held, len(s.held) > 0
+// restart begins a line afresh.
+func (s *lineSplitter) restart() {
+	s.held, s.over, s.cr = s.held[:0], false, false
+}
+
+// rest is the line the output stopped in without ending, if there is one,
+// and whether it was cut.
+func (s *lineSplitter) rest() (raw []byte, over, ok bool) {
+	return s.held, s.over, len(s.held) > 0
 }

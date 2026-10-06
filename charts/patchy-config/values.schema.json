@@ -676,6 +676,10 @@
                             "type": "array",
                             "x-kubernetes-list-type": "set"
                         },
+                        "rerunFailed": {
+                            "description": "RerunFailed re-runs the failed jobs of the GitHub Actions runs behind\na failed named check once, on patchy's own head, before a fix round\nis spent on it: a flaky test that passes again costs no round. Only a\nsecond failure at the same head starts the round, as does a failure\nthat is not an Actions check run (a commit status, another App's\ncheck), which has no run to re-run. It acts only on the checks Fix\nnames, and needs the App's actions write permission on every app\nrepository (the Project is not Ready otherwise).",
+                            "type": "boolean"
+                        },
                         "timeout": {
                             "default": "30m",
                             "description": "Timeout is how long after a push the controller waits for the named\nchecks to settle before it stops watching them, between 1m and 6h. A\npointer so that an unset value is omitted and the schema default\napplies (a zero metav1.Duration would serialize as \"0s\").",

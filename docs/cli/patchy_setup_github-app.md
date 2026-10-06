@@ -18,6 +18,10 @@ else; choose at least one:
               write. intent-controller polls GitHub, so intents add no webhook.
   --checks    with --intents: checks, statuses and actions read, which a
               Project's check-fix rounds (spec.checks.fix) need.
+  --rerun-failed
+              with --checks: actions write, which a Project's
+              spec.checks.rerunFailed needs to re-run the failed jobs of the
+              Actions runs behind a failed check once before a check-fix round.
 Metadata read comes with every App. The intent permissions are the table
 intent-controller proves before a Project is Ready.
 
@@ -77,6 +81,7 @@ patchy setup github-app [flags]
       --no-browser            open no browser and listen on no port: write the page to a file and paste the code back
       --org string            organization to create the App under (you must be an owner)
   -o, --output string         file to write the Secret manifest to, or - for stdout (default <secret-name>.secret.yaml)
+      --rerun-failed          with --checks: actions write, to re-run failed Actions jobs before a check-fix round
       --secret-name string    name of the Secret written (default "patchy-github")
       --security              the findings pipeline: alerts, tracking issues, remediation PRs
       --timeout duration      how long to wait for GitHub to send the browser back (default 15m0s)

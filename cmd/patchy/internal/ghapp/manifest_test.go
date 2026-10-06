@@ -28,7 +28,7 @@ func TestBuildGolden(t *testing.T) {
 		name string
 		cfg  Config
 	}{
-		{"all", Config{Features: Features{Security: true, Intents: true, Checks: true},
+		{"all", Config{Features: Features{Security: true, Intents: true, Checks: true, RerunFailed: true},
 			Name: DefaultName(org), HomepageURL: DefaultHomepageURL, WebhookURL: testWebhook,
 			RedirectURL: "http://127.0.0.1:49152/callback"}},
 		{"intents", Config{Features: Features{Intents: true},
@@ -82,6 +82,8 @@ func TestBuildRefuses(t *testing.T) {
 		{"no feature", func(c *Config) { c.Features = Features{} }, "choose what the App is for"},
 		{"checks without intents", func(c *Config) { c.Features = Features{Security: true, Checks: true} },
 			"it needs --intents"},
+		{"re-runs without checks", func(c *Config) { c.Features = Features{Intents: true, RerunFailed: true} },
+			"it needs --checks"},
 		{"security without a webhook", func(c *Config) { c.Features.Security = true }, "needs --webhook-url"},
 		{"a webhook without security", func(c *Config) { c.WebhookURL = testWebhook }, "receives webhook events"},
 		{"http webhook", func(c *Config) {
@@ -153,11 +155,11 @@ func TestManifestIsTheTable(t *testing.T) {
 	}
 }
 
-// allFeatureSelections is every combination of the three switches.
+// allFeatureSelections is every combination of the four switches.
 func allFeatureSelections() []Features {
-	out := make([]Features, 0, 8)
-	for i := range 8 {
-		out = append(out, Features{Security: i&1 != 0, Intents: i&2 != 0, Checks: i&4 != 0})
+	out := make([]Features, 0, 16)
+	for i := range 16 {
+		out = append(out, Features{Security: i&1 != 0, Intents: i&2 != 0, Checks: i&4 != 0, RerunFailed: i&8 != 0})
 	}
 	return out
 }
@@ -165,7 +167,7 @@ func allFeatureSelections() []Features {
 // TestFeaturesAreTheTable: the switches cover exactly the table's
 // features, in its order.
 func TestFeaturesAreTheTable(t *testing.T) {
-	if got := (Features{Security: true, Intents: true, Checks: true}).Selected(); !slices.Equal(got,
+	if got := (Features{Security: true, Intents: true, Checks: true, RerunFailed: true}).Selected(); !slices.Equal(got,
 		intentperm.Features()) {
 		t.Errorf("Selected() = %v, want the table's %v", got, intentperm.Features())
 	}

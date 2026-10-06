@@ -173,9 +173,10 @@ func plainTurn(t transcript.Turn) Turn {
 // activity events (counts and the open tool's name, no text); only a tier 2
 // reader also gets the turns. The stripping happens here, per subscriber, on
 // every send: the follow behind a live run is shared by everyone watching
-// it, whatever their tier. The stream re-checks its grant every reauth
-// period and ends when it is gone, and ends anyway after maxAge so the
-// browser reconnects through its current session.
+// it, whatever their tier. A run that has not launched yet is waited for
+// (awaitLaunch). The stream re-checks its grant every reauth period and ends
+// when it is gone, and ends anyway after maxAge so the browser reconnects
+// through its current session.
 func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
 	id, in, tier, ok := s.intentRequest(w, r)
 	if !ok {
@@ -206,8 +207,10 @@ func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
 	if tier == authz.TierTranscripts {
 		s.auditRead(ctx, id, in, run.Name, "transcript")
 	}
+	deadline := time.NewTimer(s.intents.maxAge)
+	defer deadline.Stop()
 	rs := &runStream{s: s, w: w, flusher: flusher, id: id, in: in, run: run, tier: tier,
-		act: &activityTracker{now: s.now}}
+		act: &activityTracker{now: s.now}, deadline: deadline.C}
 	rs.serve(ctx)
 }
 
@@ -221,6 +224,9 @@ type runStream struct {
 	run     *v1alpha1.IntentRun
 	tier    authz.Tier
 	act     *activityTracker
+	// deadline fires maxAge after the stream opened, whether it is still
+	// waiting for the run to launch or already following it.
+	deadline <-chan time.Time
 }
 
 // send emits one turn: activity to everyone, the turn itself to tier 2.
@@ -233,6 +239,9 @@ func (rs *runStream) send(t transcript.Turn) bool {
 }
 
 func (rs *runStream) serve(ctx context.Context) {
+	if !rs.awaitLaunch(ctx) {
+		return
+	}
 	if rs.run.Status.Transcript != nil {
 		rs.persisted(ctx)
 		return
@@ -243,6 +252,71 @@ func (rs *runStream) serve(ctx context.Context) {
 		return
 	}
 	rs.live(ctx)
+}
+
+// queued reports a run whose agent has not launched: waiting for a run slot
+// (Pending, or no status written yet), or granted one (Running) before its
+// Job exists. The RunReconciler records the Job only once it has launched it.
+func queued(run *v1alpha1.IntentRun) bool {
+	if run.Status.Transcript != nil || run.Status.JobRef != nil {
+		return false
+	}
+	switch run.Status.Phase {
+	case "", v1alpha1.RunPending, v1alpha1.RunRunning:
+		return true
+	}
+	return false
+}
+
+// awaitLaunch holds the stream of a queued run open until the run launches
+// or ends, re-reading it every runPoll, so a viewer who opened it while it
+// waited for a slot sees it start rather than a stream that ended before
+// there was anything to follow. It keeps the stream's other rules while it
+// waits: pings, the grant re-checked, the maxAge reconnect. It reports
+// whether the stream goes on; false once it has ended.
+func (rs *runStream) awaitLaunch(ctx context.Context) bool {
+	if !queued(rs.run) {
+		return true
+	}
+	poll := time.NewTicker(rs.s.intents.runPoll)
+	defer poll.Stop()
+	ping := time.NewTicker(keepalivePeriod)
+	defer ping.Stop()
+	reauth := time.NewTicker(rs.s.intents.reauth)
+	defer reauth.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-poll.C:
+			run, err := rs.s.intentRunFor(ctx, rs.in, rs.run.Name)
+			switch {
+			case errors.Is(err, errNotVisible):
+				sseEnd(rs.w, rs.flusher, "")
+				return false
+			case err != nil:
+				// A failed read is retried on the next tick.
+				continue
+			}
+			rs.run = run
+			if !queued(run) {
+				return true
+			}
+		case <-reauth.C:
+			if !rs.s.stillGranted(ctx, rs.id, rs.in.Spec.Project, rs.tier) {
+				sseEnd(rs.w, rs.flusher, endRevoked)
+				return false
+			}
+		case <-rs.deadline:
+			sseEnd(rs.w, rs.flusher, endReconnect)
+			return false
+		case <-ping.C:
+			if _, err := fmt.Fprint(rs.w, ": ping\n\n"); err != nil {
+				return false
+			}
+			rs.flusher.Flush()
+		}
+	}
 }
 
 // persisted replays a collected run's stored transcript and ends.
@@ -295,8 +369,6 @@ func (rs *runStream) live(ctx context.Context) {
 	defer ping.Stop()
 	reauth := time.NewTicker(rs.s.intents.reauth)
 	defer reauth.Stop()
-	deadline := time.NewTimer(rs.s.intents.maxAge)
-	defer deadline.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -316,7 +388,7 @@ func (rs *runStream) live(ctx context.Context) {
 				sseEnd(rs.w, rs.flusher, endRevoked)
 				return
 			}
-		case <-deadline.C:
+		case <-rs.deadline:
 			sseEnd(rs.w, rs.flusher, endReconnect)
 			return
 		case <-ping.C:

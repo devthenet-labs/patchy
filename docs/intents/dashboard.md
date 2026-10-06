@@ -27,7 +27,8 @@ pull requests; the preview; and every run with its stage, round, attempt, outcom
 watchdog's limit (20 minutes without a model turn or tool result, by default), which tool the agent called last and has
 no result for yet and for how long, the last activity, and every condition that stops the run, in plain English. The
 output-token kill switch is listed as what it is: a count of streamed output tokens, not a bound on spend. The cost
-ceiling is checked only before the next launch, so a running run can pass it; the panel says so.
+ceiling is checked only before the next launch, so a running run can pass it; the panel says so. A run still waiting
+for a run slot can be opened too: its panel follows it live from the moment its agent starts.
 
 Spend on the dashboard is recorded spend only: the cost each run reported when it was collected. A run's spend appears
 when it ends. There are no live token or dollar figures yet.

@@ -64,6 +64,7 @@ type IntentsOptions struct {
 const (
 	defaultReauthPeriod = 20 * time.Second
 	defaultMaxStreamAge = 10 * time.Minute
+	defaultRunPoll      = 2 * time.Second
 )
 
 // intentsState is the server's intents side; nil while the views are off.
@@ -74,6 +75,9 @@ type intentsState struct {
 	limiter  *streamLimiter
 	reauth   time.Duration
 	maxAge   time.Duration
+	// runPoll is how often the stream of a run that has not launched yet
+	// re-reads it (from the cache) for its Job.
+	runPoll time.Duration
 }
 
 // WithIntents enables the intents views.
@@ -90,6 +94,7 @@ func (s *Server) WithIntents(o IntentsOptions) *Server {
 		limiter:  newStreamLimiter(maxIdentityStreams, maxIntentStreams),
 		reauth:   o.ReauthPeriod,
 		maxAge:   o.MaxStreamAge,
+		runPoll:  defaultRunPoll,
 	}
 	if o.Facts != nil {
 		st.facts = &factsCache{src: o.Facts, now: s.now, entries: map[string]factsEntry{}}

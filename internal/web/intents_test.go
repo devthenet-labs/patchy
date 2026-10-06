@@ -4,6 +4,7 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"reflect"
 	"slices"
@@ -11,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/web/auth"
 	"github.com/bitwise-media-group/patchy/internal/web/authz"
 )
@@ -518,6 +522,106 @@ func TestStreamMaxAgeEndsForReconnect(t *testing.T) {
 	_, body := get(t, as(t, s, viewerAlpha), "/api/intents/alpha-7/runs/alpha-7-bld-r1-app-a2/stream")
 	if !strings.Contains(body, endReconnect) {
 		t.Errorf("body = %s, want an end with reason reconnect", body)
+	}
+}
+
+// open is how many streams the limiter holds (tests).
+func (l *streamLimiter) open() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.total
+}
+
+// A run still waiting for a run slot when its panel opens (Pending, no Job
+// yet) has nothing to follow. Its stream waits for the Job instead of
+// ending, then follows the run live once it launches, so a viewer who opened
+// a queued run sees it start without reloading.
+func TestRunStreamWaitsForLaunch(t *testing.T) {
+	objs := intentsFixture(t)
+	queued := findRun(objs, "alpha-7-bld-r1-app-a2")
+	queued.Status.Phase, queued.Status.JobRef, queued.Status.StartedAt = v1alpha1.RunPending, nil, nil
+	s, _ := intentsServer(t, &fakeTailer{turns: fixtureTurns()}, objs...)
+	s.intents.runPoll = 10 * time.Millisecond
+	ts := as(t, s, readerAlpha)
+	done := make(chan string, 1)
+	go func() {
+		_, body := get(t, ts, "/api/intents/alpha-7/runs/alpha-7-bld-r1-app-a2/stream")
+		done <- body
+	}()
+	// The stream holds its slot while the run waits.
+	waitFor(t, func() bool { return s.intents.limiter.open() == 1 })
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case body := <-done:
+		t.Fatalf("the stream of a queued run ended before it launched: %s", body)
+	default:
+	}
+
+	// The run launches: the RunReconciler grants it a slot, then its Job.
+	ctx := context.Background()
+	var run v1alpha1.IntentRun
+	if err := s.client.Get(ctx, client.ObjectKeyFromObject(queued), &run); err != nil {
+		t.Fatal(err)
+	}
+	run.Status.Phase = v1alpha1.RunRunning
+	run.Status.JobRef = &v1alpha1.JobReference{Namespace: "patchy-agents", Name: "job-alpha-7-bld"}
+	if err := s.client.Update(ctx, &run); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case body := <-done:
+		turns := 0
+		for _, ev := range sseEvents(body) {
+			if ev[0] == eventTurn {
+				turns++
+			}
+		}
+		if turns != 3 {
+			t.Errorf("the launched run streamed %d turns, want 3: %s", turns, body)
+		}
+		if a := lastActivity(t, body); a.Turns != 3 {
+			t.Errorf("final activity = %+v, want 3 turns", a)
+		}
+		if !strings.Contains(body, `"live":true`) {
+			t.Errorf("the stream never reported the run live: %s", body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream did not follow the run once it launched")
+	}
+}
+
+// A queued run that ends without ever launching (its launch refused) ends
+// its stream too, rather than waiting for a Job that will never exist.
+func TestRunStreamOfQueuedRunEndsWhenRunEnds(t *testing.T) {
+	objs := intentsFixture(t)
+	queued := findRun(objs, "alpha-7-bld-r1-app-a2")
+	queued.Status.Phase, queued.Status.JobRef, queued.Status.StartedAt = v1alpha1.RunPending, nil, nil
+	s, _ := intentsServer(t, &fakeTailer{}, objs...)
+	s.intents.runPoll = 10 * time.Millisecond
+	ts := as(t, s, viewerAlpha)
+	done := make(chan string, 1)
+	go func() {
+		_, body := get(t, ts, "/api/intents/alpha-7/runs/alpha-7-bld-r1-app-a2/stream")
+		done <- body
+	}()
+	waitFor(t, func() bool { return s.intents.limiter.open() == 1 })
+	ctx := context.Background()
+	var run v1alpha1.IntentRun
+	if err := s.client.Get(ctx, client.ObjectKeyFromObject(queued), &run); err != nil {
+		t.Fatal(err)
+	}
+	run.Status.Phase, run.Status.Outcome = v1alpha1.RunFailed, "launch_refused"
+	if err := s.client.Update(ctx, &run); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case body := <-done:
+		events := sseEvents(body)
+		if len(events) == 0 || events[len(events)-1][0] != eventEnd {
+			t.Errorf("events = %v, want a final end", events)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream of a run that ended unlaunched kept waiting")
 	}
 }
 

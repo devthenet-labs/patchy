@@ -208,7 +208,8 @@ func TestTargetHealthHeadUpdateKeepsIngress(t *testing.T) {
 		t.Fatal(err)
 	}
 	p = e.step(p.Name)
-	if p.Status.Phase != v1alpha1.PreviewPending || p.Status.URL != "" {
+	// The Preview holds its slot, so it redeploys there at once.
+	if p.Status.Phase != v1alpha1.PreviewDeploying || p.Status.URL != "" {
 		t.Fatalf("head update status = %+v", p.Status)
 	}
 	if err := e.slotObject(resourceName(p), &networkingv1.Ingress{}); err != nil {

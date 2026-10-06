@@ -18,6 +18,7 @@ import type {
   Me,
   OfflineDataset,
   RunActivity,
+  RunOutput,
   StreamNotice,
   TranscriptTurn,
 } from "./types";
@@ -30,6 +31,7 @@ import {
   mockIntentPlan,
   mockIntentRun,
   mockMe,
+  mockRunOutput,
   mockRunTurns,
 } from "./mock/intents";
 import { DEFAULT_PERSONA, type Persona } from "./mock/personas";
@@ -377,11 +379,15 @@ function parseNotice(data: unknown): StreamNotice {
   }
 }
 
-// RunStreamHandlers receive one run's stream. onTurn fires only for a
-// transcripts-tier reader: the server never sends turns to anyone else.
+// RunStreamHandlers receive one run's stream. onTurn and onOutput fire only
+// for a transcripts-tier reader: the server never sends turns or command
+// output to anyone else.
 export interface RunStreamHandlers {
   onActivity: (a: RunActivity) => void;
   onTurn: (t: TranscriptTurn) => void;
+  // onOutput receives each chunk of the running command's output as sent,
+  // the reconnect replay included; mergeRunOutput (intents.ts) dedupes.
+  onOutput: (o: RunOutput) => void;
   onUnavailable: (reason: string) => void;
   // onEnd fires once the stream is over for good: the run ended, or the
   // grant it was opened under is gone (reason "revoked").
@@ -394,6 +400,8 @@ export interface RunStreamHandlers {
 export function streamRun(intent: string, run: string, handlers: RunStreamHandlers): () => void {
   if (dataMode() !== "live") {
     const turns = mockRunTurns();
+    const output = mockRunOutput();
+    let ticker: ReturnType<typeof setInterval> | undefined;
     const timer = setTimeout(() => {
       turns.forEach(handlers.onTurn);
       handlers.onActivity({
@@ -403,8 +411,20 @@ export function streamRun(intent: string, run: string, handlers: RunStreamHandle
         openToolSince: turns[turns.length - 1].at,
         live: true,
       });
+      // The open Bash tool's command prints a chunk at a time.
+      let next = 0;
+      ticker = setInterval(() => {
+        if (next >= output.length) {
+          clearInterval(ticker);
+          return;
+        }
+        handlers.onOutput(output[next++]);
+      }, 350);
     }, 120);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(ticker);
+    };
   }
   const path = `/api/intents/${encodeURIComponent(intent)}/runs/${encodeURIComponent(run)}/stream`;
   let es: EventSource | null = null;
@@ -430,6 +450,13 @@ export function streamRun(intent: string, run: string, handlers: RunStreamHandle
           lastSeq = turn.seq;
           handlers.onTurn(turn);
         }
+      } catch {
+        // As above.
+      }
+    });
+    es.addEventListener("output", (event) => {
+      try {
+        handlers.onOutput(JSON.parse((event as MessageEvent).data) as RunOutput);
       } catch {
         // As above.
       }

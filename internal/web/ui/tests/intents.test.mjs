@@ -6,9 +6,13 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   INTENTS_VIEW_FILES,
+  OUTPUT_KEEP,
   costShare,
   formatDuration,
   groupByColumn,
+  mergeRunOutput,
+  outputSegments,
+  outputStatus,
   secondsSince,
   stopConditions,
 } from "../src/intents.ts";
@@ -147,6 +151,88 @@ test("intents routes parse and round-trip", () => {
   });
   assert.equal(isIntentsRoute(parseRoute("#/intents/demo-7")), true);
   assert.equal(isIntentsRoute(parseRoute("#/finding/x")), false);
+});
+
+const chunk = (line, lines, extra = {}) => ({ task: "b1", line, lines, ...extra });
+const fold = (chunks, state = null) => chunks.reduce(mergeRunOutput, state);
+const numbers = (state) => state.lines.map((l) => l.n);
+
+test("mergeRunOutput holds lines by number and drops a reconnect's replay of them", () => {
+  const live = fold([chunk(1, ["a", "b"]), chunk(3, ["c"])]);
+  // A reconnect replays the server's ring: lines already held are not
+  // added twice, and the text first held is kept.
+  const after = fold([chunk(1, ["A", "B", "C"]), chunk(4, ["d"])], live);
+  assert.deepEqual(
+    after.lines.map((l) => l.text),
+    ["a", "b", "c", "d"],
+  );
+  assert.equal(after.end, 5);
+  assert.deepEqual(outputSegments(after), [{ kind: "lines", text: "a\nb\nc\nd" }]);
+});
+
+test("mergeRunOutput records gaps, and a replay can fill one", () => {
+  // Lines 3-9 never arrived (a chunk dropped on a slow connection), and
+  // lines past 12 are known to exist from the last chunk's number.
+  const gapped = fold([chunk(1, ["a", "b"]), chunk(10, ["j", "k"]), chunk(13, [])]);
+  assert.deepEqual(outputSegments(gapped), [
+    { kind: "lines", text: "a\nb" },
+    { kind: "skipped", count: 7 },
+    { kind: "lines", text: "j\nk" },
+    { kind: "skipped", count: 1 },
+  ]);
+  // A late joiner whose replay starts at line 5 is told about lines 1-4.
+  assert.deepEqual(outputSegments(fold([chunk(5, ["e"])]))[0], { kind: "skipped", count: 4 });
+  // The reconnect replay brings lines 3-9 back: the gap closes.
+  const filled = fold([chunk(3, ["c", "d", "e", "f", "g", "h", "i"])], gapped);
+  assert.deepEqual(numbers(filled), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  assert.deepEqual(outputSegments(filled).at(-1), { kind: "skipped", count: 1 });
+});
+
+test("mergeRunOutput starts over for another command", () => {
+  const first = fold([chunk(1, ["old"], { done: true, truncated: true })]);
+  const next = mergeRunOutput(first, { task: "b2", line: 1, lines: ["new"] });
+  assert.deepEqual(next, { task: "b2", lines: [{ n: 1, text: "new" }], end: 2, done: false, truncated: false });
+});
+
+test("mergeRunOutput keeps only the newest OUTPUT_KEEP lines", () => {
+  const many = Array.from({ length: OUTPUT_KEEP + 120 }, (_, i) => `l${i + 1}`);
+  const state = fold([chunk(1, many.slice(0, 300)), chunk(301, many.slice(300))]);
+  assert.equal(state.lines.length, OUTPUT_KEEP);
+  assert.equal(state.lines[0].n, 121);
+  assert.equal(state.lines.at(-1).text, `l${OUTPUT_KEEP + 120}`);
+  // What was let go is shown as lines not shown, and a replay of it does
+  // not push the newest lines out.
+  assert.deepEqual(outputSegments(state)[0], { kind: "skipped", count: 120 });
+  assert.deepEqual(numbers(fold([chunk(1, many.slice(0, 50))], state)), numbers(state));
+});
+
+test("mergeRunOutput tracks done and truncated, and outputStatus names them", () => {
+  const running = fold([chunk(1, ["a"])]);
+  assert.equal(outputStatus(running, true), "running");
+  assert.equal(outputStatus(running, false), "no longer followed");
+  const done = mergeRunOutput(running, chunk(2, [], { done: true }));
+  assert.equal(done.done, true);
+  assert.equal(outputStatus(done, true), "finished");
+  // A later chunk does not undo either flag.
+  const cut = fold([chunk(2, ["b"], { truncated: true }), chunk(3, ["c"])], running);
+  assert.equal(cut.truncated, true);
+  assert.equal(outputStatus({ ...cut, done: true }, true), "output limit reached");
+});
+
+test("mergeRunOutput ignores a malformed chunk", () => {
+  const state = fold([chunk(1, ["a"])]);
+  for (const bad of [
+    { task: "", line: 1, lines: ["x"] },
+    { task: "b1", line: 0, lines: ["x"] },
+    { task: "b1", line: 1.5, lines: ["x"] },
+    { line: 1, lines: ["x"] },
+    null,
+  ]) {
+    assert.equal(mergeRunOutput(state, bad), state, JSON.stringify(bad));
+  }
+  assert.equal(mergeRunOutput(null, { task: "b1", line: -1, lines: [] }), null);
+  // A chunk without lines is still a chunk: it moves the end.
+  assert.equal(mergeRunOutput(state, { task: "b1", line: 4 }).end, 4);
 });
 
 // Agent text is rendered as plain text only: no intents view may reach the

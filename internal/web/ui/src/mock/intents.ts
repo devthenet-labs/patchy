@@ -11,6 +11,7 @@ import type {
   IntentRunDetail,
   IntentRunRow,
   Me,
+  RunOutput,
   TranscriptTurn,
 } from "../types";
 
@@ -228,4 +229,33 @@ export function mockRunTurns(): TranscriptTurn[] {
     { seq: 3, at: ago(21), role: "user", kind: "tool_result", text: "package http …" },
     { seq: 4, at: ago(9), role: "assistant", kind: "tool_use", tool: "Bash", text: "npm run test:ci" },
   ];
+}
+
+// mockRunOutput is what the open Bash tool's "npm run test:ci" prints, in
+// the chunks the stream delivers it in: a few lines at a time, one stretch
+// the agent left out (the panel shows it as lines not shown), then the
+// summary and the command's last chunk.
+export function mockRunOutput(): RunOutput[] {
+  const files = ["router", "healthz", "store", "cart", "checkout", "catalog", "search", "session", "pricing"];
+  const lines = ["> storefront@1.4.0 test:ci", "> vitest run --reporter=verbose", ""];
+  lines.push(" RUN  v3.2.4 /workspace/storefront");
+  files.forEach((file, f) => {
+    for (let t = 1; t <= 10; t++) lines.push(` ✓ src/${file}.test.ts > case ${t} ${(f * 7 + t * 3) % 40}ms`);
+  });
+  lines.push("", " Test Files  9 passed (9)", "      Tests  90 passed (90)", "   Duration  14.2s");
+  const task = "b578qoc1g";
+  const sent = (n: number) => n < 41 || n > 62; // lines 41-62 never arrive
+  const chunks: RunOutput[] = [];
+  for (let i = 0; i < lines.length; ) {
+    if (!sent(i + 1)) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < lines.length && j - i < 1 + (chunks.length % 3) && sent(j + 1)) j++;
+    chunks.push({ task, line: i + 1, lines: lines.slice(i, j) });
+    i = j;
+  }
+  chunks.push({ task, line: lines.length + 1, lines: [], done: true });
+  return chunks;
 }

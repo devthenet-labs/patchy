@@ -399,6 +399,160 @@ func TestPreviewTargetHealthRuntime(t *testing.T) {
 	})
 }
 
+// TestPreviewUpgradeKeepsServing upgrades the shipped binary under a live
+// preview: one Ready for an hour, on its last attempt, whose Deployment the
+// previous release rendered with the Recreate strategy. The upgraded
+// controller patches the strategy in place, which the API server counts as a
+// new Deployment generation. envtest has no Deployment controller, so that
+// generation is never observed: the race a cluster almost always loses on
+// the reconcile that patched. Regression: that lag was counted against the
+// attempt that had made the Preview Ready, so the upgrade retried it at once,
+// deleting its Deployment and Ingress, and this one was Failed.
+func TestPreviewUpgradeKeepsServing(t *testing.T) {
+	cl := startCluster(t)
+	ctx := context.Background()
+	for _, name := range []string{"patchy-preview-0", "patchy-preview-1"} {
+		if err := cl.client.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args := []string{
+		"--preview-slot-count", "2",
+		"--preview-image-prefix", "registry.example/patchy/previews/",
+		"--preview-host-suffix", "preview.patchy.example.com",
+		"--preview-node-pool", "patchy-preview", "--preview-node-class", "patchy-preview",
+		"--preview-taint-key", "patchy.devthe.net/preview-only",
+		"--preview-poll-interval", "1s",
+	}
+	_, stop := cl.stoppableController(t, "preview-controller", args...)
+	sha := strings.Repeat("a", 40)
+	project := &v1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: namespace},
+		Spec: v1alpha1.ProjectSpec{
+			IntentRepository: "https://github.com/acme/intents",
+			Approvers:        v1alpha1.ProjectApprovers{Logins: []string{"octocat"}},
+			Repositories:     []v1alpha1.ProjectRepository{{Name: "demo", URL: "https://github.com/acme/demo"}},
+			Preview: &v1alpha1.ProjectPreview{ImageRepository: "registry.example/patchy/previews/demo",
+				Port: 8080, ReadinessPath: "/health"},
+		}}
+	if err := cl.client.Create(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	in := &v1alpha1.Intent{ObjectMeta: metav1.ObjectMeta{Name: "demo-1", Namespace: namespace},
+		Spec: v1alpha1.IntentSpec{Project: "demo",
+			Issue:       v1alpha1.IntentIssue{Repository: "https://github.com/acme/intents", Number: 1},
+			RequestedBy: v1alpha1.IntentRequest{Login: "octocat", At: metav1.Now(), EventID: 1}}}
+	if err := cl.client.Create(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	in.Status.Phase = v1alpha1.IntentInReview
+	in.Status.PullRequests = []v1alpha1.IntentPullRequest{{
+		Repository: "https://github.com/acme/demo", Number: 1, State: "open", HeadSHA: sha,
+	}}
+	if err := cl.client.Status().Update(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	p := &v1alpha1.Preview{ObjectMeta: metav1.ObjectMeta{Name: in.Name, Namespace: namespace},
+		Spec: v1alpha1.PreviewSpec{
+			IntentRef: v1alpha1.ObjectReference{Name: in.Name, UID: in.UID}, HostLabel: in.Name,
+			Components: []v1alpha1.PreviewComponent{{Name: "demo",
+				ImageRepository: "registry.example/patchy/previews/demo", Revision: sha,
+				Port: 8080, ReadinessPath: "/health"}}, TTL: metav1.Duration{Duration: 72 * time.Hour},
+		}}
+	if err := cl.client.Create(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	key := types.NamespacedName{Namespace: "patchy-preview-0", Name: "preview-demo-1"}
+	var dep appsv1.Deployment
+	eventually(t, "the preview Deployment in slot 0", func() bool { return cl.client.Get(ctx, key, &dep) == nil })
+	dep.Status.ObservedGeneration = dep.Generation
+	dep.Status.Replicas, dep.Status.ReadyReplicas, dep.Status.AvailableReplicas = 1, 1, 1
+	if err := cl.client.Status().Update(ctx, &dep); err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "preview-demo-1-pod", Namespace: key.Namespace,
+		Labels: dep.Spec.Template.Labels}, Spec: dep.Spec.Template.Spec}
+	if err := cl.client.Create(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	pod.Status.Phase = corev1.PodRunning
+	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "demo", Ready: true, ImageID: "repo@sha256:123"}}
+	if err := cl.client.Status().Update(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	var current v1alpha1.Preview
+	eventually(t, "a Ready Preview behind its Ingress", func() bool {
+		return cl.client.Get(ctx, client.ObjectKeyFromObject(p), &current) == nil &&
+			current.Status.Phase == v1alpha1.PreviewReady && cl.client.Get(ctx, key, &networkingv1.Ingress{}) == nil
+	})
+	stop()
+
+	// What the previous release leaves behind: its Recreate strategy, which
+	// its Deployment controller has observed, on a Preview Ready an hour ago
+	// on the last of its three attempts.
+	if err := cl.client.Get(ctx, key, &dep); err != nil {
+		t.Fatal(err)
+	}
+	dep.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+	if err := cl.client.Update(ctx, &dep); err != nil {
+		t.Fatal(err)
+	}
+	dep.Status.ObservedGeneration = dep.Generation
+	if err := cl.client.Status().Update(ctx, &dep); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.client.Get(ctx, client.ObjectKeyFromObject(p), &current); err != nil {
+		t.Fatal(err)
+	}
+	anHourAgo := metav1.NewTime(time.Now().Add(-time.Hour))
+	current.Status.AttemptStartedAt, current.Status.LastDeployedAt = &anHourAgo, &anHourAgo
+	current.Status.Retries = 2
+	if err := cl.client.Status().Update(ctx, &current); err != nil {
+		t.Fatal(err)
+	}
+
+	cl.controller(t, "preview-controller", args...) // the upgrade; it leads once the old lease expires
+	eventually(t, "the upgraded controller's first reconcile", func() bool {
+		err := cl.client.Get(ctx, key, &dep)
+		return apierrors.IsNotFound(err) ||
+			err == nil && dep.Spec.Strategy.Type == appsv1.RollingUpdateDeploymentStrategyType
+	})
+	time.Sleep(3 * time.Second) // several one-second polls, the patch never observed
+	if err := cl.client.Get(ctx, client.ObjectKeyFromObject(p), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.Phase != v1alpha1.PreviewReady || current.Status.Retries != 2 || current.Status.URL == "" {
+		t.Fatalf("status = %+v after the upgrade, want still Ready with no retry spent", current.Status)
+	}
+	if err := cl.client.Get(ctx, key, &dep); err != nil {
+		t.Fatalf("Deployment deleted by the upgrade: %v", err)
+	}
+	if dep.Status.ObservedGeneration >= dep.Generation {
+		t.Fatalf("generation %d observed as %d: the test no longer models the unobserved patch",
+			dep.Generation, dep.Status.ObservedGeneration)
+	}
+	if err := cl.client.Get(ctx, key, &networkingv1.Ingress{}); err != nil {
+		t.Fatalf("Ingress withdrawn by the upgrade: %v", err)
+	}
+
+	// envtest has no garbage collector to remove the synthetic Pod.
+	if err := cl.client.Delete(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.client.Get(ctx, client.ObjectKeyFromObject(in), in); err != nil {
+		t.Fatal(err)
+	}
+	in.Status.Phase = v1alpha1.IntentMerged
+	if err := cl.client.Status().Update(ctx, in); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "Preview finalizer and slot cleanup", func() bool {
+		return apierrors.IsNotFound(cl.client.Get(ctx, client.ObjectKeyFromObject(p), &v1alpha1.Preview{})) &&
+			apierrors.IsNotFound(cl.client.Get(ctx, key, &appsv1.Deployment{})) &&
+			apierrors.IsNotFound(cl.client.Get(ctx, key, &networkingv1.Ingress{}))
+	})
+}
+
 // TestPreviewMultiComponentRuntime drives the shipped binary through a
 // two-component Preview (slice 3): a web component at / and an API at /api,
 // from a Project that also has a library it never previews. Each component

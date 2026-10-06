@@ -1341,6 +1341,33 @@ agent:
             - 172.16.0.0/12
             - 192.168.0.0/16
             - 169.254.0.0/16
+        # How agent pods resolve names:
+        #
+        #   cluster  the cluster resolver (default). The agent egress allows DNS
+        #            to kube-system (and clusterDNSCIDR), and the cluster
+        #            resolver forwards any name it does not own upstream, so a
+        #            command in the pod can still carry data out in query names
+        #            (<chunk>.attacker.example). Only mode cilium's DNS rules
+        #            bound that.
+        #   none     no resolver: closes that channel. The job controllers
+        #            resolve the two names an agent pod dials (the artifact
+        #            server, the egress broker) themselves at launch and pin
+        #            them in the pod's hosts file (hostAliases); the pod's only
+        #            nameserver is its own loopback, where nothing answers, and
+        #            the agent egress policies drop their DNS rules. A launch
+        #            whose names do not resolve is retried, never run. Brokered
+        #            claude only: enabling codex or copilot on either fleet
+        #            fails the render, and so does mode istio, whose sidecar
+        #            must resolve istiod. It closes DNS, not addresses: pair it
+        #            with broadEgress: never (no runner that can run under none
+        #            uses the 443 rule). Policies are additive, so a DNS allow policy
+        #            for the agent namespace managed outside this chart (an
+        #            operator's own allow-dns, say) must be narrowed too, or it
+        #            keeps the channel open. Setting it rolls
+        #            investigation-, remediation-, intent- and
+        #            evaluation-controller; running Jobs keep the mode they
+        #            started with.
+        dns: cluster
         # Cilium only: cluster-local DNS names every runner pod may resolve on
         # top of its own model host — this is what lets the artifact fetch
         # resolve source-controller's Service. GKE's FQDN policy cannot name a

@@ -65,6 +65,7 @@ supports it, refusing to start otherwise.
 | `--agent-memory-request`          | `PATCHY_AGENT_MEMORY_REQUEST`          | —                      | Memory request on both containers of every agent Job, such as `1Gi`; unset requests none                                                                                             |
 | `--agent-cpu-limit`               | `PATCHY_AGENT_CPU_LIMIT`               | —                      | CPU limit, at or above the request; unset sets none, and none is best: a limit throttles test suites                                                                                 |
 | `--agent-memory-limit`            | `PATCHY_AGENT_MEMORY_LIMIT`            | —                      | Memory limit, at or above the request; unset sets none                                                                                                                               |
+| `--agent-dns`                     | `PATCHY_AGENT_DNS`                     | `cluster`              | How agent pods resolve names: `cluster`, or `none` for [no resolver](#agent-dns) (brokered claude and the fake harness only)                                                         |
 
 The four `--agent-*` CPU and memory flags are the default every agent Job gets (Helm `agent.resources.default`), shared
 with the remediation-, intent- and evaluation-controller. All unset, which is the default, a Job requests and limits
@@ -73,6 +74,18 @@ or `128Mi` and `512Gi`, each request at or below its limit), and a bad value sto
 Finding never picks a size of its own; only an intent's Project can, from the operator's classes
 ([intent-controller](intent-controller.md#resource-classes)). Every agent pod carries
 `karpenter.sh/do-not-disrupt: "true"`, so a node autoscaler consolidating nodes never evicts a running agent.
+
+### Agent DNS
+
+`--agent-dns none` (Helm `agent.networkPolicy.dns: none`, shared with the remediation-, intent- and
+evaluation-controller) gives every agent pod no working resolver, so nothing can leave the pod in a DNS query. The pod
+gets `dnsPolicy: None`, its own loopback as its only nameserver, and a `hostAliases` entry for each host its URLs name:
+the artifact server in the prepare init's fetch URL (and each tree's, for a multi-repository plan) and the egress broker
+in the claude runner's base URL. The controller resolves those hosts with its own resolver as it creates the Job; a host
+that does not resolve fails the launch with an error naming it, before any Secret or Job exists, and the launch is
+retried. A harness that dials its model API by name cannot run without a resolver, so with codex or copilot enabled the
+controller refuses to start. `cluster`, the default, leaves every Job exactly as before. See
+[Closing DNS](../deployment/isolation.md#closing-dns) for the network policies and what else must change.
 
 ### Repository-declared runner images
 

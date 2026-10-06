@@ -85,9 +85,10 @@ The posture is built so that none of that reaches further than a default-image r
   commit, is capped at `--changeset-max-entries` entries, and may not touch `.github/workflows/` or `.github/actions/`,
   because a pushed branch runs CI with the repository's secrets before a human has read it; a refused changeset makes no
   forge call. An `ignore` verdict from such a run is held for a human instead of dismissing the alert.
-- **What is not bounded.** DNS to the cluster resolver is open, as for every agent pod; only a Cilium DNS-rules or
-  `toFQDNs` allowlist bounds it. The usage and cost the claude CLI reports from a repository-image run are
-  image-controlled; the broker's per-pod totals are the trustworthy record.
+- **What is not bounded.** DNS to the cluster resolver is open, as for every agent pod, unless it is
+  [closed](#closing-dns) with `agent.networkPolicy.dns: none`; otherwise only a Cilium DNS-rules or `toFQDNs` allowlist
+  bounds it. The usage and cost the claude CLI reports from a repository-image run are image-controlled; the broker's
+  per-pod totals are the trustworthy record.
 
 ## Network egress — the floor and the fence
 
@@ -96,9 +97,10 @@ for DNS, the artifact port (9790) to source-controller, the broker port (8080) t
 the cluster's own ranges and the cloud metadata endpoint (`169.254.169.254`) excluded — adjust
 `agent.networkPolicy.clusterCIDRs` (Helm) or the `except:` CIDRs in `base/networkpolicy.yaml` (kustomize) to your
 cluster's pod/service/node CIDRs. A **claude** pod uses only the first three: DNS, the artifact server, and the broker —
-its entire egress is cluster-local. The 443 rule exists for the non-brokered runners (codex/copilot, both shipped
-disabled), and be honest about what it is: **a plain NetworkPolicy is L3/L4 and cannot match a hostname**, so "TCP 443"
-means every HTTPS host on the internet, not just the model vendor's.
+its entire egress is cluster-local, and with [DNS closed](#closing-dns) it is the last two alone. The 443 rule exists
+for the non-brokered runners (codex/copilot, both shipped disabled), and be honest about what it is: **a plain
+NetworkPolicy is L3/L4 and cannot match a hostname**, so "TCP 443" means every HTTPS host on the internet, not just the
+model vendor's.
 
 Pinning egress to hostnames takes one of three optional layers, selected by `agent.networkPolicy.mode` (Helm) or by the
 matching kustomize component. Brokered claude needs none of them — it has **no external hosts to allowlist** (its Cilium
@@ -153,7 +155,8 @@ the choice is made for you — `gke` is the only one Dataplane V2 enforces):
   the proxy does not constrain what names it may resolve. A prompt-injected agent can encode data into query names
   (`<chunk>.attacker.example`) and walk it out through the resolver with every other route blocked. Cilium's transparent
   DNS proxy answers only the allowlisted patterns and drops everything else, closing that channel; the learned IPs then
-  bound the L3/L4 rules, so skipping DNS and dialling a raw address is blocked too.
+  bound the L3/L4 rules, so skipping DNS and dialling a raw address is blocked too. On any CNI, brokered claude can
+  instead [run with no resolver at all](#closing-dns).
 - **Enforcement point.** The sidecar and its traffic redirection live inside the pod's own network namespace, where a
   sufficiently privileged process could bypass them. Cilium enforces in eBPF on the node, outside anything the workload
   can touch.
@@ -168,6 +171,49 @@ narrow what a compromised agent can talk to, not what it can do to your forge.
     kind's default CNI (kindnet) ignores NetworkPolicy entirely. The dev overlay applying cleanly does not mean the
     egress fence works — verify isolation on a CNI that enforces it (k3s on [Colima](colima.md) enforces the L3/L4
     floor; the FQDN layer needs a real Cilium or Istio cluster).
+
+### Closing DNS
+
+Every egress layer above still lets the pod reach a resolver, and the cluster resolver forwards any name it does not own
+upstream. A command in the pod can therefore encode data into query names (`<chunk>.attacker.example`) and walk it out
+through DNS with every other route blocked. Only Cilium's DNS rules bound that. `agent.networkPolicy.dns: none` (Helm),
+or the kustomize component `components/agent-dns-none` (listed after `components/cilium` when both are used), closes it
+on any CNI:
+
+- **The pod has no resolver.** Its `dnsPolicy` is `None` and its only nameserver is `127.0.0.1`, its own loopback, where
+  nothing answers. A lookup the hosts file cannot answer is refused at once (about 5 ms for curl in the runner image);
+  the `timeout:1` and `attempts:1` options bound the libcs that do not see the refusal (musl) to a second.
+- **The names it needs are pinned.** An agent pod dials exactly two in-cluster names: the artifact server (the prepare
+  init's fetch) and the egress broker (the claude CLI's base URL). The job controller that creates the Job resolves the
+  hosts in the Job's own URLs with its own resolver, which still reaches cluster DNS, and writes them into the pod's
+  hosts file through `hostAliases`, one entry per address. A host that does not resolve fails the launch, which is
+  retried; no pod is created that could not reach its endpoints. The names are Services' ClusterIPs, stable for the
+  Service's lifetime; a Job keeps the addresses it was created with.
+- **The policies drop DNS.** The agent egress NetworkPolicy, and under mode `cilium` the claude `CiliumNetworkPolicy`,
+  render no DNS rule, so a command that ignores the resolver configuration and queries the cluster DNS address directly
+  is dropped too. The controllers keep theirs: they resolve for the pods.
+- **DNS, not addresses.** Closing DNS leaves the policies' other rules as they are, so under mode `none` or `istio` the
+  base policy's "TCP 443 to anywhere" rule still admits a raw address. Only brokered claude runs without a resolver, and
+  it needs no such rule: set `agent.networkPolicy.broadEgress: never` beside it (the install NOTES say so while the rule
+  is kept) and an agent pod reaches the artifact server and the broker alone.
+- **Brokered claude only.** codex and copilot dial their vendor's API by name, and an internet name's addresses cannot
+  be pinned at launch the way a ClusterIP's can, so enabling either (on any fleet) fails the chart render and the
+  controllers refuse to start. The chart refuses mode `istio` too (do not combine the kustomize component with
+  `components/istio`): the pod's sidecar must resolve istiod. The fake harness works.
+
+The images resolve through the hosts file. The claude runner image and `agent-base` are built on wolfi-base, whose
+`/etc/nsswitch.conf` reads `hosts: files dns`. musl reads the hosts file first whatever that file says, Go's resolver
+follows it (hosts file first when it is missing), and glibc with no `hosts:` line falls back to the hosts file once the
+dead nameserver refuses. With only the dead nameserver configured, curl and the claude CLI in the runner image were
+checked to reach the broker through a hosts-file entry, with and without that `hosts:` line, so a repository-declared
+image needs nothing extra.
+
+!!! warning "A DNS policy managed outside patchy keeps the channel open"
+
+    Network policies are additive. A namespace-wide DNS allow policy for `patchy-agents` that you manage yourself (an
+    `allow-dns` policy for EKS Auto Mode's node-local resolver, say) still lets an agent pod query the cluster resolver
+    directly, whatever the chart renders. Remove it, or narrow its `podSelector` so it selects no agent pod, when you
+    turn DNS off. `clusterDNSCIDR` needs nothing: it only adds an address to the chart's own DNS rules, which are dropped.
 
 ## Egress proxies
 

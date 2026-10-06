@@ -160,6 +160,25 @@ are additive, so the allowlist is not actually constraining egress. That is
 what agent.networkPolicy.broadEgress={{ .Values.agent.networkPolicy.broadEgress | default "auto" }} asks for; set it to `auto` once the mode
 is soaked{{ else }} — each runner reaches only its own model API{{ end }}.
 {{- end }}
+{{- if include "patchy.agentDNSNone" . }}
+
+Agent DNS: none. The agent pods have no resolver (the job controllers pin the
+artifact server and the egress broker in each pod's hosts file), and this
+chart's agent egress policies allow no DNS. Network policies are additive: a
+DNS allow policy for {{ .Values.agent.namespace }} managed outside this chart (an allow-dns
+policy for a node-local resolver, say) still lets an agent pod query the
+cluster resolver directly, and so still carries data out in query names.
+Remove it, or narrow it so it selects no agent pod:
+
+  kubectl get networkpolicy -n {{ .Values.agent.namespace }}
+{{- if include "patchy.broadEgress" . }}
+
+DNS is closed, but the base policy still allows TCP 443 to any address
+outside the cluster. Only brokered claude runs without a resolver, and it
+needs no such rule: set agent.networkPolicy.broadEgress: never to leave an
+agent pod the artifact server and the broker alone.
+{{- end }}
+{{- end }}
 
 For the pod-security labels on {{ .Release.Namespace }} (the chart only
 labels the agent namespace it creates):

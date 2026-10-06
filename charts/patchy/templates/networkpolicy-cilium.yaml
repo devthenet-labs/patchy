@@ -34,6 +34,7 @@
 {{- if and .Values.agent.networkPolicy.create (eq (include "patchy.egressMode" .) "cilium") }}
 {{- $root := . }}
 {{- $clusterDNS := .Values.agent.networkPolicy.clusterDNSPatterns | default list }}
+{{- $dnsNone := include "patchy.agentDNSNone" . }}
 {{- range $id, $r := .Values.agent.runners }}
 {{- if include "patchy.harnessEnabled" (dict "root" $root "id" $id) }}
 ---
@@ -54,6 +55,10 @@ spec:
             {{- include "patchy.agentPodSelector" $root | nindent 12 }}
             patchy.bitwisemedia.uk/harness: {{ $id | quote }}
     egress:
+        {{- /* Under agent.networkPolicy.dns: none the pod has no resolver and
+               the DNS rule is not rendered (only brokered claude runs then,
+               with no toFQDNs to learn addresses for). */}}
+        {{- if not $dnsNone }}
         # DNS via Cilium's proxy — this is what makes toFQDNs work at all:
         # the proxy watches the answers and programs the resolved IPs into
         # the policy. Only this runner's model host and the cluster-local
@@ -71,6 +76,7 @@ spec:
                         {{- range concat ($r.dnsPatterns | default list) $clusterDNS }}
                         - matchPattern: {{ . | quote }}
                         {{- end }}
+        {{- end }}
 
         # The INIT container's artifact fetch: source-controller's tarball
         # server, in-cluster, credential-less, digest-verified.
@@ -86,9 +92,10 @@ spec:
         {{- if eq $id "claude" }}
         # Brokered claude: the agent container's ONLY destination is the
         # egress credential broker — a cluster-local endpoint, so this policy
-        # carries no toFQDNs at all. The DNS rule above resolves only the
+        # carries no toFQDNs at all.{{ if $dnsNone }} The pod has no resolver
+        # (agent.networkPolicy.dns: none), so there is no DNS rule either.{{ else }} The DNS rule above resolves only the
         # cluster-local names (clusterDNSPatterns); no external name resolves
-        # from a claude pod, period.
+        # from a claude pod, period.{{ end }}
         - toEndpoints:
               - matchLabels:
                     io.kubernetes.pod.namespace: {{ $root.Release.Namespace }}

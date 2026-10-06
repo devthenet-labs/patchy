@@ -24,6 +24,7 @@
 {{- end }}
 {{- $mode := include "patchy.egressMode" . }}
 {{- $broadEgress := include "patchy.broadEgress" . }}
+{{- $dnsNone := include "patchy.agentDNSNone" . }}
 {{- $repositoryImages := (.Values.agent.repositoryImages | default dict).enabled }}
 {{- range $c := list
     (dict "name" "integration-controller" "vals" .Values.integrationController)
@@ -225,6 +226,11 @@ spec:
             {{- include "patchy.agentPodSelector" . | nindent 12 }}
     policyTypes: [Egress]
     egress:
+        {{- /* Under agent.networkPolicy.dns: none there is no DNS rule: the
+               agent pods have no resolver (the job controllers pin the
+               artifact server and the broker in each pod's hosts file), so a
+               query name can carry nothing out of the pod. */}}
+        {{- if not $dnsNone }}
         # DNS, so the names below resolve at all.
         - to:
               - namespaceSelector:
@@ -237,6 +243,7 @@ spec:
                 port: 53
         {{- with include "patchy.clusterDNSEgress" . }}
         {{- . | nindent 8 }}
+        {{- end }}
         {{- end }}
         # The artifact server.
         - to:

@@ -1164,6 +1164,77 @@ expect_fail "a class name that is not a DNS label" "invalid propertyName 'Large'
 seventeen=$(for i in $(seq 1 17); do printf '"c%s":{"requests":{"cpu":1,"memory":"1Gi"},"limits":{"memory":"1Gi"}},' "$i"; done)
 expect_fail "seventeen classes" "/agent/resources/classes" --set-json "agent.resources.classes={${seventeen%,}}"
 
+# ---- agent DNS: none closes the channel, cluster leaves everything alone ----
+# Unset or cluster (the default), no ConfigMap carries PATCHY_AGENT_DNS and the
+# agent egress keeps its DNS rule, byte for byte the render before the value
+# existed. none reaches exactly the four controllers that launch agent Jobs and
+# drops every DNS rule the chart renders for agent pods, in each dialect, while
+# the controllers (which resolve the pods' names for them) keep theirs.
+agentdns='select(.metadata.namespace == "patchy-agents" and (.kind == "NetworkPolicy" or .kind == "CiliumNetworkPolicy")) | .spec.egress[] | select((.ports // []) + (.toPorts[0].ports // []) | map(.port | tostring) | contains(["53"])) | .to // .toEndpoints | to_json(0)'
+expect default "select(.kind == \"ConfigMap\") | .data.PATCHY_AGENT_DNS | select(. != null)" ""
+expect default "$agentdns" '[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"kube-system"}}}]'
+render dns-cluster --set agent.networkPolicy.dns=cluster
+if ! cmp -s "$out/default.yaml" "$out/dns-cluster.yaml"; then
+  fail "dns-cluster: agent.networkPolicy.dns=cluster changed the default render"
+fi
+render dns-none-off -f "$ifx" -f "$ef"
+render dns-none -f "$ifx" -f "$ef" --set agent.networkPolicy.dns=none --set clusterDNSCIDR=10.100.0.10/32
+for c in investigation-controller remediation-controller intent-controller evaluation-controller; do
+  cm dns-none "$c" PATCHY_AGENT_DNS none
+  csum="select(.kind == \"Deployment\" and .metadata.name == \"patchy-$c\") | .spec.template.metadata.annotations[\"checksum/config\"]"
+  if [ "$(get dns-none-off "$csum")" = "$(get dns-none "$csum")" ]; then
+    fail "dns-none: $c's checksum/config did not change, so dns: none would not roll it"
+  fi
+done
+for c in integration-controller source-controller context-controller egress-broker status-server; do
+  cm dns-none "$c" PATCHY_AGENT_DNS null
+done
+expect dns-none "$agentdns" ""
+expect dns-none 'select(.kind == "NetworkPolicy" and .metadata.name == "patchy-agents-egress") | .spec.egress[].ports[].port' "9790
+8080
+443"
+expect dns-none "$nodedns | select(test(\"agents\"))" ""
+expect dns-none "$nodedns | select(test(\"investigation|remediation|intent|evaluation\"))" "patchy/patchy-evaluation-controller
+patchy/patchy-intent-controller
+patchy/patchy-investigation-controller
+patchy/patchy-remediation-controller"
+if [ "$(get dns-none-off "$npsel")" != "$(get dns-none "$npsel")" ]; then
+  fail "dns-none: agent.networkPolicy.dns changed which pods a NetworkPolicy selects"
+fi
+render dns-none-cilium -f "$ifx" -f "$ef" --set agent.networkPolicy.dns=none --set agent.networkPolicy.mode=cilium
+expect dns-none-cilium "$agentdns" ""
+expect dns-none-cilium "$hnp" "CiliumNetworkPolicy/patchy-agent-egress-claude"
+expect dns-none-cilium 'select(.kind == "CiliumNetworkPolicy" and .metadata.name == "patchy-agent-egress-claude") | .spec.egress[].toPorts[].ports[].port' '9790
+8080'
+render dns-none-gke --set agent.networkPolicy.dns=none --set agent.networkPolicy.mode=gke
+expect dns-none-gke "$agentdns" ""
+expect dns-none-gke "$hnp" ""
+expect dns-none-gke 'select(.kind == "NetworkPolicy" and .metadata.name == "patchy-agents-egress") | .spec.egress[].ports[].port' "9790
+8080"
+# Without the chart's agent policies the pods still lose their resolver.
+render dns-none-no-np --set agent.networkPolicy.dns=none --set agent.networkPolicy.create=false
+cm dns-none-no-np investigation-controller PATCHY_AGENT_DNS none
+notes notes-dns-none --set agent.networkPolicy.dns=none
+notes_has notes-dns-none "Agent DNS: none" yes
+notes_has notes-dns-none "broadEgress: never" yes
+notes notes-dns-none-narrow --set agent.networkPolicy.dns=none --set agent.networkPolicy.broadEgress=never
+notes_has notes-dns-none-narrow "Agent DNS: none" yes
+notes_has notes-dns-none-narrow "broadEgress: never" no
+notes notes-dns-cluster
+notes_has notes-dns-cluster "Agent DNS: none" no
+# Only brokered claude can run without a resolver, and an Istio sidecar must
+# resolve istiod; a mode the schema does not know is refused.
+expect_fail "dns none with codex" "the codex runner dials its model API by name" \
+  --set agent.networkPolicy.dns=none --set agent.runners.codex.enabled=true
+expect_fail "dns none with copilot on the evaluation fleet" "the copilot runner dials its model API by name" \
+  -f "$ef" --set agent.networkPolicy.dns=none --set evaluationController.runners.copilot.enabled=true
+expect_fail "dns none under istio" "incompatible with mode istio" \
+  --set agent.networkPolicy.dns=none --set agent.networkPolicy.mode=istio
+expect_fail "dns none under the legacy istio switch" "incompatible with mode istio" \
+  --set agent.networkPolicy.dns=none --set agent.networkPolicy.istio.enabled=true
+expect_fail "an unknown dns mode" "/agent/networkPolicy/dns" --set agent.networkPolicy.dns=off
+render dns-none-fixed --set agent.networkPolicy.dns=none --set agent.runners.codex.enabled=false
+
 # ---- intent controller on: claude everywhere it runs ------------------------
 # Intents run on claude even when the finding fleet does not: the broker
 # deploys, the agent egress admits it, and each egress dialect keeps a claude

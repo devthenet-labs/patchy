@@ -136,7 +136,11 @@ func (r *Recorder) record(t Turn) {
 		return
 	}
 
-	text := Scrub(string(ansi.Strip([]byte(t.Text))), r.secrets)
+	// Scrub before stripping escapes as well as after: a bare or unfinished
+	// escape swallows the byte after it, so a secret printed straight after
+	// one would lose its first byte to the strip and pass the scrub after
+	// it; the scrub after catches a secret split by escape codes.
+	text := Scrub(string(ansi.Strip([]byte(Scrub(t.Text, r.secrets)))), r.secrets)
 	if r.limits.MaxTurnBytes > 0 {
 		cut, did := Truncate(text, r.limits.MaxTurnBytes)
 		text, t.Truncated = cut, t.Truncated || did

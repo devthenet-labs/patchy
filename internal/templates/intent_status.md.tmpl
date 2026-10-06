@@ -1,8 +1,9 @@
 {{- /* An intent's sticky status comment, edited in place. The summary
 arrives sanitised, the reason (which may quote agent output) is fenced, and
 logins are code, never mentions. The pull requests are patchy's own, linked
-on purpose. One line per paragraph: GitHub renders a line break inside an
-issue comment as a hard break. */ -}}
+on purpose, and so is the preview host, while the preview is live
+(intent_preview.go). One line per paragraph: GitHub renders a line break
+inside an issue comment as a hard break. */ -}}
 {{ .Marker }}
 ### patchy
 
@@ -24,6 +25,15 @@ issue comment as a hard break. */ -}}
 **Pull requests:**
 {{ range . }}
 - [{{ .Ref }}]({{ .URL }}){{ with .State }} ({{ . }}){{ end }}
+{{- end }}
+{{- end }}
+{{- with .Preview }}
+
+**Preview:** {{ .Sentence }}
+{{- with .Components }}
+{{ range . }}
+- {{ . }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- if .MaxRevisions }}

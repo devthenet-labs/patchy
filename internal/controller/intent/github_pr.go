@@ -47,6 +47,14 @@ func (g *forgeGitHub) CreatePullRequestComment(ctx context.Context, repoURL stri
 	return c.CreateIssueComment(ctx, repo, int(number), body)
 }
 
+func (g *forgeGitHub) EditPullRequestComment(ctx context.Context, repoURL string, id int64, body string) error {
+	c, repo, err := g.client(ctx, repoURL, pullsWrite)
+	if err != nil {
+		return err
+	}
+	return c.EditComment(ctx, repo, id, body)
+}
+
 func (g *forgeGitHub) ReactPullRequestComment(ctx context.Context, repoURL string, commentID int64) error {
 	c, repo, err := g.client(ctx, repoURL, pullsWrite)
 	if err != nil {

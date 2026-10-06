@@ -79,6 +79,10 @@ type IntentReconciler struct {
 	// departedRetry has passed. A restart asks once more, which costs a
 	// request and nothing else.
 	departed map[string]map[string]time.Time
+	// previews is what syncPreviewComments knows of each Intent's preview
+	// comments that its status may not hold yet; a restart lists a pull
+	// request once more, which costs a request and nothing else.
+	previews map[string]*previewNotes
 }
 
 func (r *IntentReconciler) now() time.Time {
@@ -108,6 +112,9 @@ func (r *IntentReconciler) memo(f func()) {
 	if r.departed == nil {
 		r.departed = map[string]map[string]time.Time{}
 	}
+	if r.previews == nil {
+		r.previews = map[string]*previewNotes{}
+	}
 	f()
 }
 
@@ -118,6 +125,7 @@ func (r *IntentReconciler) forget(name string) {
 		delete(r.blockedAt, name)
 		delete(r.siblings, name)
 		delete(r.departed, name)
+		delete(r.previews, name)
 	})
 }
 
@@ -166,6 +174,12 @@ type pass struct {
 	// refused are the accounts refused this pass without asking GitHub
 	// (refusedLocally), to be added to status.commands.refusedActors.
 	refused map[int64]bool
+	// preview is the intent's Preview as this pass read it (loadPreview),
+	// read once: previewRead reports the read was made, previewOK that it
+	// did not fail.
+	preview     previewView
+	previewRead bool
+	previewOK   bool
 }
 
 // Reconcile takes one Intent one step at a time: every step that changes the
@@ -231,6 +245,9 @@ func (p *pass) run(ctx context.Context) (ctrl.Result, error) {
 	if err != nil || stop {
 		return ctrl.Result{}, err
 	}
+	if changed, _, err := p.syncPreviewComments(ctx); changed || err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := p.syncStatusComment(ctx); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -238,11 +255,13 @@ func (p *pass) run(ctx context.Context) (ctrl.Result, error) {
 }
 
 // ended is the pass of an ended intent: the round notices still owed, the
-// notice on pull requests it left open while opening them, any hand-off
-// discovery made, and the status comment. Each notice asks only the
-// repository it is owed in, so no other pull request's repository, one patchy
-// can no longer reach included, holds an ended intent. A round notice still
-// owed holds back the hand-off, never the status comment.
+// notice on pull requests it left open while opening them, the preview
+// comments' last edit (the preview was removed), any hand-off discovery
+// made, and the status comment. Each notice asks only the repository it is
+// owed in, so no other pull request's repository, one patchy can no longer
+// reach included, holds an ended intent. A round notice still owed holds back
+// the hand-off, never the status comment. The preview comments hold back
+// nothing: one that could not be edited is tried again a poll interval later.
 func (p *pass) ended(ctx context.Context) (ctrl.Result, error) {
 	if p.in.Status.RoundNoticesThrough < p.in.Status.Rounds {
 		changed, wait, err := p.syncEndedRoundNotices(ctx)
@@ -275,19 +294,31 @@ func (p *pass) ended(ctx context.Context) (ctrl.Result, error) {
 		}
 		return ctrl.Result{RequeueAfter: p.set.PRPollInterval}, nil
 	}
-	if p.r.Nudger.take(p.in.Name) {
-		stop, err := p.handOff(ctx)
-		if err != nil {
-			// Not answered yet: the hand-off stays pending for the retry,
-			// since nothing else would bring it back.
-			p.r.Nudger.restore(p.in.Name)
-			return ctrl.Result{}, err
-		}
-		if stop {
-			return ctrl.Result{}, nil
-		}
+	changed, retry, err := p.syncPreviewComments(ctx)
+	if changed || err != nil {
+		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, p.syncStatusComment(ctx)
+	if stop, err := p.nudgedHandOff(ctx); stop || err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := p.syncStatusComment(ctx); err != nil || !retry {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: p.set.PRPollInterval}, nil
+}
+
+// nudgedHandOff answers a hand-off discovery made for the ended intent, if
+// there is one (handOff); stop reports the pass ends with it.
+func (p *pass) nudgedHandOff(ctx context.Context) (stop bool, err error) {
+	if !p.r.Nudger.take(p.in.Name) {
+		return false, nil
+	}
+	if stop, err = p.handOff(ctx); err != nil {
+		// Not answered yet: the hand-off stays pending for the retry, since
+		// nothing else would bring it back.
+		p.r.Nudger.restore(p.in.Name)
+	}
+	return stop, err
 }
 
 // step does the phase's own work, the part driven by the resources rather

@@ -89,7 +89,15 @@
 // request because another closed. With the preview projection on, the first
 // review pass records the default-branch head of each previewed repository
 // without a pull request (status.previewBases), once: its preview component
-// runs that commit's image. Without the flag, an Intent of a Project listing
+// runs that commit's image. The reconciler also reads the Intent's Preview
+// (one uncached get per pass, only while the Intent wants one and its
+// Project previews something; never written, never watched) to say where the
+// preview stands: a line in the status comment, and one sticky comment on
+// each previewed pull request. A preview is live only when the Preview is
+// this Intent's, has observed its spec, serves exactly the revisions derived
+// from the Intent's own records, and names a bare https host whose first
+// label is the Intent's; its status message never reaches GitHub, and a
+// failed read shows no link. Without --intent-multi-repo, an Intent of a Project listing
 // more than one repository is held Blocked (UnsupportedRepositories): no run
 // is launched or created and no push made for it (a Job already running
 // finishes, and its push waits), so turning the flag off is a real rollback.
@@ -114,6 +122,8 @@
 //	IntentRun spec       IntentReconciler, once, at creation (the lease)
 //	IntentRun status     RunReconciler
 //	Project status       ProjectReconciler
+//	Preview spec         PreviewSourceReconciler (preview-controller writes
+//	                     its status, which the IntentReconciler only reads)
 //
 // Repositories (spec, at creation) and the input, plan and run-input
 // ConfigMaps are created by the IntentReconciler and never changed; the
@@ -175,7 +185,14 @@
 //     the moment the thing it answers happened (never the whole thread),
 //     so a restart between posting and recording never posts twice. The
 //     status comment is created exactly once and edited only when its
-//     digest changes.
+//     digest changes. So is each pull request's preview comment: posted
+//     once the preview is first live at its head (found first by its marker
+//     among the bot's comments since the build finished), recorded by id and
+//     digest on the pull request's record, edited only when its digest
+//     changes, and last edited to say the preview was removed once the
+//     intent ends. Its writes are best effort: they ask each pull request
+//     repository's own rate floor, skip a repository that left the Project,
+//     and never hold a phase step or an ended intent's hand-off.
 //   - A human action is consumed exactly once. Trigger actions (the trigger
 //     label re-applied, /patchy replan) are consumed by status.lastTrigger,
 //     written in the same status write as their effect, and only actions

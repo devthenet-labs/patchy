@@ -72,6 +72,9 @@ type GitHub interface {
 	GetPullRequestComment(ctx context.Context, repoURL string, id int64) (*ghclient.Comment, error)
 	PullRequestCommentEdited(ctx context.Context, repoURL, nodeID string) (bool, error)
 	CreatePullRequestComment(ctx context.Context, repoURL string, number int64, body string) (*ghclient.Comment, error)
+	// EditPullRequestComment replaces the body of patchy's own comment on a
+	// pull request conversation: the sticky preview comment.
+	EditPullRequestComment(ctx context.Context, repoURL string, id int64, body string) error
 	ReactPullRequestComment(ctx context.Context, repoURL string, commentID int64) error
 	ListPullRequestReviews(ctx context.Context, repoURL string, number int64) ([]ghclient.Review, error)
 	ListPullRequestReviewComments(ctx context.Context, repoURL string, number int64) ([]ghclient.ReviewComment, error)

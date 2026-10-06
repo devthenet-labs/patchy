@@ -261,6 +261,67 @@ test("mergeRunOutput ignores a malformed chunk", () => {
   assert.equal(mergeRunOutput(state, { task: "b1", line: 4 }).end, 4);
 });
 
+// mulberry32 is a tiny seeded PRNG, so the property below runs the same
+// cases every time without a dependency.
+function mulberry32(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// randomStream is one command's chunks as a follow might deliver them:
+// mostly consecutive, with gaps (samples, drops), overlaps and repeats
+// (replays), and empty chunks; a line's text is its number's.
+function randomStream(rand) {
+  const int = (n) => Math.floor(rand() * n);
+  const out = [];
+  let cur = 1;
+  for (let i = 1 + int(60); i > 0; i--) {
+    const roll = rand();
+    const line = Math.max(1, roll < 0.6 ? cur : roll < 0.8 ? cur + 1 + int(80) : cur - int(30));
+    const lines = Array.from({ length: int(40) }, (_, k) => `L${line + k}`);
+    out.push(chunk(line, lines, { done: i === 1 && rand() < 0.5, truncated: rand() < 0.05 }));
+    cur = Math.max(cur, line + lines.length);
+  }
+  return out;
+}
+
+// Whatever a command's chunks are, and wherever a reconnect cuts in, the
+// panel's state is what one pass over the stream gives: replaying any
+// prefix again (the replay a reconnect brings) changes nothing. It keeps at
+// most OUTPUT_KEEP lines, each under its own number, and its segments
+// account for every line up to the end exactly once, held or counted as
+// not shown.
+test("mergeRunOutput and outputSegments hold under replays (seeded property)", () => {
+  const rand = mulberry32(20261006);
+  for (let run = 0; run < 300; run++) {
+    const stream = randomStream(rand);
+    const once = fold(stream);
+    const cut = Math.floor(rand() * (stream.length + 1));
+    const again = fold([...stream.slice(0, cut), ...stream.slice(0, cut), ...stream.slice(cut)]);
+    assert.deepEqual(again, once, `run ${run}: a replay of the first ${cut} chunks changed the state`);
+
+    assert.ok(once.lines.length <= OUTPUT_KEEP, `run ${run}: ${once.lines.length} lines held`);
+    once.lines.forEach((l, i) => {
+      assert.equal(l.text, `L${l.n}`, `run ${run}: line ${l.n} holds ${l.text}`);
+      if (i > 0) assert.ok(l.n > once.lines[i - 1].n, `run ${run}: lines out of order`);
+    });
+
+    const segments = outputSegments(once);
+    const shown = segments.filter((g) => g.kind === "lines").reduce((n, g) => n + g.text.split("\n").length, 0);
+    const skipped = segments.filter((g) => g.kind === "skipped").reduce((n, g) => n + g.count, 0);
+    assert.equal(shown, once.lines.length, `run ${run}: segments show ${shown} of ${once.lines.length} lines`);
+    assert.equal(shown + skipped, once.end - 1, `run ${run}: segments cover ${shown + skipped} of ${once.end - 1}`);
+    assert.ok(
+      segments.every((g) => g.kind === "lines" || g.count > 0),
+      `run ${run}: an empty gap`,
+    );
+  }
+});
+
 // Agent text is rendered as plain text only: no intents view may reach the
 // markdown renderer, or put raw HTML into the page.
 test("no intents view imports Markdown or sets inner HTML", () => {

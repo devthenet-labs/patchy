@@ -7,12 +7,15 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/quick"
 	"time"
 	"unicode/utf8"
 
@@ -672,5 +675,115 @@ func TestHubStaleCloseLeavesANewerRunAlone(t *testing.T) {
 	stale.Close()
 	if ctx.Err() != nil {
 		t.Error("closing a subscription to an ended run cancelled a newer run of the same Job")
+	}
+}
+
+// tailText is the text line n of task carries in TestOutputTailProperty,
+// so a held line shows which number it came under.
+func tailText(task string, n int) string { return fmt.Sprintf("%s#%d", task, n) }
+
+// randomChunk is a chunk of task as a follow might deliver it, cur being the
+// number after the last line delivered: behind it, overlapping, at it or
+// past it, of up to one and a half rings of lines.
+func randomChunk(r *rand.Rand, task string, cur int) transcript.Output {
+	line := max(1, cur+r.Intn(60)-20)
+	c := transcript.Output{V: transcript.OutputVersion, Task: task, Line: line, Done: r.Intn(10) == 0,
+		Truncated: r.Intn(10) == 0}
+	for k := range r.Intn(3 * outputRing / 2) {
+		c.Lines = append(c.Lines, tailText(task, line+k))
+	}
+	return c
+}
+
+// heldWrong says what is wrong with the lines a tail holds, or "".
+func heldWrong(tail outputTail) string {
+	if len(tail.lines) > outputRing {
+		return fmt.Sprintf("%d lines held", len(tail.lines))
+	}
+	for i, l := range tail.lines {
+		if l.text != tailText(tail.task, l.n) || (i > 0 && l.n <= tail.lines[i-1].n) {
+			return fmt.Sprintf("held line %d is %q under number %d", i, l.text, l.n)
+		}
+	}
+	return ""
+}
+
+// stepWrong says what is wrong with a tail after it took chunk c, or "".
+func stepWrong(before, after outputTail, c transcript.Output) string {
+	if after.task != c.Task {
+		return fmt.Sprintf("task %q after a chunk of %q", after.task, c.Task)
+	}
+	if before.task != c.Task {
+		if after.end != c.Line+len(c.Lines) || after.done != c.Done || after.truncated != c.Truncated {
+			return fmt.Sprintf("a new command kept state from the last: end %d, done %v", after.end, after.done)
+		}
+		return ""
+	}
+	if after.end < before.end || (before.done && !after.done) || (before.truncated && !after.truncated) {
+		return fmt.Sprintf("end %d after %d, done %v after %v", after.end, before.end, after.done, before.done)
+	}
+	// Within a command nothing held is let go but the oldest, to the ring.
+	for _, l := range before.lines {
+		if len(after.lines) > 0 && l.n >= after.lines[0].n && !slices.Contains(after.lines, l) {
+			return fmt.Sprintf("line %d was let go though newer than the oldest held", l.n)
+		}
+	}
+	return ""
+}
+
+// replayWrong says what is wrong with a tail's replay, or "".
+func replayWrong(tail outputTail) string {
+	replay := tail.replay()
+	var replayed []outputLine
+	for i, o := range replay {
+		if o.Task != tail.task || (i < len(replay)-1 && (o.Done || o.Truncated)) {
+			return fmt.Sprintf("replay chunk %d = %+v", i, o)
+		}
+		for k, l := range o.Lines {
+			replayed = append(replayed, outputLine{n: o.Line + k, text: l})
+		}
+	}
+	if !slices.Equal(replayed, tail.lines) {
+		return fmt.Sprintf("replay renders %d lines, the ring holds %d", len(replayed), len(tail.lines))
+	}
+	if last := replay[len(replay)-1]; last.Done != tail.done || last.Truncated != tail.truncated ||
+		last.Line+len(last.Lines) < tail.end {
+		return fmt.Sprintf("last replay chunk %+v, want the command's end %d and state", last, tail.end)
+	}
+	return ""
+}
+
+// TestOutputTailProperty: whatever chunks a follow delivers — repeats,
+// gaps, lines behind the end, chunks longer than the ring, a new command
+// now and then — the replay ring holds each line under its own number,
+// ascending, at most outputRing of them; its end never moves back within a
+// command; it starts over only for a new task id; and its replay renders
+// exactly the lines it holds, the command's end and state on the last chunk.
+func TestOutputTailProperty(t *testing.T) {
+	property := func(seed int64) bool {
+		r := rand.New(rand.NewSource(seed))
+		var tail outputTail
+		task, cur := "b1", 1
+		for step := range 1 + r.Intn(60) {
+			if r.Intn(8) == 0 {
+				task, cur = fmt.Sprintf("b%d", 2+r.Intn(3)), 1 // another command, maybe a seen one
+			}
+			c := randomChunk(r, task, cur)
+			cur = max(cur, c.Line+len(c.Lines))
+			before := tail
+			before.lines = slices.Clone(tail.lines)
+			tail.add(c)
+			for _, wrong := range []string{heldWrong(tail), stepWrong(before, tail, c), replayWrong(tail)} {
+				if wrong != "" {
+					t.Logf("seed %d step %d (chunk %s@%d+%d): %s", seed, step, c.Task, c.Line, len(c.Lines), wrong)
+					return false
+				}
+			}
+		}
+		return true
+	}
+	cfg := &quick.Config{MaxCount: 500, Rand: rand.New(rand.NewSource(20261006))}
+	if err := quick.Check(property, cfg); err != nil {
+		t.Error(err)
 	}
 }

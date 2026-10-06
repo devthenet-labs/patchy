@@ -787,6 +787,12 @@ iterates on those failures itself, using the revise machinery.
   check would otherwise burn budget, as the CodeQL zero-rule upload glitch would have.
 - **Only on patchy's own head.** A fix round starts only when the failing head is the commit patchy pushed. If a human
   has pushed since, the failure is reported and a human decides.
+- **A re-run first (opt-in).** With `checks.rerunFailed`, the first failure at a head re-runs the failed jobs of the
+  GitHub Actions run behind it once (`POST .../actions/runs/{id}/rerun-failed-jobs`), recorded on the pull request so a
+  restart neither repeats nor forgets it; only a failure after that re-run starts the round. A failure with no Actions
+  run (a commit status, another App's check) or a refused re-run starts the round at once. It is off by default because
+  it is the one write on a repository's CI: actions write, its own `intentperm` feature (`rerun-failed`) so that check
+  fixes alone never widen the App to it, and a token minted with it alone.
 - **What the agent sees.** For each failed check:
   - the name and conclusion;
   - the check run's output title, summary and text;

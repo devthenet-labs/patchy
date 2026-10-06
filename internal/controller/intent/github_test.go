@@ -109,6 +109,7 @@ const (
 	onIntentRepository   = "the intent repository"
 	onAppRepository      = "an application repository"
 	onCheckFixRepository = "an application repository, on a check-fix round"
+	onRerunRepository    = "an application repository, re-running failed checks"
 )
 
 // tokenUses declares, for every method of GitHub, the repositories
@@ -146,7 +147,8 @@ var tokenUses = map[string][]string{
 
 	"ListCheckRuns": {onCheckFixRepository}, "ListCheckAnnotations": {onCheckFixRepository},
 	"ListCommitStatuses": {onCheckFixRepository}, "ListWorkflowJobs": {onCheckFixRepository},
-	"GetJobLogTail": {onCheckFixRepository},
+	"GetJobLogTail": {onCheckFixRepository}, "ListWorkflowRuns": {onCheckFixRepository},
+	"RerunFailedJobs": {onRerunRepository},
 }
 
 // TestEveryTokenIsInTheTable is the other half of
@@ -211,6 +213,22 @@ func TestCreatePullRequestCanReadTheRefs(t *testing.T) {
 	}
 }
 
+// TestRerunTokenIsActionsWriteAlone pins the one token with a write on a
+// repository's CI: re-running failed jobs mints actions write and nothing
+// else beside it, so no other call can ride on it.
+func TestRerunTokenIsActionsWriteAlone(t *testing.T) {
+	store, spec := tokenFixture(t)
+	m, ok := reflect.TypeFor[GitHub]().MethodByName("RerunFailedJobs")
+	if !ok {
+		t.Fatal("GitHub has no RerunFailedJobs")
+	}
+	minted := mintedBy(t, store, m, spec.Repositories[0].URL)
+	want := ghclient.TokenPerms{Actions: ghclient.PermWrite}
+	if len(minted) != 1 || minted[0].perms != want {
+		t.Fatalf("RerunFailedJobs minted %+v, want one token with %+v", minted, want)
+	}
+}
+
 // tokenFixture is a Forge whose API answers everything with 404, its
 // credential Secret, the store minting tokens from them, and a Project spec
 // with an intent repository and one application repository on that Forge.
@@ -240,7 +258,8 @@ func tokenFixture(t *testing.T) (*forge.Store, v1alpha1.ProjectSpec) {
 // tableFor is the repository URL and the intentperm grants of the
 // repository use names in a Project shaped like spec: the intent
 // repository's row, or the application repository's, with spec.checks.fix
-// set for a check-fix round.
+// set for a check-fix round, and spec.checks.rerunFailed beside it for a
+// re-run.
 func tableFor(t *testing.T, spec v1alpha1.ProjectSpec, use string) (string, []intentperm.Grant) {
 	t.Helper()
 	role := intentperm.RoleApp
@@ -249,6 +268,8 @@ func tableFor(t *testing.T, spec v1alpha1.ProjectSpec, use string) (string, []in
 		role = intentperm.RoleIntent
 	case onCheckFixRepository:
 		spec.Checks.Fix = []string{"test"}
+	case onRerunRepository:
+		spec.Checks.Fix, spec.Checks.RerunFailed = []string{"test"}, true
 	}
 	for _, need := range intentperm.For(&spec) {
 		if need.Role == role {

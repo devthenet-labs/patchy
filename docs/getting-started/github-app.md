@@ -37,21 +37,28 @@ Grant exactly these — nothing more:
 Intent-driven development (the optional [intent-controller](../configuration/intent-controller.md)) uses the same App.
 It needs no webhook event, because it polls GitHub, and these permissions:
 
-| Repository             | Permission          | Access       | Why                                                                         |
-| ---------------------- | ------------------- | ------------ | --------------------------------------------------------------------------- |
-| The intent repository  | **Issues**          | Read & write | Read intent issues and their events; post the plan and status; label, close |
-| Each app repository    | **Contents**        | Read & write | Push the `patchy-intent/…` branch                                           |
-| Each app repository    | **Pull requests**   | Read & write | Open the pull request; read its reviews and conversation                    |
-| Each app repository    | **Issues**          | Read         | Check a reviewer's or commenter's permission; read the rate budget          |
-| With `spec.checks.fix` | **Checks**          | Read         | Find the failed check runs and read their annotations                       |
-| With `spec.checks.fix` | **Commit statuses** | Read         | Find the failed commit statuses                                             |
-| With `spec.checks.fix` | **Actions**         | Read         | Read the job log tail behind a failed Actions check run                     |
+| Repository                     | Permission          | Access       | Why                                                                             |
+| ------------------------------ | ------------------- | ------------ | ------------------------------------------------------------------------------- |
+| The intent repository          | **Issues**          | Read & write | Read intent issues and their events; post the plan and status; label, close     |
+| Each app repository            | **Contents**        | Read & write | Push the `patchy-intent/…` branch                                               |
+| Each app repository            | **Pull requests**   | Read & write | Open the pull request; read its reviews and conversation                        |
+| Each app repository            | **Issues**          | Read         | Check a reviewer's or commenter's permission; read the rate budget              |
+| With `spec.checks.fix`         | **Checks**          | Read         | Find the failed check runs and read their annotations                           |
+| With `spec.checks.fix`         | **Commit statuses** | Read         | Find the failed commit statuses                                                 |
+| With `spec.checks.fix`         | **Actions**         | Read         | Read the job log tail behind a failed Actions check run                         |
+| With `spec.checks.rerunFailed` | **Actions**         | Read & write | Re-run the failed jobs of a failed Actions check run once before a CI-fix round |
 
 Issues read on an app repository is not about its issues: intent-controller reads a pull request reviewer's or
-commenter's repository permission, and the installation's rate budget, with an issues-read token. The last three are
-needed only by a Project that names checks in `spec.checks.fix`, on its app repositories. A Project reports `Ready` only
-once the App holds every grant it needs (each is proven by minting a token with it), and `AppNotInstalled` names the
-first one missing.
+commenter's repository permission, and the installation's rate budget, with an issues-read token. The three
+`spec.checks.fix` rows are needed only by a Project that names checks in `spec.checks.fix`, on its app repositories.
+Actions at read and write is needed only by a Project that also sets `spec.checks.rerunFailed` (off by default); with
+it, Actions is the one permission at read and write rather than read. A Project reports `Ready` only once the App holds
+every grant it needs (each is proven by minting a token with it), and `AppNotInstalled` names the first one missing.
+
+To turn re-runs on for an existing App, raise its **Actions** permission from Read to **Read & write** in the App's
+settings (Permissions & events), approve the change on each installation (GitHub asks the installation's owner to accept
+a widened permission), then set `checks.rerunFailed: true` on the Project. An App created with
+`patchy setup github-app --intents --checks --rerun-failed` holds it from the start.
 
 ## Webhook events
 

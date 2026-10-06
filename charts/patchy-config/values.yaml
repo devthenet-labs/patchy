@@ -282,5 +282,10 @@ projects: []
 #       #     # Project is not Ready.
 #       #     fix: [test, lint]
 #       #     timeout: 30m          # how long to wait for them after a push
+#       #     # Re-run the failed jobs of a failed GitHub Actions check once
+#       #     # before a fix round is spent on it (a flaky test then costs
+#       #     # no round). Needs the App's actions write permission on
+#       #     # every app repository, or the Project is not Ready.
+#       #     rerunFailed: false
 #       # requireRepositoryImage: true                  # the default
 #       # suspend: false

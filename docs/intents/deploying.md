@@ -184,8 +184,9 @@ gh repo create acme/intents --private --description "Intents for patchy"
 ```
 
 Create the App with the CLI. `--intents` asks for exactly what intent-controller uses, `--checks` adds the reads that
-automatic check-fix rounds need (a Project with `spec.checks.fix`), and neither needs a webhook, because
-intent-controller polls GitHub:
+automatic check-fix rounds need (a Project with `spec.checks.fix`), `--rerun-failed` adds the Actions write that
+re-running a failed check before a round needs (a Project with `spec.checks.rerunFailed`, off by default), and none
+needs a webhook, because intent-controller polls GitHub:
 
 ```sh
 patchy setup github-app --org acme --intents --checks
@@ -199,12 +200,13 @@ mode 0600; it holds the only copy of the private key, so apply it in step 5 and 
 `-o - | sops ...`). [Creating the GitHub App](../cli.md#creating-the-github-app) has every flag, and
 [Create the GitHub App](../getting-started/github-app.md#intents) the permissions and why each is needed:
 
-| Repository             | Permission                       | Access       |
-| ---------------------- | -------------------------------- | ------------ |
-| The intent repository  | Issues                           | Read & write |
-| Each app repository    | Contents, Pull requests          | Read & write |
-| Each app repository    | Issues                           | Read         |
-| With `spec.checks.fix` | Checks, Commit statuses, Actions | Read         |
+| Repository                     | Permission                       | Access       |
+| ------------------------------ | -------------------------------- | ------------ |
+| The intent repository          | Issues                           | Read & write |
+| Each app repository            | Contents, Pull requests          | Read & write |
+| Each app repository            | Issues                           | Read         |
+| With `spec.checks.fix`         | Checks, Commit statuses, Actions | Read         |
+| With `spec.checks.rerunFailed` | Actions                          | Read & write |
 
 Then install the App from the link the CLI prints. Choose **Only select repositories** and pick the intent repository
 and every application repository: an App installed on all repositories can act on all of them. Add each new application
@@ -524,6 +526,7 @@ projects:
           url: https://github.com/acme/Shop.Web
       checks:
         fix: [test] # a failing `test` check on patchy's PR starts a fix round
+        # rerunFailed: true # re-run a failed Actions check once first; needs Actions read & write
 ```
 
 `checks.fix` names check runs: `test` is the job of the CI `init app` generates for a new application. A repository

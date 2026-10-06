@@ -102,6 +102,13 @@ type fingerprint struct {
 // clone's own index — what commit.sh will commit — is never touched; the
 // copy keeps git's stat cache, so only files changed since it was written
 // are hashed again.
+//
+// It catches a repair that edits, adds, stages or commits anything, which
+// is what a model told to fix only its report gets wrong. It is not a
+// sandbox against one set on hiding an edit: ignored paths are not hashed
+// (that would hash every dependency tree), and commit.sh, which a repair
+// may rewrite, runs afterwards — as a first run's commit.sh already does,
+// with the same reach.
 func treeFingerprint(ctx context.Context, dir string) (fingerprint, error) {
 	head, err := git(ctx, dir, "rev-parse", "HEAD")
 	if err != nil {

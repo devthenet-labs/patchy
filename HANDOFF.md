@@ -9,6 +9,46 @@
 
 ## Current checkpoint — 2026-10-06
 
+**0.12.19 released, deployed and fresh-Finding gated; sign-in and the intents dashboard are on (2026-10-06, overnight;
+the owner asked for everything "well tested" while asleep).** Six PRs, each with `make pr`, `mise run e2e` and a
+regression test proven to fail without its fix; five were reviewed from two angles and the dashboard from four, every
+finding adversarially verified; an integration run merged all five fixes together and passed both gates before they were
+merged one at a time, each current with main and every check green:
+
+- #125 intent pull requests are opened with contents read too: GitHub refused overdub-12's PR in a private repository
+  (`422 not all refs are readable`). Live: after the upgrade the Blocked intent retried and opened overdub#2.
+- #126 the planner is told its own turn, token and wall-clock budget, that it cannot run commands, to batch reads, and
+  the report's limits; its writes are scoped to `reports/` by an `Edit(//…/reports/**)` rule (smoke-tested on CLI
+  2.1.291; live plans on 2.1.263 since: hello-web-14 in ~10 turns/$0.13, preview-demo-15 in ~12 turns/$0.19).
+- #127 the preview link: one sticky comment per previewed PR, edited in place, and a status-comment line. Live on
+  Hello.Web#2 and overdub#2 within seconds of the upgrade.
+- #128 an invalid or missing report is repaired by resuming the agent's own session (2 bounded rounds) instead of
+  discarding the stage. Not yet triggered live; e2e drives the real agent-runner through repair, refusal and give-up.
+- #129 preview Deployments roll (maxSurge 1, maxUnavailable 0) instead of Recreate. Review caught that the upgrade's
+  strategy patch would have retried every long-Ready preview (fixed, unit + real-apiserver e2e). Live: Hello.Web's
+  preview answered 200 throughout the upgrade. A redeploy on a new head is not yet proven live (both slots are held by
+  the owner's demos).
+- #130 the read-only intents dashboard, first slice, behind `statusServer.intents.enabled`.
+
+Helm: patchy **57** (0.12.19, sign-in off; rollback point **56**), then **58** (sign-in + dashboard on; rollback
+**57**); patchy-config **38** (stamps only; rollback **37**). Release PR #131 was stamps and CHANGELOG only, its CI
+approved at the verified head. Gate: weak-key alert **#45** → `finding-514becf18f-20` → issue **#83** → expedite → the
+investigation held it (`breakingChangeAvailable`) → `/patchy approve` → PR **#84** (2048-bit key plus a committed test,
+pushed commit = PR head) → merged `8baa2df` → Remediated, issue closed completed, one Finding, alert fixed, each marker
+once.
+
+Sign-in: Dex (`dex.patchy.devthe.net`, terraform-devthenet #39–#43) with "Sign in with GitHub" for devthenet-labs
+members; the status server runs mode oidc with `github:` prefixes and the dashboard on; `github:<owner>` is bound to
+findings-operator and intents-content. The redirect chain status → Dex (PKCE) → GitHub authorize is verified; the
+owner's first sign-in (one "Authorize" click at GitHub) is still to do. Anonymous `/api` answers 401, cross-site 403;
+CSP and HSTS are set; the webhook and previews were checked after each step.
+
+Live test intent: preview-demo-15 (intents#15) planned, built, opened PR #11, had its changelog fixed by an automatic
+CI-fix round, and merged
+($0.72); its preview stayed Queued because both slots were in use. Open for the owner:
+Hello.Web#2 (hello-web-13) and overdub#2 (overdub-12, $9.48
+of its $10 ceiling, preview live, checks green after a re-run of the known-flaky studio test).
+
 **0.12.18 released, deployed and fresh-Finding gated.** PR #122 added operator-defined agent resource classes and fast
 failure for unschedulable Jobs, with fixes for durable run outcomes and public eviction messages. Its local `make pr`
 and `mise run e2e` gates passed, and every PR check concluded SUCCESS or SKIPPED before merge. Release-please PR #120
@@ -387,8 +427,9 @@ setting. The standing permission for these run approvals is recorded below; it d
 Slice 1a/1b code is merged and live on **0.12.6**, patchy revision **33**, patchy-config revision **19**, intents
 enabled. PR #65 fixed PR-comment permissions and durable notices; the missing round-1 notice on target PR #46 was
 recovered exactly once. The new human review completed a successful revision
-($0.295620), the owner merged PR #46, target-2
-reached Merged, and intents issue #2 closed as completed with one summary. Its total reported cost was $1.150306.
+($0.295620), the owner merged PR #46,
+target-2 reached Merged, and intents issue #2 closed as completed with one summary. Its total reported cost was
+$1.150306.
 The automatic check-fix path remains **unexercised live**: the revision's checks passed on its first push.
 
 The post-demo fresh-Finding gate passed: alert 30, `finding-514becf18f-5`, issue #53, repair PR #54, merge

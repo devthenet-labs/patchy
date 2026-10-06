@@ -41,6 +41,78 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
 
 ## Running intents
 
+- **A fake client cannot see a Deployment's generation, so it hid an upgrade bug** (#129 review, 2026-10-06). Switching
+  live preview Deployments from Recreate to rolling raises their `metadata.generation`; the controller then read the
+  not-yet-observed generation as "not ready" and, for a preview Ready longer than the rollout timeout, retried it:
+  deleting its Deployment and spending a retry. controller-runtime's fake client never bumps generation and envtest has
+  no Deployment controller, so the PR's own tests passed. Caught by an adversarial reviewer, reproduced on a real
+  kube-apiserver, fixed before release. Docs/patchy: tests of upgrade paths that patch a live spec need generation
+  semantics (an interceptor, or envtest).
+- **A plan can be confidently wrong about a security header** (hello-web-14, 2026-10-06). The planner claimed inline
+  `style="…"` attributes pass Hello.Web's `default-src 'none'` CSP; they do not (style-src falls back to default-src).
+  Its test would not have noticed. Cancelled. Docs: the human plan review is where this is caught; tell reviewers to
+  read claims about CSP, auth and permissions skeptically.
+- **Two intents on one file collide** (hello-web-14). It planned against `main` while Hello.Web#2 (another intent's PR)
+  changes the same file, so merging it would have left the demo PR conflicting. Patchy: the planner could be told about
+  open intent PRs in the same repository.
+- **A flaky check can still start a needless CI-fix round** (overdub#2, 2026-10-06). `studio-test.js` failed in CI and
+  passed in the agent's pod; re-running the failed job before patchy's check-fix round launched turned it green, which
+  mattered at $9.48 of a $10 ceiling. Patchy: re-run a failed check once before spending a fix round on it.
+- **A queued preview reads as "being deployed"** (preview-demo-15). With both slots held, its status comment said the
+  preview was being deployed when it was waiting for a slot. Patchy: say "waiting for a preview slot".
+- **The 0.12.19 gate needed an approval** (2026-10-06). The investigation recommended remediation at 0.95 confidence but
+  held it (`breakingChangeAvailable`); earlier gates went straight through. Docs: the gate procedure may need
+  `/patchy approve` after `/patchy expedite`.
+- **Dex on the shared ALB, three snags** (operator, 2026-10-06): the chart's image runs as the named user `dex`, which
+  `runAsNonRoot` cannot verify (pin uid 1001); its entrypoint renders config into `/tmp` (emptyDir under a read-only
+  root); and the shared ALB's IngressClassParams admitted only the `patchy` namespace (FailedLoadGroupID; the allowlist
+  now names `dex` too, and the refusal left the ALB untouched). Docs: list these in the sign-in guide.
+- **golangci-lint's cache can report another worktree's paths** (operator). After a scratch worktree was deleted,
+  `make pr` in a different worktree failed on `../patchy-integ/...` lll findings from the cache;
+  `golangci-lint cache clean` fixed it.
+- **The first private repository could not get its pull request** (overdub-12, 2026-10-06). The build succeeded and
+  pushed `patchy-intent/overdub-12`, then GitHub refused the pull request: `422 ... not all refs are readable`. Patchy
+  opened pull requests with a pull-requests-write token only; in a public repository the refs are readable anyway, so
+  Hello.Web, preview-demo and marigold never showed it. The intent parks Blocked (`PullRequestRefused`) and retries when
+  the Project changes or the controller restarts. The fix (for 0.12.19) opens pull requests with contents read added.
+  Docs: test onboarding against a private repository; patchy: e2e has no notion of a private repository.
+- **A report can still fail on the last attempt, so it was fixed by hand** (overdub-12 attempt 2, operator, owner
+  approved). Attempt 1 failed `report_invalid` ($3.70: a sentence where the schema wants a list). Attempt 2's report had
+  a 664-character note (limit 500); the agent had checked its YAML parsed but did not know the limit. The operator split
+  that note at a sentence boundary inside the pod, wording unchanged, before the agent finished; the report then passed.
+  Report repair (give the validation error back to the same session) makes this automatic.
+- **Claude's Bash tool backgrounds a command after 10 minutes** (overdub-12). The agent ran the app's full 63-suite run;
+  at 10 minutes the CLI moved it to the background and returned, and the agent went on (CI subset, screenshots, report)
+  while polling it. So one long command does not trip the 20-minute idle watchdog. Docs: an agent can leave a long
+  command running; patchy: nothing to change.
+- **On the large class, overdub's build behaved** (overdub-12 attempt 2): 38 s for the transport browser test, about a
+  minute for the 11-suite CI subset,
+  $3.56 and about 37 minutes, most of it fitting the new toggle into the transport
+  bar at 1280/1366/1440 px. Auto Mode picked a `c6a.2xlarge` in under a minute. The intent's total was $9.48
+  of its $10
+  ceiling (plan $2.22, two builds).
+- **Hello.Web is the quick demo** (hello-web-13, 2026-10-06). "Greet visitors by time of day on a styled card": plan
+  $0.47 (3.5 minutes), build $0.42, PR about 7 minutes after filing, preview Ready about 3 minutes later, serving the
+  greeting with the stylesheet allowed by its `sha256` hash in the CSP. Patchy did not post the preview link anywhere
+  (intent-controller never reads Preview status); a fix is going into 0.12.19.
+- **With 100 turns the replan finished** (overdub-12, 2026-10-06): about 67 turns, $2.22, 10 minutes, a 243-line plan
+  with 3 questions. It also showed the planner's sandbox is uneven. It tried to run the transport browser test 4 times
+  (each refused; plans are read-only) before going back to reading, and its Write tool was not refused: it created a
+  scratch file inside its copy of the repository, then could not delete it because `rm` is. Harmless (a plan's tree is
+  discarded and nothing is pushed from it), but patchy should tell the planner up front that it cannot run commands and
+  either refuse Write in the repository tree or say "read-only" means shell only.
+- **The per-intent cost ceiling survives a re-label** (operator). Re-labelling a Failed issue resumes the same Intent,
+  whose recorded spend still counts toward `limits.maxCostMicroUSD`: overdub-10 had spent $6.07 of $10, too little left
+  for a 100-turn plan and a build. It was closed and re-filed as intents#12. Docs: retry an expensive intent as a new
+  issue, or raise the ceiling.
+- **40 plan turns is too few for a real app** (overdub-10, 2026-10-06). The successful first plan used about 38 turns;
+  the replan's two attempts both hit 40 ($1.46 and $0.96) while reading sensibly: the transport UI, the recording tests,
+  the icon helper, the user guide. Each turn made one tool call, never several in parallel. The plan prompt gives the
+  build's turn budget but not the planner's own until a retry, after it has already run out. On devthenet
+  `intentController.config.plan` is now 100 turns and 30m (chart-wide; there is no per-Project setting). Patchy: tell
+  the planner its limit up front, encourage parallel reads, let a Project override its plan and build limits, and make a
+  mid-run dollar cap (broker limits) the real spend guard. Docs: a transcript's `turns` counts entries (each tool call
+  and each result), about twice the model turns.
 - **The 0.12.18 fresh-Finding gate passed** (2026-10-06). A new weak-key alert became one Finding and one tracking
   issue. `/patchy expedite` took it through investigation and remediation to a repair PR. The agent raised the key size
   and added a regression test; all PR and post-merge CodeQL checks passed. Patchy closed the issue as completed, emitted
@@ -95,7 +167,8 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
   tripping it. Patchy/docs: say plainly which limit bounds spend; set broker limits from observed runs.
 - **Spend on a real app, for scale** (overdub-10, Sonnet 5): plan $1.45 (~7 min), first build attempt $2.20 (31 min on 2
   vCPU, about 20 of them waiting on browser tests). Hello.Web's whole intent was
-  $0.55; marigold's two-repo intent $1.51.
+  $0.55; marigold's two-repo intent
+  $1.51.
 - **Agent Jobs request no CPU or memory, so heavy builds starve** (overdub-10, 2026-10-04). Pods set only
   ephemeral-storage, so EKS Auto Mode placed an overdub build (Chromium + audio rendering) on a `c6a.large`: 2 vCPU,
   ~3.7 GiB, shared. Builds are slow and risk OOM. Addressed in

@@ -172,6 +172,11 @@ func TestPlanRunsReadOnly(t *testing.T) {
 		"Bash(git log:*) Bash(git show:*) Bash(git blame:*) Bash(git diff:*)" {
 		t.Errorf("--allowedTools = %q, want the read-only posture writing only under reports/", got)
 	}
+	// The tree being planned cannot widen that posture through its own
+	// .claude/ settings or .mcp.json: the run reads the user source alone.
+	if got := flag("--setting-sources"); got != "user" || !slices.Contains(argv, "--strict-mcp-config") {
+		t.Errorf("--setting-sources = %q in %q, want user alone and --strict-mcp-config", got, argv)
+	}
 	if got := flag("--max-turns"); got != "30" {
 		t.Errorf("--max-turns = %s, want the grant below the stage's limit", got)
 	}
@@ -477,6 +482,9 @@ func TestBuildRunsOnTheGrant(t *testing.T) {
 	}
 	if got := at("--allowedTools"); got != "Read Glob Grep Edit Write NotebookEdit Bash" {
 		t.Errorf("--allowedTools = %q, want the workspace-write posture", got)
+	}
+	if got := at("--setting-sources"); got != "user" || !slices.Contains(argv, "--strict-mcp-config") {
+		t.Errorf("--setting-sources = %q in %q, want user alone and --strict-mcp-config", got, argv)
 	}
 	if got := at("--max-turns"); got != "40" {
 		t.Errorf("--max-turns = %s, want the grant, not the automated budget", got)

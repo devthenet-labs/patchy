@@ -84,6 +84,14 @@ func goldenFile(t *testing.T, name, got string) {
 // environment — so work on other stages that shares their helpers
 // (templates, the harness, the budget grant, the broker env) is proven not
 // to move them. The goldens were captured before any other stage existed.
+//
+// They have moved once on purpose, in the harness, for every stage at once:
+// a postured claude run reads settings from the user source alone
+// (--setting-sources user, --strict-mcp-config), so the working tree's
+// .claude/ settings and .mcp.json cannot change what the stage may run, and
+// it loads the tree's CLAUDE.md through the working tree added as a
+// directory (--add-dir and CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD).
+// The prompts and every other flag are byte-for-byte what they were.
 func TestFindingStageInvocationsUnchanged(t *testing.T) {
 	t.Run("investigate", func(t *testing.T) {
 		ws := newWorkspace(t)

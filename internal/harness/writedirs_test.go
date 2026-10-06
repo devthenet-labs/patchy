@@ -11,7 +11,7 @@ import (
 // TestClaudePromptSpecReadOnlyWriteDirs pins how a read-only run's write
 // scope renders: the bare Write is replaced, at its place in the allow list,
 // by one absolute Edit rule per directory (an Edit rule covers the Write
-// tool too), and the deny list is untouched.
+// tool too), and the deny list and the settings pin are untouched.
 func TestClaudePromptSpecReadOnlyWriteDirs(t *testing.T) {
 	const gitRO = "Bash(git log:*) Bash(git show:*) Bash(git blame:*) Bash(git diff:*)"
 	tests := []struct {
@@ -37,6 +37,7 @@ func TestClaudePromptSpecReadOnlyWriteDirs(t *testing.T) {
 				"claude", "-p", "plan", "--model", "m", "--output-format", "stream-json", "--verbose",
 				"--allowedTools", tt.want,
 				"--disallowedTools", "WebFetch WebSearch Task",
+				"--setting-sources", "user", "--strict-mcp-config", "--add-dir", "/work/repo",
 			}
 			if !slices.Equal(spec.Argv, want) {
 				t.Errorf("Argv =\n%q\nwant\n%q", spec.Argv, want)

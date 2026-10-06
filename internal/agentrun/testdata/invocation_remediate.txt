@@ -78,12 +78,24 @@ Read Glob Grep Edit Write NotebookEdit Bash
 --- argv[13]
 WebFetch WebSearch
 --- argv[14]
---add-dir
+--setting-sources
 --- argv[15]
-/workspace
+user
 --- argv[16]
---session-id
+--strict-mcp-config
 --- argv[17]
+--add-dir
+--- argv[18]
+/workspace/repo
+--- argv[19]
+--add-dir
+--- argv[20]
+/workspace
+--- argv[21]
+--session-id
+--- argv[22]
 00000000-0000-4000-8000-000000000001
 --- env
 ANTHROPIC_CUSTOM_HEADERS=X-Patchy-Broker-Token: caller-token
+--- env
+CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1

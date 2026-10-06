@@ -23,7 +23,9 @@ its status may be stale.
 **The timeline** of one intent lists its phase changes; the plan revision and digest, with a link to the plan comment;
 the accepted approval with who approved, how (label or command), the plan revision and both digests it is bound to; the
 pull requests; the preview; and every run with its stage, round, attempt, outcome, duration, recorded cost and image
-(source and digest).
+(source and digest). Each run row links to that run's panel twice: its underlined name and a trailing "View conversation
+→" link ("Open run →" when the panel will show no conversation: for a reader without the transcripts tier, a run still
+waiting for a run slot, or a finished run that recorded none).
 
 **The run panel** shows how long the run has taken against its stage time limit, the Job's deadline and the idle
 watchdog's limit (20 minutes without a model turn or tool result, by default), which tool the agent called last and has

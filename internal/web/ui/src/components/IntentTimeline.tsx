@@ -1,13 +1,14 @@
 // One intent's story: the issue, each plan and its approval (bound to its
 // digests), every run with its outcome in public wording and its recorded
-// cost, the pull requests and the preview. A transcripts-tier reader can
-// also open each plan revision's text, as plain text.
+// cost, the pull requests and the preview. Every run row opens its run
+// panel. A transcripts-tier reader can also open each plan revision's text,
+// as plain text.
 
 import { useEffect, useState } from "preact/hooks";
-import type { IntentDetail, IntentPlanText } from "../types";
+import type { IntentDetail, IntentPlanText, IntentRunRow, IntentTier } from "../types";
 import { fetchIntentPlan } from "../api";
 import { formatDate, formatMicroUSD } from "../format";
-import { INTENT_PHASE_LABELS, formatDuration, secondsSince } from "../intents";
+import { INTENT_PHASE_LABELS, formatDuration, runLinkLabel, secondsSince } from "../intents";
 import { hrefForIntentRun, hrefForIntents } from "../router";
 import { Icon } from "./icons";
 import { PlainText } from "./PlainText";
@@ -59,6 +60,54 @@ function PlanText({ intent, revisions }: { intent: string; revisions: number[] }
         />
       ) : null}
     </section>
+  );
+}
+
+// RunRow is one run in the timeline's table, and a way into its run panel:
+// the run name, the row header, styled as the link it is, and a trailing
+// "View conversation →" (or "Open run →") link whose accessible name says
+// which run it opens. Both are plain links, so a middle or modified click
+// opens a tab and a click on any other cell selects text as usual.
+function RunRow({ intent, tier, run, now }: { intent: string; tier: IntentTier; run: IntentRunRow; now: number }) {
+  const href = hrefForIntentRun(intent, run.name);
+  const label = runLinkLabel(tier, run);
+  return (
+    <tr class="ps-hover-row group">
+      <th scope="row" class="px-3 py-2 text-left font-mono font-normal whitespace-nowrap">
+        <a href={href} class="text-ink underline decoration-1 underline-offset-2 group-hover:decoration-2">
+          {run.name}
+        </a>
+      </th>
+      <td class="px-3 py-2">
+        {run.stage} r{run.round} a{run.attempt}
+        {run.trigger ? ` (${run.trigger})` : ""}
+      </td>
+      <td class="px-3 py-2">{run.repository ?? "—"}</td>
+      <td class="px-3 py-2">
+        {run.running ? (
+          <span class="inline-flex items-center gap-1.5 text-ink">
+            <span class="ps-live-dot" /> {run.phase?.toLowerCase()}
+          </span>
+        ) : (
+          (run.reason ?? run.phase ?? "—")
+        )}
+      </td>
+      <td class="px-3 py-2 font-mono">{formatDuration(runSeconds(run.startedAt, run.finishedAt, now))}</td>
+      <td class="px-3 py-2 font-mono">{run.costMicroUSD ? formatMicroUSD(run.costMicroUSD) : "—"}</td>
+      <td class="px-3 py-2 font-mono" title="digest only; the registry is not shown">
+        {run.imageSource ?? "—"}
+        {run.imageDigest ? ` ${run.imageDigest}` : ""}
+      </td>
+      <td class="px-3 py-2 text-right whitespace-nowrap">
+        <a
+          href={href}
+          aria-label={`${label} for ${run.name}`}
+          class="text-[11.5px] font-semibold text-ink no-underline group-hover:underline"
+        >
+          {label} →
+        </a>
+      </td>
+    </tr>
   );
 }
 
@@ -210,7 +259,10 @@ export function IntentTimeline({ detail, now }: { detail: IntentDetail; now: num
 
       <section class="mt-6">
         <h2 class="ps-heading mb-2">Runs</h2>
-        <div class="overflow-x-auto rounded-[11px] border border-line bg-surface">
+        {/* relative: the screen-reader-only header inside is absolutely
+            positioned, and must scroll and clip with the table rather than
+            widen the page on a narrow screen. */}
+        <div class="relative overflow-x-auto rounded-[11px] border border-line bg-surface">
           <table class="w-full border-collapse text-[12px]">
             <thead>
               <tr class="text-left font-mono text-[9.5px] tracking-[0.07em] text-faint uppercase">
@@ -221,35 +273,14 @@ export function IntentTimeline({ detail, now }: { detail: IntentDetail; now: num
                 <th class="px-3 py-2">Duration</th>
                 <th class="px-3 py-2">Cost</th>
                 <th class="px-3 py-2">Image</th>
+                <th class="px-3 py-2">
+                  <span class="sr-only">Run panel</span>
+                </th>
               </tr>
             </thead>
             <tbody>
               {d.runs.map((run) => (
-                <tr key={run.name} class="ps-hover-row">
-                  <td class="px-3 py-2 font-mono">
-                    <a href={hrefForIntentRun(d.name, run.name)}>{run.name}</a>
-                  </td>
-                  <td class="px-3 py-2">
-                    {run.stage} r{run.round} a{run.attempt}
-                    {run.trigger ? ` (${run.trigger})` : ""}
-                  </td>
-                  <td class="px-3 py-2">{run.repository ?? "—"}</td>
-                  <td class="px-3 py-2">
-                    {run.running ? (
-                      <span class="inline-flex items-center gap-1.5 text-ink">
-                        <span class="ps-live-dot" /> {run.phase?.toLowerCase()}
-                      </span>
-                    ) : (
-                      (run.reason ?? run.phase ?? "—")
-                    )}
-                  </td>
-                  <td class="px-3 py-2 font-mono">{formatDuration(runSeconds(run.startedAt, run.finishedAt, now))}</td>
-                  <td class="px-3 py-2 font-mono">{run.costMicroUSD ? formatMicroUSD(run.costMicroUSD) : "—"}</td>
-                  <td class="px-3 py-2 font-mono" title="digest only; the registry is not shown">
-                    {run.imageSource ?? "—"}
-                    {run.imageDigest ? ` ${run.imageDigest}` : ""}
-                  </td>
-                </tr>
+                <RunRow key={run.name} intent={d.name} tier={d.tier} run={run} now={now} />
               ))}
             </tbody>
           </table>

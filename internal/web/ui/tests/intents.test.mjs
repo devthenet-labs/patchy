@@ -14,9 +14,11 @@ import {
   mergeRunOutput,
   outputSegments,
   outputStatus,
+  runLinkLabel,
   secondsSince,
   stopConditions,
 } from "../src/intents.ts";
+import { mockIntentDetail } from "../src/mock/intents.ts";
 import { hrefForIntent, hrefForIntentRun, isIntentsRoute, parseRoute } from "../src/router.ts";
 
 const card = (name, column, phaseSince) => ({
@@ -333,6 +335,58 @@ test("mergeRunOutput and outputSegments hold under replays (seeded property)", (
       `run ${run}: an empty gap`,
     );
   }
+});
+
+test("runLinkLabel promises the conversation only to a reader who will see it", () => {
+  const cases = [
+    { tier: "transcripts", run: { running: true, phase: "Running" }, want: "View conversation" },
+    { tier: "transcripts", run: { transcript: { turns: 4 } }, want: "View conversation" },
+    // Queued for a run slot: nothing has launched, so there is no conversation yet.
+    { tier: "transcripts", run: { running: true, phase: "Pending" }, want: "Open run" },
+    // Finished without a recorded conversation: the panel would say so.
+    { tier: "transcripts", run: {}, want: "Open run" },
+    { tier: "intents", run: { running: true, phase: "Running" }, want: "Open run" },
+    { tier: "intents", run: { transcript: { turns: 4 } }, want: "Open run" },
+  ];
+  for (const c of cases) {
+    assert.equal(runLinkLabel(c.tier, c.run), c.want, JSON.stringify(c));
+  }
+});
+
+test("every timeline run row links to its own run panel", () => {
+  for (const intent of ["storefront-12", "storefront-9"]) {
+    const d = mockIntentDetail(intent);
+    assert.ok(d && d.runs.length > 0, intent);
+    for (const run of d.runs) {
+      assert.deepEqual(parseRoute(hrefForIntentRun(d.name, run.name)), {
+        view: "intentRun",
+        name: d.name,
+        run: run.name,
+      });
+    }
+  }
+});
+
+// The run rows are only findable if they look like links. There is no DOM
+// test harness here, so this checks the rendered shape from the source: each
+// run renders through RunRow, which links to its panel twice (the run name
+// and the trailing affordance), names the affordance after its run, and
+// leaves the row itself to ordinary links rather than a click handler.
+test("run rows carry a visible link and a named affordance to the run panel", () => {
+  const src = readFileSync(new URL("../src/components/IntentTimeline.tsx", import.meta.url), "utf8");
+  const start = src.indexOf("function RunRow(");
+  const end = src.indexOf("export function IntentTimeline(");
+  assert.ok(start >= 0 && end > start, "RunRow precedes IntentTimeline");
+  const row = src.slice(start, end);
+  const timeline = src.slice(end);
+
+  assert.match(timeline, /<RunRow\b/);
+  assert.equal(timeline.match(/<tr\b/g)?.length, 1, "the timeline renders run rows only through RunRow");
+  assert.match(row, /hrefForIntentRun\(intent, run\.name\)/);
+  assert.equal(row.match(/<a\b/g)?.length, 2, "the run name and the affordance are both links");
+  assert.match(row, /aria-label=\{`\$\{label\} for \$\{run\.name\}`\}/);
+  assert.match(row, /\{label\} →/);
+  assert.doesNotMatch(row, /onClick|aria-hidden|tabIndex/, "plain links only, every one reachable");
 });
 
 // Agent text is rendered as plain text only: no intents view may reach the

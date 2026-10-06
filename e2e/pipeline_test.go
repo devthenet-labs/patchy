@@ -49,6 +49,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -153,7 +154,7 @@ func startCluster(t *testing.T) *cluster {
 	scheme := runtime.NewScheme()
 	for _, add := range []func(*runtime.Scheme) error{
 		v1alpha1.AddToScheme, corev1.AddToScheme, batchv1.AddToScheme,
-		appsv1.AddToScheme, networkingv1.AddToScheme,
+		appsv1.AddToScheme, networkingv1.AddToScheme, rbacv1.AddToScheme,
 	} {
 		if err := add(scheme); err != nil {
 			t.Fatal(err)

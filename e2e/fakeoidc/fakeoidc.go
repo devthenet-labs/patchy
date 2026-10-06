@@ -31,7 +31,8 @@ const keyID = "fakeoidc-1"
 // Server is a running fake issuer.
 type Server struct {
 	*httptest.Server
-	key *rsa.PrivateKey
+	key  *rsa.PrivateKey
+	flow *codeFlow
 }
 
 // Start brings up the issuer. Its URL is the issuer identifier, so callers
@@ -50,11 +51,15 @@ func Start() (*Server, error) {
 		writeJSON(w, map[string]any{
 			"issuer":                                s.URL,
 			"jwks_uri":                              s.URL + "/jwks",
+			"authorization_endpoint":                s.URL + "/authorize",
+			"token_endpoint":                        s.URL + "/token",
 			"id_token_signing_alg_values_supported": []string{"RS256"},
-			"response_types_supported":              []string{"id_token"},
+			"response_types_supported":              []string{"id_token", "code"},
+			"code_challenge_methods_supported":      []string{"S256"},
 			"subject_types_supported":               []string{"public"},
 		})
 	})
+	s.registerCodeFlow(mux)
 	mux.HandleFunc("GET /jwks", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
 			Key:       key.Public(),

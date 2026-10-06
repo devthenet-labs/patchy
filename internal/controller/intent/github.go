@@ -64,6 +64,11 @@ type GitHub interface {
 	FindPullRequest(ctx context.Context, repoURL, head, base string) (*ghclient.PR, error)
 	CreatePullRequest(ctx context.Context, repoURL string, req ghclient.PRRequest) (*ghclient.PR, error)
 	GetPullRequest(ctx context.Context, repoURL string, number int64) (*ghclient.PullRequest, error)
+	// ListPullRequestFiles is the first files a pull request changes, at
+	// most limit (ghclient.ListPullRequestFiles): what a plan is told of
+	// another intent's open pull request.
+	ListPullRequestFiles(ctx context.Context, repoURL string, number int64, limit int) (
+		[]ghclient.PullRequestFile, error)
 	// PR conversation comments use the issues endpoints, but the permission
 	// belongs to the resource: pull_requests, never issues. Keep this explicit
 	// even when intent and application repositories are the same repository.
@@ -531,6 +536,15 @@ func (g *forgeGitHub) GetPullRequest(ctx context.Context, repoURL string, number
 		return nil, err
 	}
 	return c.GetPullRequest(ctx, repo, int(number))
+}
+
+func (g *forgeGitHub) ListPullRequestFiles(ctx context.Context, repoURL string, number int64, limit int) (
+	[]ghclient.PullRequestFile, error) {
+	c, repo, err := g.client(ctx, repoURL, pullsRead)
+	if err != nil {
+		return nil, err
+	}
+	return c.ListPullRequestFiles(ctx, repo, int(number), limit)
 }
 
 func (g *forgeGitHub) ListPullRequestReviews(ctx context.Context, repoURL string, number int64) (

@@ -250,6 +250,23 @@ exists at a commit this intent did not push, the intent is `Blocked` with `Branc
 and resumes once someone deletes the branch. Delete a merged intent's branch (or let GitHub delete head branches on
 merge) to keep that from happening.
 
+### Other intents' open pull requests
+
+A plan is told of the pull requests other intents of its Project have open, so it does not plan a change that collides
+with one it cannot see: the default branch it reads has none of their changes. As the plan run is created, patchy reads
+each other intent of the Project that has not ended, and each pull request it records open in one of the Project's
+repositories, as GitHub has it then: its title, how many files it changes and the first 50 of them. At most five are
+read, the longest-open intents' first. They are recorded in the run's input ConfigMap (`open-pull-requests.json`),
+beside the request and outside its digest, and handed to the plan Job, whose prompt lists them as data, not
+instructions, under a statement that their titles and paths come from whoever opened or pushed to those pull requests.
+The plan is asked to avoid the files they change wherever the request allows, and to name each overlap it cannot avoid
+among its questions, so the approver can decide whether to wait for that pull request to merge first.
+
+Intents of another Project are never read, even in the same repository. A pull request GitHub reports closed, or no
+longer has, is left out. Any other failure to read one, the rate floor included, leaves the whole list out, with a
+warning in the controller's log, and the intent plans as it would have without the list. The reads take the pull
+requests read token on each repository, so they need no permission a Ready Project does not already have.
+
 ## On the pull request
 
 Once the pull request is open, the intent is `InReview`, and patchy runs rounds on it, each a new agent run on the pull
@@ -408,11 +425,12 @@ It writes no Finding spec, so it is not exempt from the finding admission policy
 ## Polling cost
 
 Each active intent reads about three GitHub resources per interval (its issue, its events, and its comments since the
-newest one it has already read). An intent in review also reads its pull request. A conditional listing that has not
-changed returns 304, which costs nothing against the installation's rate limit. The rate-limit floor pauses all intent
-polling, pull requests included, while the installation's remaining core budget is below it, so intents can never starve
-the security flow of the requests it shares with them. Each poll checks the installation of the repository it reads: the
-intent repository and an app repository may be covered by two installations, and the app repository's is the one the
-Finding flow shares, so its pull request and a blocked build's default branch wait on its floor, the issue on the intent
-repository's. The headers GitHub reports are not consistent from one response to the next, so the floor is a coarse
-guard, not an exact budget.
+newest one it has already read). An intent in review also reads its pull request. A plan run, as it is created, also
+reads at most two resources for each of up to five other intents' open pull requests (the pull request and one page of
+its files). A conditional listing that has not changed returns 304, which costs nothing against the installation's rate
+limit. The rate-limit floor pauses all intent polling, pull requests included, while the installation's remaining core
+budget is below it, so intents can never starve the security flow of the requests it shares with them. Each poll checks
+the installation of the repository it reads: the intent repository and an app repository may be covered by two
+installations, and the app repository's is the one the Finding flow shares, so its pull request and a blocked build's
+default branch wait on its floor, the issue on the intent repository's. The headers GitHub reports are not consistent
+from one response to the next, so the floor is a coarse guard, not an exact budget.

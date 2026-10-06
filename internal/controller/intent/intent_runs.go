@@ -551,7 +551,10 @@ func (p *pass) ensureRunRepository(ctx context.Context, run *v1alpha1.IntentRun,
 	return nil
 }
 
-// runInput is the run's handoff: issue.md and, for a build, investigation.md.
+// runInput is the run's handoff: issue.md and, for a build,
+// investigation.md; for a plan, the other intents' open pull requests too,
+// when there are any (otherOpenPullRequests), read once as the run's input is
+// created.
 func (p *pass) runInput(ctx context.Context, run *v1alpha1.IntentRun) (map[string]string, error) {
 	if run.Spec.Stage == v1alpha1.IntentStagePlan {
 		var cm corev1.ConfigMap
@@ -563,7 +566,11 @@ func (p *pass) runInput(ctx context.Context, run *v1alpha1.IntentRun) (map[strin
 		if got := digest([]byte(issue)); got != run.Spec.Inputs.InputDigest {
 			return nil, fmt.Errorf("input snapshot %s holds %s, not %s", name, got, run.Spec.Inputs.InputDigest)
 		}
-		return map[string]string{keyIssue: issue}, nil
+		data := map[string]string{keyIssue: issue}
+		if open := p.otherOpenPullRequests(ctx); open != "" {
+			data[keyOpenPullRequests] = open
+		}
+		return data, nil
 	}
 	pl := p.in.Status.Plan
 	if pl == nil || pl.Revision != run.Spec.Inputs.PlanRevision || pl.Digest != run.Spec.Inputs.PlanDigest {

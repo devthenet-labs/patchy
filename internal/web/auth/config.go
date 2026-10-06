@@ -113,6 +113,40 @@ type ClaimsConfig struct {
 	Groups string `yaml:"groups"`
 	// DisplayName claim the UI shows (default name).
 	DisplayName string `yaml:"displayName"`
+	// UsernamePrefix is prepended to the username before it reaches an
+	// access review, as kube-apiserver's --oidc-username-prefix does, so a
+	// RoleBinding written for a signed-in user can never also match a
+	// cluster identity (an EKS access entry, another provider's user) that
+	// happens to share the string. Empty prepends nothing. Required when the
+	// intents views are enabled (RequireForIntents).
+	UsernamePrefix string `yaml:"usernamePrefix"`
+	// GroupsPrefix is prepended to every group, as --oidc-groups-prefix
+	// does: with it a provider group named system:masters reaches the access
+	// review as <prefix>system:masters, which no built-in binding names.
+	// Required when the intents views are enabled.
+	GroupsPrefix string `yaml:"groupsPrefix"`
+	// RequireVerifiedEmail refuses a token whose email_verified claim is
+	// not true. Required when the intents views are enabled and the username
+	// claim is email: an unverified address is an assertion anyone can make
+	// at some providers.
+	RequireVerifiedEmail bool `yaml:"requireVerifiedEmail"`
+}
+
+// reservedPrefix is the Kubernetes system identity namespace. A configured
+// prefix inside it would mint system identities from token claims.
+const reservedPrefix = "system:"
+
+// Validate rejects claim settings that would misbehave at access-review
+// time: a prefix inside the reserved system: namespace.
+func (c ClaimsConfig) Validate() error {
+	for _, p := range []struct{ field, value string }{
+		{"usernamePrefix", c.UsernamePrefix}, {"groupsPrefix", c.GroupsPrefix},
+	} {
+		if strings.HasPrefix(strings.ToLower(p.value), reservedPrefix) {
+			return fmt.Errorf("claims.%s %q is inside the reserved %s namespace", p.field, p.value, reservedPrefix)
+		}
+	}
+	return nil
 }
 
 // LoadConfig reads and validates the configuration at path. An empty path or
@@ -167,7 +201,7 @@ func (c *Config) validate() error {
 		if o.ClientSecret != "" && o.ClientSecretFile != "" {
 			return fmt.Errorf("oidc clientSecret and clientSecretFile are mutually exclusive")
 		}
-		return nil
+		return o.Claims.Validate()
 	case "":
 		return fmt.Errorf("mode is required: none, anonymous, or oidc")
 	default:
@@ -196,6 +230,36 @@ func (c *Config) applyDefaults() {
 	if cl.DisplayName == "" {
 		cl.DisplayName = "name"
 	}
+}
+
+// RequireForIntents checks the configuration may serve the intents views,
+// which show agent plans and transcripts (private code) per Project. Only
+// mode oidc qualifies: mode none bypasses authorization for everyone, and
+// mode anonymous gives every visitor one identity's grants. Within oidc the
+// username and groups prefixes are mandatory, so no binding written for a
+// dashboard user can match a cluster identity of the same name and a
+// provider group such as system:masters arrives prefixed; and an email
+// username must be a verified one. A nil configuration (the unconfigured,
+// rollups-only posture) is refused too. Call it on what LoadConfig returned,
+// which has applied the claim defaults.
+func (c *Config) RequireForIntents() error {
+	if c == nil {
+		return fmt.Errorf("the intents views need an auth config in mode oidc; none is configured")
+	}
+	if c.Mode != ModeOIDC || c.OIDC == nil {
+		return fmt.Errorf("the intents views need auth mode oidc, not %q: mode none bypasses authorization "+
+			"for everyone and mode anonymous gives every visitor one identity's grants", c.Mode)
+	}
+	cl := c.OIDC.Claims
+	if cl.UsernamePrefix == "" || cl.GroupsPrefix == "" {
+		return fmt.Errorf("the intents views need oidc.claims.usernamePrefix and oidc.claims.groupsPrefix, " +
+			"so a binding for a signed-in user cannot match a cluster identity of the same name")
+	}
+	if cl.Username == "email" && !cl.RequireVerifiedEmail {
+		return fmt.Errorf("the intents views need oidc.claims.requireVerifiedEmail when the username claim " +
+			"is email")
+	}
+	return nil
 }
 
 // clientSecret resolves the inline or file-based client secret.

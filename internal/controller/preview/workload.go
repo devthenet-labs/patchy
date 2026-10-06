@@ -237,10 +237,14 @@ func (r *Reconciler) prune(ctx context.Context, p *v1alpha1.Preview, slot int32)
 type componentReadiness int
 
 const (
+	// componentUnobserved: the Deployment controller has yet to observe the
+	// component's Deployment at its current generation, so its status says
+	// nothing about the spec last written.
+	componentUnobserved componentReadiness = iota
 	// componentPending: no Pod running the component's current spec
 	// (runsComponent) has a Ready container yet, or none the Deployment
 	// counts available.
-	componentPending componentReadiness = iota
+	componentPending
 	// componentGateless: gated, and the component's Pod is up but carries no
 	// load-balancer readiness gate, so its target health is never reported.
 	componentGateless
@@ -255,8 +259,9 @@ const (
 // out and a Pod running the component's current spec (runsComponent) is
 // Ready — and, when gated, its load balancer target is healthy too
 // (targetHealthy). Short of that, it reports how far the furthest Pod has
-// got. A previous revision's Pod, still serving through the rolling update,
-// never counts.
+// got, or componentUnobserved while the Deployment controller has yet to
+// observe the Deployment's current generation. A previous revision's Pod,
+// still serving through the rolling update, never counts.
 //
 // Each Pod is classified whether or not the Deployment counts one available
 // yet: the kubelet holds a Pod's Ready condition False until every readiness
@@ -272,7 +277,7 @@ func (r *Reconciler) readyImage(ctx context.Context, p *v1alpha1.Preview, i int,
 		return "", componentPending, err
 	}
 	if dep.Status.ObservedGeneration < dep.Generation {
-		return "", componentPending, nil
+		return "", componentUnobserved, nil
 	}
 	available := dep.Status.AvailableReplicas >= 1
 	var pods corev1.PodList

@@ -370,6 +370,16 @@ func (r *Reconciler) completeDeployment(ctx context.Context, p *v1alpha1.Preview
 		if err != nil {
 			return ctrl.Result{}, err
 		}
+		if state == componentUnobserved && p.Status.Phase == v1alpha1.PreviewReady {
+			// A Ready Preview's Deployment was patched at the same Preview
+			// generation (to an upgraded controller's new strategy, say),
+			// which raised its generation; the Deployment controller
+			// observes that moments later. The Pods serve on meanwhile, so
+			// it waits, rather than counting the lag against the attempt
+			// that made the Preview Ready, long past its deadline: that
+			// would retry it, restarting every component.
+			return r.wait(), nil
+		}
 		switch state {
 		case componentReady:
 		case componentGateless:

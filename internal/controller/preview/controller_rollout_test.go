@@ -5,6 +5,7 @@ package preview
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 )
@@ -332,40 +334,143 @@ func TestSpecChangeKeepingTheImageWaitsForItsOwnPod(t *testing.T) {
 	}
 }
 
+// apiServerGenerations plays what controller-runtime's fake client leaves out
+// of a Deployment write: the API server creates a Deployment at generation 1
+// and raises the generation of one whose spec a patch changed, and its
+// status.observedGeneration stays behind until the Deployment controller has
+// observed the change (syncAvailability plays that), which on a cluster is
+// almost never before the writer's next read.
+func apiServerGenerations() interceptor.Funcs {
+	return interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object,
+		opts ...client.CreateOption) error {
+		if dep, ok := obj.(*appsv1.Deployment); ok {
+			dep.Generation = 1
+		}
+		return c.Create(ctx, obj, opts...)
+	}, Patch: func(ctx context.Context, c client.WithWatch, obj client.Object,
+		patch client.Patch, opts ...client.PatchOption) error {
+		dep, ok := obj.(*appsv1.Deployment)
+		if !ok {
+			return c.Patch(ctx, obj, patch, opts...)
+		}
+		var before appsv1.Deployment
+		if err := c.Get(ctx, client.ObjectKeyFromObject(dep), &before); err != nil {
+			return err
+		}
+		if err := c.Patch(ctx, dep, patch, opts...); err != nil {
+			return err
+		}
+		if equality.Semantic.DeepEqual(before.Spec, dep.Spec) {
+			return nil
+		}
+		dep.Generation = before.Generation + 1
+		return c.Update(ctx, dep)
+	}}
+}
+
 // A Deployment the previous controller rendered with the Recreate strategy is
 // moved to the rolling one in place. Its Pod template is untouched, so the
 // Deployment controller starts no new ReplicaSet and a live preview's Pods
-// keep running across the upgrade.
+// keep running across the upgrade. The patch still raises the Deployment's
+// generation, which the Deployment controller has yet to observe when the
+// same reconcile reads it back. Regression: a Preview Ready for longer than
+// the rollout timeout counted that lag against the attempt that had made it
+// Ready, so the upgrade retried every live preview at once, deleting its
+// Deployment (and with target health off its Ingress) and spending a retry;
+// one Ready on its last attempt was Failed and lost its slot.
 func TestUpgradeMovesALiveDeploymentToRollingWithoutARestart(t *testing.T) {
+	for _, targetHealth := range []bool{false, true} {
+		t.Run(fmt.Sprintf("targetHealth=%t", targetHealth), func(t *testing.T) {
+			at := time.Date(2026, 10, 1, 11, 0, 0, 0, time.UTC) // an hour before e.now
+			in, p := testPreview("demo-1", at)
+			slot := int32(0)
+			p.Finalizers = []string{finalizer}
+			// Ready an hour ago on its last attempt: one more retry fails it.
+			retries := testSettings().MaxRetries - 1
+			p.Status = v1alpha1.PreviewStatus{Phase: v1alpha1.PreviewReady, ObservedGeneration: p.Generation,
+				Slot: &slot, URL: "https://demo-1." + testSettings().HostSuffix, ObservedRevision: testSHA,
+				Retries: retries, AttemptStartedAt: &metav1.Time{Time: at}, LastDeployedAt: &metav1.Time{Time: at},
+				Components: []v1alpha1.PreviewComponentStatus{{Name: "demo", Revision: testSHA,
+					ImageID: "repo@sha256:demo"}}}
+			live := renderSingle(testSettings(), p, slot)
+			previous := live[0].(*appsv1.Deployment)
+			previous.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+			template := previous.Spec.Template.DeepCopy()
+			e := newTestEnvWith(t, apiServerGenerations(), append([]client.Object{in, p}, live...)...)
+			e.r.Settings.TargetHealth = targetHealth
+			e.markReady(p, 0)
+			serving := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: previous.Namespace,
+				Name: componentName(p, 0) + "-pod"}}
+			// still checks what must hold after each poll of the upgraded
+			// controller: nothing restarted, nothing spent.
+			still := func(when string) *appsv1.Deployment {
+				t.Helper()
+				var dep appsv1.Deployment
+				if err := e.slotObject(componentName(p, 0), &dep); err != nil {
+					t.Fatalf("%s: Deployment gone: %v (status %+v)", when, err, p.Status)
+				}
+				if !rollingStrategy(dep.Spec.Strategy) {
+					t.Errorf("%s: strategy = %+v, want the rolling update", when, dep.Spec.Strategy)
+				}
+				if !equality.Semantic.DeepEqual(dep.Spec.Template, *template) {
+					t.Errorf("%s: Pod template changed, which restarts the preview:\n got %+v\nwant %+v", when,
+						dep.Spec.Template, *template)
+				}
+				if p.Status.Phase != v1alpha1.PreviewReady || p.Status.Retries != retries || p.Status.URL == "" ||
+					p.Status.Message != "" {
+					t.Errorf("%s: status = %+v, want still Ready with %d retries", when, p.Status, retries)
+				}
+				if err := e.slotObject(resourceName(p), &networkingv1.Ingress{}); err != nil {
+					t.Errorf("%s: Ingress withdrawn: %v", when, err)
+				}
+				if !e.servingPod(serving) {
+					t.Errorf("%s: the serving Pod stopped", when)
+				}
+				return &dep
+			}
+			p = e.step(p.Name)
+			if dep := still("strategy patched"); dep.Status.ObservedGeneration >= dep.Generation {
+				t.Fatalf("test setup: generation %d observed as %d, want the strategy patch not yet observed",
+					dep.Generation, dep.Status.ObservedGeneration)
+			}
+			p = e.step(p.Name) // the Deployment controller is not there yet
+			still("patch not yet observed")
+			e.syncAvailability(componentName(p, 0)) // it observes the patch: no new ReplicaSet, no new Pod
+			for range 2 {
+				p = e.step(p.Name)
+			}
+			if dep := still("patch observed"); dep.Status.ObservedGeneration != dep.Generation {
+				t.Errorf("generation %d observed as %d: the controller patched the Deployment again",
+					dep.Generation, dep.Status.ObservedGeneration)
+			}
+		})
+	}
+}
+
+// Only a Ready Preview waits out a Deployment not yet observed. One still
+// deploying counts it against its rollout deadline as before, so a
+// Deployment the Deployment controller never observes is retried, and the
+// Preview is not held Deploying in its slot until it expires.
+func TestUnobservedDeploymentStillTimesOutARollout(t *testing.T) {
 	at := time.Date(2026, 10, 1, 11, 0, 0, 0, time.UTC)
 	in, p := testPreview("demo-1", at)
-	slot := int32(0)
-	p.Finalizers = []string{finalizer}
-	p.Status = v1alpha1.PreviewStatus{Phase: v1alpha1.PreviewReady, ObservedGeneration: p.Generation, Slot: &slot,
-		URL: "https://demo-1." + testSettings().HostSuffix, ObservedRevision: testSHA,
-		AttemptStartedAt: &metav1.Time{Time: at}, LastDeployedAt: &metav1.Time{Time: at},
-		Components: []v1alpha1.PreviewComponentStatus{{Name: "demo", Revision: testSHA, ImageID: "repo@sha256:demo"}}}
-	live := renderSingle(testSettings(), p, slot)
-	previous := live[0].(*appsv1.Deployment)
-	previous.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
-	template := previous.Spec.Template.DeepCopy()
-	e := newTestEnv(t, append([]client.Object{in, p}, live...)...)
-	e.markReady(p, 0)
-	for range 2 {
-		p = e.step(p.Name)
-	}
+	e := newTestEnvWith(t, apiServerGenerations(), in, p)
+	p = e.untilSlot(p.Name)
+	p = e.step(p.Name) // creates the Deployment, never observed
 	var dep appsv1.Deployment
 	if err := e.slotObject(componentName(p, 0), &dep); err != nil {
 		t.Fatal(err)
 	}
-	if !rollingStrategy(dep.Spec.Strategy) {
-		t.Errorf("strategy = %+v, want the rolling update", dep.Spec.Strategy)
+	if dep.Status.ObservedGeneration >= dep.Generation {
+		t.Fatalf("test setup: generation %d observed as %d, want unobserved", dep.Generation,
+			dep.Status.ObservedGeneration)
 	}
-	if !equality.Semantic.DeepEqual(dep.Spec.Template, *template) {
-		t.Errorf("Pod template changed across the upgrade, which restarts the preview:\n got %+v\nwant %+v",
-			dep.Spec.Template, *template)
+	if p = e.step(p.Name); p.Status.Phase != v1alpha1.PreviewDeploying || p.Status.Retries != 0 {
+		t.Fatalf("status = %+v within the deadline, want Deploying with no retry", p.Status)
 	}
-	if p.Status.Phase != v1alpha1.PreviewReady {
-		t.Errorf("phase = %s, want still Ready", p.Status.Phase)
+	e.now = e.now.Add(testSettings().RolloutTimeout)
+	p = e.step(p.Name)
+	if p.Status.Retries != 1 || !strings.Contains(p.Status.Message, "component demo did not become Ready") {
+		t.Fatalf("status = %+v past the deadline, want one retry naming the component", p.Status)
 	}
 }

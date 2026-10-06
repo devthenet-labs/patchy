@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.12.19](https://github.com/devthenet-labs/patchy/compare/v0.12.18...v0.12.19) (2026-10-06)
+
+
+### Features
+
+* **agentrun:** repair a refused report in the agent's own session ([#128](https://github.com/devthenet-labs/patchy/issues/128)) ([92ffea2](https://github.com/devthenet-labs/patchy/commit/92ffea23749652c10ea44b4038c787ec3f8b020e))
+* **intent:** post the preview link on the issue and each pull request ([#127](https://github.com/devthenet-labs/patchy/issues/127)) ([5d2cb1e](https://github.com/devthenet-labs/patchy/commit/5d2cb1ef7c7a89a22b1d7aa73d48567cdd1c05fd))
+* **intent:** tell the planner its own budget and enforce its write scope ([#126](https://github.com/devthenet-labs/patchy/issues/126)) ([d103b9f](https://github.com/devthenet-labs/patchy/commit/d103b9f2a6d604cdc157f891f094690a14226729))
+* read-only intents dashboard, first slice ([#130](https://github.com/devthenet-labs/patchy/issues/130)) ([6fb7725](https://github.com/devthenet-labs/patchy/commit/6fb7725292f25e208f46bcf2cb46448f40b0fe5b))
+
+
+### Bug Fixes
+
+* **intent:** open pull requests with contents read so private repositories accept them ([#125](https://github.com/devthenet-labs/patchy/issues/125)) ([82a345d](https://github.com/devthenet-labs/patchy/commit/82a345d0b878b3d4a5ff4187b7021630a0688b85))
+* **preview:** keep the serving revision up while a new one rolls out ([#129](https://github.com/devthenet-labs/patchy/issues/129)) ([79b9551](https://github.com/devthenet-labs/patchy/commit/79b95518c9d31fbe6f751ca96288219e637d0a4e))
+
 ## [0.12.18](https://github.com/devthenet-labs/patchy/compare/v0.12.17...v0.12.18) (2026-10-06)
 
 

@@ -135,6 +135,13 @@ Ready by the deadline, the retry restarts every component as before, by deleting
 previous revision too; after `maxRetries` attempts the Preview is `Failed` and its slot is released. With `targetHealth`
 off, the host is still withdrawn for a redeploy.
 
+Upgrading from a release that rendered the `Recreate` strategy (0.12.18 or earlier) patches each live Deployment to the
+rolling one in place. Its Pod template is unchanged, so no Pod restarts, and a `Ready` Preview stays `Ready` while the
+Deployment controller observes the patch. Rolling back to such a release is not as quiet: its controller patches the
+strategy back and counts the moment before the Deployment controller observes that against the rollout deadline, so a
+Preview `Ready` for longer than `rolloutTimeout` is retried at once. Its Pods restart, its host is down until they are
+Ready again, and one already on its last retry ends `Failed`.
+
 With `previewController.config.targetHealth: true` (the chart's default; `--preview-target-health` on the binary, whose
 own default is still off), `Ready` also means the load balancer's target is healthy, so the host does not answer 404 or
 nothing for the seconds after `Ready` while a new target registers. The chart then labels the slot namespaces

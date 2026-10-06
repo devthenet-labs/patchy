@@ -128,6 +128,9 @@ func settleReport[T any](ctx context.Context, a *Agent, sr *stageRun, st *envelo
 		}
 		outcome, detail, last = nextOutcome, nextDetail, r.failure
 	}
+	if rounds == 0 && why == "" {
+		return v, nil, outcome, detail // no round is configured
+	}
 	return v, nil, outcome, detail + " (" + notRepaired(rounds, last, why) + ")"
 }
 

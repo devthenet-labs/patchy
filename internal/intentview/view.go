@@ -76,6 +76,59 @@ func ColumnFor(in *v1alpha1.Intent) Column {
 // (intent.DefaultMaxAttempts, with no flag); a test there pins the two.
 const MaxAttempts int32 = 2
 
+// Uncounted reports a failed run whose attempt does not count toward
+// MaxAttempts: its agent never ran (no image to run on, no node could fit
+// it, the sandbox probe refused it), a suspension lost its result, or the
+// pull request head moved under it. A test in internal/controller/intent
+// pins it to the controller's rule.
+func Uncounted(run *v1alpha1.IntentRun) bool {
+	switch run.Status.Outcome {
+	case "image_required", "hold_expired", "head_moved", "unschedulable":
+		return true
+	}
+	return meta.IsStatusConditionTrue(run.Status.Conditions, v1alpha1.ConditionSandboxRefused)
+}
+
+// CountedAttempt is run's attempt as intent-controller counts it toward
+// MaxAttempts: one more than the attempts of its round before it that
+// counted. Its ordinal (spec.attempt) never repeats within a round, so it
+// runs ahead of this count once an attempt did not count: a plan whose first
+// attempt no node could fit, resumed from Blocked, is attempt 2 by ordinal
+// and still the first that counts. A round is the run's stage and round
+// number, and for a build its repository too. A failed attempt counts unless
+// Uncounted; a completed plan attempt with a later one counts too, since a
+// plan round goes on past a completed attempt only when its plan could not be
+// offered for approval.
+func CountedAttempt(run *v1alpha1.IntentRun, runs []*v1alpha1.IntentRun) int32 {
+	n := int32(1)
+	for _, o := range runs {
+		if o.Spec.Stage != run.Spec.Stage || o.Spec.Round != run.Spec.Round || o.Spec.Attempt >= run.Spec.Attempt ||
+			(run.Spec.Stage == v1alpha1.IntentStageBuild && !sameRepo(o.Spec.Repository.URL, run.Spec.Repository.URL)) {
+			continue
+		}
+		switch o.Status.Phase {
+		case v1alpha1.RunFailed:
+			if !Uncounted(o) {
+				n++
+			}
+		case v1alpha1.RunComplete:
+			if run.Spec.Stage == v1alpha1.IntentStagePlan {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// sameRepo compares two repository URLs as intent-controller does: case,
+// surrounding space, trailing slashes and a .git suffix aside.
+func sameRepo(a, b string) bool {
+	norm := func(u string) string {
+		return strings.TrimSuffix(strings.ToLower(strings.TrimRight(strings.TrimSpace(u), "/")), ".git")
+	}
+	return norm(a) == norm(b)
+}
+
 // Limits are a Project's intent limits with the schema defaults applied, for
 // a Project the API server never defaulted.
 type Limits struct {

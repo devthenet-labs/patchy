@@ -199,6 +199,7 @@ export function mockIntentRun(intent: string, run: string): IntentRunDetail | nu
     intent,
     project: detail.project,
     tier: "transcripts",
+    countedAttempt: row.attempt,
     lastAttempt: false,
     limits: LIMITS,
     intentCostMicroUSD: detail.costMicroUSD,

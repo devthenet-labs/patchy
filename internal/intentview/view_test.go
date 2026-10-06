@@ -228,6 +228,54 @@ func TestRoundsCountedAgainstTheLimits(t *testing.T) {
 	}
 }
 
+// An attempt is counted as intent-controller counts it: failed attempts
+// whose agent never ran do not count, so the ordinal runs ahead of it.
+func TestCountedAttempt(t *testing.T) {
+	run := func(stage v1alpha1.IntentStage, repo string, attempt int32, phase v1alpha1.RunPhase,
+		outcome string) *v1alpha1.IntentRun {
+		return &v1alpha1.IntentRun{
+			Spec: v1alpha1.IntentRunSpec{Stage: stage, Round: 1, Attempt: attempt,
+				Repository: v1alpha1.IntentRunRepository{URL: repo}},
+			Status: v1alpha1.IntentRunStatus{Phase: phase, Outcome: outcome},
+		}
+	}
+	const app, api = "https://github.com/acme/app", "https://github.com/acme/api"
+	plan, build := v1alpha1.IntentStagePlan, v1alpha1.IntentStageBuild
+	failed, complete, running := v1alpha1.RunFailed, v1alpha1.RunComplete, v1alpha1.RunRunning
+
+	unschedulable := run(plan, app, 1, failed, "unschedulable")
+	resumed := run(plan, app, 2, running, "")
+	if got := CountedAttempt(resumed, []*v1alpha1.IntentRun{unschedulable, resumed}); got != 1 {
+		t.Errorf("a plan resumed after an unschedulable attempt is counted attempt %d, want 1", got)
+	}
+	evicted := run(plan, app, 1, failed, "evicted")
+	if got := CountedAttempt(resumed, []*v1alpha1.IntentRun{evicted, resumed}); got != 2 {
+		t.Errorf("a plan after an evicted attempt is counted attempt %d, want 2", got)
+	}
+	refused := run(plan, app, 1, complete, "ok")
+	if got := CountedAttempt(resumed, []*v1alpha1.IntentRun{refused, resumed}); got != 2 {
+		t.Errorf("a plan after a completed attempt whose plan was refused is counted attempt %d, want 2", got)
+	}
+
+	// A build's attempts are its repository's own.
+	apiFailed := run(build, api, 1, failed, "timeout")
+	appFirst := run(build, app+".git", 1, failed, "image_required")
+	appNext := run(build, app, 2, running, "")
+	if got := CountedAttempt(appNext, []*v1alpha1.IntentRun{apiFailed, appFirst, appNext}); got != 1 {
+		t.Errorf("a build after its own uncounted attempt and another repository's failure is attempt %d, want 1",
+			got)
+	}
+	appFirst.Status.Outcome = "runtime_error"
+	if got := CountedAttempt(appNext, []*v1alpha1.IntentRun{apiFailed, appFirst, appNext}); got != 2 {
+		t.Errorf("a build after its own counted failure is attempt %d, want 2", got)
+	}
+	// A completed build attempt is not a refused one.
+	appFirst.Status.Phase, appFirst.Status.Outcome = complete, "ok"
+	if got := CountedAttempt(appNext, []*v1alpha1.IntentRun{appFirst, appNext}); got != 1 {
+		t.Errorf("a build after a completed attempt is attempt %d, want 1", got)
+	}
+}
+
 func TestSafeURL(t *testing.T) {
 	for raw, ok := range map[string]bool{
 		"https://github.com/acme/app/pull/3":       true,

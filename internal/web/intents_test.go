@@ -336,6 +336,36 @@ func TestTier2DeniedToTier1(t *testing.T) {
 	}
 }
 
+// The attempt a card and a run panel show is the attempt as
+// intent-controller counts it toward the round's two, not the run's ordinal:
+// a first attempt no node could fit did not count, so the build's attempt 2
+// is still its first that counts, and its failure would be retried, not
+// fail the intent. The fixture's evicted first attempt, by contrast, counts.
+func TestAttemptsAreCountedAsTheControllerCounts(t *testing.T) {
+	objs := intentsFixture(t)
+	findRun(objs, "alpha-7-bld-r1-app-a1").Status.Outcome = "unschedulable"
+	s, _ := intentsServer(t, nil, objs...)
+	ts := as(t, s, viewerAlpha)
+	_, body := get(t, ts, "/api/intents/alpha-7/runs/alpha-7-bld-r1-app-a2")
+	run := decode[IntentRunDetail](t, body)
+	if run.LastAttempt || run.CountedAttempt != 1 || run.Attempt != 2 {
+		t.Errorf("run panel attempt %d (counted %d), last %v; want ordinal 2, counted 1, not the last",
+			run.Attempt, run.CountedAttempt, run.LastAttempt)
+	}
+	_, body = get(t, ts, "/api/intents")
+	if a := decode[IntentBoard](t, body).Intents[0].Attempt; a == nil || a.Current != 1 || a.Max != 2 {
+		t.Errorf("card attempt = %+v, want 1 of 2", a)
+	}
+
+	// The fixture as it is: attempt 1 was evicted, which counts.
+	s, _ = intentsServer(t, nil)
+	_, body = get(t, as(t, s, viewerAlpha), "/api/intents/alpha-7/runs/alpha-7-bld-r1-app-a2")
+	if run := decode[IntentRunDetail](t, body); !run.LastAttempt || run.CountedAttempt != 2 {
+		t.Errorf("attempt 2 after a counted failure: counted %d, last %v; want 2 and the last",
+			run.CountedAttempt, run.LastAttempt)
+	}
+}
+
 func TestPlanRevisionInput(t *testing.T) {
 	s, _ := intentsServer(t, nil)
 	ts := as(t, s, readerAlpha)

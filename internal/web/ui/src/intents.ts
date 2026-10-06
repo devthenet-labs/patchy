@@ -130,7 +130,7 @@ export function stopConditions(run: IntentRunDetail, activity: RunActivity | nul
         : "last attempt: if it fails, the intent fails",
     );
   } else {
-    out.push(`attempt ${run.attempt} of ${run.limits.maxAttempts}: a failure is retried`);
+    out.push(`attempt ${run.countedAttempt} of ${run.limits.maxAttempts}: a failure is retried`);
   }
   out.push(
     `cost ceiling ${usd(run.limits.maxCostMicroUSD)} is checked only before the next launch ` +

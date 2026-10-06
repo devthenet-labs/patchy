@@ -450,7 +450,7 @@ func projectCard(in *v1alpha1.Intent, runs []*v1alpha1.IntentRun, pv *v1alpha1.P
 	}
 	if n := len(runs); n > 0 && !v1alpha1.IntentTerminal(st.Phase) {
 		last := runs[n-1]
-		c.Attempt = &AttemptCount{Stage: string(last.Spec.Stage), Current: last.Spec.Attempt,
+		c.Attempt = &AttemptCount{Stage: string(last.Spec.Stage), Current: intentview.CountedAttempt(last, runs),
 			Max: intentview.MaxAttempts}
 	}
 	return c
@@ -612,14 +612,21 @@ func (s *Server) handleIntentRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to load the run", http.StatusInternalServerError)
 		return
 	}
+	runs, err := s.intentRuns(ctx, in)
+	if err != nil {
+		s.log.LogAttrs(ctx, slog.LevelError, "list intent runs", slog.String("intent", in.Name), slog.Any("error", err))
+		http.Error(w, "failed to load the run", http.StatusInternalServerError)
+		return
+	}
 	limits := intentview.LimitsOf(nil)
 	var proj v1alpha1.Project
 	if err := s.client.Get(ctx, types.NamespacedName{Namespace: s.namespace, Name: in.Spec.Project}, &proj); err == nil {
 		limits = intentview.LimitsOf(&proj)
 	}
+	counted := intentview.CountedAttempt(run, runs)
 	out := IntentRunDetail{
 		IntentRunRow: runRow(run), Intent: in.Name, Project: in.Spec.Project, Tier: tierName(tier),
-		LastAttempt: run.Spec.Attempt >= intentview.MaxAttempts, Limits: wireLimits(limits),
+		CountedAttempt: counted, LastAttempt: counted >= intentview.MaxAttempts, Limits: wireLimits(limits),
 		IntentCostMicroUSD: in.Status.Usage.CostMicroUSD,
 	}
 	if out.Running && run.Status.JobRef != nil {

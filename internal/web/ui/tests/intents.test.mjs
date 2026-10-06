@@ -82,6 +82,7 @@ const run = {
   stage: "build",
   round: 1,
   attempt: 2,
+  countedAttempt: 2,
   running: true,
   startedAt: "2026-10-06T11:37:00Z",
   grant: { maxTurns: 150, tokenBudget: 800000, timeoutMilliseconds: 3_600_000 },
@@ -105,11 +106,23 @@ test("stopConditions says what ends a running run, and when", () => {
 });
 
 test("stopConditions for a revise round's earlier attempt", () => {
-  const lines = stopConditions({ ...run, stage: "revise", lastAttempt: false, attempt: 1, job: undefined }, null, now);
+  const lines = stopConditions(
+    { ...run, stage: "revise", lastAttempt: false, attempt: 1, countedAttempt: 1, job: undefined },
+    null,
+    now,
+  );
   assert.ok(lines.includes("attempt 1 of 2: a failure is retried"));
   assert.ok(!lines.some((l) => l.includes("deadline")));
   const last = stopConditions({ ...run, stage: "revise" }, null, now);
   assert.ok(last.includes("last attempt: if it fails, the round ends"));
+});
+
+test("stopConditions counts attempts as the controller does, not by ordinal", () => {
+  // Attempts 1 and 2 never ran their agent (no node could fit it), so
+  // ordinal 3 is the first attempt that counts.
+  const lines = stopConditions({ ...run, attempt: 3, countedAttempt: 1, lastAttempt: false }, null, now);
+  assert.ok(lines.includes("attempt 1 of 2: a failure is retried"), lines.join("\n"));
+  assert.ok(!lines.some((l) => l.includes("attempt 3")));
 });
 
 test("intents routes parse and round-trip", () => {

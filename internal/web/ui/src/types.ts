@@ -686,6 +686,9 @@ export interface IntentRunDetail extends IntentRunRow {
   intent: string;
   project: string;
   tier: IntentTier;
+  // countedAttempt is the attempt as counted toward limits.maxAttempts;
+  // attempt is the ordinal, which runs ahead once an attempt did not count.
+  countedAttempt: number;
   lastAttempt?: boolean;
   limits: IntentLimits;
   intentCostMicroUSD: number;

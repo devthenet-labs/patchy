@@ -126,8 +126,8 @@ type RunningRun struct {
 	StartedAt  string `json:"startedAt,omitempty"`
 }
 
-// AttemptCount is the attempt of the intent's newest run against the
-// attempts its round gets.
+// AttemptCount is the attempt of the intent's newest run, as counted toward
+// the attempts its round gets (intentview.CountedAttempt), against them.
 type AttemptCount struct {
 	Stage   string `json:"stage"`
 	Current int32  `json:"current"`
@@ -220,6 +220,10 @@ type IntentRunDetail struct {
 	Intent  string `json:"intent"`
 	Project string `json:"project"`
 	Tier    string `json:"tier"`
+	// CountedAttempt is this run's attempt as counted toward the attempts
+	// its round gets (intentview.CountedAttempt). Attempt is its ordinal,
+	// which runs ahead once an attempt did not count (its agent never ran).
+	CountedAttempt int32 `json:"countedAttempt"`
 	// LastAttempt: if this attempt fails, the intent fails (or, for a
 	// revise round, the round ends).
 	LastAttempt bool         `json:"lastAttempt,omitempty"`

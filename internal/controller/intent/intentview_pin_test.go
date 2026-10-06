@@ -78,19 +78,25 @@ func randomRuns(r *rand.Rand) []*v1alpha1.IntentRun {
 		if stage == v1alpha1.IntentStageRevise {
 			trigger = triggers[r.Intn(len(triggers))]
 		}
-		repo := repos[r.Intn(len(repos))]
-		for _, attempt := range r.Perm(1 + r.Intn(4)) {
-			run := &v1alpha1.IntentRun{
-				Spec: v1alpha1.IntentRunSpec{Stage: stage, Round: round, Attempt: int32(attempt + 1),
-					Trigger: trigger, Repository: v1alpha1.IntentRunRepository{URL: repo}},
-				Status: v1alpha1.IntentRunStatus{Phase: phases[r.Intn(len(phases))],
-					Outcome: outcomes[r.Intn(len(outcomes))]},
+		// A build round runs per repository, each with its own attempts.
+		roundRepos := []string{repos[r.Intn(len(repos))]}
+		if stage == v1alpha1.IntentStageBuild && r.Intn(2) == 0 {
+			roundRepos = append(roundRepos, repos[r.Intn(len(repos))])
+		}
+		for _, repo := range roundRepos {
+			for _, attempt := range r.Perm(1 + r.Intn(4)) {
+				run := &v1alpha1.IntentRun{
+					Spec: v1alpha1.IntentRunSpec{Stage: stage, Round: round, Attempt: int32(attempt + 1),
+						Trigger: trigger, Repository: v1alpha1.IntentRunRepository{URL: repo}},
+					Status: v1alpha1.IntentRunStatus{Phase: phases[r.Intn(len(phases))],
+						Outcome: outcomes[r.Intn(len(outcomes))]},
+				}
+				if r.Intn(8) == 0 {
+					run.Status.Conditions = []metav1.Condition{{Type: v1alpha1.ConditionSandboxRefused,
+						Status: metav1.ConditionTrue, Reason: "SandboxUnenforced"}}
+				}
+				runs = append(runs, run)
 			}
-			if r.Intn(8) == 0 {
-				run.Status.Conditions = []metav1.Condition{{Type: v1alpha1.ConditionSandboxRefused,
-					Status: metav1.ConditionTrue, Reason: "SandboxUnenforced"}}
-			}
-			runs = append(runs, run)
 		}
 	}
 	r.Shuffle(len(runs), func(i, j int) { runs[i], runs[j] = runs[j], runs[i] })
@@ -112,6 +118,68 @@ func TestIntentviewRoundCountsPinned(t *testing.T) {
 		p := &pass{runs: runs}
 		return intentview.RevisionRounds(runs) == p.revisionRounds() &&
 			intentview.CheckFixRounds(runs) == p.checkFixRounds()
+	}, cfg); err != nil {
+		t.Error(err)
+	}
+}
+
+// The dashboard's rule for which failed attempts count is this package's,
+// for every outcome, with and without the sandbox refusal.
+func TestIntentviewUncountedPinned(t *testing.T) {
+	outcomes := []string{"", OutcomeAborted, OutcomeImageRequired, OutcomeNotBuilt, OutcomeBranchExists,
+		OutcomeHoldExpired, OutcomePushRefused, OutcomeLaunchRefused, OutcomeHeadMoved, OutcomeInputUnavailable,
+		OutcomeNoUsableFeedback, OutcomeUnschedulable, OutcomeEvicted,
+		string(envelope.OutcomeOK), string(envelope.OutcomeRuntimeError), string(envelope.OutcomeTimeout)}
+	for _, o := range outcomes {
+		for _, refused := range []bool{false, true} {
+			run := &v1alpha1.IntentRun{Status: v1alpha1.IntentRunStatus{Phase: v1alpha1.RunFailed, Outcome: o}}
+			if refused {
+				run.Status.Conditions = []metav1.Condition{{Type: v1alpha1.ConditionSandboxRefused,
+					Status: metav1.ConditionTrue, Reason: "SandboxUnenforced"}}
+			}
+			if got, want := intentview.Uncounted(run), uncounted(run); got != want {
+				t.Errorf("outcome %q, sandbox refused %v: intentview.Uncounted = %v, the controller's %v",
+					o, refused, got, want)
+			}
+		}
+	}
+}
+
+// For any runs, the attempt the dashboard shows for a run is one more than
+// the attempts before it in its round that this package counts toward
+// MaxAttempts, its round read as this package reads it (a build's per
+// repository). A completed plan attempt with a later attempt in its round
+// is one whose plan could not be offered (planRefused): an offered plan ends
+// its round.
+func TestIntentviewCountedAttemptPinned(t *testing.T) {
+	completedPlan := func(run *v1alpha1.IntentRun) bool {
+		return run.Spec.Stage == v1alpha1.IntentStagePlan && run.Status.Phase == v1alpha1.RunComplete
+	}
+	cfg := &quick.Config{
+		MaxCount: 3000,
+		Rand:     rand.New(rand.NewSource(20261006)),
+		Values: func(args []reflect.Value, r *rand.Rand) {
+			args[0] = reflect.ValueOf(randomRuns(r))
+		},
+	}
+	if err := quick.Check(func(runs []*v1alpha1.IntentRun) bool {
+		p := &pass{runs: runs}
+		for _, run := range runs {
+			repo := anyRepository
+			if run.Spec.Stage == v1alpha1.IntentStageBuild {
+				repo = run.Spec.Repository.URL
+			}
+			var before roundRuns
+			for _, o := range p.round(run.Spec.Stage, run.Spec.Round, repo) {
+				if o.Spec.Attempt < run.Spec.Attempt {
+					before = append(before, o)
+				}
+			}
+			if intentview.CountedAttempt(run, runs) != before.counted(completedPlan)+1 {
+				return false
+			}
+		}
+		return true
 	}, cfg); err != nil {
 		t.Error(err)
 	}

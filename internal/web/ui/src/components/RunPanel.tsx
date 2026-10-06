@@ -63,7 +63,7 @@ export function RunPanel({ run, now }: { run: IntentRunDetail; now: number }) {
           <Pill tone={run.outcome === "ok" ? "green" : run.outcome ? "red" : "neutral"}>{run.outcome ?? run.phase ?? "—"}</Pill>
         )}
         <span class="ps-chip">
-          {run.stage} r{run.round} attempt {run.attempt}/{run.limits.maxAttempts}
+          {run.stage} r{run.round} attempt {run.countedAttempt}/{run.limits.maxAttempts}
           {run.trigger ? ` · ${run.trigger}` : ""}
         </span>
       </div>

@@ -526,6 +526,60 @@ func TestOutputStopsSamplingAtItsCap(t *testing.T) {
 	}
 }
 
+// TestOutputSamplingKeepsUpWithAFlood: a command flooding its file faster
+// than any per-pass byte cap would let a reader follow is still sampled at
+// its newest lines: once it pauses, a sample shows its very last line within
+// a pass or two, under its exact number, however many lines came before.
+func TestOutputSamplingKeepsUpWithAFlood(t *testing.T) {
+	cfg, ws, tmp, out := outputSetup(t)
+	pace := outputPace{poll: 250 * time.Millisecond, flush: 500 * time.Millisecond, sample: 250 * time.Millisecond,
+		drain: 2 * time.Second}
+	const lines = 6 << 20 // of 9 bytes each: 54 MiB
+	last := fmt.Sprintf("%08d", lines)
+	var caughtUp time.Duration
+	exec := &commandExec{ws: ws, runs: []commandRun{{writes: reported, script: func(feed func(string)) {
+		f, path := commandFile(t, tmp, "bflood")
+		feed(startedLine("bflood", "toolu_flood"))
+		// Line n is n in eight digits, counted up in place: formatting each
+		// would make the writer, not the reader, the test's slow side.
+		line, block := []byte("00000001\n"), make([]byte, 0, 1<<20)
+		for n := 1; n <= lines; {
+			block = block[:0]
+			for ; len(block) < cap(block)-len(line) && n <= lines; n++ {
+				block = append(block, line...)
+				for i := 7; i >= 0; i-- {
+					if line[i]++; line[i] <= '9' {
+						break
+					}
+					line[i] = '0'
+				}
+			}
+			if _, err := f.Write(block); err != nil {
+				t.Fatal(err)
+			}
+		}
+		wrote := time.Now()
+		waitFor(t, out, "a sample of the last line", hasLine("bflood", last))
+		caughtUp = time.Since(wrote)
+		_ = os.Remove(path)
+		feed(notifiedLine("bflood", "toolu_flood"))
+	}}}}
+	runStage(t, cfg, exec, pace, out)
+
+	t.Logf("the last line was sampled %s after the flood paused", caughtUp)
+	if caughtUp > 2*time.Second {
+		t.Errorf("the last line was sampled %s after the flood paused; want within a pass or two of %s",
+			caughtUp, pace.poll)
+	}
+	for _, o := range chunks(out.String()) {
+		for k, text := range o.Lines {
+			if want := fmt.Sprintf("%08d", o.Line+k); text != want {
+				t.Fatalf("line %d shows %q: a line under another's number", o.Line+k, text)
+			}
+		}
+	}
+}
+
 // TestOutputProcessBudget: commands printing more than a process may are
 // cut off once its budget is spent: one chunk closes the command it ran out
 // on, Done and Truncated, past the lines it dropped, and nothing more is
@@ -1145,6 +1199,47 @@ func TestLineSplitterProperty(t *testing.T) {
 		return slices.Equal(whole, want) && slices.Equal(cut, want)
 	}
 	cfg := &quick.Config{MaxCount: 1000, Rand: rand.New(rand.NewSource(20261006))}
+	if err := quick.Check(property, cfg); err != nil {
+		t.Error(err)
+	}
+}
+
+// TestSkimProperty: however a sampled command's output is cut into reads,
+// skimming numbers its lines exactly and keeps the newest of them, and the
+// line it left unended, as the splitter reading every byte sees them.
+func TestSkimProperty(t *testing.T) {
+	alphabet := []string{"a", "é", " ", "\r", "\n", "\n", "\r\n", "\x1b[1m"}
+	raw := func(b []byte, _ bool) string { return string(b) }
+	property := func(seed int64, n uint16) bool {
+		r := rand.New(rand.NewSource(seed))
+		var b strings.Builder
+		for range int(n) {
+			b.WriteString(alphabet[r.Intn(len(alphabet))])
+		}
+		in := b.String()
+		s := (&outputFollower{}).newStream("b")
+		s.sampling = true
+		for rest := in; rest != ""; {
+			k := 1 + r.Intn(len(rest))
+			s.skim([]byte(rest[:k]))
+			rest = rest[k:]
+		}
+
+		all, ended := splitAll(in), strings.Count(in, "\n")
+		newest := all[max(0, ended-outputSampleLines):ended]
+		first, kept := s.newest.since(0, raw)
+		if s.next != ended+1 || !slices.Equal(kept, newest) || (len(kept) > 0 && first != ended-len(kept)+1) {
+			t.Logf("seed %d: next %d, kept %q from %d; want next %d, %q", seed, s.next, kept, first, ended+1, newest)
+			return false
+		}
+		held, _, ok := s.split.rest()
+		if want := all[ended:]; ok != (len(want) == 1) || (ok && string(held) != want[0]) {
+			t.Logf("seed %d: unended line %q (%v), want %q", seed, held, ok, want)
+			return false
+		}
+		return true
+	}
+	cfg := &quick.Config{MaxCount: 1000, Rand: rand.New(rand.NewSource(20261008))}
 	if err := quick.Check(property, cfg); err != nil {
 		t.Error(err)
 	}

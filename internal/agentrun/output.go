@@ -6,7 +6,6 @@ package agentrun
 import (
 	"bytes"
 	"context"
-	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -72,9 +71,10 @@ const (
 	// The CLI runs its foreground commands one at a time; this only bounds
 	// a stream that says otherwise.
 	outputQueued = 8
-	// outputReadBytes bounds what one read pass takes from a command's file,
-	// so a command that floods it costs each pass a bounded amount.
-	outputReadBytes = 4 << 20
+	// outputReadBuf is one read's buffer. A pass reads until the file's end
+	// or a poll interval, whichever is first; once sampling, a read costs
+	// little more than counting its newlines (skim).
+	outputReadBuf = 64 << 10
 	// outputEllipsis marks a line cut at outputLineBytes.
 	outputEllipsis = "…"
 )
@@ -419,15 +419,15 @@ type outputStream struct {
 
 // newStream is command task's output stream, from its first line.
 func (f *outputFollower) newStream(task string) *outputStream {
-	return &outputStream{f: f, task: task, next: 1, buf: make([]byte, 32<<10)}
+	return &outputStream{f: f, task: task, next: 1, buf: make([]byte, outputReadBuf)}
 }
 
-// read takes what the command appended to its file since the last pass, up
-// to outputReadBytes of it, and prints what is due by now. It reports false
-// once nothing more may be printed.
+// read takes what the command appended to its file since the last pass, to
+// its end or for a poll interval at most, and prints what is due by now. It
+// reports false once nothing more may be printed.
 func (s *outputStream) read(file *os.File, now time.Time) bool {
 	s.now = now
-	s.readFile(file, outputReadBytes, time.Time{})
+	s.readFile(file, now.Add(s.f.pace.poll))
 	if s.stopped {
 		return false
 	}
@@ -453,7 +453,7 @@ func (s *outputStream) close(file *os.File) {
 		return
 	}
 	s.now = time.Now()
-	whole := s.readFile(file, math.MaxInt, s.now.Add(s.f.pace.drain))
+	whole := s.readFile(file, s.now.Add(s.f.pace.drain))
 	if s.stopped {
 		return
 	}
@@ -471,25 +471,52 @@ func (s *outputStream) close(file *os.File) {
 	}
 }
 
-// readFile reads up to limit bytes from the file, until deadline when it is
-// set, handing each line read to line. It reports whether it reached the
-// file's end.
-func (s *outputStream) readFile(file *os.File, limit int, deadline time.Time) bool {
-	for read := 0; read < limit && !s.stopped; {
+// readFile reads the file until its end or deadline, handing each line read
+// to line: every line at full fidelity, and only those a sample could show
+// once sampling (skim). It reports whether it reached the file's end.
+func (s *outputStream) readFile(file *os.File, deadline time.Time) bool {
+	for !s.stopped {
 		n, err := file.Read(s.buf)
-		if n > 0 {
-			read += n
+		switch {
+		case n == 0:
+		case s.sampling || s.cut:
+			s.skim(s.buf[:n])
+		default:
 			s.split.write(s.buf[:n], s.line)
 		}
 		if err != nil || n == 0 {
 			return true
 		}
-		if !deadline.IsZero() && time.Now().After(deadline) {
+		if time.Now().After(deadline) {
 			return false
 		}
 	}
 	return false
 }
+
+// skim takes one read of a sampled command's output at little more than the
+// cost of counting its newlines, so a command flooding its file is sampled
+// at its newest lines rather than ever further behind them. Only the last
+// outputSampleLines lines the read ends, and the line it leaves unended, go
+// through the splitter: those before them are numbered and let go, the line
+// held from earlier reads with them, since a sample shows the newest lines
+// alone.
+func (s *outputStream) skim(p []byte) {
+	if k := bytes.Count(p, newline); k > outputSampleLines {
+		i := len(p)
+		for range outputSampleLines + 1 {
+			i = bytes.LastIndexByte(p[:i], '\n')
+		}
+		// p[i] ends the last line let go: the k-outputSampleLines before it.
+		s.next += k - outputSampleLines
+		s.split.restart()
+		p = p[i+1:]
+	}
+	s.split.write(p, s.line)
+}
+
+// newline is what skim counts.
+var newline = []byte{'\n'}
 
 // line takes one line of the command's output, over when the splitter cut
 // it: into the batch at full fidelity, or into the newest lines once

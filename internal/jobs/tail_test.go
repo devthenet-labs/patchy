@@ -101,10 +101,10 @@ func TestTailFollowsRunningAgent(t *testing.T) {
 	tl.logs = logs
 
 	var got []transcript.Turn
-	err := tl.Tail(context.Background(), jobName, func(turn transcript.Turn) error {
+	err := tl.Tail(context.Background(), jobName, Sink{Turn: func(turn transcript.Turn) error {
 		got = append(got, turn)
 		return nil
-	})
+	}})
 	if err != nil {
 		t.Fatalf("Tail: %v", err)
 	}
@@ -135,10 +135,10 @@ func TestTailStopsOnHandlerError(t *testing.T) {
 	tl.logs = &fakeLogs{body: body}
 
 	seen := 0
-	err := tl.Tail(context.Background(), jobName, func(transcript.Turn) error {
+	err := tl.Tail(context.Background(), jobName, Sink{Turn: func(transcript.Turn) error {
 		seen++
 		return context.Canceled // the viewer disconnected
-	})
+	}})
 	if err == nil {
 		t.Fatal("Tail returned nil, want the handler's error")
 	}
@@ -155,10 +155,10 @@ func TestTailCancelledContextIsNotAnError(t *testing.T) {
 		Seq: 1, Role: transcript.RoleAssistant, Kind: transcript.KindText, Text: "a"}) + "\n"}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	err := tl.Tail(ctx, jobName, func(transcript.Turn) error {
+	err := tl.Tail(ctx, jobName, Sink{Turn: func(transcript.Turn) error {
 		cancel()
 		return ctx.Err()
-	})
+	}})
 	if err != nil {
 		t.Errorf("Tail after cancellation = %v, want nil", err)
 	}
@@ -167,7 +167,7 @@ func TestTailCancelledContextIsNotAnError(t *testing.T) {
 func TestTailNoPod(t *testing.T) {
 	tl := NewTailer(fake.NewClientset(), "patchy-agents")
 	tl.logs = &fakeLogs{}
-	err := tl.Tail(context.Background(), "patchy-none-inv-a1", func(transcript.Turn) error { return nil })
+	err := tl.Tail(context.Background(), "patchy-none-inv-a1", Sink{Turn: func(transcript.Turn) error { return nil }})
 	if err == nil {
 		t.Fatal("Tail without a pod succeeded, want error")
 	}

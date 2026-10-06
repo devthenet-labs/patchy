@@ -5,6 +5,7 @@ package jobs
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -19,15 +20,25 @@ import (
 // maxTailLine bounds one log line a live follow holds in memory. A turn line
 // is a few KiB at most (the recorder caps every turn's text); the lines past
 // it are stage results, a build's carrying its whole changeset (about 7 MiB
-// of base64), which a live viewer never wants. Result still reads those
-// whole; a follow skips them without buffering them, so a handful of live
-// viewers cannot hold tens of MiB each.
+// of base64), which a live viewer never wants, and an output chunk that long
+// is skipped the same way. Result still reads those whole; a follow skips
+// them without buffering them, so a handful of live viewers cannot hold tens
+// of MiB each.
 const maxTailLine = 256 << 10
 
-// scanTurns delivers each turn line of r to fn, skipping every other line
-// and every line longer than maxTailLine without aborting the follow. A
-// handler error stops the scan.
-func scanTurns(r io.Reader, fn func(transcript.Turn) error) error {
+// Sink receives what a live follow reads from an agent's log: each
+// transcript turn, and each chunk of a running command's output. Either may
+// be nil, and the lines it would have received are skipped. An error from
+// either stops the follow.
+type Sink struct {
+	Turn   func(transcript.Turn) error
+	Output func(transcript.Output) error
+}
+
+// scanFollow delivers each turn line and each output line of r to sink,
+// skipping every other line and every line longer than maxTailLine without
+// aborting the follow. A handler error stops the scan.
+func scanFollow(r io.Reader, sink Sink) error {
 	br := bufio.NewReaderSize(r, maxTailLine)
 	skipping := false
 	for {
@@ -37,11 +48,9 @@ func scanTurns(r io.Reader, fn func(transcript.Turn) error) error {
 			skipping = true
 			continue
 		}
-		if !skipping && transcript.HasPrefix(line) {
-			if t, ok := transcript.Decode(line); ok {
-				if ferr := fn(t); ferr != nil {
-					return ferr
-				}
+		if !skipping {
+			if ferr := sink.deliver(line); ferr != nil {
+				return ferr
 			}
 		}
 		skipping = false
@@ -52,6 +61,29 @@ func scanTurns(r io.Reader, fn func(transcript.Turn) error) error {
 			return err
 		}
 	}
+}
+
+// deliver hands one log line to the handler for its kind. A line is the kind
+// of the first prefix it carries, the line's own, whatever its text quotes
+// after it, and is offered to that decoder alone. Testing one kind first, as
+// Result does turns before events, would drop the output of a command that
+// merely prints the turn prefix (a grep through patchy's own source): the
+// line would be read as a turn, fail to decode and never reach the output
+// decoder.
+func (s Sink) deliver(line []byte) error {
+	turnAt := bytes.Index(line, []byte(transcript.Prefix))
+	outputAt := bytes.Index(line, []byte(transcript.OutputPrefix))
+	switch {
+	case turnAt >= 0 && (outputAt < 0 || turnAt < outputAt):
+		if t, ok := transcript.Decode(line); ok && s.Turn != nil {
+			return s.Turn(t)
+		}
+	case outputAt >= 0:
+		if o, ok := transcript.DecodeOutput(line); ok && s.Output != nil {
+			return s.Output(o)
+		}
+	}
+	return nil
 }
 
 // maxIdleTimeout bounds an idle limit read off a Job: anything longer is

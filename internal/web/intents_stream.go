@@ -355,7 +355,7 @@ func (rs *runStream) live(ctx context.Context) {
 		sseEnd(rs.w, rs.flusher, "")
 		return
 	}
-	sub, err := rs.s.tails.subscribe(rs.run.Status.JobRef.Name)
+	sub, err := rs.s.tails.subscribe(rs.run.Status.JobRef.Name, false)
 	if err != nil {
 		sseSend(rs.w, rs.flusher, eventUnavailable, StreamNotice{
 			Reason: fmt.Sprintf("live view unavailable: %d runs are already followed", maxLiveTails)})

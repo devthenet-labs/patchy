@@ -1226,7 +1226,10 @@ Both serve `/healthz`, so the health check works even if Auto Mode ignores per-S
   affected component then fails after the rollout retries. A publish-status check is a follow-up.
 - **Stale branches after a partial failure.** These block a revival until a human deletes them.
 - **Host-wide redeploys.** Every component change takes the whole preview host down for the redeploy (about 160 s
-  today).
+  today). _Later resolved with target health on (the chart's default):_ the Ingress stays across a redeploy, and since
+  2026-10-06 each Deployment rolls out with `maxSurge: 1` and `maxUnavailable: 0` instead of `Recreate`, so the previous
+  revision serves until the new one's target is healthy, including while a pull request's runtime image is still being
+  published. A rollout that misses its deadline is still retried by deleting the Deployments.
 - **Plan pod storage.** A planner pod holds up to 8 trees under one ephemeral-storage limit.
 - **Serialised rounds.** They add latency when several PRs are under review at once.
 

@@ -413,6 +413,9 @@ func (f *fakeGitHub) deleteComment(id int64) {
 	for _, is := range f.issues {
 		is.comments = slices.DeleteFunc(is.comments, func(c *ghclient.Comment) bool { return c.ID == id })
 	}
+	for n, comments := range f.prComments {
+		f.prComments[n] = slices.DeleteFunc(comments, func(c *ghclient.Comment) bool { return c.ID == id })
+	}
 	f.version++
 }
 
@@ -782,6 +785,37 @@ func (f *fakeGitHub) CreatePullRequestComment(ctx context.Context, repoURL strin
 
 func (f *fakeGitHub) ReactPullRequestComment(ctx context.Context, repoURL string, id int64) error {
 	return f.React(ctx, repoURL, id)
+}
+
+// EditPullRequestComment edits a comment on a pull request of repoURL: one
+// that is not there (deleted, or on another repository's pull request) is a
+// 404, and a locked conversation refuses it.
+func (f *fakeGitHub) EditPullRequestComment(_ context.Context, repoURL string, id int64, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("EditPullRequestComment"); err != nil {
+		return err
+	}
+	if err := f.repoErr("EditPullRequestComment", repoURL); err != nil {
+		return err
+	}
+	for number, comments := range f.prComments {
+		if pr, ok := f.prs[number]; !ok || !pr.in(repoURL) {
+			continue
+		}
+		for _, c := range comments {
+			if c.ID != id {
+				continue
+			}
+			if f.lockedPRs[number] {
+				return ghError(http.StatusForbidden, "Unable to update comment because issue is locked.")
+			}
+			c.Body, c.UpdatedAt = body, f.clock.Now()
+			f.edited[id] = true
+			return nil
+		}
+	}
+	return ghError(http.StatusNotFound, "Not Found")
 }
 
 func (f *fakeGitHub) EditIssueComment(_ context.Context, _ string, id int64, body string) error {

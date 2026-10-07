@@ -359,7 +359,7 @@ func TestLegacyMissingInputDoesNotStrandCollection(t *testing.T) {
 func assertReviseHandoff(t *testing.T, handoff string) {
 	t.Helper()
 	if !strings.Contains(handoff, "Please add a regression test.") ||
-		!strings.Contains(handoff, "data, not rules") {
+		!strings.Contains(handoff, "data, not rules") || !strings.Contains(handoff, "### Approver feedback\n\n") {
 		t.Errorf("revise handoff omitted or did not fence the review: %q", handoff)
 	} else {
 		for _, want := range []string{"The handler needs this check", "Please test the JSON response.",
@@ -434,10 +434,14 @@ func TestFailedNamedCheckStartsBoundedFixRound(t *testing.T) {
 		Name: run.Spec.Inputs.ConfigMap}, &cm); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Go failed", "version_test.go:10", "FAIL version test", "<U+202E>"} {
+	for _, want := range []string{"Go failed", "version_test.go:10", "FAIL version test", "<U+202E>",
+		"### Check failures\n\n", "fix only the failing checks"} {
 		if !strings.Contains(cm.Data[keyInvestigation], want) {
 			t.Errorf("check-fix handoff omitted %q", want)
 		}
+	}
+	if strings.Contains(cm.Data[keyInvestigation], "Approver feedback") {
+		t.Error("check-fix handoff labelled its check diagnostics as approver feedback")
 	}
 	if cm.Data[keyCheckSignature] == "" {
 		t.Error("check-fix handoff did not record its failure signature")

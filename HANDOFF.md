@@ -921,8 +921,8 @@ already-pushed commits (or nothing) and can be removed once #51 is merged.
   the round's signature, and Actions log lines carry timestamps and runner metadata, so a repeated failure never matches
   (seen in the 2026-10-03 round's handoff; the repeat path itself was not exercised). `maxCheckFixes` is the only
   effective bound. Hash the annotations and a timestamp-stripped tail instead.
-- A check-fix round is not named as one: its diagnostics sit under "Approver feedback" in the agent's handoff, the PR
-  comment says "Revision round pushed commit", and the done summary says "Revisions: 0" without the check-fix round.
+- A check-fix round is not named as one: the PR comment says "Revision round pushed commit", and the done summary says
+  "Revisions: 0" without the check-fix round. (Its handoff now heads the diagnostics "Check failures".)
 - Extend slice 1b's bounded check-fix rounds to Finding PRs: during the 0.12.1 live gate, patchy's `go/request-forgery`
   remediation passed its Go tests but its PR still failed CodeQL with a new critical alert, so it needed a separate
   manual correction. This is the second such miss after the earlier path-traversal case. A failing CodeQL check on a

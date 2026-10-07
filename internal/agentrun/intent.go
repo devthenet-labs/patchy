@@ -187,10 +187,9 @@ func readReport(path string) ([]byte, error) {
 // repository): the prompt lists each tree, and a plan naming a repository
 // outside it is invalid, with the reason its retry is told.
 //
-// The planner reads the other trees with the read-only posture's own
+// The planner reads the other trees with the read-only posture's own file
 // tools: they sit under the workspace, which every stage adds as a
-// directory the agent may read, and they have no git history for the
-// posture's git-only Bash to read, so the posture is not widened for them.
+// directory the agent may read, so the posture is not widened for them.
 func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.Plan {
 	ev := &envelope.Plan{Stage: envelope.Stage{
 		Harness: a.cfg.InvestigateHarness,

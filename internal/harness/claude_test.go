@@ -147,7 +147,11 @@ func TestClaudePromptSpecKeepsTheTreesSettingsOut(t *testing.T) {
 			if !hasAddDir(argv, "/ws") || !hasAddDir(argv, "/workspace") {
 				t.Errorf("argv = %q, want the working tree added as a directory beside the request's", argv)
 			}
-			if want := []string{"A=b", claudeMDFromAddDirs}; !slices.Equal(spec.Env, want) {
+			want := []string{"A=b", claudeMDFromAddDirs}
+			if tc.sandbox == SandboxReadOnly {
+				want = append(want, claudeNoAutoMemory)
+			}
+			if !slices.Equal(spec.Env, want) {
 				t.Errorf("Env = %q, want %q", spec.Env, want)
 			}
 			if spare := reqEnv[:cap(reqEnv)][1]; spare != "" {

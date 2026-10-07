@@ -133,3 +133,35 @@ func TestEnforcesReadOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestClaudeReadOnlyTurnsAutoMemoryOff: the CLI may write its own memory
+// files under HOME whatever the allow rules say, and loads them into a later
+// run of the same project, which a report repair's resume is. A read-only run
+// turns auto memory off, on its first run and on resume alike, so nothing it
+// wrote there is loaded again; the writable posture and an unpostured run
+// keep the CLI's default.
+func TestClaudeReadOnlyTurnsAutoMemoryOff(t *testing.T) {
+	c := NewClaude()
+	for _, tt := range []struct {
+		sandbox Sandbox
+		off     bool
+	}{
+		{SandboxReadOnly, true},
+		{SandboxWorkspaceWrite, false},
+		{SandboxDefault, false},
+	} {
+		req := PromptRequest{
+			Prompt: "p", Model: "m", Sandbox: tt.sandbox,
+			AddDirs: []string{"/workspace"}, WriteDirs: []string{"/workspace/reports"},
+		}
+		for name, env := range map[string][]string{
+			"first run": c.PromptSpec("/workspace/repo", req).Env,
+			"resume":    c.ResumeSpec("/workspace/repo", claudeSessionID, req).Env,
+		} {
+			if got := slices.Contains(env, claudeNoAutoMemory); got != tt.off {
+				t.Errorf("sandbox %v, %s: %s in env = %v, want %v (env %q)",
+					tt.sandbox, name, claudeNoAutoMemory, got, tt.off, env)
+			}
+		}
+	}
+}

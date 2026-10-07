@@ -65,8 +65,11 @@ func TestClaudeResumeSpec(t *testing.T) {
 			t.Errorf("sandbox %d: --tools rendered = %v in %q, want it exactly for the read-only posture",
 				sandbox, hasTools, got.Argv)
 		}
-		if wantEnv := append(slices.Clone(req.Env), claudeMDFromAddDirs); got.Dir != "/workspace/repo" ||
-			!slices.Equal(got.Env, wantEnv) {
+		wantEnv := append(slices.Clone(req.Env), claudeMDFromAddDirs)
+		if sandbox == SandboxReadOnly {
+			wantEnv = append(wantEnv, claudeNoAutoMemory)
+		}
+		if got.Dir != "/workspace/repo" || !slices.Equal(got.Env, wantEnv) {
 			t.Errorf("sandbox %d: spec = %+v, want the first run's directory and the request env", sandbox, got)
 		}
 	}

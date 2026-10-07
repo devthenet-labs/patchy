@@ -60,8 +60,11 @@ func NewClaude() *Claude {
 // that is not allowed is refused), so a stage that sets WriteDirs can write
 // nowhere but its report directory: not the tree, not its .git directory, and
 // not the settings the CLI reads (claudeSettingSources), which a report
-// repair's resumed run would load. A request without WriteDirs keeps an
-// unscoped Write; both read-only stages set it.
+// repair's resumed run would load. The CLI's own exceptions for files it
+// manages itself (its memory and scratch files) are the one way around the
+// scope; a read-only run turns auto memory off (claudeNoAutoMemory), so
+// nothing written there is loaded again. A request without WriteDirs keeps
+// an unscoped Write; both read-only stages set it.
 //
 // The workspace-write posture renders no tools list and keeps the CLI's
 // built-in set with Bash allowed. SandboxDefault is absent by design: an
@@ -92,9 +95,11 @@ var claudeTools = map[Sandbox]struct{ tools, allow, deny []string }{
 // servers: each runs a command or grants a tool the grammar above withholds.
 // The user source is the settings under HOME, which in the agent pod is the
 // workspace root, where no tree is unpacked. A read-only stage cannot write
-// there, since its writes are scoped to its report directory (claudeTools),
-// so a report repair, which resumes the stage's session with these same
-// sources, reads only what the image and the prepare step put there. The
+// there, since its writes are scoped to its report directory (claudeTools)
+// and the CLI's memory, which it may write regardless, is off for it
+// (claudeNoAutoMemory), so a report repair, which resumes the stage's session
+// with these same sources, reads only what the image and the prepare step put
+// there. The
 // settings location is not moved somewhere unwritable instead
 // (CLAUDE_CONFIG_DIR): the CLI keeps its sessions in the same directory and
 // writes them as the agent's own process, a resume reads them back, and a
@@ -118,6 +123,17 @@ const claudeSettingSources = "user"
 // claudeMDFromAddDirs is the environment entry that has the CLI load
 // CLAUDE.md from its --add-dir directories; see claudeSettingSources.
 const claudeMDFromAddDirs = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1"
+
+// claudeNoAutoMemory turns the CLI's auto memory off for a read-only run.
+// The CLI lets the agent write Markdown files into its own memory directory
+// (and a few other files it manages for itself, such as its scratchpad)
+// whatever the allow rules say, and that directory sits under HOME, the
+// workspace root. With auto memory on, a report repair's resumed run would
+// load what the first run wrote there; with it off nothing loads it, so the
+// repair reads only patchy's prompt and the files it chooses to read. The
+// writable posture keeps the CLI's default, since its stage may write
+// anywhere in the workspace in any case.
+const claudeNoAutoMemory = "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"
 
 // PromptSpec builds the headless claude invocation for one prompted run.
 // stream-json with --verbose emits one JSON event per line, which is what
@@ -144,6 +160,9 @@ func (c *Claude) PromptSpec(ws string, req PromptRequest) runner.CommandSpec {
 		argv = append(argv, "--disallowedTools", strings.Join(t.deny, " "))
 		argv = append(argv, "--setting-sources", claudeSettingSources, "--strict-mcp-config", "--add-dir", ws)
 		env = append(slices.Clip(req.Env), claudeMDFromAddDirs)
+		if req.Sandbox == SandboxReadOnly {
+			env = append(env, claudeNoAutoMemory)
+		}
 	}
 	for _, dir := range req.AddDirs {
 		argv = append(argv, "--add-dir", dir)

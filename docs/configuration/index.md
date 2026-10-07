@@ -1,11 +1,12 @@
 # Configuration
 
 The eight controllers (the [evaluation-controller](evaluation-controller.md), [intent-controller](intent-controller.md)
-and [preview-controller](preview-controller.md) are optional), the [status-server](status-server.md) and the
-[egress-broker](egress-broker.md) share one configuration system; the agent-runner is deliberately different. There are
-no config files — configuration is flags and environment only, and the GitHub credentials are **not** configuration:
-they live in Secrets referenced by your `Integration` and `Forge` custom resources
-([secrets and CRs](../getting-started/install.md#create-the-secrets)), read on demand through the Kubernetes API.
+and [preview-controller](preview-controller.md) are optional), the [status-server](status-server.md), the
+[egress-broker](egress-broker.md) and the optional preview sign-in relay, [preview-auth](preview-auth.md), share one
+configuration system; the agent-runner is deliberately different. There are no config files — configuration is flags and
+environment only, and the GitHub credentials are **not** configuration: they live in Secrets referenced by your
+`Integration` and `Forge` custom resources ([secrets and CRs](../getting-started/install.md#create-the-secrets)), read
+on demand through the Kubernetes API.
 
 ## Flags, environment, precedence
 
@@ -42,7 +43,7 @@ the Deployments stay single-replica.
 
 ## The HTTP surface
 
-Only three controllers serve anything beyond kubelet probes:
+Only these serve anything beyond kubelet probes (the status-server and the egress-broker have pages of their own):
 
 | Endpoint                                                     | Controller             | Purpose                                                                                |
 | ------------------------------------------------------------ | ---------------------- | -------------------------------------------------------------------------------------- |
@@ -53,6 +54,7 @@ Only three controllers serve anything beyond kubelet probes:
 | `GET /artifacts/…` on `--artifact-addr`                      | source-controller      | The repository tarballs agent pods fetch (in-cluster only)                             |
 | `HEAD`/`PUT /internal/blobs/…` on `--artifact-internal-addr` | source-controller      | Workspace bundles the evaluation-controller uploads; off unless it is deployed         |
 | `/api/v1/…` on `--listen-addr`                               | evaluation-controller  | The evolve-facing evaluation API: workspaces, submission, snapshot, SSE events, cancel |
+| `/authorize`, `/token`, `/userinfo`, … on `--listen-addr`    | preview-auth           | The preview sign-in relay's OpenID provider endpoints, on the edge                     |
 | `GET /healthz` / `GET /readyz` on `--health-addr`            | every controller       | Liveness / readiness probes                                                            |
 
 ## Telemetry

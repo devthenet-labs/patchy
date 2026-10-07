@@ -232,7 +232,10 @@ its one code-ledger Lease. The one per-install IdP setup is a Dex static client 
 the require stage, and emptying it with no `preview.prefixListsIDs` needs `preview.allowPublicWithAuth: confirmed` and
 `previewAuth.sessionTimeout` of at most 900. To roll back from the require stage, scale the preview-controller to zero
 and delete the `patchy-preview-all-slots-ingress-auth` binding (only while `preview.inboundCIDRs` is set) first: the
-kept policy otherwise refuses the placeholder dropping its annotations.
+kept policy otherwise refuses the placeholder dropping its annotations. The operator guide,
+[Preview sign-in](../../docs/intents/preview-sign-in.md), walks through Dex, the viewers, both stages, rotation,
+rollback and the gate before the allowlist may go; [preview-auth](../../docs/configuration/preview-auth.md) is the
+relay's reference.
 
 ## Agent isolation
 

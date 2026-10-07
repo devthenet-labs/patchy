@@ -66,8 +66,10 @@ Thirteen binaries, one module. "Not monolithic" means separate binaries/deployme
   Intents), SubjectAccessReviews and get/update on its one code-ledger Lease; its keys come from a mounted Secret.
   Every authorize error is a relay page, never a redirect; a transient token failure is 503, never `invalid_grant`.
   Per-address rate limit; a background probe of every Ready preview host without credentials
-  (`patchy.preview_auth.unprotected_hosts`). Flags carry a `preview-auth-` prefix (`PATCHY_PREVIEW_AUTH_*`). Engine
-  in `internal/previewauth` (core), `internal/previewauth/adapters/*` and `internal/previewauth/httpapi`.
+  (`patchy.preview_auth.unprotected_hosts`). Operator guide `docs/intents/preview-sign-in.md` (stages, rotation,
+  rollback, the probe gate before the allowlist goes), reference `docs/configuration/preview-auth.md`; the terraform
+  module's `preview_auth` puts its host on the edge. Flags carry a `preview-auth-` prefix (`PATCHY_PREVIEW_AUTH_*`).
+  Engine in `internal/previewauth` (core), `internal/previewauth/adapters/*` and `internal/previewauth/httpapi`.
 - `cmd/evaluation-controller` — OPTIONAL (default-off in the chart): remote skill-evaluation execution for
   evolve. Hosts the bearer-authenticated HTTP API (`pkg/evaluation` wire contract: workspace upload streamed to
   source-controller's `:9791` blob endpoint, submission, snapshot, SSE monitoring, cancel; OIDC verify + SAR on
@@ -129,7 +131,9 @@ Thirteen binaries, one module. "Not monolithic" means separate binaries/deployme
   CI would by `mise run scaffold-check`). `check project` is `check image`'s cluster-reading sibling: a read-only
   Project preflight (engine in `cmd/patchy/internal/projectcheck`) that reads Ready/IntentNameConflict, resolves
   every repository over the Forge CRs, and judges agent and preview images, DNS and TLS with the caller's own
-  credentials. It never reads a Secret, so never the App key. Both `check` nouns render through
+  credentials, and, while the chart's `previewAuth` is on, the relay's discovery, Dex's acceptance of the relay's one
+  redirect URI and (once sign-in is required) each Ready preview host's unauthenticated redirect to the relay for its
+  own slot (`previewauth.JudgeProbe`). It never reads a Secret, so never the App key. Both `check` nouns render through
   `cmd/patchy/internal/checkreport` (PASS/FAIL/SKIP lines, `-o json|yaml`, inert reasons). Builds for windows too,
   and ships a `kubectl-patchy` alias. Ships no container image: it is distributed as its own `patchy-cli` release
   archive (separate from the cluster binaries' `patchy` archive) and as a Homebrew cask in
@@ -175,6 +179,8 @@ e2e/                SEPARATE Go module: envtest carries the CRDs, the real binar
                     repository runner image. fakegithub's refs and PR listings are per
                     repository, so intent_multirepo_test.go runs multi-repository intents end to
                     end; cluster.stoppableController restarts a binary with other flags.
+                    preview_auth_test.go runs preview-auth and preview-controller together,
+                    with previewauth/fakedex as a TLS Dex (--preview-auth-dex-ca-file).
 docs/ overrides/    Zensical docs site (zensical.toml at the root; patchy-branded theme in
                     docs/stylesheets/extra.css + overrides/). `mise run serve` to preview,
                     `mise run docs-build` to build; the reusable release workflow publishes it

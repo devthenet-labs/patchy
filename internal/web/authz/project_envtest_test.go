@@ -62,6 +62,9 @@ func TestProjectReviewerRealRBAC(t *testing.T) {
 		"beta-transcripts": {rule([]string{"intents", "transcripts"}, "beta")},
 		// Tier 1 on every Project.
 		"all-intents": {rule([]string{"intents"})},
+		// Preview viewing on alpha, and on every Project.
+		"alpha-previews": {rule([]string{"previews"}, "alpha")},
+		"all-previews":   {rule([]string{"previews"})},
 		// Native get on the alpha Project: a configuration read, no tier.
 		"alpha-native": {{
 			APIGroups: []string{group}, Resources: []string{"projects"},
@@ -98,6 +101,8 @@ func TestProjectReviewerRealRBAC(t *testing.T) {
 	bind("all-intents", user("github:carol"))
 	bind("beta-transcripts", user("github:carol"))
 	bind("alpha-native", user("github:dave"))
+	bind("alpha-previews", user("github:grace"))
+	bind("all-previews", groupSubject("github:acme:reviewers"))
 
 	projects := []string{"alpha", "beta", "gamma"}
 	cases := []struct {
@@ -138,5 +143,57 @@ func TestProjectReviewerRealRBAC(t *testing.T) {
 				}
 			}
 		})
+	}
+	checkPreviewGrants(t, r, projects)
+}
+
+// checkPreviewGrants covers projects/previews against the same RBAC:
+// reviewed alone through Allowed, by name or for every Project, and never
+// implied by the read tiers or a native read.
+func checkPreviewGrants(t *testing.T, r *ProjectReviewer, projects []string) {
+	t.Helper()
+	ctx := t.Context()
+	previews := []struct {
+		name string
+		id   auth.Identity
+		want map[string]bool
+	}{
+		{"previews on one Project", auth.Identity{Username: "github:grace"},
+			map[string]bool{"alpha": true, "beta": false, "gamma": false}},
+		{"previews everywhere through a group", auth.Identity{Username: "github:heidi",
+			Groups: []string{"github:acme:reviewers"}},
+			map[string]bool{"alpha": true, "beta": true, "gamma": true}},
+		{"the read tiers grant no preview", auth.Identity{Username: "github:carol"},
+			map[string]bool{"alpha": false, "beta": false, "gamma": false}},
+		{"a native project read grants no preview", auth.Identity{Username: "github:dave"},
+			map[string]bool{"alpha": false, "beta": false, "gamma": false}},
+		{"an unprefixed group matches nothing", auth.Identity{Username: "github:ivan",
+			Groups: []string{"acme:reviewers"}},
+			map[string]bool{"alpha": false, "beta": false, "gamma": false}},
+	}
+	for _, tc := range previews {
+		t.Run("previews/"+tc.name, func(t *testing.T) {
+			for range 2 {
+				for _, p := range projects {
+					got, err := r.Allowed(ctx, tc.id, p, SubresourcePreviews)
+					if err != nil {
+						t.Fatalf("Allowed: %v", err)
+					}
+					if got != tc.want[p] {
+						t.Errorf("%s previews on %s = %v, want %v", tc.id.Username, p, got, tc.want[p])
+					}
+				}
+			}
+		})
+	}
+	// A preview viewer gets no read tier.
+	tiers, err := r.Tiers(ctx, auth.Identity{Username: "github:grace"}, projects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range projects {
+		if tiers[p] != TierNone {
+			t.Errorf("preview viewer's tier on %s = %v, want none", p, tiers[p])
+		}
 	}
 }

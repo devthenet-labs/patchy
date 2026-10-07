@@ -260,6 +260,46 @@ subjects:
       apiGroup: rbac.authorization.k8s.io
       name: github:octocat # a prefixed `username` claim value (a GitHub login)
 ---
+# Preview viewers: who may open a Project's live previews once preview sign-in
+# is on. One access review for get on the VIRTUAL subresource projects/previews,
+# by Project name, in the release namespace. Like projects/intents, nothing on
+# the API server serves it, so the rule grants kubectl nothing, and no
+# admission policy is involved: no write ever reaches the API server for it.
+# It is separate from the intents tiers in both directions: projects/intents
+# and projects/transcripts do not open a preview, and projects/previews shows
+# no board. Previews may carry real staging data, so grant it to people, not
+# to service identities. Bind the prefixed claim values as above; prefer team
+# groups over individual logins (GitHub logins are case-insensitive and can be
+# renamed and re-registered, RBAC subject names are neither).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+    name: patchy-preview-viewer
+    labels:
+        app.kubernetes.io/part-of: patchy
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [projects/previews]
+      verbs: [get]
+---
+# Every Project's previews for one team. For one Project only, use a Role
+# with resourceNames: [<project>], as patchy-intents-content-storefront does.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: patchy-preview-viewers
+    namespace: patchy
+    labels:
+        app.kubernetes.io/part-of: patchy
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: patchy-preview-viewer
+subjects:
+    - kind: Group
+      apiGroup: rbac.authorization.k8s.io
+      name: github:acme:reviewers # a prefixed `groups` claim value (Dex: org:team)
+---
 # Remote-evaluation submitters (the evolve CLI): create submits an
 # evaluation and uploads workspaces, get reads snapshots and streams the SSE
 # monitor, delete cancels. Native verbs only — no custom verbs, no admission

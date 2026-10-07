@@ -43,7 +43,17 @@ const (
 	ProjectResource        = "projects"
 	SubresourceIntents     = "intents"
 	SubresourceTranscripts = "transcripts"
+	// SubresourcePreviews is get on projects/previews: may open the Project's
+	// live previews. It is reviewed on its own through Allowed, never as a
+	// tier: a preview viewer need not see the Project's intents, and an
+	// intents reader is not a preview viewer.
+	SubresourcePreviews = "previews"
 )
+
+// projectSubresources is every virtual subresource Allowed answers for.
+var projectSubresources = map[string]bool{
+	SubresourceIntents: true, SubresourceTranscripts: true, SubresourcePreviews: true,
+}
 
 // projectReviewConcurrency bounds the per-Project reviews one resolution runs
 // at once.
@@ -149,6 +159,27 @@ func (r *ProjectReviewer) Tiers(ctx context.Context, id auth.Identity, projects 
 		return nil, err
 	}
 	return out, nil
+}
+
+// Allowed reports whether the identity holds get on projects/<subresource>
+// for the named Project. The nameless review runs first, as in Tiers, so a
+// grant for every Project costs one cached review; only when it is refused is
+// the Project reviewed by name. An empty project or a subresource that is not
+// one of the virtual subresources above is an error, never an answer: a
+// caller that lost track of the Project must fail closed, not ask the
+// namespace-wide question by accident.
+func (r *ProjectReviewer) Allowed(ctx context.Context, id auth.Identity, project, subresource string) (bool, error) {
+	if project == "" {
+		return false, fmt.Errorf("access review get projects/%s: no Project named", subresource)
+	}
+	if !projectSubresources[subresource] {
+		return false, fmt.Errorf("access review get projects/%s: not a Project subresource", subresource)
+	}
+	all, err := r.allowed(ctx, id, "", subresource)
+	if err != nil || all {
+		return all, err
+	}
+	return r.allowed(ctx, id, project, subresource)
 }
 
 // allowed runs (or answers from the cache) one review of get on

@@ -5,7 +5,9 @@ package authz
 
 import (
 	"context"
+	"errors"
 	"maps"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -198,5 +200,139 @@ func TestFullProjects(t *testing.T) {
 	got, err := FullProjects{}.Tiers(t.Context(), auth.Identity{}, []string{"a", "b"})
 	if err != nil || got["a"] != TierTranscripts || got["b"] != TierTranscripts {
 		t.Errorf("FullProjects = %v, %v", got, err)
+	}
+}
+
+func TestProjectReviewerAllowed(t *testing.T) {
+	cases := []struct {
+		name    string
+		allow   func(user, name, subresource string) bool
+		project string
+		want    bool
+		reviews []projectReview
+	}{
+		{
+			name:    "every Project: the nameless review alone",
+			allow:   func(_, name, sub string) bool { return name == "" && sub == SubresourcePreviews },
+			project: "alpha", want: true,
+			reviews: []projectReview{{"github:dev", "", SubresourcePreviews}},
+		},
+		{
+			name:    "this Project by name",
+			allow:   func(_, name, sub string) bool { return name == "alpha" && sub == SubresourcePreviews },
+			project: "alpha", want: true,
+			reviews: []projectReview{
+				{"github:dev", "", SubresourcePreviews}, {"github:dev", "alpha", SubresourcePreviews},
+			},
+		},
+		{
+			name:    "another Project's grant",
+			allow:   func(_, name, sub string) bool { return name == "alpha" && sub == SubresourcePreviews },
+			project: "beta", want: false,
+			reviews: []projectReview{
+				{"github:dev", "", SubresourcePreviews}, {"github:dev", "beta", SubresourcePreviews},
+			},
+		},
+		{
+			// The read tiers are not a preview grant, and a preview grant is
+			// not a tier: each subresource is reviewed only on itself.
+			name:    "both read tiers everywhere, no previews",
+			allow:   func(_, _, sub string) bool { return sub != SubresourcePreviews },
+			project: "alpha", want: false,
+			reviews: []projectReview{
+				{"github:dev", "", SubresourcePreviews}, {"github:dev", "alpha", SubresourcePreviews},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var seen []projectReview
+			r := NewProjectReviewer(projectSARClient(t, &mu, &seen, tc.allow), "patchy", time.Minute)
+			id := auth.Identity{Username: "github:dev"}
+			// Twice: the second answer comes from the cache, with no review.
+			for range 2 {
+				got, err := r.Allowed(t.Context(), id, tc.project, SubresourcePreviews)
+				if err != nil {
+					t.Fatalf("Allowed: %v", err)
+				}
+				if got != tc.want {
+					t.Errorf("Allowed = %v, want %v", got, tc.want)
+				}
+			}
+			if !slices.Equal(seen, tc.reviews) {
+				t.Errorf("reviews = %v, want %v", seen, tc.reviews)
+			}
+		})
+	}
+}
+
+// A preview answer is never served for a tier, nor a tier's for a preview:
+// the cache key carries the subresource.
+func TestProjectReviewerAllowedCacheSeparation(t *testing.T) {
+	var mu sync.Mutex
+	var seen []projectReview
+	r := NewProjectReviewer(projectSARClient(t, &mu, &seen,
+		func(_, _, sub string) bool { return sub == SubresourcePreviews }), "patchy", time.Minute)
+	id := auth.Identity{Username: "github:dev"}
+	if ok, err := r.Allowed(t.Context(), id, "alpha", SubresourcePreviews); err != nil || !ok {
+		t.Fatalf("previews = %v, %v; want allowed", ok, err)
+	}
+	tiers, err := r.Tiers(t.Context(), id, []string{"alpha"})
+	if err != nil || tiers["alpha"] != TierNone {
+		t.Errorf("tier after a preview grant = %v, %v; want none", tiers["alpha"], err)
+	}
+	if ok, err := r.Allowed(t.Context(), id, "alpha", SubresourceIntents); err != nil || ok {
+		t.Errorf("intents through Allowed = %v, %v; want refused", ok, err)
+	}
+}
+
+// An empty Project or an unknown subresource is an error before any review:
+// the caller fails closed instead of asking the namespace-wide question.
+func TestProjectReviewerAllowedRefusesBadInput(t *testing.T) {
+	cases := []struct{ name, project, subresource string }{
+		{"no Project", "", SubresourcePreviews},
+		{"empty subresource", "alpha", ""},
+		{"a native subresource", "alpha", "status"},
+		{"an unknown virtual subresource", "alpha", "secrets"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var seen []projectReview
+			r := NewProjectReviewer(projectSARClient(t, &mu, &seen,
+				func(string, string, string) bool { return true }), "patchy", 0)
+			ok, err := r.Allowed(t.Context(), auth.Identity{Username: "github:dev"}, tc.project, tc.subresource)
+			if err == nil || ok {
+				t.Errorf("Allowed = %v, %v; want an error and no grant", ok, err)
+			}
+			if len(seen) != 0 {
+				t.Errorf("reviews = %v, want none", seen)
+			}
+		})
+	}
+}
+
+// A failed review is an error, never a grant, and is not cached.
+func TestProjectReviewerAllowedReviewError(t *testing.T) {
+	calls := 0
+	c := fake.NewClientBuilder().
+		WithScheme(kube.Scheme()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+				calls++
+				return errors.New("apiserver unavailable")
+			},
+		}).
+		Build()
+	r := NewProjectReviewer(c, "patchy", time.Minute)
+	for range 2 {
+		ok, err := r.Allowed(t.Context(), auth.Identity{Username: "github:dev"}, "alpha", SubresourcePreviews)
+		if err == nil || ok {
+			t.Errorf("Allowed = %v, %v; want an error and no grant", ok, err)
+		}
+	}
+	if calls != 2 {
+		t.Errorf("reviews = %d, want 2 (a failure is not cached)", calls)
 	}
 }

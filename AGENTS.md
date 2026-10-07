@@ -245,11 +245,16 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   ui` builds it, bare `go build` compiles a stub). `auth` = who you are (OIDC/none/anonymous/unconfigured,
   cookie sessions, zero k8s imports; claim prefixes and verified email applied once, in `MapClaims`); `authz` = what
   you may do (SubjectAccessReviews for the custom verbs approve/retry/expedite/suspend/resume + native get, and
-  `ProjectReviewer`'s per-Project read tiers). The intents side (`intents*.go`, `envelope.go`) reads every ConfigMap
+  `ProjectReviewer`'s per-Project read tiers, plus `Allowed` for a single subresource such as `projects/previews`, the
+  preview viewer grant). The intents side (`intents*.go`, `envelope.go`) reads every ConfigMap
   through `guardedConfigMap` (the intent's label and a controller reference to its very owner), strips the live run
   stream per subscriber (turns, and the `PATCHY-OUTPUT` command output the tail hub keeps on its own replay ring and
   channel: tier 2 only, live only, never part of the activity), and pins its wire types to `types.ts` by parsing it
   (`TestIntentWireTypesMatchTypeScript`).
+- `sealed` — the shared authenticated-encryption primitives for sign-in surfaces: `PurposeKey` (HKDF-SHA256 of one
+  secret, one key per purpose), `Seal`/`Open` (AES-256-GCM of a JSON value with caller-supplied AAD, so a token of one
+  kind never opens as another; every failure is `ErrOpen`) and `RandomToken`. Stdlib only (a test pins that), so a pure
+  core may import it; callers bound a blob's length before opening it.
 - `intentview` — the pure public projection of intents for the status page: board columns, fixed public wording
   for outcomes and block reasons (never a run's detail or a condition's message), limits with schema defaults, cost
   parsing, and `Text` (templates.VisibleText plus a cap) for every shown string. Copies of intent-controller facts

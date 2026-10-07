@@ -22,8 +22,9 @@
 #
 #   PATCHY_FAKE_CLAUDE_REPORT  the first run's report: "ok" (default), or the
 #                              two slips that threw builds away live:
-#                              "long-note" (one note of 574 characters) and
-#                              "scalar-notes" (notes as a single string).
+#                              "long-note" (one note of 574 characters, now
+#                              accepted rather than refused) and "scalar-notes"
+#                              (notes as a single string, still refused).
 #   PATCHY_FAKE_CLAUDE_REPAIR  what a resumed run does: "fix" (default)
 #                              rewrites the report valid, "keep" changes
 #                              nothing, "touch" rewrites the report valid and

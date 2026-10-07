@@ -56,7 +56,8 @@ while [ $# -gt 0 ]; do
   --resume) mode=resume session=$2; shift 2 ;;
   --max-turns) turns=$2; shift 2 ;;
   --allowedTools) tools=$2; shift 2 ;;
-  -p | --model | --output-format | --disallowedTools | --add-dir | --append-system-prompt) shift 2 ;;
+  -p | --model | --output-format | --tools | --disallowedTools | --setting-sources | --add-dir | \
+    --append-system-prompt) shift 2 ;;
   *) shift ;;
   esac
 done

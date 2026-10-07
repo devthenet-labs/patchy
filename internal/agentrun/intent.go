@@ -252,11 +252,10 @@ func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.
 	// repository-image Job), so the intent controller sets each stage's on
 	// the Env of the jobs Client it launches that stage with.
 	//
-	// The posture is the investigation's, with its writes scoped to the
-	// report's directory: the planner can write and fix up its report and
-	// nothing else, which is what its prompt tells it. A Finding
-	// investigation sets no WriteDirs, so its invocation does not move. A
-	// report repair resumes with this same request, so it keeps the scope.
+	// The posture is the investigation's: no shell, and writes scoped to
+	// the report's directory, so the planner can write and fix up its report
+	// and nothing else, which is what its prompt tells it. A report repair
+	// resumes with this same request, so it keeps the scope.
 	sr := a.newStage(h, cli, harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.InvestigateModel, a.cfg.InvestigateHarness),

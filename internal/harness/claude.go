@@ -32,29 +32,39 @@ func NewClaude() *Claude {
 	}}
 }
 
-// claudeTools renders each sandbox posture into Claude Code's allow/deny tool
-// grammar. Network tools stay denied in both postures — the pod has no egress
-// and the stages never fetch; the read-only posture additionally denies
-// subagents, leaves Edit out of the allow list (in -p mode a tool that is not
-// allowed is refused) and narrows Bash to read-only git. Write stays allowed
-// so the agent can emit its report: anywhere the agent can reach, unless the
-// request scopes it with WriteDirs (claudeAllow). SandboxDefault is absent by
-// design: an unset posture imposes no grammar and leaves the CLI's defaults,
-// settings sources included (claudeSettingSources).
+// claudeTools renders each sandbox posture into Claude Code's tool flags.
+// Network tools stay denied in both postures — the pod has no egress and the
+// stages never fetch.
+//
+// The read-only posture has no shell. Its tools list (--tools) is the whole
+// built-in tool set the run has: Read, Glob and Grep to find and read files,
+// and Write and Edit for the report. Bash is absent from it, and denied by
+// name as well, so neither an arbitrary command nor the CLI's built-in set of
+// read-only shell commands (which it otherwise runs without asking) is
+// available; subagents, notebooks and every other built-in tool are absent
+// too. Naming Glob and Grep in --tools is also what gives a Linux run those
+// two tools, which the CLI otherwise leaves out in favour of find and grep
+// through Bash. Edit is left out of the allow list and Write is allowed only
+// as the request's WriteDirs scope it (claudeAllow; in -p mode a tool call
+// that is not allowed is refused), so a stage that sets WriteDirs can write
+// nowhere but its report directory: not the tree, not its .git directory, and
+// not the settings the CLI reads (claudeSettingSources), which a report
+// repair's resumed run would load. A request without WriteDirs keeps an
+// unscoped Write; both read-only stages set it.
+//
+// The workspace-write posture renders no tools list and keeps the CLI's
+// built-in set with Bash allowed. SandboxDefault is absent by design: an
+// unset posture imposes no grammar and leaves the CLI's defaults, settings
+// sources included (claudeSettingSources).
 //
 // A multi-repository intent's planner reads its other repositories' trees
 // with the same read-only tools: they sit under the workspace the stage adds
-// as a directory, and they are plain trees with no git history, so the
-// git-only Bash grammar is deliberately not widened for them: Read, Glob
-// and Grep already cover what ls or cat would, and a find would bring
-// -exec and -delete with it.
-var claudeTools = map[Sandbox]struct{ allow, deny []string }{
+// as a directory.
+var claudeTools = map[Sandbox]struct{ tools, allow, deny []string }{
 	SandboxReadOnly: {
-		allow: []string{
-			"Read", "Glob", "Grep", "Write",
-			"Bash(git log:*)", "Bash(git show:*)", "Bash(git blame:*)", "Bash(git diff:*)",
-		},
-		deny: []string{"WebFetch", "WebSearch", "Task"},
+		tools: []string{"Read", "Glob", "Grep", "Edit", "Write"},
+		allow: []string{"Read", "Glob", "Grep", "Write"},
+		deny:  []string{"WebFetch", "WebSearch", "Task", "Bash"},
 	},
 	SandboxWorkspaceWrite: {
 		allow: []string{"Read", "Glob", "Grep", "Edit", "Write", "NotebookEdit", "Bash"},
@@ -70,7 +80,14 @@ var claudeTools = map[Sandbox]struct{ allow, deny []string }{
 // such as acceptEdits, project skills with their allowed-tools, and MCP
 // servers: each runs a command or grants a tool the grammar above withholds.
 // The user source is the settings under HOME, which in the agent pod is the
-// workspace root, where no tree is unpacked. Leaving out the project source
+// workspace root, where no tree is unpacked. A read-only stage cannot write
+// there, since its writes are scoped to its report directory (claudeTools),
+// so a report repair, which resumes the stage's session with these same
+// sources, reads only what the image and the prepare step put there. The
+// settings location is not moved somewhere unwritable instead
+// (CLAUDE_CONFIG_DIR): the CLI keeps its sessions in the same directory and
+// writes them as the agent's own process, a resume reads them back, and a
+// writable stage is meant to keep the location it has. Leaving out the project source
 // leaves out .mcp.json too, and --strict-mcp-config, passed beside it,
 // refuses every MCP server not named by --mcp-config, which patchy never
 // passes.
@@ -109,6 +126,9 @@ func (c *Claude) PromptSpec(ws string, req PromptRequest) runner.CommandSpec {
 	}
 	env := req.Env
 	if t, ok := claudeTools[req.Sandbox]; ok {
+		if len(t.tools) > 0 {
+			argv = append(argv, "--tools", strings.Join(t.tools, ","))
+		}
 		argv = append(argv, "--allowedTools", strings.Join(claudeAllow(ws, req, t.allow), " "))
 		argv = append(argv, "--disallowedTools", strings.Join(t.deny, " "))
 		argv = append(argv, "--setting-sources", claudeSettingSources, "--strict-mcp-config", "--add-dir", ws)

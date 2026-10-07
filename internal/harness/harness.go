@@ -37,7 +37,7 @@ const (
 	// is the zero value, so a bare PromptRequest stays unrestricted.
 	SandboxDefault Sandbox = iota
 	// SandboxReadOnly is the investigation posture: read the tree and write
-	// only the report — no source edits, no mutating commands, no network tools.
+	// only the report — no source edits, no shell, no network tools.
 	SandboxReadOnly
 	// SandboxWorkspaceWrite is the remediation posture: edit the workspace
 	// freely; network tools stay denied.

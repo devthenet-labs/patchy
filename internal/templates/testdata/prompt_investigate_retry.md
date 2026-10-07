@@ -7,6 +7,10 @@ Read the finding first: `/workspace/input/issue.md`.
 Investigate the repository as deeply as you need to — read the flagged code, trace how it is reached, check tests
 and callers. Do **not** modify any repository file in this stage; your only output is the report described below.
 
+This stage is read-only. It has no shell: do not try to run commands, tests, builds or git. Find and read files with
+your file search and read tools, and create or change no file except your report, `/workspace/reports/investigation.md`: a write anywhere
+else is refused.
+
 ## The previous attempt
 
 This is a retry. Attempt 1 at this investigation failed with outcome `report_invalid`. Find out why, and

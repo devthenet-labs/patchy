@@ -56,6 +56,25 @@ and agent Jobs — runs as non-root uid 65532 with a read-only root filesystem, 
 `backoffLimit: 0` and `restartPolicy: Never` — retries belong to the state machine, not to Kubernetes — under an
 `activeDeadlineSeconds` kill switch (`--job-deadline`).
 
+## Agent tool postures
+
+Inside the pod, the claude harness renders each stage's sandbox posture into the CLI's tool flags, beside a settings pin
+(`--setting-sources user`, `--strict-mcp-config`) that keeps the working tree's own `.claude/` settings and `.mcp.json`
+from changing what a stage may run.
+
+- **Read-only** (`investigate`, and an intent's `plan`): no shell. `--tools Read,Glob,Grep,Edit,Write` is the whole
+  built-in tool set the run has, and `Bash` is denied by name as well, so neither arbitrary commands nor the CLI's
+  built-in read-only shell commands are available, and no subagent, network or notebook tool either. Writes are allowed
+  only under the stage's `reports/` directory (a path-scoped `Edit` rule; in `-p` mode a write the rules do not allow is
+  refused), which leaves out the repository tree, its `.git` directory, and the settings under `HOME` (the workspace)
+  that the CLI reads, so a [report repair](../configuration/agent-runner.md#report-repair), which resumes the same
+  session with the same flags, loads nothing the agent wrote.
+- **Workspace-write** (`remediate`, and an intent's `build`): the CLI's built-in tools with a shell, so the agent can
+  build and test; network tools stay denied.
+
+codex and copilot do not express these postures (see [extending](../extending.md)); on them the pod is the boundary, and
+the intent stages run on brokered claude only.
+
 ## Repository-declared images
 
 With repository runner images on, the agent container can run an image the target repository names

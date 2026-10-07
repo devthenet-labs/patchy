@@ -7,7 +7,39 @@
 > documentation values `111122223333` and `203.0.113.10/32`. The real ones are in terraform-devthenet's `k8s/` values
 > (private).
 
-## Current checkpoint — 2026-10-06 (afternoon): 0.12.20
+## Current checkpoint — 2026-10-07: 0.12.21
+
+**0.12.21 released, deployed and gated.** Five small items the owner picked from the deferred 0.12.20 list, each its own
+PR with tests, reviewed and fixed before merge. Two are opt-in and change nothing until an operator turns them on.
+
+- #138 the issue's status comment shows the revision allowance (the Revisions line).
+- #139 a queued preview says it is waiting for a free slot, not that it is being deployed.
+- #141 opt-in `spec.checks.rerunFailed`: a failed GitHub Actions check is re-run once, on patchy's own head, before a
+  check-fix round is spent on it. Ready then also proves an Actions write grant; a re-run that fails to start, or is
+  still running when `checks.timeout` passes, falls back to the normal fix round. Check runs are listed with
+  `filter=all` so the original failure (and its logs) stays visible once the re-run starts. Actions write lets the App
+  re-run, cancel and dispatch workflows and delete runs, logs and artifacts on every repository it is installed on;
+  patchy uses it for the one re-run call, with a token scoped to that repository.
+- #142 the plan prompt lists the Project's other open intent pull requests (title and first changed files, newest by
+  creation first, bounded), so a planner can avoid colliding with work already in review.
+- #143 opt-in `--agent-dns none` (chart `agent.networkPolicy.dns`, kustomize component `agent-dns-none`): agent pods get
+  no resolver and the NetworkPolicy's port-53 rule is dropped. Nothing in the pod can resolve an external name, so every
+  toolchain and dependency must already be in the image. Turning it on also needs any cluster-level DNS allow policy (on
+  devthenet-dev, terraform-devthenet's Auto Mode DNS policy) narrowed to leave agent pods out.
+
+Live on devthenet-dev: Helm patchy rev 62 (rollback 61 = 0.12.20), patchy-config rev 40 (rollback 39). The render diff
+against 0.12.20 was the new optional CRD fields plus config checksums. All nine deployments ready on v0.12.21, no
+controller errors after the upgrade, all five Projects Ready. Neither opt-in is enabled there yet.
+
+Fresh-Finding gate (2026-10-07): seed `rerungatekey.go` (1024-bit RSA) on patchy-target 01:59Z, alert #47 02:00:42Z,
+`finding-514becf18f-22` one second later with issue #87, `/patchy expedite` 02:01:17Z, Investigating, Remediating
+02:03:00Z, InReview 02:04:22Z with PR #88 (2048-bit key plus a regression test), all checks green, merged, Remediated
+02:05:29Z, issue #87 closed completed, alert #47 fixed, exactly one Finding for it. No approval hold.
+
+Still waiting on the owner: the three design notes (session resume across rounds, preview sign-in, dependencies for
+offline agent pods) and the open decisions listed under the 0.12.20 checkpoint.
+
+## Earlier checkpoint — 2026-10-06 (afternoon): 0.12.20
 
 **0.12.20 released, deployed, gated, and its new features checked live.** The owner narrowed the planned batch to four
 items: a harness fix, broker spend limits, and two dashboard features. Items (a)–(e) of the 0.12.20 plan (re-run a

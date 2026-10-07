@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.12.21](https://github.com/devthenet-labs/patchy/compare/v0.12.20...v0.12.21) (2026-10-07)
+
+
+### Features
+
+* **intent:** re-run failed Actions checks once before a check-fix round ([#141](https://github.com/devthenet-labs/patchy/issues/141)) ([82cca98](https://github.com/devthenet-labs/patchy/commit/82cca98ec5463aed85e33dca2b28699bc58515f9))
+* **intent:** say a queued preview is waiting for a free slot ([#139](https://github.com/devthenet-labs/patchy/issues/139)) ([7c7fc36](https://github.com/devthenet-labs/patchy/commit/7c7fc36c508a34ae7d61164d0ce84a06dd2c39d3))
+* **intent:** tell a plan of the other intents' open pull requests ([#142](https://github.com/devthenet-labs/patchy/issues/142)) ([319152c](https://github.com/devthenet-labs/patchy/commit/319152cd79ed13646f3ebf3dabf360d9c13436a7))
+* **jobs:** run agent pods with no resolver under --agent-dns none ([#143](https://github.com/devthenet-labs/patchy/issues/143)) ([28a7657](https://github.com/devthenet-labs/patchy/commit/28a7657d7b6cf170e0b8ca640875154bcc6f17a3))
+
+
+### Bug Fixes
+
+* **intent:** show the revision allowance on the issue's status comment ([#138](https://github.com/devthenet-labs/patchy/issues/138)) ([57fcadb](https://github.com/devthenet-labs/patchy/commit/57fcadbd1a6dd9070e3c96df72464975bd8d4703))
+
 ## [0.12.20](https://github.com/devthenet-labs/patchy/compare/v0.12.19...v0.12.20) (2026-10-06)
 
 

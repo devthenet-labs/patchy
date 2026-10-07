@@ -31,8 +31,9 @@
 //   - KeyRing.Sub is the pairwise subject: stable for one viewer on one
 //     Preview, unrelated across Previews, labels and slots, and never the
 //     viewer's login.
-//   - ParseAuthorize, ParseClientAuth, ParseTokenRequest and ParseBearer
-//     validate the three OAuth endpoints' inputs; RedeemCode and CheckRefresh
+//   - ParseAuthorize, KeyRing.AuthenticateClient, ParseTokenRequest and
+//     ParseBearer validate the three OAuth endpoints' inputs (the second, a
+//     token request's client authentication); RedeemCode and CheckRefresh
 //     judge a token request against its grant; CodeKey is a code's
 //     single-use ledger key (its sealed JTI, not its spelling); TokenError and
 //     UserinfoError map every failure to its answer, keeping a transient one

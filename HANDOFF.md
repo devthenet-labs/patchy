@@ -7,7 +7,36 @@
 > documentation values `111122223333` and `203.0.113.10/32`. The real ones are in terraform-devthenet's `k8s/` values
 > (private).
 
-## Current checkpoint — 2026-10-07: 0.12.21
+## Current checkpoint — 2026-10-07 (overnight): 0.12.22 to 0.12.24
+
+**Three releases, each deployed and checked live on devthenet-dev.** The owner narrowed the night's work to preview
+sign-in plus four small fixes; the larger "never discard work" and intent-context work is parked (branch
+`feature/never-discard-work`, unmerged).
+
+- 0.12.22, #145: the read-only posture (intent plan and Finding investigate) is narrowed to the file tools: no shell,
+  writes confined to the stage's report directory (the investigate stage had no write scope), auto memory off so an
+  in-pod report repair loads nothing the agent wrote. Prompts state the real tool surface on claude only; codex and
+  copilot cannot express the posture, so the pod stays their boundary. Live: a plan run used only Read/Glob/Grep and one
+  Write, and a fresh Finding (alert #48, patchy-target#90) went from seed to Remediated in about six minutes with an
+  investigation that used only file tools.
+- 0.12.23, #147 the planner is told patchy checks the plan's layout itself (live planners spent their last turns writing
+  check scripts); #148 an over-long build note no longer fails the run; #149 a check-fix round heads its diagnostics
+  "Check failures". Live: a plan-only run cost $0.16 against $0.26 the night before, with a single Write.
+- 0.12.24, #151: preview sign-in through a new relay binary, `preview-auth` (docs/intents/preview-sign-in.md), **off by
+  default and off on devthenet-dev**. With it off the only render changes are the admission groundwork (slot pods cannot
+  reference Secrets; metadata-only updates to slot Services and Ingresses are admitted, so deletions do not hang),
+  Events RBAC for preview-controller, and the Preview `spec.project` field.
+
+Live on devthenet-dev: Helm patchy rev 65 (rollback 64 = 0.12.23, 63 = 0.12.22, 62 = 0.12.21), patchy-config rev 43.
+
+Turning preview sign-in on is prepared but not done: terraform-devthenet draft PR #47 (the relay's DNS record, its Dex
+client, a values overlay at the permit stage). Its DNS record needs the owner to apply; then the Dex client and the two
+Helm stages, then the browser sign-in and the cookie probe. The preview IP allowlist stays until that probe passes.
+
+Known flaky test: `internal/jobs` `TestDNSClusterLeavesTheJobAlone` fails about one run in 40 on main (it failed #151's
+first CI run and passed on re-run).
+
+## Earlier checkpoint — 2026-10-07: 0.12.21
 
 **0.12.21 released, deployed and gated.** Five small items the owner picked from the deferred 0.12.20 list, each its own
 PR with tests, reviewed and fixed before merge. Two are opt-in and change nothing until an operator turns them on.

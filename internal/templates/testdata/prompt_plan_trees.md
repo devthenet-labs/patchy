@@ -102,8 +102,7 @@ estimated_token_budget: <integer>   # ESTIMATED output tokens the build needs
 ---
 ```
 
-Each field has a type and hard limits, and a frontmatter that breaks any of them is refused, failing the run with no
-plan:
+Each field has a type and hard limits, and a frontmatter that breaks any of them is refused:
 
 - `summary`: a double-quoted string on one line, not empty, at most 200 characters.
 - `repositories`: 1 to 8 double-quoted `https://<host>/<owner>/<name>` URLs, each exactly as the request lists it, and
@@ -116,9 +115,9 @@ plan:
   `200,000`). They are what you expect the build to spend, not a request for budget: they never change what it is
   granted.
 
-Escape a double quote inside a string as `\"`. Unquoted prose containing a colon is invalid YAML and fails the entire
-run, and so does a YAML-tagged value (`!!binary`, `!!str`). To correct the report once it is written, Edit it in place
-rather than writing it again.
+Escape a double quote inside a string as `\"`. Unquoted prose containing a colon is invalid YAML and is refused, and
+so is a YAML-tagged value (`!!binary`, `!!str`). To correct the report once it is written, Edit it in place rather than
+writing it again.
 
 After the frontmatter, write the plan in markdown under the headings Approach, Steps, Test plan and Risks, in at most
 48 KiB; the whole report, frontmatter included, is at most 56 KiB. It is posted to the request for a human to
@@ -130,3 +129,10 @@ tab and line break. The approver reads every byte of the plan, in a code block t
 plainly too: no gap of more than 16 spaces between two characters of a line (a tab counts as 8), no line indented
 more than 64 columns, no more than 4 combining marks in a row, and no run of more than 16 backticks. A report
 breaking any of these rules is refused whole.
+
+Do not check the frontmatter limits or these layout rules yourself: patchy validates the report against them as soon
+as your run ends, and if it refuses the report it tells you, in this same session, exactly what to correct, while the
+stage has turns and time left for it. Checking the rules yourself only spends those: write no script or command to
+test the report (none can run here), and do not read it back to count its spaces, columns, characters or bytes.
+Naming each repository exactly as the request lists it is still yours to get right. Write the report once, then end
+your turn.

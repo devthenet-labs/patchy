@@ -147,7 +147,8 @@ func TestBuildPromptStatesTheRules(t *testing.T) {
 
 // TestPlanPromptStatesTheRules: the plan prompt states the bounds report.ParsePlan
 // enforces that a planner could not guess — the dependency's byte bound, the
-// whole report's, and the layout rule — and that the build reads the plan
+// whole report's, and the layout rule, and that patchy checks them itself
+// so the planner writes the report and stops — and that the build reads the plan
 // alone, so the plan must carry what the build needs of the request.
 func TestPlanPromptStatesTheRules(t *testing.T) {
 	got, err := renderTestPlanPrompt(testPlanRequest, nil)
@@ -163,9 +164,32 @@ func TestPlanPromptStatesTheRules(t *testing.T) {
 		"no line indented\nmore than 64 columns",
 		"no more than 4 combining marks in a row",
 		"no run of more than 16 backticks",
+		// A live planner spent its last turns writing scripts to check
+		// these rules after its plan was written, and ran out of turns:
+		// patchy checks them itself and asks for a repair.
+		// Only what is checked in the pod for every plan: the repositories
+		// are not (one repository has no manifest to hold them to), so the
+		// planner is still told to get them right.
+		"Do not check the frontmatter limits or these layout rules yourself",
+		"if it refuses the report it tells you, in this same session, exactly what to correct",
+		"Naming each repository exactly as the request lists it is still yours to get right.",
+		"write no script or command to\ntest the report",
+		"Write the report once, then end\nyour turn.",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("plan prompt lacks %q", want)
+		}
+	}
+	// A refused report is repaired in the same session, so no rule may
+	// still say it fails the run outright: that fear is what sends a
+	// planner to check its own report.
+	for _, stale := range []string{
+		"failing the run with no\nplan",
+		"fails the entire\nrun",
+		"every rule above",
+	} {
+		if strings.Contains(got, stale) {
+			t.Errorf("plan prompt still says %q", stale)
 		}
 	}
 }

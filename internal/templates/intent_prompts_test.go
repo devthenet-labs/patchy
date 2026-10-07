@@ -147,7 +147,8 @@ func TestBuildPromptStatesTheRules(t *testing.T) {
 
 // TestPlanPromptStatesTheRules: the plan prompt states the bounds report.ParsePlan
 // enforces that a planner could not guess — the dependency's byte bound, the
-// whole report's, and the layout rule — and that the build reads the plan
+// whole report's, and the layout rule, and that patchy checks them itself
+// so the planner writes the report and stops — and that the build reads the plan
 // alone, so the plan must carry what the build needs of the request.
 func TestPlanPromptStatesTheRules(t *testing.T) {
 	got, err := renderTestPlanPrompt(testPlanRequest, nil)
@@ -163,6 +164,13 @@ func TestPlanPromptStatesTheRules(t *testing.T) {
 		"no line indented\nmore than 64 columns",
 		"no more than 4 combining marks in a row",
 		"no run of more than 16 backticks",
+		// A live planner spent its last turns writing scripts to check
+		// these rules after its plan was written, and ran out of turns:
+		// patchy checks them itself and asks for a repair.
+		"Do not check these rules yourself",
+		"if it refuses the report it tells you, in this same session, exactly what to correct",
+		"write no script or command to test the report",
+		"Write the report once, then\nend your turn.",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("plan prompt lacks %q", want)

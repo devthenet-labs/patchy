@@ -161,3 +161,9 @@ tab and line break. The approver reads every byte of the plan, in a code block t
 plainly too: no gap of more than 16 spaces between two characters of a line (a tab counts as 8), no line indented
 more than 64 columns, no more than 4 combining marks in a row, and no run of more than 16 backticks. A report
 breaking any of these rules is refused whole.
+
+Do not check these rules yourself: patchy validates the report against every rule above as soon as your run ends, and
+if it refuses the report it tells you, in this same session, exactly what to correct, while the stage has turns and
+time left for it. Checking the rules yourself only spends those: write no script or command to test the report (none
+can run here), and do not read it back to count its spaces, columns, characters or bytes. Write the report once, then
+end your turn.

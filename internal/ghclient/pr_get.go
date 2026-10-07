@@ -25,5 +25,7 @@ func (c *Client) GetPullRequest(ctx context.Context, repo Repo, number int) (*Pu
 		MergeCommitSHA: pr.GetMergeCommitSHA(),
 		NodeID:         pr.GetNodeID(),
 		HeadSHA:        pr.GetHead().GetSHA(),
+		Title:          pr.GetTitle(),
+		ChangedFiles:   pr.GetChangedFiles(),
 	}, nil
 }

@@ -231,8 +231,9 @@ func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.
 		Limits: templates.StageLimits{
 			MaxTurns: maxTurns, TokenBudget: budget, Timeout: a.cfg.InvestigateTimeout,
 		},
-		PreviousAttempt: a.cfg.PreviousAttempt,
-		Trees:           planTrees(repos),
+		PreviousAttempt:  a.cfg.PreviousAttempt,
+		Trees:            planTrees(repos),
+		OpenPullRequests: a.cfg.OpenPullRequests,
 	})
 	if err != nil {
 		ev.Outcome = envelope.OutcomeRuntimeError

@@ -70,9 +70,13 @@ func TestHeadChecksAndJobLogs(t *testing.T) {
 		t.Fatal("job-log download has no deadline")
 	}
 	mux.HandleFunc("GET /repos/o/r/commits/abc/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("filter"); got != "all" {
+			t.Errorf("check runs listed with filter=%q, want all (a re-run hides the failure otherwise)", got)
+		}
 		writeJSON(t, w, `{"total_count":1,"check_runs":[{"id":41,"name":"test","head_sha":"abc",`+
 			`"status":"completed","conclusion":"failure","details_url":"https://github.com/o/r/actions/runs/77/job/88",`+
-			`"app":{"slug":"github-actions"},"output":{"title":"test failed","summary":"one failure","text":"details"}}]}`)
+			`"app":{"slug":"github-actions"},"check_suite":{"id":66},`+
+			`"output":{"title":"test failed","summary":"one failure","text":"details"}}]}`)
 	})
 	mux.HandleFunc("GET /repos/o/r/check-runs/41/annotations", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, `[{"path":"main.go","start_line":9,"end_line":9,"message":"bad value"}]`)
@@ -99,8 +103,8 @@ func TestHeadChecksAndJobLogs(t *testing.T) {
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("runs = %+v, %v", runs, err)
 	}
-	if got, want := []any{runs[0].ID, runs[0].HeadSHA, runs[0].AppSlug, runs[0].Output.Title},
-		[]any{int64(41), "abc", "github-actions", "test failed"}; !reflect.DeepEqual(got, want) {
+	if got, want := []any{runs[0].ID, runs[0].HeadSHA, runs[0].AppSlug, runs[0].CheckSuiteID, runs[0].Output.Title},
+		[]any{int64(41), "abc", "github-actions", int64(66), "test failed"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("check run fields = %v, want %v", got, want)
 	}
 	annotations, err := c.ListCheckAnnotations(ctx, testRepo, 41, 50)
@@ -129,6 +133,51 @@ func TestHeadChecksAndJobLogs(t *testing.T) {
 	log, err := c.GetJobLogTail(ctx, testRepo, 88, 12)
 	if err != nil || log != "failure tail" {
 		t.Fatalf("log tail = %q, %v", log, err)
+	}
+}
+
+// TestWorkflowRunsAndRerun: a check suite's Actions runs are read by its
+// id, across pages, and re-running a run's failed jobs is one POST to that
+// run, whose refusal is an error.
+func TestWorkflowRunsAndRerun(t *testing.T) {
+	mux, c := newFakeClient(t)
+	mux.HandleFunc("GET /repos/o/r/actions/runs", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("check_suite_id"); got != "66" {
+			t.Errorf("check_suite_id = %q, want 66", got)
+		}
+		pagedHandler(t,
+			`{"total_count":2,"workflow_runs":[{"id":77,"head_sha":"abc","status":"completed","conclusion":"failure"}]}`,
+			`{"total_count":2,"workflow_runs":[{"id":78,"head_sha":"abc","status":"in_progress"}]}`)(w, r)
+	})
+	var reruns []string
+	mux.HandleFunc("POST /repos/o/r/actions/runs/{id}/rerun-failed-jobs", func(w http.ResponseWriter, r *http.Request) {
+		reruns = append(reruns, r.PathValue("id"))
+		if r.PathValue("id") == "78" {
+			w.WriteHeader(http.StatusForbidden)
+			writeJSON(t, w, `{"message":"This workflow is already running"}`)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		writeJSON(t, w, `{}`)
+	})
+	ctx := context.Background()
+	runs, err := c.ListWorkflowRunsForCheckSuite(ctx, testRepo, 66)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []WorkflowRun{{ID: 77, HeadSHA: "abc", Status: "completed", Conclusion: "failure"},
+		{ID: 78, HeadSHA: "abc", Status: "in_progress"}}
+	if !reflect.DeepEqual(runs, want) {
+		t.Errorf("workflow runs = %+v, want %+v", runs, want)
+	}
+	if err := c.RerunFailedJobs(ctx, testRepo, 77); err != nil {
+		t.Errorf("RerunFailedJobs(77) = %v", err)
+	}
+	if err := c.RerunFailedJobs(ctx, testRepo, 78); !IsForbidden(err) {
+		t.Errorf("RerunFailedJobs(78) = %v, want GitHub's refusal", err)
+	}
+	if !reflect.DeepEqual(reruns, []string{"77", "78"}) {
+		t.Errorf("re-runs requested = %v, want 77 then 78", reruns)
 	}
 }
 

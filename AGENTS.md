@@ -107,9 +107,9 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   kubeconfig flags inert, git never touched), `check image` (source-controller's runner-image checks through
   `resolve.Inspect`, plus `--run`: `agent-runner preflight` in a local docker shaped like the agent pod; engine in
   `cmd/patchy/internal/imagecheck`), `setup github-app` (creates the GitHub App through the manifest flow with
-  exactly `intentperm.ForApp`'s permissions and events for `--security`/`--intents`/`--checks`, then writes its
-  ghsecret-keyed Secret manifest to a 0600 file or a pipe, never to the cluster and never the private key to a
-  terminal or a file other users can read; engine in `cmd/patchy/internal/ghapp`, plain net/http, no GitHub
+  exactly `intentperm.ForApp`'s permissions and events for `--security`/`--intents`/`--checks`/`--rerun-failed`, then
+  writes its ghsecret-keyed Secret manifest to a 0600 file or a pipe, never to the cluster and never the private key to
+  a terminal or a file other users can read; engine in `cmd/patchy/internal/ghapp`, plain net/http, no GitHub
   client) and `init app` (scaffolds an application repository's agent image, CI builds and split trusted ECR
   publishers from embedded templates; engine in `cmd/patchy/internal/scaffold`, golden trees checked as their own
   CI would by `mise run scaffold-check`). `check project` is `check image`'s cluster-reading sibling: a read-only
@@ -307,15 +307,17 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
 - `intentperm` — the one table of the GitHub App permissions patchy needs, in two views of the same rows. `For`: what
   a Project needs per repository (issues write on the intent repository; contents and pull requests write and issues
   read on each app repository, the last being the token reviewer permissions and the rate budget are read with;
-  checks, statuses and actions read there too when `spec.checks.fix` is set). `ForApp`: the permissions and webhook
-  events an App registered for a set of features (`security`, `intents`, `checks`) must hold, metadata read included,
-  and nothing more. Pure (stdlib + `api/v1alpha1`, a test pins that), so the CLI can read it without linking a GitHub
-  client; intent-controller's Ready mints a token per grant of `For`, and an App manifest is built from `ForApp`, so
-  the App holds exactly what a Project is checked for. Every token intent-controller mints must be a grant of `For` for
-  its repository (`TestEveryTokenIsInTheTable`), so a new GitHub call cannot widen what Ready proves. One read-only
-  exception is deliberate: an open intent's pull request in a repository the Project no longer lists is still read
-  (pull requests read, plus issues read for the rate check) where the installation allows, so its merge counts; nothing
-  is written there, and once refused there it is not asked again for a while (`readDepartedPullRequest`).
+  checks, statuses and actions read there too when `spec.checks.fix` is set, and actions write beside them when
+  `spec.checks.rerunFailed` is too). `ForApp`: the permissions and webhook events an App registered for a set of
+  features (`security`, `intents`, `checks`, `rerun-failed`, the last its own feature so check fixes never widen to a
+  write on CI) must hold, metadata read included, and nothing more. Pure (stdlib + `api/v1alpha1`, a test pins that), so
+  the CLI can read it without linking a GitHub client; intent-controller's Ready mints a token per grant of `For`, and
+  an App manifest is built from `ForApp`, so the App holds exactly what a Project is checked for. Every token
+  intent-controller mints must be a grant of `For` for its repository (`TestEveryTokenIsInTheTable`), so a new GitHub
+  call cannot widen what Ready proves. One read-only exception is deliberate: an open intent's pull request in a
+  repository the Project no longer lists is still read (pull requests read, plus issues read for the rate check) where
+  the installation allows, so its merge counts; nothing is written there, and once refused there it is not asked again
+  for a while (`readDepartedPullRequest`).
 - `runnerimage` (+ `runnerimage/resolve`) — repository-declared agent runner images. The parent is the pure
   core (declaration files out of a tar.gz stream, `.patchy/agent.yaml` and the devcontainer.json fallback with
   precedence, reference grammar and strict digests, the allowlist `Policy`, PATH/ENV/VOLUME checks, the

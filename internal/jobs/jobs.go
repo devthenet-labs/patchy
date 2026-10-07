@@ -304,6 +304,12 @@ type Spec struct {
 	// Calibration its shape is not this package's business, and the text
 	// inside it is untrusted — the prompt fences it.
 	PreviousAttempt string
+	// OpenPullRequests is pre-serialized JSON listing other intents' pull
+	// requests open in the repositories an intent's plan may change, passed
+	// opaquely to the plan prompt; empty, as on every other Job, omits it.
+	// Its shape is not this package's business either, and its text is
+	// untrusted — the prompt bounds and fences it.
+	OpenPullRequests string
 	// RunnerImage is the digest-pinned repository-declared image from the
 	// Repository's status (name@sha256:...), copied by the launching
 	// controller; empty runs the harness's runner image. It is honoured only
@@ -856,7 +862,8 @@ var reservedEnv = map[string]bool{
 // perJobEnv are the names a finding Job sets itself: HOME, the workspace,
 // and what agentEnv reads off the Spec (repository, phase, finding, base
 // SHA, the stage's harness and model, the budget grant, the estimate
-// calibration and the previous attempt). The injected-binary directory is
+// calibration, the previous attempt and an intent plan's open pull
+// requests). The injected-binary directory is
 // one too, set only by a Job that injects: on the default image it would
 // send agent-runner looking for an injected CLI that was never copied.
 // Unlike the gateway names, these are refused on Runner.Env as well as on
@@ -880,6 +887,7 @@ var perJobEnv = map[string]bool{
 	"PATCHY_GRANTED_TOKEN_BUDGET": true,
 	"PATCHY_CALIBRATION":          true,
 	"PATCHY_PREVIOUS_ATTEMPT":     true,
+	"PATCHY_OPEN_PULL_REQUESTS":   true,
 	agentrun.BinDirEnv:            true,
 }
 
@@ -1085,9 +1093,10 @@ func (c *Client) agentEnv(runner Runner, spec Spec) []corev1.EnvVar {
 		env = append(env, corev1.EnvVar{Name: modelEnv, Value: spec.Model})
 	}
 
-	// The per-run budget grant, the estimate calibration and the previous
-	// attempt. All are decided per Job, so like harness and model they are
-	// injected from the Spec rather than the controller-global Env.
+	// The per-run budget grant, the estimate calibration, the previous
+	// attempt and an intent plan's open pull requests. All are decided per
+	// Job, so like harness and model they are injected from the Spec rather
+	// than the controller-global Env.
 	if spec.MaxTurns > 0 {
 		env = append(env, corev1.EnvVar{
 			Name: "PATCHY_GRANTED_MAX_TURNS", Value: strconv.FormatInt(int64(spec.MaxTurns), 10)})
@@ -1101,6 +1110,9 @@ func (c *Client) agentEnv(runner Runner, spec Spec) []corev1.EnvVar {
 	}
 	if spec.PreviousAttempt != "" {
 		env = append(env, corev1.EnvVar{Name: "PATCHY_PREVIOUS_ATTEMPT", Value: spec.PreviousAttempt})
+	}
+	if spec.OpenPullRequests != "" {
+		env = append(env, corev1.EnvVar{Name: "PATCHY_OPEN_PULL_REQUESTS", Value: spec.OpenPullRequests})
 	}
 
 	// The controller-global Env under the full reserved filter, then the

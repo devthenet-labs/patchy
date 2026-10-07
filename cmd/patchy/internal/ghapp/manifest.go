@@ -44,6 +44,10 @@ type Features struct {
 	// Checks adds the reads check-fix rounds make (a Project's
 	// spec.checks.fix). It extends Intents.
 	Checks bool
+	// RerunFailed adds actions write, which re-runs the failed jobs of the
+	// Actions runs behind a failed check once before a check-fix round (a
+	// Project's spec.checks.rerunFailed). It extends Checks.
+	RerunFailed bool
 }
 
 // Selected is f as the table's features, in the table's order.
@@ -56,6 +60,7 @@ func (f Features) Selected() []intentperm.Feature {
 		{f.Security, intentperm.FeatureSecurity},
 		{f.Intents, intentperm.FeatureIntents},
 		{f.Checks, intentperm.FeatureChecks},
+		{f.RerunFailed, intentperm.FeatureRerunFailed},
 	} {
 		if s.on {
 			out = append(out, s.feature)
@@ -102,6 +107,9 @@ func (f Features) describe() string {
 	}
 	if f.Checks {
 		uses = append(uses, "check-fix rounds")
+	}
+	if f.RerunFailed {
+		uses = append(uses, "failed-check re-runs")
 	}
 	return "patchy: " + strings.Join(uses, ", ")
 }

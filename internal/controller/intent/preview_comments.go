@@ -59,9 +59,9 @@ type previewRecord struct {
 // found first among the App's bot's comments by its marker (so a lost write
 // never posts twice), recorded by id and body digest on the pull request's
 // record, and from then on edited in place, only when what it says changes:
-// live at a new head, being redeployed, failed, expired, gone, and last
-// removed once the intent has ended. A comment someone deleted is posted
-// again only once the preview is live again.
+// live at a new head, being redeployed, waiting for a free slot, failed,
+// expired, gone, and last removed once the intent has ended. A comment
+// someone deleted is posted again only once the preview is live again.
 //
 // It is best effort, like the cross-link, and never holds a phase or a
 // hand-off back. Nothing is written to a pull request whose repository left

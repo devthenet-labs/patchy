@@ -74,6 +74,12 @@ type PlanPrompt struct {
 	// than two omits the section, and the prompt is exactly the
 	// one-repository prompt.
 	Trees []PlanTree
+	// OpenPullRequests are other intents' pull requests open in the
+	// repositories the plan may change, which the prompt lists, as data, so
+	// the plan steers clear of the files they change. UNTRUSTED:
+	// RenderPlanPrompt bounds and strips them (BoundOpenPullRequests). None
+	// omits the section, and the prompt is exactly the prompt without it.
+	OpenPullRequests []OpenPullRequest
 }
 
 // PlanTree is one repository a multi-repository plan reads: its URL as the
@@ -108,6 +114,7 @@ func RenderPlanPrompt(p PlanPrompt) (string, error) {
 	if len(p.Trees) < 2 {
 		p.Trees = nil
 	}
+	p.OpenPullRequests = BoundOpenPullRequests(p.OpenPullRequests)
 	return render("prompt_plan.md.tmpl", p)
 }
 

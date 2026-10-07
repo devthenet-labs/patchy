@@ -151,6 +151,7 @@ projects:
           # agentResourceClass: large  # one of the operator's classes; see Resource classes below
       # labels: {trigger: patchy:target, approve: patchy:approved}  (the defaults)
       # limits: {maxActiveIntents: 2, maxCostMicroUSD: 10000000, plan: {...}, build: {...}}
+      # checks: {fix: [test], timeout: 30m, rerunFailed: false}  (see CI-fix rounds below)
       # requireRepositoryImage: true
 ```
 
@@ -161,8 +162,9 @@ The Project reports `Ready` once:
   intent-controller may read (`ForgeSecretUnreadable` otherwise); the message names the repository;
 - the App is installed on the intent repository and every app repository, with the permissions intents use: issues write
   on the intent repository; contents and pull requests write and issues read (a reviewer's permission and the rate
-  budget are read with it) on each app repository; and, when `spec.checks.fix` names a check, checks, statuses and
-  actions read on each app repository too (`AppNotInstalled` otherwise, naming the repository and the permission);
+  budget are read with it) on each app repository; when `spec.checks.fix` names a check, checks, statuses and actions
+  read on each app repository too; and when `spec.checks.rerunFailed` is set beside it, actions write there as well
+  (`AppNotInstalled` otherwise, naming the repository and the permission);
 - no other Project shares its intent repository and trigger label (`AmbiguousIntentRepository`).
 
 It creates the trigger and approve labels when they are missing. An issue whose Intent name is held by another
@@ -251,6 +253,23 @@ exists at a commit this intent did not push, the intent is `Blocked` with `Branc
 and resumes once someone deletes the branch. Delete a merged intent's branch (or let GitHub delete head branches on
 merge) to keep that from happening.
 
+### Other intents' open pull requests
+
+A plan is told of the pull requests other intents of its Project have open, so it does not plan a change that collides
+with one it cannot see: the default branch it reads has none of their changes. As the plan run is created, patchy reads
+each other intent of the Project that has not ended, and each pull request it records open in one of the Project's
+repositories, as GitHub has it then: its title, how many files it changes and the first 50 of them. At most five are
+read, the longest-open intents' first. They are recorded in the run's input ConfigMap (`open-pull-requests.json`),
+beside the request and outside its digest, and handed to the plan Job, whose prompt lists them as data, not
+instructions, under a statement that their titles and paths come from whoever opened or pushed to those pull requests.
+The plan is asked to avoid the files they change wherever the request allows, and to name each overlap it cannot avoid
+among its questions, so the approver can decide whether to wait for that pull request to merge first.
+
+Intents of another Project are never read, even in the same repository. A pull request GitHub reports closed, or no
+longer has, is left out. Any other failure to read one, the rate floor included, leaves the whole list out, with a
+warning in the controller's log, and the intent plans as it would have without the list. The reads take the pull
+requests read token on each repository, so they need no permission a Ready Project does not already have.
+
 ## On the pull request
 
 Once the pull request is open, the intent is `InReview`, and patchy runs rounds on it, each a new agent run on the pull
@@ -269,24 +288,43 @@ request's head, in the same image as its build, pushed as a fast-forward of the 
   failure whose values moved (coverage from 71.3% to 76.1%, a test from `got 3` to `got 4`) is progress, and gets
   another round. A tool that prints some other volatile number in its last lines (a random seed, say) can still make the
   same failure read as a new one, which costs a round, up to `limits.maxCheckFixes`.
+- **Re-runs before a CI-fix round**, with `checks.rerunFailed: true` (off by default): the first time a named check
+  fails on a head patchy pushed, patchy re-runs the failed jobs of the GitHub Actions run behind it once, instead of
+  starting a round, so a flaky test that passes the second time costs no agent run. The re-run is recorded on the
+  intent's pull request (`status.pullRequests[].checksRerun`: the head, the check runs, the Actions runs, when), so a
+  restart neither asks again nor forgets it, and `checks.timeout` counts from it. If the re-run passes, the head is
+  settled and nothing more happens; if it fails again at the same head, the CI-fix round starts on that second failure.
+  Each new head patchy pushes (a round's fix included) gets its one re-run. A run whose other jobs are still running is
+  waited for, since GitHub re-runs only a completed run. The round starts at once, with no re-run, when a failure has no
+  Actions run to re-run (a commit status, or a check another App reports), when GitHub refuses the re-run (a run too old
+  to re-run, say), or when the Actions run is still running as `checks.timeout` passes. A re-run that GitHub started but
+  that is still running when `checks.timeout`, counted from the re-run, passes does not settle the head either: the
+  failure it re-ran stands, and the CI-fix round starts on it. It needs the App's **Actions** permission at **Read and
+  write** on every app repository (`patchy setup github-app --rerun-failed` asks for it). Without it the Project is not
+  `Ready` (`AppNotInstalled`), which stops discovery: no new intent is picked up from the intent repository. Intents
+  already in flight keep running; their re-run requests are refused, and each falls back to the CI-fix round at once.
 
 Each round posts one comment on the pull request saying what kind of round it was ("Revision round", or "CI-fix round
-for `test`") and what it pushed, and when it pushed, asks the approvers to review again. The summary patchy posts when
-the intent ends counts revisions and CI-fix rounds apart.
+for `test`") and what it pushed, and when it pushed, asks the approvers to review again. Once the intent has a pull
+request, the issue's status comment counts its revision rounds against `limits.maxRevisions` ("Revisions: 1 of 3") as
+the limit counts them: a round that failed counts, and a CI-fix round is not a revision. The summary patchy posts when
+the intent ends counts revision and CI-fix rounds apart, the same way.
 
 ### The preview link
 
 With `--intent-previews-enabled` and a Project that previews the pull request's repository, patchy tells reviewers where
 the preview is, in two places:
 
-- **The issue's status comment** gains a **Preview** line: the link once the preview is live, "being deployed" while
+- **The issue's status comment** gains a **Preview** line: the link once the preview is live, "waiting for a free
+  preview slot" while its Preview is `Queued` behind others (every slot is taken), "being deployed" while
   preview-controller rolls it out, or why it is not available (it could not be deployed, or it expired after its time to
   live). With several previewed repositories it lists what each path serves, at which commit.
 - **Each previewed pull request** gets one comment of its own, posted the first time the preview is live at that pull
   request's head. patchy then edits that same comment, never posting another: to "being deployed" when a round or a push
-  moves the head, back to live with the new commit once it is served, to say why when the preview fails or expires, and
-  last to say the preview was removed once the intent ends. Edits notify nobody; the round's own comment already asks
-  for the review. A pull request whose repository is not previewed (a library) gets no preview comment.
+  moves the head (or "waiting for a free preview slot" when there is none to deploy it in yet), back to live with the
+  new commit once it is served, to say why when the preview fails or expires, and last to say the preview was removed
+  once the intent ends. Edits notify nobody; the round's own comment already asks for the review. A pull request whose
+  repository is not previewed (a library) gets no preview comment.
 
 The link is posted only when it can be checked: the Preview is this intent's, has rolled out its current spec, serves
 exactly the commits the intent recorded (each pull request's head, or a preview base), and its address is a bare
@@ -401,7 +439,8 @@ intent-controller is the second code path that writes to a forge (remediation-co
   agent pod.
 - **GitHub App:** intents need no event subscription. They use issues, contents and pull requests (write) and metadata
   (read), issues read on the app repository too; a Project with `spec.checks.fix` also needs checks, statuses and
-  actions (read) on its app repository, for the check-fix rounds. See
+  actions (read) on its app repository, for the check-fix rounds, and one with `spec.checks.rerunFailed` actions write
+  there, the one write on a repository's CI, minted alone for each re-run request. See
   [Create the GitHub App](../getting-started/github-app.md#intents).
 
 It writes no Finding spec, so it is not exempt from the finding admission policy.
@@ -409,11 +448,12 @@ It writes no Finding spec, so it is not exempt from the finding admission policy
 ## Polling cost
 
 Each active intent reads about three GitHub resources per interval (its issue, its events, and its comments since the
-newest one it has already read). An intent in review also reads its pull request. A conditional listing that has not
-changed returns 304, which costs nothing against the installation's rate limit. The rate-limit floor pauses all intent
-polling, pull requests included, while the installation's remaining core budget is below it, so intents can never starve
-the security flow of the requests it shares with them. Each poll checks the installation of the repository it reads: the
-intent repository and an app repository may be covered by two installations, and the app repository's is the one the
-Finding flow shares, so its pull request and a blocked build's default branch wait on its floor, the issue on the intent
-repository's. The headers GitHub reports are not consistent from one response to the next, so the floor is a coarse
-guard, not an exact budget.
+newest one it has already read). An intent in review also reads its pull request. A plan run, as it is created, also
+reads at most two resources for each of up to five other intents' open pull requests (the pull request and one page of
+its files). A conditional listing that has not changed returns 304, which costs nothing against the installation's rate
+limit. The rate-limit floor pauses all intent polling, pull requests included, while the installation's remaining core
+budget is below it, so intents can never starve the security flow of the requests it shares with them. Each poll checks
+the installation of the repository it reads: the intent repository and an app repository may be covered by two
+installations, and the app repository's is the one the Finding flow shares, so its pull request and a blocked build's
+default branch wait on its floor, the issue on the intent repository's. The headers GitHub reports are not consistent
+from one response to the next, so the floor is a coarse guard, not an exact budget.

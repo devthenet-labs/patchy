@@ -95,13 +95,15 @@ func previewFixture(head string) (*v1alpha1.Project, *v1alpha1.Intent, *v1alpha1
 // TestViewPreview: the preview is live only when the Preview is this
 // Intent's, current, Ready at exactly the derived revisions, and at a host
 // that is linked; Failed and Expired at the current spec are unavailable;
-// anything else that exists for the Intent is being deployed.
+// Queued at the current spec waits for a free slot; anything else that
+// exists for the Intent is being deployed.
 func TestViewPreview(t *testing.T) {
 	head := strings.Repeat("a", 40)
 	moved := strings.Repeat("b", 40)
 	live := previewView{state: templates.PreviewLive, host: "target-1.preview.example.com",
 		components: []previewComponent{{repository: appRepoURL, path: "/", revision: head}}}
 	updating := previewView{state: templates.PreviewUpdating, components: live.components}
+	waiting := previewView{state: templates.PreviewWaiting, components: live.components}
 	unavailable := func(reason string) previewView {
 		return previewView{state: templates.PreviewUnavailable, reason: reason, components: live.components}
 	}
@@ -137,9 +139,24 @@ func TestViewPreview(t *testing.T) {
 			return pv
 		}, updating},
 		{"queued", func(_ *v1alpha1.Project, _ *v1alpha1.Intent, pv *v1alpha1.Preview) *v1alpha1.Preview {
-			pv.Status.Phase = v1alpha1.PreviewQueued
+			pv.Status.Phase, pv.Status.URL, pv.Status.Components = v1alpha1.PreviewQueued, "", nil
+			return pv
+		}, waiting},
+		// Queued is about a spec the preview controller has since been
+		// given a new one of: what it does with that is not known yet.
+		{"queued at an older generation", func(_ *v1alpha1.Project, _ *v1alpha1.Intent,
+			pv *v1alpha1.Preview) *v1alpha1.Preview {
+			pv.Status.Phase, pv.Status.URL, pv.Status.Components = v1alpha1.PreviewQueued, "", nil
+			pv.Status.ObservedGeneration = 1
 			return pv
 		}, updating},
+		{"queued at the old head", func(_ *v1alpha1.Project, in *v1alpha1.Intent,
+			pv *v1alpha1.Preview) *v1alpha1.Preview {
+			pv.Status.Phase, pv.Status.URL, pv.Status.Components = v1alpha1.PreviewQueued, "", nil
+			in.Status.PullRequests[0].HeadSHA = moved
+			return pv
+		}, previewView{state: templates.PreviewUpdating,
+			components: []previewComponent{{repository: appRepoURL, path: "/", revision: moved}}}},
 		{"deploying", func(_ *v1alpha1.Project, _ *v1alpha1.Intent, pv *v1alpha1.Preview) *v1alpha1.Preview {
 			pv.Status.Phase = v1alpha1.PreviewDeploying
 			return pv
@@ -245,8 +262,10 @@ func previewCaseConfig(seed int64) *quick.Config {
 // serving the derived revisions or not, at every kind of URL, the preview is
 // live exactly when it is Ready, has observed its spec, its spec and its
 // components are the derived ones, and its URL is a bare https host under
-// the intent's label; and the status comment and pull request comment
-// rendered from it name an https address exactly when it is live.
+// the intent's label; it waits for a free slot exactly when it is Queued
+// and has observed its spec, which is the derived one; and the status
+// comment and pull request comment rendered from it name an https address
+// exactly when it is live, and a free preview slot exactly when it waits.
 func TestViewPreviewProperty(t *testing.T) {
 	head := strings.Repeat("c", 40)
 	var failure string
@@ -264,9 +283,14 @@ func TestViewPreviewProperty(t *testing.T) {
 		}
 		_, linkable := previewHost(pc.url, in.Name, in.Name)
 		wantLive := pc.phase == v1alpha1.PreviewReady && pc.observed && pc.serves && pc.specNow && linkable
+		wantWaiting := pc.phase == v1alpha1.PreviewQueued && pc.observed && pc.specNow
 		v := viewPreview(proj, in, pv)
 		if (v.state == templates.PreviewLive) != wantLive {
 			failure = fmt.Sprintf("%+v: state %q, want live %v", pc, v.state, wantLive)
+			return false
+		}
+		if (v.state == templates.PreviewWaiting) != wantWaiting {
+			failure = fmt.Sprintf("%+v: state %q, want waiting %v", pc, v.state, wantWaiting)
 			return false
 		}
 		p := &pass{in: in, proj: proj, preview: v}
@@ -283,13 +307,8 @@ func TestViewPreviewProperty(t *testing.T) {
 			return false
 		}
 		for name, body := range map[string]string{"status comment": status, "pull request comment": comment} {
-			if strings.Contains(body, "https://") != wantLive {
-				failure = fmt.Sprintf("%+v: %s names an https address: %v, want %v:\n%s", pc, name,
-					strings.Contains(body, "https://"), wantLive, body)
-				return false
-			}
-			if wantLive && !strings.Contains(body, "(https://target-1.") {
-				failure = fmt.Sprintf("%+v: %s does not link the preview:\n%s", pc, name, body)
+			if wrong := previewBodyWrong(body, wantLive, wantWaiting); wrong != "" {
+				failure = fmt.Sprintf("%+v: %s %s:\n%s", pc, name, wrong, body)
 				return false
 			}
 		}
@@ -298,4 +317,22 @@ func TestViewPreviewProperty(t *testing.T) {
 	if err := quick.Check(holds, previewCaseConfig(20261005)); err != nil {
 		t.Errorf("%v\n%s", err, failure)
 	}
+}
+
+// previewBodyWrong is what a comment rendered from a preview's view gets
+// wrong, "" for nothing: it names an https address exactly when the preview
+// is live, then linking it, and a free preview slot exactly when it waits,
+// then never saying it is being deployed.
+func previewBodyWrong(body string, live, waiting bool) string {
+	switch {
+	case strings.Contains(body, "https://") != live:
+		return fmt.Sprintf("names an https address: %v, want %v", !live, live)
+	case live && !strings.Contains(body, "(https://target-1."):
+		return "does not link the preview"
+	case strings.Contains(body, "free preview slot") != waiting:
+		return fmt.Sprintf("says it waits for a slot: %v, want %v", !waiting, waiting)
+	case waiting && strings.Contains(body, "being deployed"):
+		return "says it is being deployed while it waits for a slot"
+	}
+	return ""
 }

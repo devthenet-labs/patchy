@@ -391,6 +391,7 @@ writes its credentials as the Secret manifest a `Forge` and an `Integration` rea
 
 ```sh
 patchy setup github-app --org acme --intents --checks                    # intents, with check-fix rounds
+patchy setup github-app --org acme --intents --checks --rerun-failed     # and re-runs of failed Actions checks
 patchy setup github-app --org acme --security --webhook-url https://patchy.acme.dev/github/webhooks
 patchy setup github-app --org acme --intents --dry-run                   # print the manifest; create nothing
 patchy setup github-app --org acme --intents -o - | sops --encrypt --input-type yaml --output-type yaml /dev/stdin
@@ -398,16 +399,19 @@ patchy setup github-app --org acme --intents -o - | sops --encrypt --input-type 
 
 Choose what the App is for. It asks for the least each chosen feature uses, and nothing else:
 
-| Flag                          | Permissions                                                         | Webhook events                                                   |
-| ----------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `--security`                  | Code scanning alerts, Issues, Contents, Pull requests: read & write | `code_scanning_alert`, `issues`, `issue_comment`, `pull_request` |
-| `--intents`                   | Issues, Contents, Pull requests: read & write                       | none: intent-controller polls GitHub                             |
-| `--checks` (with `--intents`) | Checks, Commit statuses, Actions: read                              | none                                                             |
+| Flag                               | Permissions                                                         | Webhook events                                                   |
+| ---------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `--security`                       | Code scanning alerts, Issues, Contents, Pull requests: read & write | `code_scanning_alert`, `issues`, `issue_comment`, `pull_request` |
+| `--intents`                        | Issues, Contents, Pull requests: read & write                       | none: intent-controller polls GitHub                             |
+| `--checks` (with `--intents`)      | Checks, Commit statuses, Actions: read                              | none                                                             |
+| `--rerun-failed` (with `--checks`) | Actions: read & write                                               | none                                                             |
 
 Metadata read comes with every App. The table is `internal/intentperm`, the one intent-controller proves a `Project`'s
 grants against before it is Ready, so an App created with `--intents` (and `--checks` for a Project with
-`spec.checks.fix`) passes that check once it is installed. `--security` needs `--webhook-url`, the
-integration-controller's `https://<host>/github/webhooks`; an App without it has no webhook.
+`spec.checks.fix`, `--rerun-failed` for one with `spec.checks.rerunFailed`) passes that check once it is installed.
+`--rerun-failed` is its own switch so that check-fix rounds alone never widen the App to a write on a repository's CI.
+`--security` needs `--webhook-url`, the integration-controller's `https://<host>/github/webhooks`; an App without it has
+no webhook.
 
 The flow: patchy listens on a random `127.0.0.1` port and opens a page in your browser that posts the manifest to
 GitHub's "create a GitHub App" form, for `--org` (you must be an owner of it) or, with `--user`, your own account. Check

@@ -71,6 +71,11 @@ func TestIntentPreviewGoldens(t *testing.T) {
 		{"intent_status_preview_updating.md", func() (string, error) {
 			return RenderIntentStatusComment(testInReview(onePreview(PreviewUpdating, "")))
 		}},
+		// Queued behind other Previews for a free slot: waiting, not being
+		// deployed.
+		{"intent_status_preview_waiting.md", func() (string, error) {
+			return RenderIntentStatusComment(testInReview(onePreview(PreviewWaiting, "")))
+		}},
 		{"intent_status_preview_failed.md", func() (string, error) {
 			return RenderIntentStatusComment(testInReview(onePreview(PreviewUnavailable, PreviewFailed)))
 		}},
@@ -93,6 +98,12 @@ func TestIntentPreviewGoldens(t *testing.T) {
 			return RenderIntentStatusComment(IntentStatusComment{
 				Namespace: "patchy", Intent: "marigold-3", Phase: "Revising", PlanRevision: 1,
 				Preview: twoPreview(PreviewUpdating),
+			})
+		}},
+		{"intent_status_preview_waiting_repositories.md", func() (string, error) {
+			return RenderIntentStatusComment(IntentStatusComment{
+				Namespace: "patchy", Intent: "marigold-3", Phase: "Revising", PlanRevision: 1,
+				Preview: twoPreview(PreviewWaiting),
 			})
 		}},
 		// A Project may name its repositories anything; the names are
@@ -119,6 +130,9 @@ func TestIntentPreviewGoldens(t *testing.T) {
 		}},
 		{"intent_preview_updating.md", func() (string, error) {
 			return RenderIntentPreviewComment(testPreviewComment(PreviewUpdating, "", "/api"))
+		}},
+		{"intent_preview_waiting.md", func() (string, error) {
+			return RenderIntentPreviewComment(testPreviewComment(PreviewWaiting, "", "/api"))
 		}},
 		{"intent_preview_failed.md", func() (string, error) {
 			return RenderIntentPreviewComment(testPreviewComment(PreviewUnavailable, PreviewFailed, "/api"))
@@ -183,7 +197,7 @@ func TestPreviewCommentKey(t *testing.T) {
 			t.Errorf("notice key %q is used twice", k)
 		}
 	}
-	for _, state := range []string{PreviewLive, PreviewUpdating, PreviewUnavailable, PreviewRemoved} {
+	for _, state := range []string{PreviewLive, PreviewUpdating, PreviewWaiting, PreviewUnavailable, PreviewRemoved} {
 		body, err := RenderIntentPreviewComment(testPreviewComment(state, "", ""))
 		if err != nil {
 			t.Fatal(err)
@@ -207,7 +221,7 @@ var previewHosts = []string{
 // previewConfig generates previews in every state and reason, at hosts from
 // previewHosts, with components and a resource name of markdown tokens.
 func previewConfig(seed int64) *quick.Config {
-	states := []string{"", PreviewLive, PreviewUpdating, PreviewUnavailable, PreviewRemoved, "bogus"}
+	states := []string{"", PreviewLive, PreviewUpdating, PreviewWaiting, PreviewUnavailable, PreviewRemoved, "bogus"}
 	reasons := []string{"", PreviewFailed, PreviewExpired, PreviewUnlinkable, "bogus"}
 	tokens := func(r *rand.Rand) string {
 		var b strings.Builder

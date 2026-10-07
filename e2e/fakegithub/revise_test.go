@@ -87,6 +87,55 @@ func TestReviseAPISurfaceAndScope(t *testing.T) {
 	}
 }
 
+// TestWorkflowRunsAndRerunScope: a check run names its workflow run's
+// check suite, the suite's runs are listed with actions read, and re-running
+// a completed run's failed jobs takes actions write, queues the run again
+// and is recorded; a run still running is refused, as GitHub refuses it.
+func TestWorkflowRunsAndRerunScope(t *testing.T) {
+	srv, c, _ := newFake(t)
+	ctx := context.Background()
+	srv.SetCheckRun("abc", fakegithub.CheckRun{ID: 41, Name: "test", Status: "completed", Conclusion: "failure",
+		RunID: 77})
+	srv.SetWorkflowRun(fakegithub.WorkflowRun{ID: 77, HeadSHA: "abc", Status: "completed", Conclusion: "failure"})
+	srv.SetWorkflowRun(fakegithub.WorkflowRun{ID: 78, HeadSHA: "abc", Status: "in_progress"})
+	runs, err := c.ListCheckRuns(ctx, target, "abc")
+	if err != nil || len(runs) != 1 || runs[0].CheckSuiteID != 77 {
+		t.Fatalf("check runs = %+v, %v; want run 41 in check suite 77", runs, err)
+	}
+
+	app := newApp(t, srv)
+	read := scopedClient(t, srv, app, target, ghclient.TokenPerms{Actions: ghclient.PermRead})
+	got, err := read.ListWorkflowRunsForCheckSuite(ctx, target, 77)
+	if err != nil || len(got) != 1 || got[0] != (ghclient.WorkflowRun{ID: 77, HeadSHA: "abc", Status: "completed",
+		Conclusion: "failure"}) {
+		t.Fatalf("workflow runs of suite 77 = %+v, %v", got, err)
+	}
+	if err := read.RerunFailedJobs(ctx, target, 77); !ghclient.IsForbidden(err) {
+		t.Errorf("actions read re-ran a run: %v", err)
+	}
+	write := scopedClient(t, srv, app, target, ghclient.TokenPerms{Actions: ghclient.PermWrite})
+	if err := write.RerunFailedJobs(ctx, target, 77); err != nil {
+		t.Fatalf("actions write: %v", err)
+	}
+	if err := write.RerunFailedJobs(ctx, target, 78); !ghclient.IsForbidden(err) {
+		t.Errorf("a running run was re-run: %v", err)
+	}
+	if err := write.RerunFailedJobs(ctx, target, 79); !ghclient.IsNotFound(err) {
+		t.Errorf("an unknown run was re-run: %v", err)
+	}
+	if got := srv.Reruns(); len(got) != 1 || got[0] != 77 {
+		t.Errorf("re-runs = %v, want 77", got)
+	}
+	if again, _ := read.ListWorkflowRunsForCheckSuite(ctx, target, 77); len(again) != 1 ||
+		again[0].Status != "queued" || again[0].Conclusion != "" {
+		t.Errorf("re-run run = %+v, want queued again", again)
+	}
+	other := scopedClient(t, srv, app, intents, ghclient.TokenPerms{Actions: ghclient.PermWrite})
+	if err := other.RerunFailedJobs(ctx, target, 77); !ghclient.IsForbidden(err) {
+		t.Errorf("another repository's token re-ran a run: %v", err)
+	}
+}
+
 func TestPendingReviewSubmissionMovesRESTTimestampWithoutEditing(t *testing.T) {
 	srv, c, clk := newFake(t)
 	ctx := context.Background()

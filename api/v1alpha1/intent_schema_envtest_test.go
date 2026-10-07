@@ -481,6 +481,9 @@ func testProjectBounds(ctx context.Context, t *testing.T, c client.Client) {
 		{"check timeout of one hour", func(p *patchyv1.Project) {
 			p.Spec.Checks.Timeout = &metav1.Duration{Duration: time.Hour}
 		}, false},
+		{"re-running failed checks", func(p *patchyv1.Project) {
+			p.Spec.Checks.Fix, p.Spec.Checks.RerunFailed = []string{"test"}, true
+		}, false},
 		// A repository's resource class names one of the operator's
 		// classes: a DNS label, as resourceclass.ValidName holds it.
 		{"a resource class", func(p *patchyv1.Project) { p.Spec.Repositories[0].AgentResourceClass = "large" }, false},
@@ -618,6 +621,8 @@ func fullIntentStatus() patchyv1.IntentStatus {
 			URL: "https://github.com/acme/shop/pull/7", NodeID: "PR_kwDOAbCdEf", HeadSHA: schemaSHA,
 			State: "merged", MergedAt: schemaNow.DeepCopy(), MergeCommitSHA: schemaSHA,
 			ChecksObservedHeadSHA: schemaSHA, ChecksObservedProjectGeneration: 3,
+			ChecksRerun: &patchyv1.IntentChecksRerun{HeadSHA: schemaSHA, CheckRunIDs: []int64{71, 72},
+				Checks: []string{"lint", "test"}, WorkflowRunIDs: []int64{81}, RequestedAt: schemaNow},
 			PreviewCommentID: 1002, PreviewDigest: schemaDigest,
 		}},
 		PreviewBases: []patchyv1.IntentPreviewBase{
@@ -836,6 +841,28 @@ func testIntentSchema(ctx context.Context, t *testing.T, c client.Client) {
 		}, true},
 		{"a negative per-PR checks generation", func(s *patchyv1.IntentStatus) {
 			s.PullRequests[0].ChecksObservedProjectGeneration = -1
+		}, true},
+		// The one re-run of failed checks on a pull request's head.
+		{"a malformed re-run head", func(s *patchyv1.IntentStatus) {
+			s.PullRequests[0].ChecksRerun.HeadSHA = "HEAD"
+		}, true},
+		{"a re-run of no check run", func(s *patchyv1.IntentStatus) {
+			s.PullRequests[0].ChecksRerun.CheckRunIDs = nil
+		}, true},
+		{"a re-run of no Actions run", func(s *patchyv1.IntentStatus) {
+			s.PullRequests[0].ChecksRerun.WorkflowRunIDs = nil
+		}, true},
+		{"a re-run of 32 check runs", func(s *patchyv1.IntentStatus) {
+			s.PullRequests[0].ChecksRerun.CheckRunIDs = actors(32)
+		}, false},
+		{"a re-run of 33 check runs", func(s *patchyv1.IntentStatus) {
+			s.PullRequests[0].ChecksRerun.CheckRunIDs = actors(33)
+		}, true},
+		{"a re-run of 33 Actions runs", func(s *patchyv1.IntentStatus) {
+			s.PullRequests[0].ChecksRerun.WorkflowRunIDs = actors(33)
+		}, true},
+		{"a re-run naming a check twice", func(s *patchyv1.IntentStatus) {
+			s.PullRequests[0].ChecksRerun.Checks = []string{"test", "test"}
 		}, true},
 		// The sticky preview comment's record on its pull request.
 		{"a negative preview comment id", func(s *patchyv1.IntentStatus) {

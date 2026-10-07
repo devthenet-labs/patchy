@@ -133,6 +133,17 @@ spec:
                     maxItems: 32
                     type: array
                     x-kubernetes-list-type: set
+                  rerunFailed:
+                    description: |-
+                      RerunFailed re-runs the failed jobs of the GitHub Actions runs behind
+                      a failed named check once, on patchy's own head, before a fix round
+                      is spent on it: a flaky test that passes again costs no round. Only a
+                      second failure at the same head starts the round, as does a failure
+                      that is not an Actions check run (a commit status, another App's
+                      check), which has no run to re-run. It acts only on the checks Fix
+                      names, and needs the App's actions write permission on every app
+                      repository (the Project is not Ready otherwise).
+                    type: boolean
                   timeout:
                     default: 30m
                     description: |-

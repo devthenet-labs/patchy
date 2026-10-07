@@ -189,22 +189,26 @@ type fakeGitHub struct {
 	// index.
 	commitRepos []string
 	// lockedPRs refuse every comment on them (a locked conversation).
-	lockedPRs          map[int64]bool
-	parents            map[string]string
-	branches           map[string]string
-	prs                map[int64]*fakePR
-	heads              map[string]string
-	reviews            map[int64][]ghclient.Review
-	inline             map[int64][]ghclient.ReviewComment
-	prComments         map[int64][]*ghclient.Comment
-	reviewEdits        map[string]bool
-	inlineEdits        map[string]bool
-	patch              string
-	checks             map[string][]ghclient.CheckRun
-	statuses           map[string][]ghclient.CommitStatus
-	annotations        map[int64][]ghclient.CheckAnnotation
-	workflowJobs       map[int64][]ghclient.WorkflowJob
-	jobLogs            map[int64]string
+	lockedPRs    map[int64]bool
+	parents      map[string]string
+	branches     map[string]string
+	prs          map[int64]*fakePR
+	heads        map[string]string
+	reviews      map[int64][]ghclient.Review
+	inline       map[int64][]ghclient.ReviewComment
+	prComments   map[int64][]*ghclient.Comment
+	reviewEdits  map[string]bool
+	inlineEdits  map[string]bool
+	patch        string
+	checks       map[string][]ghclient.CheckRun
+	statuses     map[string][]ghclient.CommitStatus
+	annotations  map[int64][]ghclient.CheckAnnotation
+	workflowJobs map[int64][]ghclient.WorkflowJob
+	jobLogs      map[int64]string
+	// workflowRuns are the Actions runs of each check suite, by suite id.
+	workflowRuns map[int64][]ghclient.WorkflowRun
+	// reruns are the Actions runs whose failed jobs were re-run, in order.
+	reruns             []int64
 	requestedReviewers map[int64][]string
 
 	resolveErr   error
@@ -252,6 +256,7 @@ func newFakeGitHub(clock *fakeClock) *fakeGitHub {
 		annotations:        map[int64][]ghclient.CheckAnnotation{},
 		workflowJobs:       map[int64][]ghclient.WorkflowJob{},
 		jobLogs:            map[int64]string{},
+		workflowRuns:       map[int64][]ghclient.WorkflowRun{},
 		requestedReviewers: map[int64][]string{},
 		errs:               map[string][]error{},
 		calls:              map[string]int{},
@@ -1140,6 +1145,43 @@ func (f *fakeGitHub) GetJobLogTail(_ context.Context, _ string, jobID int64, tai
 		log = log[len(log)-tailBytes:]
 	}
 	return log, nil
+}
+
+func (f *fakeGitHub) ListWorkflowRuns(_ context.Context, _ string, checkSuiteID int64) (
+	[]ghclient.WorkflowRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("ListWorkflowRuns"); err != nil {
+		return nil, err
+	}
+	return slices.Clone(f.workflowRuns[checkSuiteID]), nil
+}
+
+// RerunFailedJobs records the re-run and, as GitHub does, queues the run
+// again; it refuses a run that is not completed, or that it does not know.
+func (f *fakeGitHub) RerunFailedJobs(_ context.Context, repoURL string, runID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("RerunFailedJobs"); err != nil {
+		return err
+	}
+	if err := f.repoErr("RerunFailedJobs", repoURL); err != nil {
+		return err
+	}
+	for suite, runs := range f.workflowRuns {
+		for i, run := range runs {
+			if run.ID != runID {
+				continue
+			}
+			if run.Status != "completed" {
+				return ghError(http.StatusForbidden, "This workflow is already running")
+			}
+			f.reruns = append(f.reruns, runID)
+			f.workflowRuns[suite][i].Status, f.workflowRuns[suite][i].Conclusion = "queued", ""
+			return nil
+		}
+	}
+	return ghError(http.StatusNotFound, "Not Found")
 }
 
 // ---- jobs ----

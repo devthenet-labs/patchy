@@ -51,6 +51,7 @@ type setupGitHubAppFlags struct {
 	security    bool
 	intents     bool
 	checks      bool
+	rerunFailed bool
 	webhookURL  string
 	name        string
 	homepageURL string
@@ -96,6 +97,10 @@ func newSetupGitHubAppCmd(opts *Options) *cobra.Command {
 			"              write. intent-controller polls GitHub, so intents add no webhook.\n" +
 			"  --checks    with --intents: checks, statuses and actions read, which a\n" +
 			"              Project's check-fix rounds (spec.checks.fix) need.\n" +
+			"  --rerun-failed\n" +
+			"              with --checks: actions write, which a Project's\n" +
+			"              spec.checks.rerunFailed needs to re-run the failed jobs of the\n" +
+			"              Actions runs behind a failed check once before a check-fix round.\n" +
 			"Metadata read comes with every App. The intent permissions are the table\n" +
 			"intent-controller proves before a Project is Ready.\n\n" +
 			"The flow: patchy serves a page on a random 127.0.0.1 port and opens it in your\n" +
@@ -153,6 +158,8 @@ func newSetupGitHubAppCmd(opts *Options) *cobra.Command {
 	fl.BoolVar(&f.security, "security", false, "the findings pipeline: alerts, tracking issues, remediation PRs")
 	fl.BoolVar(&f.intents, "intents", false, "intent-driven development (no webhook)")
 	fl.BoolVar(&f.checks, "checks", false, "with --intents: the reads check-fix rounds need")
+	fl.BoolVar(&f.rerunFailed, "rerun-failed", false,
+		"with --checks: actions write, to re-run failed Actions jobs before a check-fix round")
 	fl.StringVar(&f.webhookURL, "webhook-url", "",
 		"with --security: the integration-controller's https://<host>/github/webhooks")
 	fl.StringVar(&f.name, "name", "", "the App's name, at most 34 characters (default patchy-<org>, or patchy)")
@@ -221,7 +228,8 @@ func planSetup(opts *Options, f *setupGitHubAppFlags) (setupPlan, error) {
 		name = ghapp.DefaultName(p.owner)
 	}
 	p.config = ghapp.Config{
-		Features:    ghapp.Features{Security: f.security, Intents: f.intents, Checks: f.checks},
+		Features: ghapp.Features{Security: f.security, Intents: f.intents, Checks: f.checks,
+			RerunFailed: f.rerunFailed},
 		Name:        name,
 		HomepageURL: f.homepageURL,
 		WebhookURL:  f.webhookURL,

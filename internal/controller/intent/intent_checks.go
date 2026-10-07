@@ -6,6 +6,8 @@ package intent
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"maps"
 	"net/url"
 	"slices"
 	"strconv"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
@@ -24,7 +27,11 @@ const defaultChecksTimeout = 30 * time.Minute
 // checkRound starts a check-fix round on pr when a named check failed on the
 // head patchy last pushed in its repository, once the checks settled (or
 // their timeout passed). Each pull request's checks are its own: observed per
-// pull request, against its own repository's pushes and earlier fixes.
+// pull request, against its own repository's pushes and earlier fixes. With
+// the Project's checks.rerunFailed, the first failure at a head re-runs the
+// failed Actions jobs instead (rerunFailedChecks), and only a failure after
+// that re-run starts the round; the checks timeout then counts from the
+// re-run.
 func (p *pass) checkRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (bool, error) {
 	if len(p.proj.Spec.Checks.Fix) == 0 || pr.HeadSHA == "" || p.checksObserved(pr) {
 		return false, nil
@@ -39,15 +46,20 @@ func (p *pass) checkRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (
 	if err != nil {
 		return false, err
 	}
-	deadline := latest.CreationTimestamp.Time
-	if latest.Status.FinishedAt != nil {
-		deadline = latest.Status.FinishedAt.Time
+	rerun := rerunAt(pr)
+	expired := p.checksTimedOut(latest, rerun)
+	if !settled && !expired {
+		return false, nil
 	}
-	timeout := defaultChecksTimeout
-	if p.proj.Spec.Checks.Timeout != nil {
-		timeout = p.proj.Spec.Checks.Timeout.Duration
+	if expired {
+		// A re-run still running as its timeout passes leaves the failures
+		// it re-ran standing: the round starts on them rather than the head
+		// reading as settled with nothing failed.
+		failed = failed.withUnsettledRerun(rerun)
 	}
-	if !settled && p.now.Before(deadline.Add(timeout)) {
+	if !expired && rerunAwaited(rerun, failed) {
+		// A failure the re-run re-ran is still its check's latest run:
+		// GitHub has not yet replaced it with the re-run's.
 		return false, nil
 	}
 	if len(failed.checkIDs) == 0 && len(failed.statusIDs) == 0 {
@@ -62,11 +74,32 @@ func (p *pass) checkRound(ctx context.Context, pr *v1alpha1.IntentPullRequest) (
 	if p.checksConsumed(pr.Repository, failed) {
 		return false, nil
 	}
+	if outcome, err := p.rerunFailedChecks(ctx, pr, failed, expired); err != nil || outcome != rerunSkipped {
+		return outcome == rerunRequested, err
+	}
 	diagnosis, err := p.checkDiagnostics(ctx, pr.Repository, pr.HeadSHA, failed)
 	if err != nil {
 		return false, err
 	}
 	return p.startCheckFix(ctx, pr, failed, diagnosis.signature)
+}
+
+// checksTimedOut reports whether the checks timeout of a head has passed:
+// counted from the push that made it (latest, the run that pushed it), or
+// from the re-run asked for there since, whose checks settle anew.
+func (p *pass) checksTimedOut(latest *v1alpha1.IntentRun, rerun *v1alpha1.IntentChecksRerun) bool {
+	deadline := latest.CreationTimestamp.Time
+	if latest.Status.FinishedAt != nil {
+		deadline = latest.Status.FinishedAt.Time
+	}
+	if rerun != nil && rerun.RequestedAt.After(deadline) {
+		deadline = rerun.RequestedAt.Time
+	}
+	timeout := defaultChecksTimeout
+	if p.proj.Spec.Checks.Timeout != nil {
+		timeout = p.proj.Spec.Checks.Timeout.Duration
+	}
+	return !p.now.Before(deadline.Add(timeout))
 }
 
 // checksObserved reports whether pr's head had its named checks observed
@@ -126,6 +159,162 @@ func (p *pass) startCheckFix(ctx context.Context, pr *v1alpha1.IntentPullRequest
 type failedChecks struct {
 	checkIDs  []int64
 	statusIDs []int64
+	// runs are the failed check runs, by id, as GitHub listed them.
+	runs map[int64]ghclient.CheckRun
+	// listed is every check run GitHub listed at the head, by id, and
+	// pending the named checks whose latest run has not completed.
+	listed  map[int64]ghclient.CheckRun
+	pending map[string]bool
+}
+
+// withUnsettledRerun adds to f each failure rerun re-ran whose check's
+// latest run (the re-run's own) has still not completed: once the checks
+// timeout counted from the re-run passes, that failure is the check's last
+// word at the head. A re-ran check that has since concluded is judged on its
+// own latest run, already in f. With no re-run, f is unchanged.
+func (f failedChecks) withUnsettledRerun(rerun *v1alpha1.IntentChecksRerun) failedChecks {
+	if rerun == nil {
+		return f
+	}
+	added := false
+	for _, id := range rerun.CheckRunIDs {
+		r, ok := f.listed[id]
+		if !ok || !f.pending[r.Name] || !failedConclusion(r.Conclusion) || slices.Contains(f.checkIDs, id) {
+			continue
+		}
+		if f.runs == nil {
+			f.runs = map[int64]ghclient.CheckRun{}
+		}
+		f.checkIDs = append(slices.Clone(f.checkIDs), id)
+		f.runs[id] = r
+		added = true
+	}
+	if added {
+		slices.Sort(f.checkIDs)
+		if len(f.checkIDs) > 32 {
+			f.checkIDs = f.checkIDs[:32]
+		}
+	}
+	return f
+}
+
+// rerunAt is the re-run recorded on pr's head, nil when there is none: one
+// recorded on an earlier head says nothing about this one.
+func rerunAt(pr *v1alpha1.IntentPullRequest) *v1alpha1.IntentChecksRerun {
+	if pr.ChecksRerun == nil || pr.ChecksRerun.HeadSHA != pr.HeadSHA {
+		return nil
+	}
+	return pr.ChecksRerun
+}
+
+// rerunAwaited reports a failure rerun re-ran that is still its check's
+// latest run: the re-run's own check run has not been reported yet. With no
+// re-run there is none.
+func rerunAwaited(rerun *v1alpha1.IntentChecksRerun, failed failedChecks) bool {
+	return rerun != nil &&
+		slices.ContainsFunc(failed.checkIDs, func(id int64) bool { return slices.Contains(rerun.CheckRunIDs, id) })
+}
+
+// rerunOutcome is what rerunFailedChecks did.
+type rerunOutcome int
+
+const (
+	// rerunSkipped re-ran nothing: the check-fix round starts.
+	rerunSkipped rerunOutcome = iota
+	// rerunWaiting re-ran nothing yet: an Actions run behind a failure is
+	// still running, and GitHub re-runs only a completed run.
+	rerunWaiting
+	// rerunRequested re-ran the failed jobs and recorded it on the Intent.
+	rerunRequested
+)
+
+// maxRerunRuns bounds the Actions runs one re-run asks GitHub for, as
+// status.pullRequests[].checksRerun.workflowRunIDs is bounded.
+const maxRerunRuns = 32
+
+// rerunFailedChecks re-runs the failed jobs of the GitHub Actions runs behind
+// failed, the failures of pr's head, and records the re-run on the pull
+// request so that it is asked for once per head (checks.rerunFailed). A
+// flaky check then costs a re-run, not a check-fix round.
+//
+// Only a failure every part of which can be re-run is: a commit status, or a
+// check run another App reports, has no Actions run behind it, so the round
+// starts at once (rerunSkipped), as it does when a failure's check suite has
+// no completed, failed Actions run at this head, or GitHub refuses the
+// re-run (a run too old to re-run, an App without actions write). A run
+// still running (other jobs of its workflow) is waited for until the
+// checks timeout passes (rerunWaiting). Listing the runs failing is a
+// transient error, retried with the pass.
+func (p *pass) rerunFailedChecks(ctx context.Context, pr *v1alpha1.IntentPullRequest, failed failedChecks,
+	expired bool) (rerunOutcome, error) {
+	if !p.proj.Spec.Checks.RerunFailed || rerunAt(pr) != nil {
+		// Re-runs are off, or this head had its one re-run.
+		return rerunSkipped, nil
+	}
+	if len(failed.statusIDs) > 0 || len(failed.checkIDs) == 0 {
+		return rerunSkipped, nil
+	}
+	suites := map[int64]bool{}
+	names := make([]string, 0, len(failed.checkIDs))
+	for _, id := range failed.checkIDs {
+		r := failed.runs[id]
+		if !strings.EqualFold(r.AppSlug, "github-actions") || r.CheckSuiteID == 0 {
+			return rerunSkipped, nil
+		}
+		suites[r.CheckSuiteID] = true
+		names = append(names, r.Name)
+	}
+	var runIDs []int64
+	for _, suite := range slices.Sorted(maps.Keys(suites)) {
+		runs, err := p.r.GitHub.ListWorkflowRuns(ctx, pr.Repository, suite)
+		if err != nil {
+			return rerunSkipped, err
+		}
+		rerunnable := false
+		for _, run := range runs {
+			if run.HeadSHA != pr.HeadSHA {
+				continue
+			}
+			if !strings.EqualFold(run.Status, "completed") {
+				if expired {
+					return rerunSkipped, nil
+				}
+				return rerunWaiting, nil
+			}
+			if failedConclusion(run.Conclusion) {
+				runIDs = append(runIDs, run.ID)
+				rerunnable = true
+			}
+		}
+		if !rerunnable {
+			return rerunSkipped, nil
+		}
+	}
+	slices.Sort(runIDs)
+	if runIDs = slices.Compact(runIDs); len(runIDs) > maxRerunRuns {
+		return rerunSkipped, nil
+	}
+	log := p.r.log().With(slog.String("intent", p.in.Name), slog.String("repository", pr.Repository),
+		slog.String("head", pr.HeadSHA))
+	for _, id := range runIDs {
+		if err := p.r.GitHub.RerunFailedJobs(ctx, pr.Repository, id); err != nil {
+			log.LogAttrs(ctx, slog.LevelWarn, "GitHub refused to re-run failed checks; the check-fix round starts",
+				slog.Int64("workflowRun", id), slog.Any("error", err))
+			return rerunSkipped, nil
+		}
+	}
+	slices.Sort(names)
+	names = slices.Compact(names)
+	log.LogAttrs(ctx, slog.LevelInfo, "re-ran failed checks before a check-fix round",
+		slog.Any("checks", names), slog.Any("workflowRuns", runIDs))
+	return rerunRequested, p.update(ctx, func(cur *v1alpha1.Intent) error {
+		if rec := recordedPullRequest(cur, pr.Repository); rec != nil {
+			rec.ChecksRerun = &v1alpha1.IntentChecksRerun{HeadSHA: pr.HeadSHA,
+				CheckRunIDs: slices.Clone(failed.checkIDs), Checks: names, WorkflowRunIDs: runIDs,
+				RequestedAt: metav1.NewTime(p.now)}
+		}
+		return nil
+	})
 }
 
 func (p *pass) failedNamedChecks(ctx context.Context, repo, sha string) (failedChecks, bool, error) {
@@ -138,10 +327,12 @@ func (p *pass) failedNamedChecks(ctx context.Context, repo, sha string) (failedC
 		return failedChecks{}, false, err
 	}
 	byName := map[string]ghclient.CheckRun{}
+	listed := map[int64]ghclient.CheckRun{}
 	for _, r := range runs {
 		if r.HeadSHA != sha {
 			continue
 		}
+		listed[r.ID] = r
 		if current, ok := byName[r.Name]; !ok || r.ID > current.ID {
 			byName[r.Name] = r
 		}
@@ -153,13 +344,15 @@ func (p *pass) failedNamedChecks(ctx context.Context, repo, sha string) (failedC
 		}
 	}
 	settled := true
-	var failures failedChecks
+	failures := failedChecks{runs: map[int64]ghclient.CheckRun{}, listed: listed, pending: map[string]bool{}}
 	for _, name := range p.proj.Spec.Checks.Fix {
 		if r, ok := byName[name]; ok {
 			if !strings.EqualFold(r.Status, "completed") {
 				settled = false
+				failures.pending[name] = true
 			} else if failedConclusion(r.Conclusion) {
 				failures.checkIDs = append(failures.checkIDs, r.ID)
+				failures.runs[r.ID] = r
 			}
 			continue
 		}

@@ -295,6 +295,7 @@ projects:
         readinessPath: /healthz
       checks:
         fix: [test] # failing checks on patchy's own PR that start a fix round
+        # rerunFailed: true # re-run a failed Actions check once before a round
       # labels: {trigger: patchy:shop-web, approve: patchy:approved}   the defaults
       # limits: {maxActiveIntents: 2, maxCostMicroUSD: 10000000}        $10 per intent
 ```
@@ -304,8 +305,10 @@ class the operator defined: its builds otherwise run with no CPU or memory reser
 [Sizing agents](deploying.md#sizing-agents).
 
 `checks.fix` names check runs or commit statuses (`test` is the generated CI's job); the App then needs checks, statuses
-and actions read on the repository. Under `--existing` there is no `test` check from patchy (`runtime-image.yml`'s job
-is `build`): name your own CI's check runs, as GitHub lists them for the default branch's head
+and actions read on the repository. `checks.rerunFailed: true` re-runs the failed jobs of a failed Actions check once
+before a fix round is spent on it, so a flaky test costs no round; the App then needs Actions at read and write instead.
+Under `--existing` there is no `test` check from patchy (`runtime-image.yml`'s job is `build`): name your own CI's check
+runs, as GitHub lists them for the default branch's head
 (`gh api repos/acme/Shop.Web/commits/main/check-runs --jq '.check_runs[].name'`). The App must be installed on the
 repository before the Project is `Ready`. Upgrade `patchy-config`, then run the preflight:
 

@@ -23,7 +23,8 @@ const (
 // TestFor: the intent repository needs issues write; every application
 // repository contents and pull requests write and issues read (the
 // repository reads), plus the check-fix reads when spec.checks.fix names a
-// check, and never otherwise.
+// check, and never otherwise, and actions write beside them when
+// spec.checks.rerunFailed is set too, and never without checks to fix.
 func TestFor(t *testing.T) {
 	issuesW := Grant{Permission: Issues, Access: Write}
 	issuesR := Grant{Permission: Issues, Access: Read}
@@ -32,6 +33,7 @@ func TestFor(t *testing.T) {
 	checksR := Grant{Permission: Checks, Access: Read}
 	statusesR := Grant{Permission: Statuses, Access: Read}
 	actionsR := Grant{Permission: Actions, Access: Read}
+	actionsW := Grant{Permission: Actions, Access: Write}
 
 	tests := []struct {
 		name string
@@ -56,6 +58,29 @@ func TestFor(t *testing.T) {
 				{Role: RoleIntent, URL: intentURL, Grants: []Grant{issuesW}},
 				{Role: RoleApp, Key: "web", URL: webURL,
 					Grants: []Grant{contentsW, pullsW, issuesR, checksR, statusesR, actionsR}},
+			},
+		},
+		{
+			name: "a re-run adds actions write beside the reads",
+			spec: v1alpha1.ProjectSpec{IntentRepository: intentURL,
+				Repositories: []v1alpha1.ProjectRepository{{Name: "web", URL: webURL}, {Name: "api", URL: apiURL}},
+				Checks:       v1alpha1.ProjectChecks{Fix: []string{"test"}, RerunFailed: true}},
+			want: []Requirement{
+				{Role: RoleIntent, URL: intentURL, Grants: []Grant{issuesW}},
+				{Role: RoleApp, Key: "web", URL: webURL,
+					Grants: []Grant{contentsW, pullsW, issuesR, checksR, statusesR, actionsR, actionsW}},
+				{Role: RoleApp, Key: "api", URL: apiURL,
+					Grants: []Grant{contentsW, pullsW, issuesR, checksR, statusesR, actionsR, actionsW}},
+			},
+		},
+		{
+			name: "a re-run with no check to fix adds nothing",
+			spec: v1alpha1.ProjectSpec{IntentRepository: intentURL,
+				Repositories: []v1alpha1.ProjectRepository{{Name: "web", URL: webURL}},
+				Checks:       v1alpha1.ProjectChecks{RerunFailed: true}},
+			want: []Requirement{
+				{Role: RoleIntent, URL: intentURL, Grants: []Grant{issuesW}},
+				{Role: RoleApp, Key: "web", URL: webURL, Grants: []Grant{contentsW, pullsW, issuesR}},
 			},
 		},
 		{

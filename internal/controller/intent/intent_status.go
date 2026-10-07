@@ -101,6 +101,13 @@ func (p *pass) statusComment() templates.IntentStatusComment {
 			Repository: repoSlug(pr.Repository), Number: pr.Number, URL: pr.URL, State: pr.State,
 		})
 	}
+	if len(st.PullRequests) > 0 {
+		// Revision rounds run on pull requests, so the line waits for one.
+		// It counts as the limit does (revisionRounds, a failed round
+		// included, CI-fix rounds apart), not status.revisions, which counts
+		// completed rounds only: "3 of 3" is what blocks the intent.
+		c.Revisions, c.MaxRevisions = p.revisionRounds(), maxRevisions(p.proj)
+	}
 	c.Preview = p.statusPreview()
 	switch st.Phase {
 	case v1alpha1.IntentRevising:

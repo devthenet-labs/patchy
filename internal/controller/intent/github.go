@@ -92,6 +92,13 @@ type GitHub interface {
 	ListCommitStatuses(ctx context.Context, repoURL, sha string) ([]ghclient.CommitStatus, error)
 	ListWorkflowJobs(ctx context.Context, repoURL string, runID int64) ([]ghclient.WorkflowJob, error)
 	GetJobLogTail(ctx context.Context, repoURL string, jobID int64, tailBytes int) (string, error)
+	// ListWorkflowRuns lists the Actions runs of one check suite: the run
+	// behind a GitHub Actions check run.
+	ListWorkflowRuns(ctx context.Context, repoURL string, checkSuiteID int64) ([]ghclient.WorkflowRun, error)
+	// RerunFailedJobs re-runs the failed jobs of one completed Actions run
+	// (the Project's checks.rerunFailed): the one call made with actions
+	// write.
+	RerunFailedJobs(ctx context.Context, repoURL string, runID int64) error
 }
 
 // The permission set of each token. Every token requests exactly one permission
@@ -114,6 +121,9 @@ var (
 	checksRead    = ghclient.TokenPerms{Checks: ghclient.PermRead}
 	statusesRead  = ghclient.TokenPerms{Statuses: ghclient.PermRead}
 	actionsRead   = ghclient.TokenPerms{Actions: ghclient.PermRead}
+	// actionsWrite re-runs failed jobs, on a Project with
+	// checks.rerunFailed only; ghclient mints it alone.
+	actionsWrite = ghclient.TokenPerms{Actions: ghclient.PermWrite}
 
 	// pullsCreate opens a pull request: pull requests write plus contents
 	// read, the one token with two permissions. GitHub refuses to open a pull
@@ -638,6 +648,23 @@ func (g *forgeGitHub) GetJobLogTail(ctx context.Context, repoURL string, jobID i
 		return "", err
 	}
 	return c.GetJobLogTail(ctx, repo, jobID, tailBytes)
+}
+
+func (g *forgeGitHub) ListWorkflowRuns(ctx context.Context, repoURL string, checkSuiteID int64) (
+	[]ghclient.WorkflowRun, error) {
+	c, repo, err := g.client(ctx, repoURL, actionsRead)
+	if err != nil {
+		return nil, err
+	}
+	return c.ListWorkflowRunsForCheckSuite(ctx, repo, checkSuiteID)
+}
+
+func (g *forgeGitHub) RerunFailedJobs(ctx context.Context, repoURL string, runID int64) error {
+	c, repo, err := g.client(ctx, repoURL, actionsWrite)
+	if err != nil {
+		return err
+	}
+	return c.RerunFailedJobs(ctx, repo, runID)
 }
 
 // installationRefused reports a token GitHub will not mint for the

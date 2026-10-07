@@ -94,6 +94,15 @@ func CheckFix() []Grant {
 	return []Grant{{Checks, Read}, {Statuses, Read}, {Actions, Read}}
 }
 
+// CheckRerun is the write a check re-run adds on an application repository
+// (spec.checks.rerunFailed, with spec.checks.fix non-empty): re-running the
+// failed jobs of the Actions runs behind a failed named check. It is the
+// one write on Actions, listed beside CheckFix's read rather than merged
+// into it, so a Project's Ready names what each is for.
+func CheckRerun() []Grant {
+	return []Grant{{Actions, Write}}
+}
+
 // For is the table for one Project: the intent repository first, then every
 // entry of spec.repositories in order. A repository listed in two roles (an
 // intent repository that is also an application repository) appears once
@@ -102,8 +111,15 @@ func For(spec *v1alpha1.ProjectSpec) []Requirement {
 	out := make([]Requirement, 0, 1+len(spec.Repositories))
 	out = append(out, Requirement{Role: RoleIntent, URL: spec.IntentRepository, Grants: Intent()})
 	checkFix := len(spec.Checks.Fix) > 0
+	// A re-run only ever precedes a check-fix round: without checks to fix
+	// there is nothing to re-run, and nothing to prove.
+	rerun := checkFix && spec.Checks.RerunFailed
 	for _, r := range spec.Repositories {
-		out = append(out, Requirement{Role: RoleApp, Key: r.Name, URL: r.URL, Grants: App(checkFix)})
+		grants := App(checkFix)
+		if rerun {
+			grants = append(grants, CheckRerun()...)
+		}
+		out = append(out, Requirement{Role: RoleApp, Key: r.Name, URL: r.URL, Grants: grants})
 	}
 	return out
 }

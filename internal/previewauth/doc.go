@@ -44,6 +44,9 @@
 //     re-checks the Preview after the sign-in.
 //   - ReviewFor is the authorisation decision's input: the viewer and the
 //     Preview's Project, refused when the Project is unknown.
+//   - JudgeProbe judges a preview host's answer to an unauthenticated
+//     request: protected only when it is the ALB's 302 to this relay's
+//     /authorize for the host's own slot client and callback.
 //
 // Nothing the ALB forwards to a preview identifies the viewer or works
 // anywhere else. That is the security boundary: preview code is written by an

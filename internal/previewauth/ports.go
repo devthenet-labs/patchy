@@ -34,8 +34,9 @@ type CodeLedger interface {
 // Upstream is the identity provider (Dex) the relay signs viewers in with.
 type Upstream interface {
 	// AuthURL is where to send the browser, with state, nonce and an S256
-	// PKCE challenge.
-	AuthURL(state, nonce, challenge string) string
+	// PKCE challenge. An error means the provider cannot be reached (its
+	// discovery has not succeeded yet); the relay answers 503.
+	AuthURL(ctx context.Context, state, nonce, challenge string) (string, error)
 	// Exchange redeems code with the PKCE verifier, verifies the ID token
 	// and its nonce, and maps its claims to an Identity.
 	Exchange(ctx context.Context, code, verifier, nonce string) (Identity, error)

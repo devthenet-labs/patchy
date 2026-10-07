@@ -16,6 +16,11 @@ const (
 	CheckPreviewImage = "preview-image"
 	CheckPreviewDNS   = "preview-dns"
 	CheckPreviewTLS   = "preview-tls"
+	// The preview sign-in checks, reported only while the chart's
+	// previewAuth is on.
+	CheckPreviewAuth     = "preview-auth"
+	CheckPreviewAuthDex  = "preview-auth-dex"
+	CheckPreviewAuthHost = "preview-auth-host"
 )
 
 // IntentRepository is the Repository of a check about the Project's intent

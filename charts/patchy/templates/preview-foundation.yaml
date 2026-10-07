@@ -13,7 +13,29 @@
 {{- if not $dnsCIDR }}{{ fail "preview.dnsCIDR is required when preview.enabled=true: the node-local cluster DNS /32 (it defaults to clusterDNSCIDR when that is set)" }}{{ end }}
 {{- if not $p.albSubnetCIDRs }}{{ fail "preview.albSubnetCIDRs is required when preview.enabled=true" }}{{ end }}
 {{- if and $p.albSubnetIDs (ne (len $p.albSubnetIDs) (len $p.albSubnetCIDRs)) }}{{ fail "preview.albSubnetIDs must name one subnet per preview.albSubnetCIDRs entry: the ALB's subnets are the only sources the slots admit" }}{{ end }}
-{{- if not $p.inboundCIDRs }}{{ fail "preview.inboundCIDRs is required when preview.enabled=true" }}{{ end }}
+{{- /* Preview sign-in (previewAuth). Only once it is REQUIRED may the
+       allowlist go (Rev C): an empty inboundCIDRs with prefix lists still
+       restricts sources; with neither, any address reaches the preview ALB,
+       which needs the explicit allowPublicWithAuth confirmation and a short
+       ALB session (a cookie replayed from anywhere stays valid until it
+       expires). Never inferred from the cluster. */}}
+{{- $pas := include "patchy.previewAuthState" . | fromJson }}
+{{- $authRequired := and $pas.enabled (eq $pas.stage "require") }}
+{{- /* Once sign-in has been required, its kept policy refuses any slot
+       Ingress without the pinned set, the placeholder included: a render
+       that no longer requires it would fail part-way through the upgrade.
+       Stopping is the rollback runbook's, and a lookup sees whether it ran
+       (helm template sees nothing, as ever). */}}
+{{- if and (not $authRequired) (lookup "admissionregistration.k8s.io/v1" "ValidatingAdmissionPolicyBinding" "" "patchy-preview-all-slots-ingress-auth") }}
+{{- fail "preview sign-in is required on this cluster (the kept binding patchy-preview-all-slots-ingress-auth is live), but this render does not require it, so the placeholder and every preview Ingress would be refused. To stop requiring sign-in, first scale the preview-controller to zero and delete that binding, and only while preview.inboundCIDRs is set" }}
+{{- end }}
+{{- if not $p.inboundCIDRs }}
+{{- if not $authRequired }}{{ fail "preview.inboundCIDRs is required when preview.enabled=true, unless preview sign-in is required (previewAuth.enabled with previewAuth.stage=require)" }}{{ end }}
+{{- if not $p.prefixListsIDs }}
+{{- if ne ($p.allowPublicWithAuth | default "") "confirmed" }}{{ fail "preview.inboundCIDRs and preview.prefixListsIDs are both empty, which opens the preview ALB to any address: set preview.allowPublicWithAuth=confirmed to accept that sign-in alone guards previews, and only after the ALB probe has run" }}{{ end }}
+{{- if gt (int .Values.previewAuth.sessionTimeout) 900 }}{{ fail (printf "preview.allowPublicWithAuth needs previewAuth.sessionTimeout of at most 900 (it is %d): until the ALB probe shows how its session cookie behaves, the session is the window a replayed cookie works in" (int .Values.previewAuth.sessionTimeout)) }}{{ end }}
+{{- end }}
+{{- end }}
 {{- if not $p.certificateARN }}{{ fail "preview.certificateARN is required when preview.enabled=true" }}{{ end }}
 {{- if not $p.hostSuffix }}{{ fail "preview.hostSuffix is required when preview.enabled=true" }}{{ end }}
 {{- if not $p.albName }}{{ fail "preview.albName is required when preview.enabled=true" }}{{ end }}
@@ -145,10 +167,21 @@ spec:
     listeners:
         - port: 443
           protocol: HTTPS
+    {{- with $p.inboundCIDRs }}
     inboundCIDRs:
-        {{- range $cidr := $p.inboundCIDRs }}
+        {{- range $cidr := . }}
         - {{ $cidr }}
         {{- end }}
+    {{- end }}
+    {{- with $p.prefixListsIDs }}
+    # Managed prefix lists admitted beside inboundCIDRs (a VPN's or an
+    # office's egress ranges kept in one place). Optional; inboundCIDRs stays
+    # required.
+    prefixListsIDs:
+        {{- range $id := . }}
+        - {{ $id }}
+        {{- end }}
+    {{- end }}
     namespaceSelector:
         matchExpressions:
             - key: kubernetes.io/metadata.name
@@ -198,6 +231,13 @@ metadata:
     namespace: patchy-preview-0
     annotations:
         helm.sh/resource-policy: keep
+        {{- if $authRequired }}
+        # Slot 0's pinned sign-in set, so the placeholder host is authenticated
+        # too (the relay answers it 404: no Preview is ever named placeholder).
+        {{- range $k, $v := get $pas.sets (toString (int $pas.applyGen)) | dig "patchy-preview-0" dict }}
+        {{ $k }}: {{ $v | quote }}
+        {{- end }}
+        {{- end }}
 spec:
     ingressClassName: alb-preview
     rules:

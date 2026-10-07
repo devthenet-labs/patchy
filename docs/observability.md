@@ -70,6 +70,16 @@ an OTLP backend gets the same numbers the `FindingRollup` objects carry):
 
 `repo` is the only high-cardinality attribute (~estate size); constrained backends can drop it with a metric view.
 
+**Preview sign-in** (preview-auth and preview-controller, only while the chart's `previewAuth` is on):
+
+- `patchy.preview_auth.unprotected_hosts` — Ready preview hosts that answered the relay's credential-less probe with
+  anything but the redirect to the relay for their own slot. Anything above zero is an incident: a preview is served
+  without sign-in. `patchy.preview_auth.probe.unreachable_hosts` counts hosts that did not answer at all, which is all
+  of them while the preview allowlist leaves out the cluster's NAT addresses.
+- `patchy.preview.ingress.unauthenticated{slot}` — slot Ingresses without their pinned sign-in annotations;
+  `patchy.preview.ingress.refused{slot}` — Ingress writes the API server refused.
+- The relay's request counters and latency are listed in [preview-auth](configuration/preview-auth.md#observability).
+
 **Probes:** `GET /healthz` / `GET /readyz` on every controller's `--health-addr` (`:8081`) feed the Deployments'
 liveness and readiness probes.
 

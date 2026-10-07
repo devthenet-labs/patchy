@@ -11,8 +11,8 @@
 // minting the App's scoped tokens on every repository and ensuring the
 // labels), its IntentNameConflict condition, and each covering Forge's
 // Ready condition. It never reads a Secret, so it never holds the App's
-// private key: the cluster reads are Projects, Forges, ConfigMaps and one
-// Ingress, with the caller's own kubeconfig.
+// private key: the cluster reads are Projects, Forges, ConfigMaps, one
+// Ingress and Previews, with the caller's own kubeconfig.
 //
 // What the controllers cannot report before an intent runs, it checks with
 // the operator's own identity, and says so in each reason:
@@ -42,7 +42,18 @@
 //     no issue is numbered 0, so the probe host is one the wildcard record
 //     and certificate cover and no Preview owns. Only NXDOMAIN fails the DNS
 //     check; a lookup that times out is a SKIP. The load balancer admits
-//     only the chart's inbound CIDRs, so a TLS timeout is a SKIP, not a FAIL.
+//     only the chart's inbound CIDRs, so a TLS timeout is a SKIP, not a FAIL;
+//   - preview-auth, preview-auth-dex and preview-auth-host, only while the
+//     chart's preview sign-in is on (the relay's ConfigMap exists, or
+//     preview-controller requires sign-in): the relay answers its discovery
+//     document at its issuer; Dex accepts the relay's client with its one
+//     redirect URI (asked of Dex's authorization endpoint without a session,
+//     following nothing, since Dex's clients are not readable); and, once
+//     sign-in is required, the placeholder host and every Ready Preview of
+//     the Project answer without credentials with the load balancer's
+//     redirect to the relay for their own slot's client
+//     (previewauth.JudgeProbe, the relay's own probe verdict). A timeout from
+//     outside the inbound CIDRs is a SKIP.
 //
 // What it cannot prove: that source-controller's or the preview nodes' own
 // registry credentials work from inside the cluster (a Repository's

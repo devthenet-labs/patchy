@@ -208,6 +208,38 @@ The chart renders the placeholder only when both `preview.enabled` and `preview.
 separate ALB and the wildcard DNS record are staged with the infrastructure, in order:
 [Deploying intents and previews](../../docs/intents/deploying.md) walks through the stages and their rollback points.
 
+## Preview sign-in (opt-in, off by default)
+
+`previewAuth.enabled` deploys the sign-in relay (`cmd/preview-auth`, two replicas behind a PodDisruptionBudget, on the
+edge class at `previewAuth.host`) and puts every preview Ingress behind it in two `helm upgrade`s, because Helm applies
+an Ingress before the admission policies that judge it:
+
+1. `previewAuth.stage: permit` renders the relay, its keys (generated on first enablement and reused by `lookup`
+   afterwards, kept on uninstall), each slot's ALB client Secret `patchy-preview-oidc-g<generation>` with a Role that
+   lets Auto Mode (`Group eks:managed`) get exactly that Secret, and the `<fullname>-preview-viewer` ClusterRole bound
+   to `previewAuth.viewers`. The slot Ingress policy now admits the pinned sign-in annotations and records the
+   generation in its `patchy.bitwisemedia.uk/preview-auth-admits` annotation. Nothing requires sign-in yet.
+2. `previewAuth.stage: require` puts the preview-controller and the placeholder on those annotations and adds the kept
+   `patchy-preview-ingress-auth` policy, which refuses a slot Ingress without them. The render fails unless the live
+   policy admits the generation; a render without a cluster (`helm template`, GitOps) confirms it with
+   `previewAuth.permitConfirmedGeneration`. Such a render must also use an operator-owned
+   `previewAuth.keys.existingSecret`: with chart-managed keys it is refused, since it cannot look the keys up and would
+   generate new ones on every render (`previewAuth.keys.renderOffline=true` renders anyway, with throwaway keys, for
+   inspection only).
+
+A key rotation (`previewAuth.keys.rotate`) is the same pair: the first upgrade admits the new generation and keeps the
+old one on the Ingresses, the second (the same values) moves them; `keys.dropPrevious` ends the overlap. The relay reads
+no Secret through the API (its keys and Dex client secret are mounted) and holds only Previews read, access reviews and
+its one code-ledger Lease. The one per-install IdP setup is a Dex static client whose redirect URI is
+`https://<previewAuth.host>/dex/callback`, which the install NOTES print. `preview.inboundCIDRs` stays required until
+the require stage, and emptying it with no `preview.prefixListsIDs` needs `preview.allowPublicWithAuth: confirmed` and
+`previewAuth.sessionTimeout` of at most 900. To roll back from the require stage, scale the preview-controller to zero
+and delete the `patchy-preview-all-slots-ingress-auth` binding (only while `preview.inboundCIDRs` is set) first: the
+kept policy otherwise refuses the placeholder dropping its annotations. The operator guide,
+[Preview sign-in](../../docs/intents/preview-sign-in.md), walks through Dex, the viewers, both stages, rotation,
+rollback and the gate before the allowlist may go; [preview-auth](../../docs/configuration/preview-auth.md) is the
+relay's reference.
+
 ## Agent isolation
 
 The agent Jobs run in their own namespace (`agent.namespace`, created by the chart with the `restricted` Pod Security

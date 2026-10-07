@@ -54,6 +54,7 @@ nav = [
     { "Onboarding an application" = "intents/onboarding-app.md" },
     { "The Terraform module" = "intents/terraform-module.md" },
     { "The intents dashboard" = "intents/dashboard.md" },
+    { "Preview sign-in" = "intents/preview-sign-in.md" },
   ] },
   { "Configuration" = [
     { "Overview" = "configuration/index.md" },
@@ -65,6 +66,7 @@ nav = [
     { "evaluation-controller" = "configuration/evaluation-controller.md" },
     { "intent-controller" = "configuration/intent-controller.md" },
     { "preview-controller" = "configuration/preview-controller.md" },
+    { "preview-auth" = "configuration/preview-auth.md" },
     { "agent-runner" = "configuration/agent-runner.md" },
     { "egress-broker" = "configuration/egress-broker.md" },
     { "status-server" = "configuration/status-server.md" },

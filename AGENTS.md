@@ -17,7 +17,7 @@ hour, get context-enhanced, then a sandboxed `claude -p` run investigates each o
 remediated in priority order into pull requests, everything else routes to humans. Completed findings expire on a
 TTL; `FindingRollup` resources keep the all-time statistics.
 
-Twelve binaries, one module. "Not monolithic" means separate binaries/deployments with shared `internal/` code:
+Thirteen binaries, one module. "Not monolithic" means separate binaries/deployments with shared `internal/` code:
 
 - `cmd/integration-controller` — the single internet-facing entry point, driven by `Integration` CRs: validates
   provider webhooks (`/github/webhooks` HMAC, `/google-cloud/webhooks` Pub/Sub OIDC, `/wiz/webhooks` bearer
@@ -56,6 +56,20 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   outbound, streams SSE with idle keep-alive pings, audits one slog line per request. Engine in
   `internal/broker`; deployed by the chart exactly when a claude runner is enabled (claude ⇒ broker;
   proxy-only, no in-pod credential mode).
+- `cmd/preview-auth` — OPTIONAL (default-off; chart `previewAuth`, two stages: `permit` admits the pinned sign-in
+  annotations, `require` puts every slot Ingress behind them, refused by a `lookup` until the permit stage is live;
+  chart-only, no kustomize component): the preview sign-in relay (NOT a controller: no reconcilers, no leases), the
+  OpenID provider every preview host's ALB signs viewers in through. It
+  signs a viewer in once per browser session at Dex (one fixed redirect URI, `<relay>/dex/callback`), admits them by a
+  SubjectAccessReview for get on `projects/previews` named for the Preview's `spec.project`, and hands the ALB only
+  opaque, pairwise, short-lived values. Its Kubernetes access is Previews (get/list/watch, release namespace; no
+  Intents), SubjectAccessReviews and get/update on its one code-ledger Lease; its keys come from a mounted Secret.
+  Every authorize error is a relay page, never a redirect; a transient token failure is 503, never `invalid_grant`.
+  Per-address rate limit; a background probe of every Ready preview host without credentials
+  (`patchy.preview_auth.unprotected_hosts`). Operator guide `docs/intents/preview-sign-in.md` (stages, rotation,
+  rollback, the probe gate before the allowlist goes), reference `docs/configuration/preview-auth.md`; the terraform
+  module's `preview_auth` puts its host on the edge. Flags carry a `preview-auth-` prefix (`PATCHY_PREVIEW_AUTH_*`).
+  Engine in `internal/previewauth` (core), `internal/previewauth/adapters/*` and `internal/previewauth/httpapi`.
 - `cmd/evaluation-controller` — OPTIONAL (default-off in the chart): remote skill-evaluation execution for
   evolve. Hosts the bearer-authenticated HTTP API (`pkg/evaluation` wire contract: workspace upload streamed to
   source-controller's `:9791` blob endpoint, submission, snapshot, SSE monitoring, cancel; OIDC verify + SAR on
@@ -85,7 +99,9 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   periodic orphan sweep. Intent-controller projects the operator's Project preview config and recorded PR head into
   Preview spec only when explicitly enabled: one component per previewed repository (at most four, path-routed on one
   host), a repository with no PR running its default-branch head from `status.previewBases`, all derived by the one
-  pure `v1alpha1.DesiredPreviewComponents` the writer and the controller's re-check share. The intent reconciler reads
+  pure `v1alpha1.DesiredPreviewComponents` the writer and the controller's re-check share. The writer also stamps the
+  Intent's Project into `spec.project` (set once, then immutable by CEL; backfilled onto older Previews), which the
+  re-check holds to the Intent's, so a per-Project reader needs only Previews. The intent reconciler reads
   Preview status (one uncached get per pass, never written) to link the preview from the issue's status comment and one
   sticky comment per previewed PR, only once it checks out (`preview_view.go`: UID, observed generation, derived
   revisions, a bare `https://<intent>.<suffix>`). See `docs/configuration/preview-controller.md`.
@@ -115,7 +131,9 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   CI would by `mise run scaffold-check`). `check project` is `check image`'s cluster-reading sibling: a read-only
   Project preflight (engine in `cmd/patchy/internal/projectcheck`) that reads Ready/IntentNameConflict, resolves
   every repository over the Forge CRs, and judges agent and preview images, DNS and TLS with the caller's own
-  credentials. It never reads a Secret, so never the App key. Both `check` nouns render through
+  credentials, and, while the chart's `previewAuth` is on, the relay's discovery, Dex's acceptance of the relay's one
+  redirect URI and (once sign-in is required) each Ready preview host's unauthenticated redirect to the relay for its
+  own slot (`previewauth.JudgeProbe`). It never reads a Secret, so never the App key. Both `check` nouns render through
   `cmd/patchy/internal/checkreport` (PASS/FAIL/SKIP lines, `-o json|yaml`, inert reasons). Builds for windows too,
   and ships a `kubectl-patchy` alias. Ships no container image: it is distributed as its own `patchy-cli` release
   archive (separate from the cluster binaries' `patchy` archive) and as a Homebrew cask in
@@ -161,6 +179,8 @@ e2e/                SEPARATE Go module: envtest carries the CRDs, the real binar
                     repository runner image. fakegithub's refs and PR listings are per
                     repository, so intent_multirepo_test.go runs multi-repository intents end to
                     end; cluster.stoppableController restarts a binary with other flags.
+                    preview_auth_test.go runs preview-auth and preview-controller together,
+                    with previewauth/fakedex as a TLS Dex (--preview-auth-dex-ca-file).
 docs/ overrides/    Zensical docs site (zensical.toml at the root; patchy-branded theme in
                     docs/stylesheets/extra.css + overrides/). `mise run serve` to preview,
                     `mise run docs-build` to build; the reusable release workflow publishes it
@@ -192,7 +212,10 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   phase machine and its GitHub writes, the IntentRun scheduler with launch/collect/push, the Intent TTL; one
   writer reconciler per status and its own phase table, `v1alpha1.SetIntentPhase`, beside Finding's; `doc.go` holds
   the single-writer table and the durable-settle rules), `controller/preview` (fixed slot workload renderer,
-  bounded rollout, cleanup and orphan sweep; no forge access).
+  bounded rollout, cleanup and orphan sweep; no forge access; with `--preview-auth-required`, default off, it renders
+  each slot's pinned sign-in annotations from the chart's JSON, the one the slot admission policy compares, and the
+  sweep reports a slot Ingress without the current or previous generation's set, deleting it only after three poll
+  intervals; an Ingress write refused at admission or by RBAC waits and requeues, never spending a retry).
 - `kube` — the controller-runtime manager wrapper: scheme, kubeconfig/in-cluster config, leader election,
   multi-namespace cache, health probes, logr↔slog bridge. Secrets are never cached; a controller that needs only
   its own ConfigMaps confines their informer by label (`ConfigMapSelector`; intent-controller does, so the Finding
@@ -245,11 +268,32 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   ui` builds it, bare `go build` compiles a stub). `auth` = who you are (OIDC/none/anonymous/unconfigured,
   cookie sessions, zero k8s imports; claim prefixes and verified email applied once, in `MapClaims`); `authz` = what
   you may do (SubjectAccessReviews for the custom verbs approve/retry/expedite/suspend/resume + native get, and
-  `ProjectReviewer`'s per-Project read tiers). The intents side (`intents*.go`, `envelope.go`) reads every ConfigMap
+  `ProjectReviewer`'s per-Project read tiers, plus `Allowed` for a single subresource such as `projects/previews`, the
+  preview viewer grant). The intents side (`intents*.go`, `envelope.go`) reads every ConfigMap
   through `guardedConfigMap` (the intent's label and a controller reference to its very owner), strips the live run
   stream per subscriber (turns, and the `PATCHY-OUTPUT` command output the tail hub keeps on its own replay ring and
   channel: tier 2 only, live only, never part of the activity), and pins its wire types to `types.ts` by parsing it
   (`TestIntentWireTypesMatchTypeScript`).
+- `sealed` — the shared authenticated-encryption primitives for sign-in surfaces: `PurposeKey` (HKDF-SHA256 of one
+  secret, one key per purpose), `Seal`/`Open` (AES-256-GCM of a JSON value with caller-supplied AAD, so a token of one
+  kind never opens as another; every failure is `ErrOpen`) and `RandomToken`. Stdlib only (a test pins that), so a pure
+  core may import it; callers bound a blob's length before opening it.
+- `previewauth` — the pure core of the preview sign-in relay (no HTTP server, Kubernetes client, Dex client or
+  signing key; those are `cmd/preview-auth`'s adapters, below). The redirect-URI grammar (`Callbacks`: exactly
+  `https://<label>.<suffix>/oauth2/idpresponse`), the per-slot ALB clients and their client secrets, the `KeyRing`
+  (current and previous generation) that seals codes, access and refresh tokens, login states and relay sessions as
+  `pa1.<kind>.<gen>.<blob>` with the kind and generation in the AAD and strict base64, the binding every token is
+  checked against (client, slot, Preview UID, label: `Bound.Matches`), the pairwise subject, the login double-submit
+  (a cookie name per sealed state), the OAuth input checks and the access-review input (`ReviewFor`, refused for a
+  Preview with no Project), and `JudgeProbe` (is a preview host's unauthenticated answer the ALB's redirect to this
+  relay for its own slot). Access tokens carry no identity. Seeded properties; stdlib, `sealed` and `api/v1alpha1`
+  only (a test pins that). Its adapters, one package each under `previewauth/adapters/`: `kubeview` (the
+  `PreviewLookup` over the Preview cache), `access` (the `Authorizer` over `web/authz.ProjectReviewer.Allowed`),
+  `ledger` (single-use codes on one Lease, resourceVersion compare-and-swap, capped), `dex` (go-oidc client of Dex,
+  lazy retried discovery, `web/auth.MapClaims` under the intents-views claims posture), `signer` (RS256, JWKS of
+  current and previous key, RFC 7638 kids), `keydir` (the mounted keys Secret) and `hostprobe` (the unauthenticated
+  host probe, critique F5). `previewauth/httpapi` is the HTTP surface (endpoints, pages, envelope headers, rate
+  limit, audit line, OTel counters); `previewauth/fakedex` is test support only (an in-memory Dex).
 - `intentview` — the pure public projection of intents for the status page: board columns, fixed public wording
   for outcomes and block reasons (never a run's detail or a condition's message), limits with schema defaults, cost
   parsing, and `Text` (templates.VisibleText plus a cap) for every shown string. Copies of intent-controller facts

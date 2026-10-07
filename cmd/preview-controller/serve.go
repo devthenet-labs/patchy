@@ -43,6 +43,13 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.Bool("preview-target-health", false, "mark a Preview Ready only once each component's load balancer "+
 		"target is healthy (its Pods' readiness gates, injected in slot namespaces labelled for it): the Ingress "+
 		"precedes the Pods and stays across redeploys")
+	f.Bool("preview-auth-required", false, "put every preview Ingress behind the sign-in relay: render each "+
+		"slot's pinned auth annotations (--preview-auth-annotations) and have the sweeper report, then after a "+
+		"grace period delete, a slot Ingress without them")
+	f.String("preview-auth-annotations", "", "JSON object of slot namespace to its pinned auth annotations, "+
+		"the current key generation's, exactly as the chart renders it for the slot admission policy")
+	f.String("preview-auth-previous-annotations", "", "the previous key generation's pinned auth annotations "+
+		"during a rotation's overlap (same JSON shape); an Ingress still on them is not unauthenticated")
 	return cmd
 }
 
@@ -68,6 +75,11 @@ func serve(ctx context.Context, opts *cli.Options) error {
 		MaxRetries:   int32(opts.Int("preview-max-retries")),
 		TargetHealth: opts.Bool("preview-target-health"),
 	}
+	auth, err := authSettings(opts)
+	if err != nil {
+		return err
+	}
+	settings.Auth = auth
 	if err := settings.Validate(); err != nil {
 		return err
 	}
@@ -86,17 +98,35 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	if err != nil {
 		return fmt.Errorf("preview direct client: %w", err)
 	}
-	reconciler := &preview.Reconciler{Client: direct, Settings: settings, Log: prov.Logger}
+	recorder := mgr.GetEventRecorder("patchy-preview-controller")
+	reconciler := &preview.Reconciler{Client: direct, Settings: settings, Log: prov.Logger, Events: recorder}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		return err
 	}
-	if err := mgr.Add(&preview.Sweeper{Client: direct, Settings: settings, Log: prov.Logger}); err != nil {
+	if err := mgr.Add(&preview.Sweeper{Client: direct, Settings: settings, Log: prov.Logger,
+		Events: recorder}); err != nil {
 		return err
 	}
 	prov.Logger.LogAttrs(ctx, slog.LevelInfo, "preview-controller starting",
-		slog.Int("slot_count", settings.SlotCount), slog.String("namespace", namespace))
+		slog.Int("slot_count", settings.SlotCount), slog.String("namespace", namespace),
+		slog.Bool("auth_required", settings.Auth.Required))
 	if err := mgr.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
 	return nil
+}
+
+// authSettings reads the sign-in relay's pinned annotations, which the chart
+// renders once for both this controller and the slot admission policy.
+func authSettings(opts *cli.Options) (preview.AuthSettings, error) {
+	current, err := preview.ParseAuthAnnotations(opts.String("preview-auth-annotations"))
+	if err != nil {
+		return preview.AuthSettings{}, err
+	}
+	previous, err := preview.ParseAuthAnnotations(opts.String("preview-auth-previous-annotations"))
+	if err != nil {
+		return preview.AuthSettings{}, fmt.Errorf("previous generation: %w", err)
+	}
+	return preview.AuthSettings{Required: opts.Bool("preview-auth-required"), Annotations: current,
+		Previous: previous}, nil
 }

@@ -206,3 +206,62 @@ func TestPreviewSourceSharesTheControllerDerivation(t *testing.T) {
 		})
 	}
 }
+
+// TestPreviewSourceStampsTheProjectOnce: the writer records the Intent's
+// Project on the Preview it creates and once onto one written before the
+// field existed, and it never rewrites a Preview naming another Project (the
+// schema refuses the change; preview-controller renders nothing for it).
+func TestPreviewSourceStampsTheProjectOnce(t *testing.T) {
+	ctx := context.Background()
+	const repo = "https://github.com/acme/preview-demo"
+	project := &v1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "patchy"},
+		Spec: v1alpha1.ProjectSpec{
+			Repositories: []v1alpha1.ProjectRepository{{Name: "demo", URL: repo}},
+			Preview: &v1alpha1.ProjectPreview{ImageRepository: "registry.example/patchy/previews/demo",
+				Port: 8080, ReadinessPath: "/health"},
+		},
+	}
+	in := &v1alpha1.Intent{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo-1", Namespace: "patchy", UID: types.UID("intent-uid")},
+		Spec:       v1alpha1.IntentSpec{Project: project.Name},
+		Status: v1alpha1.IntentStatus{Phase: v1alpha1.IntentInReview,
+			PullRequests: []v1alpha1.IntentPullRequest{{Repository: repo, State: "open",
+				HeadSHA: strings.Repeat("a", 40)}}},
+	}
+	written, ok := desiredPreview(in, project)
+	if !ok || written.Spec.Project != project.Name {
+		t.Fatalf("desired preview = %+v, %v; want spec.project %q", written, ok, project.Name)
+	}
+	for _, tc := range []struct {
+		name, existing, want string
+		wantErr              bool
+	}{
+		{"written before the field existed", "", "demo", false},
+		{"already stamped", "demo", "demo", false},
+		{"naming another Project", "other", "other", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			existing := written.DeepCopy()
+			existing.Spec.Project = tc.existing
+			scheme := kube.Scheme()
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(project, in, existing).Build()
+			r := &PreviewSourceReconciler{Client: c, APIReader: c, Scheme: scheme}
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "patchy", Name: in.Name}}
+			_, err := r.Reconcile(ctx, req)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("reconcile error = %v, want error %v", err, tc.wantErr)
+			}
+			got := &v1alpha1.Preview{}
+			if err := c.Get(ctx, req.NamespacedName, got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Spec.Project != tc.want {
+				t.Fatalf("spec.project = %q, want %q", got.Spec.Project, tc.want)
+			}
+			if !reflect.DeepEqual(got.Spec.Components, written.Spec.Components) {
+				t.Fatalf("components = %+v, want %+v", got.Spec.Components, written.Spec.Components)
+			}
+		})
+	}
+}

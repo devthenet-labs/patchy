@@ -151,7 +151,18 @@ preview:
     # kubernetes.io/role/elb subnet in every zone that has one; albSubnetCIDRs
     # must then cover every such subnet, or the slots drop that zone's traffic.
     albSubnetIDs: []
-    inboundCIDRs: [] # Reviewer IPs, each a /32 (the schema refuses wider), at most 8.
+    # Reviewer IPs, each a /32 (the schema refuses wider), at most 8. Required
+    # unless previewAuth requires sign-in (see allowPublicWithAuth).
+    inboundCIDRs: []
+    # Managed prefix list IDs (pl-...) the preview ALB also admits, at most 8:
+    # the IngressClassParams prefixListsIDs. Optional and additive; it
+    # replaces inboundCIDRs only once previewAuth requires sign-in.
+    prefixListsIDs: []
+    # Rev C only: confirmed lets inboundCIDRs (and prefixListsIDs) be empty,
+    # so any address reaches the preview ALB and sign-in alone guards it.
+    # Needs previewAuth in its require stage and previewAuth.sessionTimeout
+    # of at most 900. Never set it before the ALB probe has run.
+    allowPublicWithAuth: ""
     certificateARN: "" # Issued wildcard certificate for preview hosts.
     hostSuffix: "" # e.g. preview.example.com, without leading dot.
     albName: "" # Distinct from the normal patchy ALB.
@@ -209,6 +220,150 @@ previewController:
         annotations: {}
     networkPolicy:
         create: true
+
+# Preview sign-in (cmd/preview-auth): every preview Ingress authenticated by the
+# preview ALB against this relay, which signs viewers in at Dex (GitHub) once
+# per browser session and lets in a viewer an access review allows get on
+# projects/previews for the Preview's Project. What reaches the preview's code
+# is opaque, pairwise and short-lived: no login, no usable token, never the
+# Authorization header, and a cookie name of its own
+# (patchy-preview-s<slot>-*). Off by default; it needs preview.enabled, and
+# the require stage previewController.enabled too.
+#
+# Two stages, each its own helm upgrade, because Helm applies an Ingress
+# before the admission policies that judge it:
+#   1. stage: permit (B1). The relay, its keys, each slot's OIDC client
+#      Secret and the Auto Mode read grant render, and the slot Ingress policy
+#      ADMITS this key generation's pinned sign-in annotations (it records
+#      them in its patchy.bitwisemedia.uk/preview-auth-admits annotation).
+#      Nothing requires sign-in yet: the controller and the placeholder are
+#      unchanged.
+#   2. stage: require (B2). The preview-controller and the placeholder put
+#      every slot Ingress behind sign-in, and a kept policy
+#      (patchy-preview-ingress-auth) refuses any slot Ingress without it. The
+#      render fails unless the live slot Ingress policy already admits the
+#      generation (a lookup), or permitConfirmedGeneration names it (GitOps,
+#      helm template, any render without a cluster).
+# A key rotation (keys.rotate) is the same pair: the first upgrade admits the
+# new generation and keeps applying the old one, the second (the same
+# values) applies the new one.
+#
+# preview.inboundCIDRs stays required. Emptying it (Rev C) needs the require
+# stage, and, with no preview.prefixListsIDs either, the explicit
+# preview.allowPublicWithAuth: confirmed and sessionTimeout of at most 900:
+# never automatic, and not before the ALB probe has run.
+#
+# The one per-install IdP setup: a Dex static client whose redirect URI is
+# https://<host>/dex/callback (the install NOTES print it).
+previewAuth:
+    enabled: false
+    # permit (B1) or require (B2), above.
+    stage: permit
+    # The relay's public hostname, e.g. preview-auth.patchy.example.com: the
+    # issuer is exactly https://<host>. On the edge ALB (it must not be
+    # IP-allowlisted: the preview ALB's token calls come from dynamic public
+    # addresses), never under preview.hostSuffix.
+    host: ""
+    # The generation the live slot Ingress policy is known to admit, for a
+    # render that cannot look it up (helm template, GitOps). 0 is none.
+    permitConfirmedGeneration: 0
+    replicas: 2
+    image: {}
+    dex:
+        issuerURL: "" # https
+        clientID: "" # the relay's static client at Dex
+        # A Secret in the release namespace holding the client secret.
+        existingSecret: ""
+        clientSecretKey: clientSecret
+    # How a Dex ID token becomes the user and groups access reviews run for.
+    # Both prefixes are required (a viewer can then never name a cluster
+    # identity); viewers below are bound with them.
+    claims:
+        usernameClaim: preferred_username
+        groupsClaim: groups
+        usernamePrefix: "github:"
+        groupsPrefix: "github:"
+        requireVerifiedEmail: false
+    # Who may view previews, rendered as one RoleBinding of the
+    # <fullname>-preview-viewer ClusterRole (get on projects/previews, every
+    # Project) in the release namespace. Raw values; the chart prepends the
+    # claim prefixes. teams are the Dex GitHub connector's group names
+    # (<org>:<team-slug> by default; check the connector's teamNameField);
+    # org membership alone is no group. Prefer teams: a GitHub login can be
+    # renamed and reused, and is matched case-sensitively.
+    viewers:
+        teams: []
+        users: []
+    # The ALB's auth-session-timeout in seconds: the worst-case revocation and
+    # replay window until the ALB probe has shown how its session behaves.
+    sessionTimeout: 3600
+    accessTokenTTL: 10m
+    sessionMaxAge: 12h
+    keys:
+        # An operator-owned keys Secret (master, generation, signingKey and,
+        # during a rotation, previousMaster, previousGeneration,
+        # previousSigningKey). With it the chart renders neither the keys nor
+        # the slot OIDC Secrets (patchy-preview-oidc-g<generation>, clientID
+        # and clientSecret, in each slot): supply both, and set generation
+        # (and previousGeneration) to match. Empty: the chart generates the
+        # keys on first enablement and keeps them (a lookup, so a real
+        # helm upgrade, not helm template).
+        existingSecret: ""
+        generation: 1
+        previousGeneration: 0 # 0 is none
+        # Rotate to this generation when it is above the stored one: the
+        # current keys become the previous ones. A greater rotate later drops
+        # those.
+        rotate: 0
+        # End a rotation's overlap: forget the previous generation once every
+        # slot Ingress carries the current one.
+        dropPrevious: false
+        # Generate new keys although this release generated some before and
+        # they are gone: signs everyone out.
+        regenerate: false
+        # With chart-managed keys, a render that cannot reach the cluster
+        # (helm template, Argo CD, Flux) is refused: it would draw new keys
+        # on every render. true renders anyway, with throwaway keys: for
+        # inspecting a render only, never for applying one. A GitOps install
+        # sets existingSecret instead.
+        renderOffline: false
+    ingress:
+        className: "" # empty: the edge class (edgeIngressClass)
+        annotations: {}
+        tls: []
+    # Proxies appending to X-Forwarded-For in front of the relay (1 behind
+    # the edge ALB), so the per-address rate limit keys on the client.
+    forwardedHops: 1
+    rateLimit:
+        perSecond: 5
+        burst: 30
+    # How often every Ready preview host is probed without credentials
+    # (patchy.preview_auth.unprotected_hosts); 0s disables it.
+    probeInterval: 1m
+    # CIDRs allowed to reach the relay's :8080 (the edge ALB's subnets);
+    # empty is anywhere.
+    ingressFrom: []
+    config:
+        extra: {}
+    resources:
+        requests:
+            cpu: 25m
+            memory: 64Mi
+        limits:
+            cpu: 250m
+            memory: 128Mi
+    podAnnotations: {}
+    podLabels: {}
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    serviceAccount:
+        create: true
+        name: ""
+        annotations: {}
+    networkPolicy:
+        create: true
+        extraEgress: []
 
 # Extra labels stamped on every object the chart renders.
 commonLabels: {}

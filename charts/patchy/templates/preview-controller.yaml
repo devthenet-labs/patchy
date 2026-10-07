@@ -48,8 +48,10 @@ rules:
     - apiGroups: [coordination.k8s.io]
       resources: [leases]
       verbs: [get, create, update]
-    # Leader-election and reconcile Events, as every other controller records.
-    - apiGroups: [""]
+    # Leader-election and reconcile Events, as every other controller records;
+    # the reconcile and sweep Warnings (IngressRefused, UnauthenticatedIngress)
+    # go through the events.k8s.io API.
+    - apiGroups: ["", events.k8s.io]
       resources: [events]
       verbs: [create, patch]
 ---

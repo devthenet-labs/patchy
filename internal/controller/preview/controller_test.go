@@ -428,3 +428,39 @@ func TestForgedUpdateWithdrawsExistingIngressBeforeFailure(t *testing.T) {
 		t.Fatal("Ingress still exposed after unapproved Preview update")
 	}
 }
+
+// TestPreviewProjectMustBeItsIntents pins the spec.project check: the
+// sign-in relay authorises a viewer against a Preview's recorded Project
+// alone, so a Preview naming any Project but its Intent's renders nothing.
+// One written before the field existed (empty) renders as it always did,
+// until the writer stamps it.
+func TestPreviewProjectMustBeItsIntents(t *testing.T) {
+	for _, tc := range []struct {
+		name, project string
+		renders       bool
+	}{
+		{"written before the field existed", "", true},
+		{"its Intent's Project", "demo", true},
+		{"another Project", "other", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in, p := testPreview("demo-1", time.Date(2026, 10, 1, 11, 0, 0, 0, time.UTC))
+			p.Spec.Project = tc.project
+			e := newTestEnv(t, in, p)
+			e.step(p.Name) // finalizer
+			var got *v1alpha1.Preview
+			for range 6 {
+				if got = e.step(p.Name); got.Status.Slot != nil || got.Status.Phase == v1alpha1.PreviewFailed {
+					break
+				}
+			}
+			if rendered := got.Status.Slot != nil; rendered != tc.renders {
+				t.Fatalf("spec.project %q: slot held = %v, want %v (status %+v)", tc.project, rendered,
+					tc.renders, got.Status)
+			}
+			if !tc.renders && got.Status.Phase != v1alpha1.PreviewFailed {
+				t.Fatalf("spec.project %q: phase %s, want Failed", tc.project, got.Status.Phase)
+			}
+		})
+	}
+}

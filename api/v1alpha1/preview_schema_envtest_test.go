@@ -129,6 +129,7 @@ func testPreviewSchema(ctx context.Context, t *testing.T, c client.Client) {
 	if err := c.Update(ctx, p); err == nil {
 		t.Fatal("API server allowed Preview to rebind to another Intent")
 	}
+	testPreviewProject(ctx, t, c, valid)
 
 	for n, comps := range [][]patchyv1.PreviewComponent{
 		components(2), components(4),
@@ -183,6 +184,57 @@ func testPreviewSchema(ctx context.Context, t *testing.T, c client.Client) {
 		tc.mutate(&bad.Status)
 		if err := c.Status().Update(ctx, bad); err == nil {
 			t.Errorf("status with %s accepted", tc.name)
+		}
+	}
+}
+
+// testPreviewProject pins spec.project's schema: optional (a Preview written
+// before it existed still updates), set once onto such a Preview, and then
+// neither changed nor removed, since the sign-in relay authorises a viewer
+// against it alone. Its shape is a Project name's.
+func testPreviewProject(ctx context.Context, t *testing.T, c client.Client, valid func(string) *patchyv1.Preview) {
+	t.Helper()
+	for _, bad := range []string{"Demo", "-demo", "demo-", strings.Repeat("a", 26), "a/b"} {
+		p := valid("preview-project-bad")
+		p.Spec.Project = bad
+		if err := c.Create(ctx, p); err == nil {
+			t.Errorf("Preview with spec.project %q accepted", bad)
+			_ = c.Delete(ctx, p)
+		}
+	}
+	legacy := valid("preview-project-legacy")
+	if err := c.Create(ctx, legacy); err != nil {
+		t.Fatalf("Preview without spec.project rejected: %v", err)
+	}
+	legacy.Spec.Components[0].Revision = strings.Repeat("c", 40)
+	if err := c.Update(ctx, legacy); err != nil {
+		t.Fatalf("update of a Preview without spec.project rejected: %v", err)
+	}
+	legacy.Spec.Project = "demo"
+	if err := c.Update(ctx, legacy); err != nil {
+		t.Fatalf("stamping spec.project once rejected: %v", err)
+	}
+	stamped := valid("preview-project-stamped")
+	stamped.Spec.Project = "demo"
+	if err := c.Create(ctx, stamped); err != nil {
+		t.Fatalf("Preview with spec.project rejected: %v", err)
+	}
+	for _, p := range []*patchyv1.Preview{legacy, stamped} {
+		if err := c.Get(ctx, client.ObjectKeyFromObject(p), p); err != nil {
+			t.Fatal(err)
+		}
+		p.Spec.Components[0].Revision = strings.Repeat("d", 40)
+		if err := c.Update(ctx, p); err != nil {
+			t.Fatalf("%s: PR-head update with spec.project kept rejected: %v", p.Name, err)
+		}
+		for _, change := range []string{"other", ""} {
+			moved := p.DeepCopy()
+			moved.Spec.Project = change
+			if err := c.Update(ctx, moved); err == nil {
+				t.Fatalf("%s: spec.project changed from %q to %q", p.Name, p.Spec.Project, change)
+			} else if !strings.Contains(err.Error(), "spec.project is set once") {
+				t.Errorf("%s: spec.project change refused for another reason: %v", p.Name, err)
+			}
 		}
 	}
 }

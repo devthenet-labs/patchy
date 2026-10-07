@@ -132,6 +132,44 @@ disruption policy removes it. This release does not render that NodePool, so
 its consolidation and limits are whatever you set.
 {{- end }}
 {{- end }}
+{{- $pas := include "patchy.previewAuthState" . | fromJson }}
+{{- if $pas.enabled }}
+{{- $pa := .Values.previewAuth }}
+
+Preview sign-in: stage {{ $pas.stage }}, key generation {{ int $pas.gen }}{{ if gt (int $pas.prevGen) 0 }} (generation {{ int $pas.prevGen }} still admitted){{ end }}.
+
+  1. Dex, the one per-install IdP setup: a static client {{ $pa.dex.clientID }}
+     at {{ $pa.dex.issuerURL }} whose ONLY redirect URI is
+
+       {{ $pas.issuer }}/dex/callback
+
+     with its secret under key {{ $pa.dex.clientSecretKey | default "clientSecret" }} of Secret {{ $pa.dex.existingSecret }} ({{ .Release.Namespace }}).
+
+  2. {{ $pa.host }} on the edge ALB: a DNS record to it, and its certificate
+     covering the name. The edge ALB must stay reachable from the internet:
+     the preview ALB calls {{ $pas.issuer }}/token from dynamic addresses.
+{{- if not (or $pa.viewers.teams $pa.viewers.users) }}
+
+  NO VIEWERS: previewAuth.viewers is empty, so every sign-in is refused until
+  someone is bound to ClusterRole {{ include "patchy.fullname" . }}-preview-viewer.
+{{- end }}
+{{- if eq $pas.stage "permit" }}
+
+  3. Nothing requires sign-in yet: the slot Ingress policy now admits
+     generation {{ int $pas.gen }}'s sign-in annotations. Once this revision is live,
+     upgrade again with previewAuth.stage=require.
+{{- else if ne (int $pas.applyGen) (int $pas.gen) }}
+
+  3. ROTATION IN PROGRESS: the slot Ingress policy now admits generation {{ int $pas.gen }},
+     but slot Ingresses still carry generation {{ int $pas.applyGen }}. Run the same helm
+     upgrade once more to move them to generation {{ int $pas.gen }}.
+{{- else }}
+
+  3. Every preview Ingress requires sign-in (policy patchy-preview-ingress-auth,
+     kept on rollback). Before a rollback, read the preview sign-in runbook:
+     the kept policy refuses an Ingress that drops sign-in.
+{{- end }}
+{{- end }}
 {{- $egressMode := include "patchy.egressMode" . }}
 {{- if eq $egressMode "none" }}
 

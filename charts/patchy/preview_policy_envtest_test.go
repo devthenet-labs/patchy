@@ -43,6 +43,9 @@ func TestPreviewAdmissionAgainstAPIServer(t *testing.T) {
 	testPreviewAllowed(t, admin)
 	testMultiComponentAdmission(t, admin)
 	testPlaceholderStaysAdmissible(t, admin)
+	testSecretRefs(t, admin)
+	testLegacyObjectsCanStillBeDeleted(t, admin)
+	testTerminatingObjectsStayGuarded(t, admin)
 	testIsolationProbeService(t, env)
 }
 
@@ -85,8 +88,17 @@ func startPreviewPolicyEnv(t *testing.T, helmArgs ...string) (*envtest.Environme
 	if err := admin.Create(ctx, outsideBound); err != nil {
 		t.Fatalf("create pre-policy ordinary scheduled Pod: %v", err)
 	}
+	createLegacySlotObjects(t, admin)
 	installPreviewPolicy(t, admin, helmArgs...)
-	waitForPreviewPolicy(t, admin)
+	// The image the rendered policies admit: the secret-refs probe must fail
+	// on its Secret reference alone, not on the image rule as well.
+	image := previewImage
+	for _, arg := range helmArgs {
+		if prefix, ok := strings.CutPrefix(arg, "preview.imagePathPrefix="); ok {
+			image = previewRegistry + "/" + prefix + "/demo:sha-" + previewSHA
+		}
+	}
+	waitForPreviewPolicy(t, admin, image)
 	return env, admin
 }
 
@@ -117,8 +129,8 @@ func installPreviewPolicy(t *testing.T, admin client.Client, helmArgs ...string)
 			}
 		}
 	}
-	if len(policies) != 7 || len(bindings) != 15 {
-		t.Fatalf("rendered %d policies, %d bindings; want 7 policies and 15 bindings", len(policies), len(bindings))
+	if len(policies) != 8 || len(bindings) != 16 {
+		t.Fatalf("rendered %d policies, %d bindings; want 8 policies and 16 bindings", len(policies), len(bindings))
 	}
 	for _, u := range append(policies, bindings...) {
 		if err := admin.Create(ctx, u); err != nil {
@@ -127,7 +139,7 @@ func installPreviewPolicy(t *testing.T, admin client.Client, helmArgs ...string)
 	}
 }
 
-func waitForPreviewPolicy(t *testing.T, admin client.Client) {
+func waitForPreviewPolicy(t *testing.T, admin client.Client, image string) {
 	t.Helper()
 	ctx := t.Context()
 	// Bindings propagate independently. A Pod rejection does not prove that
@@ -150,6 +162,7 @@ func waitForPreviewPolicy(t *testing.T, admin client.Client) {
 		{"slot ingress", ingress("patchy-preview-0", "probe", "alb", previewHost), "alb-preview"},
 		{"outside ingress", ingress("ordinary", "probe", "alb-preview", previewHost),
 			"reserved for the exact preview slot"},
+		{"slot secret env", withSecretEnv(pod("patchy-preview-0", "probe", image)), "may not read a Secret"},
 	}
 	deadline := time.Now().Add(30 * time.Second)
 	for {

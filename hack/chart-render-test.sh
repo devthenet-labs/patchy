@@ -203,6 +203,7 @@ expect preview-runtime 'select(.kind == "Role" and .metadata.name == "patchy-pre
 # It records Events (leader election, reconciles) in its own namespace like every other controller; without this its
 # event recorder is refused at startup.
 expect preview-runtime 'select(.kind == "Role" and .metadata.namespace == "patchy" and .metadata.name == "patchy-preview-controller") | .rules[] | select(.resources[] == "events") | .verbs | join(",")' create,patch
+expect preview-runtime 'select(.kind == "Role" and .metadata.namespace == "patchy" and .metadata.name == "patchy-preview-controller") | .rules[] | select(.resources[] == "events") | .apiGroups | join(",")' ',events.k8s.io'
 expect preview-runtime 'select(.kind == "NetworkPolicy" and .metadata.name == "patchy-preview-controller") | .spec.egress[].to[].ipBlock.cidr | select(. != null)' 172.20.0.1/32
 cm preview-runtime preview-controller PATCHY_PREVIEW_SLOT_COUNT 2
 cm preview-runtime preview-controller PATCHY_PREVIEW_IMAGE_PREFIX 111122223333.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/
@@ -295,7 +296,28 @@ expect_fail 'preview subnet IDs not one per CIDR' 'must name one subnet per prev
   -f "$fixtures/preview-foundation.yaml" --set 'preview.albSubnetIDs={subnet-0123456789abcdef0}'
 expect_fail 'preview subnet ID that is not one' 'does not match pattern' \
   -f "$fixtures/preview-foundation.yaml" --set 'preview.albSubnetIDs={sg-0123456789abcdef0,subnet-0123456789abcdef1}'
+# prefixListsIDs admits managed prefix lists beside inboundCIDRs; unset, the
+# class renders exactly as before.
+expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec | has("prefixListsIDs")' 'false'
+render preview-prefix-lists -f "$fixtures/preview-foundation.yaml" \
+  --set 'preview.prefixListsIDs={pl-0123456789abcdef0,pl-01234567}'
+expect preview-prefix-lists 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.prefixListsIDs | join(",")' 'pl-0123456789abcdef0,pl-01234567'
+expect preview-prefix-lists 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.inboundCIDRs | join(",")' '203.0.113.10/32'
+expect_fail 'preview prefix list ID that is not one' 'does not match pattern' \
+  -f "$fixtures/preview-foundation.yaml" --set 'preview.prefixListsIDs={sg-0123456789abcdef0}'
+printf 'preview:\n    inboundCIDRs: []\n    prefixListsIDs: [pl-0123456789abcdef0]\n' >"$out/prefix-lists-only.yaml"
+expect_fail 'preview prefix lists without inbound CIDRs' 'preview.inboundCIDRs is required' \
+  -f "$fixtures/preview-foundation.yaml" -f "$out/prefix-lists-only.yaml"
+# No slot workload may read a Secret through its environment (kept, its own
+# policy), and the slot Service and Ingress policies never evaluate an UPDATE
+# that is a deletion's or changes neither spec nor annotations, so Auto Mode
+# can always remove its finalizer from an Ingress that no longer conforms.
+expect preview 'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name == "patchy-preview-secret-refs") | .metadata.annotations."helm.sh/resource-policy"' 'keep'
+expect preview 'select(.kind == "ValidatingAdmissionPolicyBinding" and .metadata.name == "patchy-preview-all-slots-secret-refs") | .spec.policyName + "/" + (.spec.validationActions | join(","))' 'patchy-preview-secret-refs/Deny'
+expect preview 'select(.kind == "ValidatingAdmissionPolicy" and .spec.matchConditions[].name == "not-metadata-only") | .metadata.name' 'patchy-preview-services
+patchy-preview-ingresses'
 expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name | test("^patchy-preview-"))) | .spec.failurePolicy' 'Fail
+Fail
 Fail
 Fail
 Fail
@@ -311,8 +333,10 @@ expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name 
 expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name | test("^patchy-preview-")) and (.metadata.name | test("^patchy-preview-outside-") | not)) | .spec.matchConditions[0].expression' 'request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]
 request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]
 request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]
+request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]
 request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]'
 expect preview 'select(.kind == "ValidatingAdmissionPolicyBinding" and (.metadata.name | test("^patchy-preview-all-slots-"))) | has("spec")' 'true
+true
 true
 true
 true'
@@ -343,9 +367,12 @@ expect_fail 'preview missing cert' 'preview.certificateARN' -f "$fixtures/previe
 # path the admission policies are byte for byte what main rendered before the
 # path was configurable, blank lines aside (same_render: helm versions differ
 # in those alone): preview-admission.default.yaml is that render (helm 4.2.3),
-# and is never regenerated to make this pass. A custom path changes only the
-# prefix and its length (preview-admission.custom.yaml; regenerate it with the
-# same helm template command and review the diff against the default).
+# and is never regenerated to make this pass; only a deliberate, reviewed
+# policy change regenerates it (the preview sign-in phase 0 did: the
+# secret-refs policy and the metadata-only exemption). A custom path
+# changes only the prefix and its length (preview-admission.custom.yaml;
+# regenerate it with the same helm template command and review the diff
+# against the default).
 golden=$fixtures/golden
 pv=$fixtures/preview-foundation.yaml
 reg=111122223333.dkr.ecr.us-east-1.amazonaws.com
@@ -626,6 +653,277 @@ notes_has notes-preview-guardrails "kubectl get ingress patchy-preview-placehold
 notes notes-preview-off
 notes_has notes-preview-off "Previews:" no
 notes_has notes-preview-off "COST:" no
+
+# ---- preview sign-in (previewAuth): off is absent, permit then require -------
+# Off (the default) nothing of it renders: the admission goldens above, the
+# whole default render and the preview renders carry none of its objects or
+# keys. The keys Secret is generated per render here (no cluster to look it up
+# in, so the fixture sets keys.renderOffline), so no assertion reads a key value; the envtest suite
+# (preview_auth_upgrade_envtest_test.go) upgrades a real release through both
+# stages and a rotation, and checks the client secrets against the relay's
+# own derivation.
+pav=$fixtures/preview-auth.yaml
+pc=$fixtures/preview-controller.yaml
+ic=$fixtures/intent-controller.yaml
+pafull="-f $pf -f $ic -f $pc -f $pav"
+for r in default preview preview-runtime; do
+  expect "$r" 'select((.metadata.name | test("preview-auth|preview-viewer|preview-oidc")) or .kind == "Lease" or .kind == "PodDisruptionBudget") | .kind + "/" + .metadata.name' ""
+  expect "$r" 'select(.kind == "ConfigMap") | .data | keys | .[] | select(test("^PATCHY_PREVIEW_AUTH_"))' ""
+  expect "$r" 'select(.kind == "ValidatingAdmissionPolicy") | .metadata.annotations."patchy.bitwisemedia.uk/preview-auth-admits" | select(. != null)' ""
+  expect "$r" 'select(.kind == "Ingress" and .metadata.name == "patchy-preview-placeholder") | .metadata.annotations | keys | .[] | select(test("auth-"))' ""
+done
+# shellcheck disable=SC2086 # $pafull is a list of helm arguments.
+render pa-permit $pafull
+# shellcheck disable=SC2086
+render pa-require $pafull --set previewAuth.stage=require --set previewAuth.permitConfirmedGeneration=1
+golden_render pa-vap-permit "$golden/preview-admission.auth-permit.yaml" -f "$pf" -f "$pav" \
+  --show-only templates/preview-admission.yaml
+# shellcheck disable=SC2086
+golden_render pa-vap-require "$golden/preview-admission.auth-require.yaml" $pafull \
+  --set previewAuth.stage=require --set previewAuth.permitConfirmedGeneration=1 --show-only templates/preview-admission.yaml
+# The relay: two replicas spread over nodes and zones behind a PDB, its own
+# component label (never component=server, which the kustomize status
+# NetworkPolicy selects), its keys and Dex secret mounted, no Secret RBAC.
+padep='select(.kind == "Deployment" and .metadata.name == "patchy-preview-auth")'
+expect pa-permit "$padep | .spec.replicas" 2
+expect pa-permit "$padep | .spec.template.metadata.labels.\"app.kubernetes.io/component\"" preview-auth
+expect pa-permit "$padep | .spec.template.spec.containers[0].image | split(\":\") | .[0]" ghcr.io/devthenet-labs/patchy/preview-auth
+expect pa-permit "$padep | .spec.template.spec.topologySpreadConstraints[].topologyKey" 'topology.kubernetes.io/zone
+kubernetes.io/hostname'
+expect pa-permit "$padep | .spec.template.spec.volumes[] | .name + \" \" + (.secret.secretName // \"-\")" 'keys patchy-preview-auth-keys
+dex patchy-preview-auth-dex
+tmp -'
+expect pa-permit "$padep | .spec.template.spec.volumes[] | select(.name == \"dex\") | .secret.items[0].key + \" \" + .secret.items[0].path" 'clientSecret clientSecret'
+expect pa-permit "$padep | .spec.template.metadata.annotations | has(\"checksum/keys\")" true
+expect pa-permit 'select(.kind == "PodDisruptionBudget") | .metadata.name + " " + (.spec.minAvailable | tostring)' 'patchy-preview-auth 1'
+render pa-one -f "$pf" -f "$pav" --set previewAuth.replicas=1
+expect pa-one 'select(.kind == "PodDisruptionBudget") | .metadata.name' ""
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_ISSUER https://preview-auth.patchy.devthe.net
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_HOST_SUFFIX preview.patchy.devthe.net
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_SLOT_COUNT 2
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_LEDGER_LEASE patchy-preview-auth-codes
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_FORWARDED_HOPS 1
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_DEX_ISSUER_URL https://dex.patchy.devthe.net
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_DEX_CLIENT_ID patchy-preview-auth
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_DEX_CLIENT_SECRET_FILE /etc/patchy/preview-auth/dex/clientSecret
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_KEYS_DIR /etc/patchy/preview-auth/keys
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_USERNAME_PREFIX github:
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_GROUPS_PREFIX github:
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_RATE_PER_SECOND 5
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_RATE_BURST 30
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_ACCESS_TOKEN_TTL 10m
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_SESSION_MAX_AGE 12h
+cm pa-permit preview-auth PATCHY_PREVIEW_AUTH_PROBE_INTERVAL 1m
+# Every key the relay's ConfigMap carries is one of its flags.
+for key in $(get pa-permit 'select(.kind == "ConfigMap" and .metadata.name == "patchy-preview-auth-config") | .data | keys | .[]'); do
+  flag=$(echo "$key" | sed 's/^PATCHY_//' | tr 'A-Z_' 'a-z-')
+  case "$flag" in
+  listen-addr | log-level) continue ;;
+  esac
+  if ! grep -q "\"$flag\"" cmd/preview-auth/serve.go; then
+    fail "pa-permit: ConfigMap key $key is no preview-auth flag ($flag)"
+  fi
+done
+expect pa-permit 'select(.kind == "ConfigMap" and .metadata.name == "patchy-preview-auth-config") | .metadata.annotations."patchy.bitwisemedia.uk/preview-auth-key-generation"' 1
+# The keys Secret: generated, kept, generation 1, never a previous one yet.
+pakeys='select(.kind == "Secret" and .metadata.name == "patchy-preview-auth-keys")'
+expect pa-permit "$pakeys | .data | keys | join(\",\")" 'generation,master,signingKey'
+expect pa-permit "$pakeys | .data.generation | @base64d" 1
+expect pa-permit "$pakeys | .data.master | @base64d | length" 64
+expect pa-permit "$pakeys | .metadata.annotations.\"helm.sh/resource-policy\"" keep
+# The relay's grants: Previews read, its one Lease, access reviews. No
+# Secret, no Intent, no write to a patchy kind, nothing in a slot.
+expect pa-permit 'select(.kind == "Role" and .metadata.name == "patchy-preview-auth") | .rules[] | (.resources | join(",")) + " " + (.verbs | join(",")) + " " + ((.resourceNames // []) | join(","))' \
+  'previews get,list,watch 
+leases get,update patchy-preview-auth-codes'
+expect pa-permit 'select(.kind == "ClusterRole" and .metadata.name == "patchy-preview-auth-authz") | .rules[] | (.resources | join(",")) + " " + (.verbs | join(","))' \
+  'subjectaccessreviews create'
+expect pa-permit 'select((.kind == "RoleBinding" or .kind == "ClusterRoleBinding") and .subjects[].name == "patchy-preview-auth") | .kind + "/" + .metadata.name + " " + (.metadata.namespace // "-")' \
+  'ClusterRoleBinding/patchy-preview-auth-authz -
+RoleBinding/patchy-preview-auth patchy'
+expect pa-permit 'select(.kind == "Lease") | .metadata.name + " " + .metadata.namespace' 'patchy-preview-auth-codes patchy'
+# The preview-viewer role and the viewers, prefixed as the relay maps claims.
+expect pa-permit 'select(.kind == "ClusterRole" and .metadata.name == "patchy-preview-viewer") | .rules[] | (.resources | join(",")) + " " + (.verbs | join(","))' \
+  'projects/previews get'
+expect pa-permit 'select(.kind == "RoleBinding" and .metadata.name == "patchy-preview-viewers") | .metadata.namespace + " " + .roleRef.kind + "/" + .roleRef.name' \
+  'patchy ClusterRole/patchy-preview-viewer'
+expect pa-permit 'select(.kind == "RoleBinding" and .metadata.name == "patchy-preview-viewers") | .subjects[] | .kind + " " + .name' \
+  'Group github:devthenet-labs:reviewers
+User github:octocat'
+render pa-noviewers -f "$pf" -f "$pav" --set-json 'previewAuth.viewers={"teams":[],"users":[]}'
+expect pa-noviewers 'select(.kind == "RoleBinding" and .metadata.name == "patchy-preview-viewers") | .kind' ""
+expect pa-noviewers 'select(.kind == "ClusterRole" and .metadata.name == "patchy-preview-viewer") | .kind' ClusterRole
+# Each slot's ALB client Secret (generation in the name), read by Auto Mode
+# alone, by name: get, exact resourceNames, Group eks:managed. All kept.
+expect pa-permit 'select(.kind == "Secret" and .metadata.name == "patchy-preview-oidc-g1") | .metadata.namespace + " " + .stringData.clientID' \
+  'patchy-preview-0 patchy-preview-s0
+patchy-preview-1 patchy-preview-s1'
+expect pa-permit 'select(.kind == "Secret" and .metadata.name == "patchy-preview-oidc-g1") | .stringData.clientSecret | test("^[0-9a-f]{64}$")' 'true
+true'
+expect pa-permit 'select(.kind == "Role" and .metadata.name == "patchy-preview-oidc-reader") | .metadata.namespace + " " + (.rules | to_json(0))' \
+  'patchy-preview-0 [{"apiGroups":[""],"resources":["secrets"],"resourceNames":["patchy-preview-oidc-g1"],"verbs":["get"]}]
+patchy-preview-1 [{"apiGroups":[""],"resources":["secrets"],"resourceNames":["patchy-preview-oidc-g1"],"verbs":["get"]}]'
+expect pa-permit 'select(.kind == "RoleBinding" and .metadata.name == "patchy-preview-oidc-reader") | .subjects | to_json(0)' \
+  '[{"kind":"Group","apiGroup":"rbac.authorization.k8s.io","name":"eks:managed"}]
+[{"kind":"Group","apiGroup":"rbac.authorization.k8s.io","name":"eks:managed"}]'
+expect pa-permit 'select((.metadata.name | test("preview-oidc")) and (.metadata.annotations."helm.sh/resource-policy" != "keep")) | .metadata.name' ""
+# The preview-controller still reads no Secret.
+expect pa-require 'select(.kind == "Role" and .metadata.name == "patchy-preview-controller") | .rules[].resources[] | select(. == "secrets")' ""
+# Permit (B1): the slot Ingress policy admits generation 1 and records it;
+# nothing requires sign-in yet: no required policy, the controller and the
+# placeholder exactly as before.
+expect pa-permit 'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name == "patchy-preview-ingresses") | .metadata.annotations."patchy.bitwisemedia.uk/preview-auth-admits"' g1
+expect pa-permit 'select(.metadata.name | test("ingress-auth")) | .kind' ""
+render pa-permit-runtime -f "$pf" -f "$ic" -f "$pc" -f "$pav"
+for q in 'select(.kind == "ConfigMap" and .metadata.name == "patchy-preview-controller-config")' \
+  'select(.kind == "Deployment" and .metadata.name == "patchy-preview-controller")' \
+  'select(.kind == "Ingress" and .metadata.name == "patchy-preview-placeholder")' \
+  'select(.kind == "IngressClassParams")'; do
+  if [ "$(get preview-runtime "$q")" != "$(get pa-permit-runtime "$q")" ]; then
+    fail "pa-permit-runtime: the permit stage changed $q"
+  fi
+done
+# Require (B2): the controller and the placeholder carry generation 1's sets,
+# the very JSON both policies compare, and the kept required policy is live.
+pcm='select(.kind == "ConfigMap" and .metadata.name == "patchy-preview-controller-config")'
+cm pa-require preview-controller PATCHY_PREVIEW_AUTH_REQUIRED true
+cm pa-require preview-controller PATCHY_PREVIEW_AUTH_PREVIOUS_ANNOTATIONS null
+expect pa-require "$pcm | .data.PATCHY_PREVIEW_AUTH_ANNOTATIONS | from_json | keys | join(\",\")" 'patchy-preview-0,patchy-preview-1'
+expect pa-require "$pcm | .data.PATCHY_PREVIEW_AUTH_ANNOTATIONS | from_json | .\"patchy-preview-1\" | .\"alb.ingress.kubernetes.io/auth-session-cookie\"" patchy-preview-s1
+expect pa-require "$pcm | .data.PATCHY_PREVIEW_AUTH_ANNOTATIONS | from_json | .\"patchy-preview-0\" | .\"alb.ingress.kubernetes.io/auth-idp-oidc\" | from_json | .secretName" patchy-preview-oidc-g1
+placeholder_auth=$(get pa-require 'select(.kind == "Ingress" and .metadata.name == "patchy-preview-placeholder") | .metadata.annotations | with_entries(select(.key | test("auth-"))) | to_json(0)')
+cm_slot0=$(get pa-require "$pcm | .data.PATCHY_PREVIEW_AUTH_ANNOTATIONS | from_json | .\"patchy-preview-0\" | to_json(0)")
+if [ -z "$cm_slot0" ] || [ "$placeholder_auth" != "$cm_slot0" ]; then
+  fail "pa-require: the placeholder's sign-in annotations ($placeholder_auth) are not slot 0's set ($cm_slot0)"
+fi
+expect pa-require 'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name == "patchy-preview-ingress-auth") | .metadata.annotations."helm.sh/resource-policy" + " " + .spec.failurePolicy' 'keep Fail'
+expect pa-require 'select(.kind == "ValidatingAdmissionPolicyBinding" and .metadata.name == "patchy-preview-all-slots-ingress-auth") | .spec.policyName + " " + (.spec.validationActions | join(",")) + " " + .metadata.annotations."helm.sh/resource-policy"' \
+  'patchy-preview-ingress-auth Deny keep'
+# Switching to require rolls the preview-controller (its ConfigMap changed).
+pccsum='select(.kind == "Deployment" and .metadata.name == "patchy-preview-controller") | .spec.template.metadata.annotations["checksum/config"]'
+if [ "$(get pa-permit-runtime "$pccsum")" = "$(get pa-require "$pccsum")" ]; then
+  fail "pa-require: the preview-controller's checksum/config did not change"
+fi
+# The order Helm applies a revision in (helm template prints it): Secrets,
+# RBAC and the controller before the placeholder Ingress, and every
+# admission policy after it. So the require stage's placeholder and
+# controller writes meet the PREVIOUS revision's policies, which is why the
+# require stage refuses a generation the live policy does not admit yet.
+order=$(get pa-require '.kind + "/" + .metadata.name' | grep -n -E '^(Secret/patchy-preview-oidc-g1|Role/patchy-preview-oidc-reader|Deployment/patchy-preview-controller|Ingress/patchy-preview-placeholder|ValidatingAdmissionPolicy/patchy-preview-ingresses|ValidatingAdmissionPolicy/patchy-preview-ingress-auth)$' |
+  awk -F: '!seen[$2]++ { print $2 }' | tr '\n' ' ')
+if [ "$order" != "Secret/patchy-preview-oidc-g1 Role/patchy-preview-oidc-reader Deployment/patchy-preview-controller Ingress/patchy-preview-placeholder ValidatingAdmissionPolicy/patchy-preview-ingresses ValidatingAdmissionPolicy/patchy-preview-ingress-auth " ]; then
+  fail "pa-require: manifest order is '$order'"
+fi
+# The relay's Ingress: the edge class (falls back like the others), the host.
+render pa-edge -f "$pf" -f "$am" -f "$pav"
+expect pa-edge 'select(.kind == "Ingress" and .metadata.name == "patchy-preview-auth") | .spec.ingressClassName + " " + .spec.rules[0].host + " " + .spec.rules[0].http.paths[0].backend.service.name' \
+  'patchy-edge preview-auth.patchy.devthe.net patchy-preview-auth'
+expect pa-permit 'select(.kind == "Ingress" and .metadata.name == "patchy-preview-auth") | .spec | has("ingressClassName")' false
+# NetworkPolicy: 8080 from anywhere (or ingressFrom) and probes; DNS, 443 and
+# 6443 out.
+panp='select(.kind == "NetworkPolicy" and .metadata.name == "patchy-preview-auth")'
+expect pa-permit "$panp | .spec.ingress[] | (.ports[0].port | tostring) + \" \" + (has(\"from\") | tostring)" '8080 false
+8081 false'
+expect pa-permit "$panp | .spec.egress[-1].ports | map(.port) | join(\",\")" '443,6443'
+render pa-from -f "$pf" -f "$pav" --set 'previewAuth.ingressFrom={10.40.0.0/24}'
+expect pa-from "$panp | .spec.ingress[0].from[0].ipBlock.cidr" 10.40.0.0/24
+# Chart-managed keys need a cluster to keep them in: a render without one
+# (helm template, GitOps) is refused unless it says its keys are throwaway,
+# and an operator-owned keys Secret needs no lookup at all.
+expect_fail 'managed keys without a cluster' 'previewAuth with chart-managed keys (no previewAuth.keys.existingSecret) needs a render that reaches the cluster' \
+  -f "$pf" -f "$pav" --set previewAuth.keys.renderOffline=false
+# shellcheck disable=SC2086
+expect_fail 'managed keys without a cluster, require stage' 'set previewAuth.keys.existingSecret and supply the slot Secrets' \
+  $pafull --set previewAuth.keys.renderOffline=false --set previewAuth.stage=require --set previewAuth.permitConfirmedGeneration=1
+render pa-existing-offline -f "$pf" -f "$pav" --set previewAuth.keys.renderOffline=false \
+  --set previewAuth.keys.existingSecret=my-keys
+expect pa-existing-offline "$padep | .spec.template.spec.volumes[0].secret.secretName" my-keys
+# An operator-owned keys Secret: the chart renders neither it nor the slot
+# client Secrets, and names the generations it is told.
+render pa-existing -f "$pf" -f "$pav" --set previewAuth.keys.existingSecret=my-keys \
+  --set previewAuth.keys.generation=3 --set previewAuth.keys.previousGeneration=2
+expect pa-existing 'select(.kind == "Secret") | .metadata.name' ""
+expect pa-existing "$padep | .spec.template.spec.volumes[0].secret.secretName" my-keys
+expect pa-existing "$padep | .spec.template.metadata.annotations | has(\"checksum/keys\")" false
+expect pa-existing 'select(.kind == "Role" and .metadata.name == "patchy-preview-oidc-reader") | .rules[0].resourceNames | join(",")' \
+  'patchy-preview-oidc-g3,patchy-preview-oidc-g2
+patchy-preview-oidc-g3,patchy-preview-oidc-g2'
+expect pa-existing 'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name == "patchy-preview-ingresses") | .metadata.annotations."patchy.bitwisemedia.uk/preview-auth-admits"' g2,g3
+expect pa-existing 'select(.kind == "ConfigMap" and .metadata.name == "patchy-preview-auth-config") | .metadata.annotations."patchy.bitwisemedia.uk/preview-auth-key-generation"' null
+# shellcheck disable=SC2086
+render pa-existing-require $pafull --set previewAuth.keys.existingSecret=my-keys --set previewAuth.keys.generation=3 \
+  --set previewAuth.keys.previousGeneration=2 --set previewAuth.stage=require --set previewAuth.permitConfirmedGeneration=2
+# A rotation's first upgrade: generation 3 admitted, 2 still applied.
+expect pa-existing-require "$pcm | .data.PATCHY_PREVIEW_AUTH_ANNOTATIONS | from_json | .\"patchy-preview-0\" | .\"alb.ingress.kubernetes.io/auth-idp-oidc\" | from_json | .secretName" patchy-preview-oidc-g2
+expect pa-existing-require "$pcm | .data.PATCHY_PREVIEW_AUTH_PREVIOUS_ANNOTATIONS | from_json | .\"patchy-preview-0\" | .\"alb.ingress.kubernetes.io/auth-idp-oidc\" | from_json | .secretName" patchy-preview-oidc-g3
+# shellcheck disable=SC2086
+notes notes-pa-rotating $pafull --set previewAuth.keys.existingSecret=my-keys --set previewAuth.keys.generation=3 \
+  --set previewAuth.keys.previousGeneration=2 --set previewAuth.stage=require --set previewAuth.permitConfirmedGeneration=2
+notes_has notes-pa-rotating "ROTATION IN PROGRESS" yes
+# The install NOTES print the one IdP setup: Dex's redirect URI.
+notes notes-pa-permit -f "$pf" -f "$pav"
+notes_has notes-pa-permit "https://preview-auth.patchy.devthe.net/dex/callback" yes
+notes_has notes-pa-permit "upgrade again with previewAuth.stage=require" yes
+notes_has notes-pa-permit "NO VIEWERS" no
+# shellcheck disable=SC2086
+notes notes-pa-require $pafull --set previewAuth.stage=require --set previewAuth.permitConfirmedGeneration=1
+notes_has notes-pa-require "Every preview Ingress requires sign-in" yes
+notes notes-pa-noviewers -f "$pf" -f "$pav" --set-json 'previewAuth.viewers={"teams":[],"users":[]}'
+notes_has notes-pa-noviewers "NO VIEWERS" yes
+notes_has notes-preview-off "Preview sign-in" no
+# Guards.
+expect_fail 'sign-in without preview slots' 'previewAuth.enabled requires preview.enabled' -f "$pav"
+expect_fail 'sign-in without a host' 'previewAuth.host is required' -f "$pf" -f "$pav" --set previewAuth.host=
+expect_fail 'sign-in host under the preview suffix' 'must not be under preview.hostSuffix' \
+  -f "$pf" -f "$pav" --set previewAuth.host=auth.preview.patchy.devthe.net
+expect_fail 'sign-in without a Dex secret' 'previewAuth.dex.existingSecret is required' \
+  -f "$pf" -f "$pav" --set previewAuth.dex.existingSecret=
+expect_fail 'sign-in without a Dex issuer' 'previewAuth.dex.issuerURL is required' \
+  -f "$pf" -f "$pav" --set previewAuth.dex.issuerURL=
+expect_fail 'sign-in with an http Dex issuer' "'/previewAuth/dex/issuerURL'" \
+  -f "$pf" -f "$pav" --set previewAuth.dex.issuerURL=http://dex.example.com
+expect_fail 'sign-in without a username prefix' "'/previewAuth/claims/usernamePrefix'" \
+  -f "$pf" -f "$pav" --set previewAuth.claims.usernamePrefix=
+expect_fail 'sign-in relay on the preview class' 'must not be alb-preview' \
+  -f "$pf" -f "$pav" --set previewAuth.ingress.className=alb-preview
+expect_fail 'require without the preview-controller' 'previewAuth.stage require needs previewController.enabled' \
+  -f "$pf" -f "$pav" --set previewAuth.stage=require --set previewAuth.permitConfirmedGeneration=1
+# shellcheck disable=SC2086
+expect_fail 'require before the permit stage is live' 'does not admit key generation 1 yet' $pafull --set previewAuth.stage=require
+# shellcheck disable=SC2086
+expect_fail 'require confirming another generation' 'does not admit key generation 1 yet' $pafull \
+  --set previewAuth.stage=require --set previewAuth.permitConfirmedGeneration=2
+expect_fail 'an unknown stage' "'/previewAuth/stage'" -f "$pf" -f "$pav" --set previewAuth.stage=enforce
+expect_fail 'a viewer login with a space' "'/previewAuth/viewers/users/0'" -f "$pf" -f "$pav" \
+  --set-json 'previewAuth.viewers.users=["octo cat"]'
+expect_fail 'a viewer team without its org' "'/previewAuth/viewers/teams/0'" -f "$pf" -f "$pav" \
+  --set-json 'previewAuth.viewers.teams=["reviewers"]'
+expect_fail 'an existing keys Secret with equal generations' 'previousGeneration must differ' -f "$pf" -f "$pav" \
+  --set previewAuth.keys.existingSecret=my-keys --set previewAuth.keys.generation=2 --set previewAuth.keys.previousGeneration=2
+# Rev C: the allowlist goes only once sign-in is required; with no prefix
+# list either, only on the explicit confirmation and a short ALB session.
+printf 'preview:\n    inboundCIDRs: []\n' >"$out/no-allowlist.yaml"
+expect_fail 'no allowlist in the permit stage' 'unless preview sign-in is required' \
+  -f "$pf" -f "$pav" -f "$out/no-allowlist.yaml"
+# shellcheck disable=SC2086
+expect_fail 'no allowlist, not confirmed' 'set preview.allowPublicWithAuth=confirmed' $pafull -f "$out/no-allowlist.yaml" \
+  --set previewAuth.stage=require --set previewAuth.permitConfirmedGeneration=1
+# shellcheck disable=SC2086
+expect_fail 'no allowlist, a long ALB session' 'previewAuth.sessionTimeout of at most 900 (it is 3600)' $pafull \
+  -f "$out/no-allowlist.yaml" --set previewAuth.stage=require --set previewAuth.permitConfirmedGeneration=1 \
+  --set preview.allowPublicWithAuth=confirmed
+expect_fail 'an unknown confirmation' "'/preview/allowPublicWithAuth'" -f "$pf" --set preview.allowPublicWithAuth=yes
+# shellcheck disable=SC2086
+render pa-public $pafull -f "$out/no-allowlist.yaml" --set previewAuth.stage=require \
+  --set previewAuth.permitConfirmedGeneration=1 --set preview.allowPublicWithAuth=confirmed --set previewAuth.sessionTimeout=900
+expect pa-public 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec | has("inboundCIDRs")' false
+cm pa-public preview-controller PATCHY_PREVIEW_AUTH_REQUIRED true
+expect pa-public "$pcm | .data.PATCHY_PREVIEW_AUTH_ANNOTATIONS | from_json | .\"patchy-preview-0\" | .\"alb.ingress.kubernetes.io/auth-session-timeout\"" 900
+# shellcheck disable=SC2086
+render pa-prefix-only $pafull -f "$out/no-allowlist.yaml" --set previewAuth.stage=require \
+  --set previewAuth.permitConfirmedGeneration=1 --set 'preview.prefixListsIDs={pl-0123456789abcdef0}'
+expect pa-prefix-only 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | (.spec | has("inboundCIDRs") | tostring) + " " + (.spec.prefixListsIDs | join(","))' \
+  'false pl-0123456789abcdef0'
 
 # ---- feature on: keys on the right controllers ------------------------------
 render on -f "$fixtures/repository-images.yaml"

@@ -376,6 +376,15 @@
                 "albSubnetCIDRs": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}/(2[0-9]|3[0-2])$"}},
                 "albSubnetIDs": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"type": "string", "pattern": "^subnet-([0-9a-f]{8}|[0-9a-f]{17})$"}},
                 "inboundCIDRs": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}/32$"}},
+                "prefixListsIDs": {"type": "array", "description": "Managed prefix list IDs the preview ALB admits beside inboundCIDRs; optional", "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "pattern": "^pl-([0-9a-f]{8}|[0-9a-f]{17})$"}},
+                "allowPublicWithAuth": {
+                    "type": "string",
+                    "enum": [
+                        "",
+                        "confirmed"
+                    ],
+                    "description": "Rev C only: confirmed lets inboundCIDRs and prefixListsIDs be empty (sign-in alone guards the preview ALB); needs previewAuth.stage require and previewAuth.sessionTimeout <= 900"
+                },
                 "certificateARN": {"type": "string", "pattern": "^$|^arn:aws:acm:[a-z0-9-]+:[0-9]{12}:certificate/[0-9a-f-]+$"},
                 "hostSuffix": {"type": "string", "pattern": "^$|^[a-z0-9-]+(\\.[a-z0-9-]+)+$"},
                 "albName": {"type": "string", "pattern": "^$|^[a-z][a-z0-9-]{0,31}$"}
@@ -413,6 +422,268 @@
                     "additionalProperties": false,
                     "required": ["create"],
                     "properties": {"create": {"type": "boolean"}}
+                }
+            }
+        },
+        "previewAuth": {
+            "type": "object",
+            "description": "The preview sign-in relay (cmd/preview-auth): every preview Ingress authenticated through it, off by default; permit (B1) then require (B2)",
+            "additionalProperties": false,
+            "required": [
+                "enabled",
+                "stage",
+                "host",
+                "dex",
+                "claims",
+                "viewers",
+                "sessionTimeout",
+                "keys",
+                "ingress",
+                "serviceAccount",
+                "networkPolicy"
+            ],
+            "properties": {
+                "enabled": {
+                    "type": "boolean"
+                },
+                "stage": {
+                    "type": "string",
+                    "enum": [
+                        "permit",
+                        "require"
+                    ]
+                },
+                "host": {
+                    "type": "string",
+                    "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)+$"
+                },
+                "permitConfirmedGeneration": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 999999
+                },
+                "replicas": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10
+                },
+                "image": {
+                    "$ref": "#/definitions/imageOverride"
+                },
+                "dex": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                        "issuerURL",
+                        "clientID",
+                        "existingSecret"
+                    ],
+                    "properties": {
+                        "issuerURL": {
+                            "type": "string",
+                            "pattern": "^$|^https://[^\\s/?#]+(/[^\\s?#]*)?$"
+                        },
+                        "clientID": {
+                            "type": "string"
+                        },
+                        "existingSecret": {
+                            "type": "string",
+                            "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+                        },
+                        "clientSecretKey": {
+                            "type": "string",
+                            "pattern": "^[-._a-zA-Z0-9]+$"
+                        }
+                    }
+                },
+                "claims": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                        "usernameClaim",
+                        "groupsClaim",
+                        "usernamePrefix",
+                        "groupsPrefix"
+                    ],
+                    "properties": {
+                        "usernameClaim": {
+                            "type": "string",
+                            "minLength": 1
+                        },
+                        "groupsClaim": {
+                            "type": "string",
+                            "minLength": 1
+                        },
+                        "usernamePrefix": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "^[^\\s]+$"
+                        },
+                        "groupsPrefix": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "^[^\\s]+$"
+                        },
+                        "requireVerifiedEmail": {
+                            "type": "boolean"
+                        }
+                    }
+                },
+                "viewers": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "teams": {
+                            "type": "array",
+                            "uniqueItems": true,
+                            "description": "Dex GitHub group names, <org>:<team-slug> by default; the chart prepends claims.groupsPrefix",
+                            "items": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*:[^\\s:][^\\s]*$"
+                            }
+                        },
+                        "users": {
+                            "type": "array",
+                            "uniqueItems": true,
+                            "description": "GitHub logins; the chart prepends claims.usernamePrefix",
+                            "items": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z0-9](-?[A-Za-z0-9]){0,38}$"
+                            }
+                        }
+                    }
+                },
+                "sessionTimeout": {
+                    "type": "integer",
+                    "minimum": 60,
+                    "maximum": 604800
+                },
+                "accessTokenTTL": {
+                    "$ref": "#/definitions/duration"
+                },
+                "sessionMaxAge": {
+                    "$ref": "#/definitions/duration"
+                },
+                "keys": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "existingSecret": {
+                            "type": "string",
+                            "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+                        },
+                        "generation": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 999999
+                        },
+                        "previousGeneration": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 999999
+                        },
+                        "rotate": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 999999
+                        },
+                        "dropPrevious": {
+                            "type": "boolean"
+                        },
+                        "regenerate": {
+                            "type": "boolean"
+                        },
+                        "renderOffline": {
+                            "type": "boolean"
+                        }
+                    }
+                },
+                "ingress": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "className": {
+                            "type": "string"
+                        },
+                        "annotations": {
+                            "type": "object"
+                        },
+                        "tls": {
+                            "type": "array",
+                            "items": {
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "forwardedHops": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 5
+                },
+                "rateLimit": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "perSecond": {
+                            "type": "number",
+                            "minimum": 0
+                        },
+                        "burst": {
+                            "type": "integer",
+                            "minimum": 1
+                        }
+                    }
+                },
+                "probeInterval": {
+                    "$ref": "#/definitions/duration"
+                },
+                "ingressFrom": {
+                    "type": "array",
+                    "uniqueItems": true,
+                    "items": {
+                        "type": "string",
+                        "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}/([0-9]|[12][0-9]|3[0-2])$"
+                    }
+                },
+                "config": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "logLevel": {
+                            "$ref": "#/definitions/logLevel"
+                        },
+                        "extra": {
+                            "$ref": "#/definitions/extraEnv"
+                        }
+                    }
+                },
+                "resources": {
+                    "type": "object"
+                },
+                "podAnnotations": {
+                    "type": "object"
+                },
+                "podLabels": {
+                    "type": "object"
+                },
+                "nodeSelector": {
+                    "type": "object"
+                },
+                "tolerations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object"
+                    }
+                },
+                "affinity": {
+                    "type": "object"
+                },
+                "serviceAccount": {
+                    "$ref": "#/definitions/serviceAccount"
+                },
+                "networkPolicy": {
+                    "$ref": "#/definitions/controllerNetworkPolicy"
                 }
             }
         },

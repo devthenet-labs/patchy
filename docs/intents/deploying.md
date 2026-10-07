@@ -756,6 +756,9 @@ Reviewers need not ask for the URL: within a minute of a preview going live, the
 the pull request gets one comment linking it at its head, which patchy edits as the head moves, the preview redeploys or
 fails, and once the intent ends ([The preview link](../configuration/intent-controller.md#the-preview-link)).
 
+Previews are now guarded by the load balancer's IP allowlist alone. To put them behind GitHub sign-in as well, follow
+[Preview sign-in](preview-sign-in.md): one Dex redirect URI, a list of viewer teams, and two more `helm upgrade`s.
+
 ## Several repositories in one Project
 
 An application whose changes span repositories, a web front end and its API say, can be one Project over all of them.

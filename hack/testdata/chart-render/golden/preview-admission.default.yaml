@@ -222,6 +222,54 @@ spec:
           message: direct node placement is forbidden outside preview slots
 ---
 # Source: patchy/templates/preview-admission.yaml
+# No slot workload may name a Secret through its environment. The emptyDir-only
+# volume rule already refuses secret and projected volumes; this closes env
+# valueFrom.secretKeyRef and envFrom secretRef, for every container kind, so a
+# Secret placed in a slot namespace (a preview sign-in client secret, say) can
+# never reach preview code. Kept, and its own policy, so it outlives a rollback
+# of the others. Only the pod spec is read, so an UPDATE that leaves the spec
+# as it was (labels, annotations, finalizers) is not evaluated.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-secret-refs
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [""]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [pods, pods/ephemeralcontainers]
+            - apiGroups: [apps]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [deployments]
+    matchConditions:
+        - name: exact-preview-slot
+          expression: 'request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]'
+        - name: pod-spec-changed
+          expression: "request.operation != 'UPDATE' || object.spec != oldObject.spec"
+    variables:
+        # One policy for both kinds: dyn() because a Pod has no template and a
+        # Deployment no containers at the top of its spec.
+        - name: pod
+          expression: "request.resource.resource == 'deployments' ? dyn(object).spec.template.spec : dyn(object).spec"
+        - name: containers
+          expression: >-
+              (has(variables.pod.containers) ? variables.pod.containers : []) +
+              (has(variables.pod.initContainers) ? variables.pod.initContainers : []) +
+              (has(variables.pod.ephemeralContainers) ? variables.pod.ephemeralContainers : [])
+    validations:
+        - expression: >-
+              variables.containers.all(c,
+                (!has(c.env) || c.env.all(e, !has(e.valueFrom) || !has(e.valueFrom.secretKeyRef))) &&
+                (!has(c.envFrom) || c.envFrom.all(f, !has(f.secretRef))))
+          message: preview containers may not read a Secret through env valueFrom.secretKeyRef or envFrom secretRef
+---
+# Source: patchy/templates/preview-admission.yaml
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -239,6 +287,8 @@ spec:
     matchConditions:
         - name: exact-preview-slot
           expression: 'request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]'
+        - name: not-metadata-only
+          expression: "request.operation != 'UPDATE' || !(object.spec == oldObject.spec && has(object.metadata.annotations) == has(oldObject.metadata.annotations) && (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations))"
     variables:
         - name: helmPlaceholder
           expression: "request.namespace == 'patchy-preview-0' && object.metadata.name == 'patchy-preview-placeholder'"
@@ -281,6 +331,8 @@ spec:
     matchConditions:
         - name: exact-preview-slot
           expression: 'request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]'
+        - name: not-metadata-only
+          expression: "request.operation != 'UPDATE' || !(object.spec == oldObject.spec && has(object.metadata.annotations) == has(oldObject.metadata.annotations) && (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations))"
     variables:
         - name: helmPlaceholder
           expression: "request.namespace == 'patchy-preview-0' && object.metadata.name == 'patchy-preview-placeholder'"
@@ -452,6 +504,17 @@ metadata:
         helm.sh/resource-policy: keep
 spec:
     policyName: patchy-preview-outside-deployments
+    validationActions: [Deny]
+---
+# Source: patchy/templates/preview-admission.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-all-slots-secret-refs
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-secret-refs
     validationActions: [Deny]
 ---
 # Source: patchy/templates/preview-admission.yaml

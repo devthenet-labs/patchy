@@ -79,13 +79,26 @@ func (r *PreviewSourceReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if !existing.DeletionTimestamp.IsZero() {
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
-	if !reflect.DeepEqual(existing.Spec.Components, desired.Spec.Components) {
-		existing.Spec.Components = desired.Spec.Components
-		if err := r.Update(ctx, &existing); err != nil {
-			return ctrl.Result{}, err
-		}
+	return ctrl.Result{RequeueAfter: time.Minute}, r.syncSpec(ctx, &existing, desired)
+}
+
+// syncSpec brings an existing Preview's writable spec to the desired one:
+// its components, and spec.project once. spec.project is set once (the
+// schema refuses any other change): a Preview written before the field
+// existed gets it here, and one naming another Project is not this Intent's
+// to fix. preview-controller renders nothing for it, and the sign-in relay
+// authorises against no Project but the one recorded.
+func (r *PreviewSourceReconciler) syncSpec(ctx context.Context, existing, desired *v1alpha1.Preview) error {
+	if existing.Spec.Project != "" && existing.Spec.Project != desired.Spec.Project {
+		return fmt.Errorf("preview %s names Project %q, not its Intent's %q",
+			existing.Name, existing.Spec.Project, desired.Spec.Project)
 	}
-	return ctrl.Result{RequeueAfter: time.Minute}, nil
+	if existing.Spec.Project != "" && reflect.DeepEqual(existing.Spec.Components, desired.Spec.Components) {
+		return nil
+	}
+	existing.Spec.Project = desired.Spec.Project
+	existing.Spec.Components = desired.Spec.Components
+	return r.Update(ctx, existing)
 }
 
 // desiredPreview is the Intent's Preview, derived by
@@ -102,6 +115,7 @@ func desiredPreview(in *v1alpha1.Intent, project *v1alpha1.Project) (*v1alpha1.P
 		ObjectMeta: metav1.ObjectMeta{Name: in.Name, Namespace: in.Namespace},
 		Spec: v1alpha1.PreviewSpec{
 			IntentRef:  v1alpha1.ObjectReference{Name: in.Name, UID: in.UID},
+			Project:    in.Spec.Project,
 			HostLabel:  in.Name,
 			Components: components,
 			TTL:        metav1.Duration{Duration: previewTTL},

@@ -6,6 +6,7 @@ package preview
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -88,6 +89,9 @@ type Settings struct {
 	// Ready, as in slice 2, and the host can answer 404 for a few seconds
 	// after Ready while the target registers.
 	TargetHealth bool
+	// Auth puts every preview Ingress behind the sign-in relay; off, the
+	// Ingress renders exactly as it did before the relay existed.
+	Auth AuthSettings
 }
 
 // Validate refuses settings the controller must not run with. The image
@@ -104,7 +108,7 @@ func (s Settings) Validate() error {
 		s.RolloutTimeout <= 0 || s.PollInterval <= 0 || s.MaxRetries < 1 || s.MaxRetries > 3 {
 		return fmt.Errorf("invalid preview-controller settings")
 	}
-	return nil
+	return s.Auth.validate(s)
 }
 
 func (s Settings) slotName(n int32) string { return fmt.Sprintf("patchy-preview-%d", n) }
@@ -279,9 +283,12 @@ func rootComponent(p *v1alpha1.Preview) int {
 // ingress is the Preview's one host: a single rule with a Prefix path per
 // component, longest first, so the load balancer tries a sibling's deeper
 // prefix before the root's catch-all whether or not it orders rules itself.
+// With auth required it also carries the slot's pinned sign-in set, the only
+// annotations beside the health-check path; the controller names the slot's
+// client Secret there but never reads it.
 func (s Settings) ingress(p *v1alpha1.Preview, slot int32) *networkingv1.Ingress {
 	pathType := networkingv1.PathTypePrefix
-	className := "alb-preview"
+	className := previewIngressClass
 	paths := make([]networkingv1.HTTPIngressPath, 0, len(p.Spec.Components))
 	for i, c := range p.Spec.Components {
 		paths = append(paths, networkingv1.HTTPIngressPath{
@@ -294,12 +301,14 @@ func (s Settings) ingress(p *v1alpha1.Preview, slot int32) *networkingv1.Ingress
 	slices.SortStableFunc(paths, func(a, b networkingv1.HTTPIngressPath) int {
 		return cmp.Or(cmp.Compare(len(b.Path), len(a.Path)), strings.Compare(a.Path, b.Path))
 	})
+	annotations := map[string]string{
+		annotationHealthcheck: p.Spec.Components[rootComponent(p)].ReadinessPath,
+	}
+	maps.Copy(annotations, s.authFor(slot))
 	return &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: resourceName(p), Namespace: s.slotName(slot), Labels: labelsFor(p),
-			Annotations: map[string]string{
-				annotationHealthcheck: p.Spec.Components[rootComponent(p)].ReadinessPath,
-			},
+			Annotations: annotations,
 		},
 		Spec: networkingv1.IngressSpec{
 			IngressClassName: &className,

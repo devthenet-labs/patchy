@@ -2,13 +2,18 @@
 # SPDX-License-Identifier: MIT
 #
 # Optional: an ACM certificate and, after Helm stage 1, alias records for
-# patchy's own public edge on an ALB (the GitHub webhook and the status page).
+# patchy's own public edge on an ALB (the GitHub webhook, the status page and,
+# with preview_auth, the preview sign-in relay).
 # Any other ingress and certificate source works as well; leave var.edge null
 # then.
 
 locals {
   edge_enabled = var.edge != null
-  edge_hosts   = local.edge_enabled ? compact([var.edge.webhook_host, var.edge.status_host]) : []
+  # The preview sign-in relay sits on the edge ALB too, beside the webhook
+  # and the status page.
+  edge_hosts = local.edge_enabled ? compact([
+    var.edge.webhook_host, var.edge.status_host, var.preview_auth == null ? null : var.preview_auth.host,
+  ]) : []
   edge_domains = local.edge_enabled ? coalesce(var.edge.certificate_domains, local.edge_hosts) : []
 
   # A name and its wildcard (example.com, *.example.com) share one validation

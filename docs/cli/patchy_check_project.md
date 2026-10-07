@@ -13,8 +13,8 @@ intent-controller's Ready verdict on the Project (it mints the App's scoped
 tokens on every repository and ensures the labels in-cluster), the
 IntentNameConflict condition, and the Ready verdict of each covering Forge. The
 check never reads a Secret, so it never handles the App's private key: its
-cluster reads are Projects, Forges, ConfigMaps and the preview placeholder
-Ingress, with your kubeconfig.
+cluster reads are Projects, Forges, ConfigMaps, the preview placeholder
+Ingress and Previews, with your kubeconfig.
 
 The rest is checked with your own identity, and each reason says so: every
 repository resolves to exactly one Forge; each app repository's agent image,
@@ -38,6 +38,14 @@ cluster's own credentials work; a Repository's status.runnerImage and a
 Preview's status are the evidence for those. The preview load balancer admits
 only the chart's preview.inboundCIDRs, so from any other address the TLS check
 times out and is a SKIP, not a FAIL.
+
+With preview sign-in on (the chart's previewAuth), three more checks run:
+the relay answers its discovery document at its issuer; Dex accepts the relay's
+client with its one redirect URI, <relay>/dex/callback (asked of Dex's
+authorization endpoint without signing anyone in, since Dex's client list is
+not readable); and, once sign-in is required, the placeholder host and every
+Ready preview host of the Project answer a request without credentials with
+the load balancer's redirect to the relay for that slot's own client.
 
 -o json or -o yaml prints the whole report as data. The exit status is 1 when
 any check fails, 3 when the Project does not exist and 4 when you may not

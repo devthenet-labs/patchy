@@ -59,8 +59,17 @@ func TestClaudeResumeSpec(t *testing.T) {
 				t.Errorf("sandbox %d: Argv %q lacks %s", sandbox, got.Argv, flag)
 			}
 		}
-		if wantEnv := append(slices.Clone(req.Env), claudeMDFromAddDirs); got.Dir != "/workspace/repo" ||
-			!slices.Equal(got.Env, wantEnv) {
+		// The read-only posture's tools list, which is what leaves it no
+		// shell, is rendered again on resume like every other flag.
+		if hasTools := slices.Contains(got.Argv, "--tools"); hasTools != (sandbox == SandboxReadOnly) {
+			t.Errorf("sandbox %d: --tools rendered = %v in %q, want it exactly for the read-only posture",
+				sandbox, hasTools, got.Argv)
+		}
+		wantEnv := append(slices.Clone(req.Env), claudeMDFromAddDirs)
+		if sandbox == SandboxReadOnly {
+			wantEnv = append(wantEnv, claudeNoAutoMemory)
+		}
+		if got.Dir != "/workspace/repo" || !slices.Equal(got.Env, wantEnv) {
 			t.Errorf("sandbox %d: spec = %+v, want the first run's directory and the request env", sandbox, got)
 		}
 	}

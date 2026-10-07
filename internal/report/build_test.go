@@ -165,9 +165,14 @@ func TestParseBuildErrors(t *testing.T) {
 		{"eleven notes", buildWith(`notes:
   - "The build time comes from a linker flag; check the Dockerfile sets it."`, items("notes", BuildMaxNotes+1,
 			func(i int) string { return fmt.Sprintf("note %d", i) })), "over 10"},
-		{"a note over 500 characters", buildWith(
+		{"a note over 500 characters with a separator", buildWith(
 			`  - "The build time comes from a linker flag; check the Dockerfile sets it."`,
-			`  - "`+strings.Repeat("n", ItemMaxChars+1)+`"`), "over 500"},
+			`  - "Check.\u2029`+strings.Repeat("n", ItemMaxChars)+`"`),
+			"notes[0] holds U+2029, a line or paragraph separator"},
+		{"a hidden character past 500 characters of a note", buildWith(
+			`  - "The build time comes from a linker flag; check the Dockerfile sets it."`,
+			`  - "`+strings.Repeat("n", ItemMaxChars)+`\u200b"`),
+			"notes[0] holds U+200B"},
 		{"failure without a reason", buildWith("success: true", "success: false"),
 			"reason is required when success is false"},
 		{"success with a reason", buildWith("notes:", "reason: \"none\"\nnotes:"), "reason is set but success is true"},
@@ -186,6 +191,37 @@ func TestParseBuildErrors(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("ParseBuild() error = %v, want it to mention %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseBuildAcceptsLongNotes: a note over ItemMaxChars is accepted
+// whole rather than refusing the report and with it the whole build
+// (overdub-10 lost one to a 574-character note). It is not cut: patchy
+// records the report's raw bytes, so a cut would reach no reader.
+func TestParseBuildAcceptsLongNotes(t *testing.T) {
+	tests := []struct {
+		name string
+		note string
+		want string
+	}{
+		{"exactly 500", strings.Repeat("n", ItemMaxChars), strings.Repeat("n", ItemMaxChars)},
+		{"501", strings.Repeat("n", ItemMaxChars+1), strings.Repeat("n", ItemMaxChars+1)},
+		{"overdub-10's 574", strings.Repeat("n", 574), strings.Repeat("n", 574)},
+		{"many characters", strings.Repeat("é", 2000), strings.Repeat("é", 2000)},
+		{"surrounding space is trimmed", "  " + strings.Repeat("n", 600) + "  ", strings.Repeat("n", 600)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := buildWith(`  - "The build time comes from a linker flag; check the Dockerfile sets it."`,
+				`  - "`+tt.note+`"`+"\n"+`  - "A second note."`)
+			b, err := ParseBuild([]byte(src))
+			if err != nil {
+				t.Fatalf("ParseBuild() error = %v, want the note accepted", err)
+			}
+			if want := []string{tt.want, "A second note."}; !slices.Equal(b.Notes, want) {
+				t.Errorf("Notes = %q, want %q", b.Notes, want)
 			}
 		})
 	}

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.12.23](https://github.com/devthenet-labs/patchy/compare/v0.12.22...v0.12.23) (2026-10-07)
+
+
+### Bug Fixes
+
+* **intent:** head a check-fix round's diagnostics "Check failures" ([#149](https://github.com/devthenet-labs/patchy/issues/149)) ([a0949fd](https://github.com/devthenet-labs/patchy/commit/a0949fd8a86d8f567ff944c96ee8662974149a11))
+* **report:** accept an over-long build note rather than refusing the report ([#148](https://github.com/devthenet-labs/patchy/issues/148)) ([d0609d6](https://github.com/devthenet-labs/patchy/commit/d0609d65abb49a95141ce881f5732d216ee4744f))
+* **templates:** tell the planner patchy checks the report itself ([#147](https://github.com/devthenet-labs/patchy/issues/147)) ([be79148](https://github.com/devthenet-labs/patchy/commit/be79148dff870b4cfc830055321448b438cc0a21))
+
+## [0.12.22](https://github.com/devthenet-labs/patchy/compare/v0.12.21...v0.12.22) (2026-10-07)
+
+
+### Bug Fixes
+
+* **harness:** narrow the read-only posture to the file tools ([#145](https://github.com/devthenet-labs/patchy/issues/145)) ([7e49c95](https://github.com/devthenet-labs/patchy/commit/7e49c95d23445d1e050be5eea9b65d57c6d8546e))
+
 ## [0.12.21](https://github.com/devthenet-labs/patchy/compare/v0.12.20...v0.12.21) (2026-10-07)
 
 

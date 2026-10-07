@@ -34,10 +34,9 @@ request was seen only as GitHub rendered it.
 - **`plan`** reads the request and the tree read-only and writes `reports/plan.md`, emitted as a `plan` event. It runs
   on the investigate stage's configuration — `PATCHY_INVESTIGATE_HARNESS`/`_MODEL`/`_TIMEOUT`, and
   `PATCHY_INVESTIGATE_MAX_TURNS`/`_TOKEN_BUDGET` as its ceiling, which a per-Job grant may lower but never raise. Its
-  sandbox is the investigation's read-only one (Read, Glob, Grep and `git log`/`show`/`blame`/`diff`, nothing else run)
-  with one difference: its writes are scoped to `reports/`. claude may create and edit files there, so the planner can
-  fix its report in place, and is refused a write anywhere else in the workspace. A Finding investigation's posture is
-  unchanged.
+  sandbox is the investigation's [read-only one](../deployment/isolation.md#agent-tool-postures): no shell, the file
+  tools alone, and writes scoped to `reports/`, so the planner can fix its report in place and is refused a write
+  anywhere else in the workspace.
 - **`build`** builds the approved plan with the workspace writable — the first build and every revise round — writes
   `reports/build.md` and `commit.sh`, and emits a `remediation` event with the changeset. It runs on the remediate
   stage's configuration, with `PATCHY_REMEDIATE_MANUAL_MAX_TURNS`/`_TOKEN_BUDGET` as its ceiling, which a per-Job grant
@@ -81,9 +80,10 @@ the tool output a build quotes routinely aligns its columns past the plan's boun
 A stage whose report is missing, or refused by its parser (any rule above, and a plan naming a repository outside its
 manifest), is not given up at once on claude or the fake harness. agent-runner asks the agent that wrote the report to
 repair it in the same session. It resumes the session the run left under `HOME` (`claude -p --resume <id>`, from the
-same working directory, with every flag the first run had, so a plan stays read-only and writes only under `reports/`)
-with one message: patchy's fixed text and the refusal reason, quoted as data in a fence. The message asks for the report
-alone, and asks for an untrue claim (tests that failed, a step not built) to be corrected rather than hidden.
+same working directory, with every flag the first run had, so a plan or an investigation stays read-only, with no shell,
+and writes only under `reports/`) with one message: patchy's fixed text and the refusal reason, quoted as data in a
+fence. The message asks for the report alone, and asks for an untrue claim (tests that failed, a step not built) to be
+corrected rather than hidden.
 
 - At most **2 rounds**, each of at most **6 turns** and **10 minutes**, and never more than the stage has left of its
   turns, output tokens (its token budget or grant) and wall clock (its `_TIMEOUT`). No round starts with less than **2

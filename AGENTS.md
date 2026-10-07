@@ -17,7 +17,7 @@ hour, get context-enhanced, then a sandboxed `claude -p` run investigates each o
 remediated in priority order into pull requests, everything else routes to humans. Completed findings expire on a
 TTL; `FindingRollup` resources keep the all-time statistics.
 
-Twelve binaries, one module. "Not monolithic" means separate binaries/deployments with shared `internal/` code:
+Thirteen binaries, one module. "Not monolithic" means separate binaries/deployments with shared `internal/` code:
 
 - `cmd/integration-controller` — the single internet-facing entry point, driven by `Integration` CRs: validates
   provider webhooks (`/github/webhooks` HMAC, `/google-cloud/webhooks` Pub/Sub OIDC, `/wiz/webhooks` bearer
@@ -56,6 +56,16 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   outbound, streams SSE with idle keep-alive pings, audits one slog line per request. Engine in
   `internal/broker`; deployed by the chart exactly when a claude runner is enabled (claude ⇒ broker;
   proxy-only, no in-pod credential mode).
+- `cmd/preview-auth` — OPTIONAL (default-off; chart wiring not built yet): the preview sign-in relay (NOT a
+  controller: no reconcilers, no leases), the OpenID provider every preview host's ALB signs viewers in through. It
+  signs a viewer in once per browser session at Dex (one fixed redirect URI, `<relay>/dex/callback`), admits them by a
+  SubjectAccessReview for get on `projects/previews` named for the Preview's `spec.project`, and hands the ALB only
+  opaque, pairwise, short-lived values. Its Kubernetes access is Previews (get/list/watch, release namespace; no
+  Intents), SubjectAccessReviews and get/update on its one code-ledger Lease; its keys come from a mounted Secret.
+  Every authorize error is a relay page, never a redirect; a transient token failure is 503, never `invalid_grant`.
+  Per-address rate limit; a background probe of every Ready preview host without credentials
+  (`patchy.preview_auth.unprotected_hosts`). Flags carry a `preview-auth-` prefix (`PATCHY_PREVIEW_AUTH_*`). Engine
+  in `internal/previewauth` (core), `internal/previewauth/adapters/*` and `internal/previewauth/httpapi`.
 - `cmd/evaluation-controller` — OPTIONAL (default-off in the chart): remote skill-evaluation execution for
   evolve. Hosts the bearer-authenticated HTTP API (`pkg/evaluation` wire contract: workspace upload streamed to
   source-controller's `:9791` blob endpoint, submission, snapshot, SSE monitoring, cancel; OIDC verify + SAR on
@@ -258,14 +268,21 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   kind never opens as another; every failure is `ErrOpen`) and `RandomToken`. Stdlib only (a test pins that), so a pure
   core may import it; callers bound a blob's length before opening it.
 - `previewauth` — the pure core of the preview sign-in relay (no HTTP server, Kubernetes client, Dex client or
-  signing key; the relay binary and its adapters are not built yet). The redirect-URI grammar (`Callbacks`: exactly
+  signing key; those are `cmd/preview-auth`'s adapters, below). The redirect-URI grammar (`Callbacks`: exactly
   `https://<label>.<suffix>/oauth2/idpresponse`), the per-slot ALB clients and their client secrets, the `KeyRing`
   (current and previous generation) that seals codes, access and refresh tokens, login states and relay sessions as
   `pa1.<kind>.<gen>.<blob>` with the kind and generation in the AAD and strict base64, the binding every token is
   checked against (client, slot, Preview UID, label: `Bound.Matches`), the pairwise subject, the login double-submit
   (a cookie name per sealed state), the OAuth input checks and the access-review input (`ReviewFor`, refused for a
-  Preview with no Project). Access tokens carry no identity. Seeded properties; stdlib, `sealed` and `api/v1alpha1`
-  only (a test pins that).
+  Preview with no Project), and `JudgeProbe` (is a preview host's unauthenticated answer the ALB's redirect to this
+  relay for its own slot). Access tokens carry no identity. Seeded properties; stdlib, `sealed` and `api/v1alpha1`
+  only (a test pins that). Its adapters, one package each under `previewauth/adapters/`: `kubeview` (the
+  `PreviewLookup` over the Preview cache), `access` (the `Authorizer` over `web/authz.ProjectReviewer.Allowed`),
+  `ledger` (single-use codes on one Lease, resourceVersion compare-and-swap, capped), `dex` (go-oidc client of Dex,
+  lazy retried discovery, `web/auth.MapClaims` under the intents-views claims posture), `signer` (RS256, JWKS of
+  current and previous key, RFC 7638 kids), `keydir` (the mounted keys Secret) and `hostprobe` (the unauthenticated
+  host probe, critique F5). `previewauth/httpapi` is the HTTP surface (endpoints, pages, envelope headers, rate
+  limit, audit line, OTel counters); `previewauth/fakedex` is test support only (an in-memory Dex).
 - `intentview` — the pure public projection of intents for the status page: board columns, fixed public wording
   for outcomes and block reasons (never a run's detail or a condition's message), limits with schema defaults, cost
   parsing, and `Text` (templates.VisibleText plus a cap) for every shown string. Copies of intent-controller facts

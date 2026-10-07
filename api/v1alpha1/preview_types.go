@@ -74,10 +74,24 @@ func PreviewComponentPath(c PreviewComponent) string {
 // PreviewSpec is authored by intent-controller in the release namespace.
 // A PR head change updates Revision; an operator's Project change may also
 // update the component runtime configuration.
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.project) || (has(self.project) && self.project == oldSelf.project)",message="spec.project is set once and is then immutable"
 type PreviewSpec struct {
 	// IntentRef pins the exact Intent; a recycled name cannot adopt a preview.
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="intentRef is immutable"
 	IntentRef ObjectReference `json:"intentRef"`
+	// Project is the pinned Intent's spec.project, copied by the writer so a
+	// reader that authorises a viewer per Project (the preview sign-in relay)
+	// needs only Previews, never Intents. It is set once and never changed:
+	// written at create, or once onto a Preview written before the field
+	// existed, and then immutable, as the Intent's own spec.project is.
+	// preview-controller renders nothing whose Project is not its Intent's.
+	// An empty value names no Project, and a reader that needs one fails
+	// closed on it.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=25
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`
+	Project string `json:"project,omitempty"`
 	// HostLabel is the single DNS label before the operator's host suffix.
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +kubebuilder:validation:MaxLength=63

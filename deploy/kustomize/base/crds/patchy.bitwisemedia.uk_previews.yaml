@@ -162,6 +162,20 @@ spec:
                 x-kubernetes-validations:
                 - message: intentRef is immutable
                   rule: self == oldSelf
+              project:
+                description: |-
+                  Project is the pinned Intent's spec.project, copied by the writer so a
+                  reader that authorises a viewer per Project (the preview sign-in relay)
+                  needs only Previews, never Intents. It is set once and never changed:
+                  written at create, or once onto a Preview written before the field
+                  existed, and then immutable, as the Intent's own spec.project is.
+                  preview-controller renders nothing whose Project is not its Intent's.
+                  An empty value names no Project, and a reader that needs one fails
+                  closed on it.
+                maxLength: 25
+                minLength: 1
+                pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                type: string
               ttl:
                 description: |-
                   TTL is at most 72 hours since the last successful deployment. It is
@@ -177,6 +191,10 @@ spec:
             - intentRef
             - ttl
             type: object
+            x-kubernetes-validations:
+            - message: spec.project is set once and is then immutable
+              rule: '!has(oldSelf.project) || (has(self.project) && self.project ==
+                oldSelf.project)'
           status:
             description: |-
               PreviewStatus is written only by preview-controller. Slot is held until

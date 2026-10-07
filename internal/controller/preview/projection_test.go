@@ -100,8 +100,8 @@ func randomProjection(rng *rand.Rand) (*v1alpha1.Project, *v1alpha1.Intent) {
 // (intent.PreviewSourceReconciler, run as deployed) writes a Preview exactly
 // when the derivation has one, and preview-controller's re-check
 // (matchesApprovedPreview) accepts every Preview it writes, as written. One
-// component changed in any field, or one dropped, is refused, so the check
-// is not merely the writer's echo.
+// component changed in any field, one dropped, or another Project named is
+// refused, so the check is not merely the writer's echo.
 func TestProjectionIsWhatTheControllerAccepts(t *testing.T) {
 	rng := rand.New(rand.NewSource(20261003))
 	written := 0
@@ -129,9 +129,11 @@ func TestProjectionIsWhatTheControllerAccepts(t *testing.T) {
 			t.Fatalf("case %d: a Preview written the derivation has none of: %+v", i, p.Spec)
 		case !matchesApprovedPreview(&p, in, project):
 			t.Fatalf("case %d: the controller refuses the projection's Preview %+v", i, p.Spec)
+		case p.Spec.Project != in.Spec.Project:
+			t.Fatalf("case %d: the Preview names Project %q, its Intent %q", i, p.Spec.Project, in.Spec.Project)
 		}
 		written++
-		for k := range 6 {
+		for k := range 7 {
 			forged := p.DeepCopy()
 			comp := &forged.Spec.Components[rng.Intn(len(forged.Spec.Components))]
 			switch k {
@@ -145,8 +147,10 @@ func TestProjectionIsWhatTheControllerAccepts(t *testing.T) {
 				comp.Path = "/elsewhere"
 			case 4:
 				comp.Name += "x"
-			default:
+			case 5:
 				forged.Spec.Components = forged.Spec.Components[1:]
+			default:
+				forged.Spec.Project = "other"
 			}
 			if matchesApprovedPreview(forged, in, project) {
 				t.Fatalf("case %d: a forged Preview (change %d) was accepted: %+v", i, k, forged.Spec)

@@ -85,7 +85,9 @@ Twelve binaries, one module. "Not monolithic" means separate binaries/deployment
   periodic orphan sweep. Intent-controller projects the operator's Project preview config and recorded PR head into
   Preview spec only when explicitly enabled: one component per previewed repository (at most four, path-routed on one
   host), a repository with no PR running its default-branch head from `status.previewBases`, all derived by the one
-  pure `v1alpha1.DesiredPreviewComponents` the writer and the controller's re-check share. The intent reconciler reads
+  pure `v1alpha1.DesiredPreviewComponents` the writer and the controller's re-check share. The writer also stamps the
+  Intent's Project into `spec.project` (set once, then immutable by CEL; backfilled onto older Previews), which the
+  re-check holds to the Intent's, so a per-Project reader needs only Previews. The intent reconciler reads
   Preview status (one uncached get per pass, never written) to link the preview from the issue's status comment and one
   sticky comment per previewed PR, only once it checks out (`preview_view.go`: UID, observed generation, derived
   revisions, a bare `https://<intent>.<suffix>`). See `docs/configuration/preview-controller.md`.

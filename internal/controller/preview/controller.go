@@ -91,7 +91,16 @@ func (r *Reconciler) reconcilePresent(ctx context.Context, p *v1alpha1.Preview) 
 // and accepts the spec only if every component matches it, in order: name,
 // image repository, revision, port, readiness path and route path. A forged
 // or stale spec renders nothing.
+//
+// spec.project, once set, must be the Intent's own Project (and the Project
+// re-derived from): the sign-in relay authorises a viewer against it alone.
+// An empty one is a Preview written before the field existed, which the
+// writer stamps on its next pass; it renders as before, and the relay, which
+// needs a Project, fails closed on it meanwhile.
 func matchesApprovedPreview(p *v1alpha1.Preview, in *v1alpha1.Intent, project *v1alpha1.Project) bool {
+	if p.Spec.Project != "" && (p.Spec.Project != in.Spec.Project || p.Spec.Project != project.Name) {
+		return false
+	}
 	want, ok := v1alpha1.DesiredPreviewComponents(project, in)
 	if !ok || len(want) != len(p.Spec.Components) {
 		return false

@@ -89,6 +89,7 @@ func TestCallbackParse(t *testing.T) {
 		{"https://a.preview.example.com/oauth2/idpresponse ", ""},
 		{"https://a.preview.example.com/oauth2/idpresponse\n", ""},
 		{"https://bücher.preview.example.com/oauth2/idpresponse", ""},
+		{"https://demo-\u0430.preview.example.com/oauth2/idpresponse", ""}, // a Cyrillic a, a homoglyph of a valid label
 		{"https://" + strings.Repeat("a", 64) + ".preview.example.com/oauth2/idpresponse", ""},
 		{"//a.preview.example.com/oauth2/idpresponse", ""},
 		{"https:a.preview.example.com/oauth2/idpresponse", ""},
@@ -177,10 +178,10 @@ var mutations = []func(r *rand.Rand, label string) string{
 		return []string{"http://", "HTTPS://", "https:/", "//", "https:///", "wss://"}[r.Intn(6)] + l + "." + testSuffix +
 			CallbackPath
 	},
-	func(r *rand.Rand, l string) string { // an invalid label character
+	func(r *rand.Rand, l string) string { // an invalid label character, non-ASCII (an IDN label) included
 		i := r.Intn(len(l) + 1)
-		c := "_.*~!$&'()+,;=ü"[r.Intn(14)]
-		return "https://" + l[:i] + string([]byte{c}) + l[i:] + "." + testSuffix + CallbackPath
+		c := invalidLabelChars[r.Intn(len(invalidLabelChars))]
+		return "https://" + l[:i] + c + l[i:] + "." + testSuffix + CallbackPath
 	},
 	func(r *rand.Rand, l string) string { // a leading or trailing hyphen
 		if r.Intn(2) == 0 {
@@ -188,6 +189,13 @@ var mutations = []func(r *rand.Rand, label string) string{
 		}
 		return "https://" + l + "-." + testSuffix + CallbackPath
 	},
+}
+
+// invalidLabelChars are inserted whole into a valid label, so a multi-byte
+// character is never split.
+var invalidLabelChars = []string{
+	"_", ".", "*", "~", "!", "$", "&", "'", "(", ")", "+", ",", ";", "=",
+	"ü", "é", "ı", "\u0430", // non-ASCII: IDN letters and a Cyrillic homoglyph of a
 }
 
 func upperOne(r *rand.Rand, s string) string {

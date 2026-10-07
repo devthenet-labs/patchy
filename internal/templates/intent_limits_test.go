@@ -70,9 +70,9 @@ func TestPlanPromptStatesItsLimits(t *testing.T) {
 			}
 			for _, want := range []string{
 				"make all of those Read, Glob and Grep calls together in one response",
-				"You cannot run commands, tests, builds, package managers or\nscripts",
-				"the only shell commands allowed are `git log`, `git show`, `git blame` and `git diff`",
-				"no file except your report, `/workspace/reports/plan.md`: a write anywhere else is refused",
+				"It has no shell: you cannot run commands, tests, builds,\npackage managers, scripts or git.",
+				"Your only tools are Glob, Grep and Read, to find and read files, and Write and Edit,\nfor your report.",
+				"no file except your report, `/workspace/reports/plan.md`: a write anywhere else is\nrefused",
 				"(CLAUDE.md, AGENTS.md, CONTRIBUTING.md, the README's development notes)",
 				"Name the test command its CI runs",
 				"Edit it in place",

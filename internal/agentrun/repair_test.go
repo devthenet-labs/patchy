@@ -230,8 +230,8 @@ func TestRepairInvalidReport(t *testing.T) {
 				t.Fatalf("commands = %d, want the first run and one repair", len(fx.specs))
 			}
 			c.checkRepairCommand(t, ws, fx.specs[0], fx.specs[1])
-			if c.phase == PhasePlan {
-				checkPlanRepairScope(t, ws, fx.specs[1])
+			if c.phase == PhasePlan || c.phase == PhaseInvestigate {
+				checkReadOnlyRepairScope(t, ws, fx.specs[1])
 			}
 			checkRepairedSpend(t, stage)
 			checkRepairTranscript(t, turns(t, out.String()))
@@ -240,20 +240,20 @@ func TestRepairInvalidReport(t *testing.T) {
 	}
 }
 
-// checkPlanRepairScope pins what a plan's repair may write: its reports
-// directory alone, as the first plan run (TestPlanRunsReadOnly), never the
-// posture's bare Write, so fixing a report cannot touch the repository.
-func checkPlanRepairScope(t *testing.T, ws string, repair runner.CommandSpec) {
+// checkReadOnlyRepairScope pins what a read-only stage's repair may do:
+// write its reports directory alone, as the first run (TestPlanRunsReadOnly,
+// TestReadOnlyStagesWriteOnlyTheirReports), never the posture's bare Write,
+// and with no shell, so fixing a report cannot touch the repository or the
+// settings the resumed run reads.
+func checkReadOnlyRepairScope(t *testing.T, ws string, repair runner.CommandSpec) {
 	t.Helper()
-	i := slices.Index(repair.Argv, "--allowedTools")
-	if i < 0 || i+1 >= len(repair.Argv) {
-		t.Fatalf("plan repair argv lacks --allowedTools: %q", repair.Argv)
-	}
-	tools := strings.Fields(repair.Argv[i+1])
+	allow := argvFlag(t, repair.Argv, "--allowedTools")
+	tools := strings.Fields(allow)
 	if scoped := "Edit(/" + filepath.Join(ws, "reports") + "/**)"; !slices.Contains(tools, scoped) ||
 		slices.Contains(tools, "Write") {
-		t.Errorf("plan repair --allowedTools = %q, want %s and no bare Write", repair.Argv[i+1], scoped)
+		t.Errorf("repair --allowedTools = %q, want %s and no bare Write", allow, scoped)
 	}
+	checkNoShell(t, repair.Argv)
 }
 
 // checkRepairCommand checks a repair continues the first run's session under

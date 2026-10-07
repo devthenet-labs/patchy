@@ -187,10 +187,9 @@ func readReport(path string) ([]byte, error) {
 // repository): the prompt lists each tree, and a plan naming a repository
 // outside it is invalid, with the reason its retry is told.
 //
-// The planner reads the other trees with the read-only posture's own
+// The planner reads the other trees with the read-only posture's own file
 // tools: they sit under the workspace, which every stage adds as a
-// directory the agent may read, and they have no git history for the
-// posture's git-only Bash to read, so the posture is not widened for them.
+// directory the agent may read, so the posture is not widened for them.
 func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.Plan {
 	ev := &envelope.Plan{Stage: envelope.Stage{
 		Harness: a.cfg.InvestigateHarness,
@@ -252,11 +251,10 @@ func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.
 	// repository-image Job), so the intent controller sets each stage's on
 	// the Env of the jobs Client it launches that stage with.
 	//
-	// The posture is the investigation's, with its writes scoped to the
-	// report's directory: the planner can write and fix up its report and
-	// nothing else, which is what its prompt tells it. A Finding
-	// investigation sets no WriteDirs, so its invocation does not move. A
-	// report repair resumes with this same request, so it keeps the scope.
+	// The posture is the investigation's: no shell, and writes scoped to
+	// the report's directory, so the planner can write and fix up its report
+	// and nothing else, which is what its prompt tells it. A report repair
+	// resumes with this same request, so it keeps the scope.
 	sr := a.newStage(h, cli, harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.InvestigateModel, a.cfg.InvestigateHarness),

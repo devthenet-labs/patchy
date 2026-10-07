@@ -167,11 +167,12 @@ func TestPlanRunsReadOnly(t *testing.T) {
 		}
 		return argv[i+1]
 	}
-	// The read-only posture with its writes scoped to the report's directory.
-	if got := flag("--allowedTools"); got != "Read Glob Grep Edit(/"+filepath.Join(ws, "reports")+"/**) "+
-		"Bash(git log:*) Bash(git show:*) Bash(git blame:*) Bash(git diff:*)" {
+	// The read-only posture: no shell, and its writes scoped to the
+	// report's directory.
+	if got := flag("--allowedTools"); got != "Read Glob Grep Edit(/"+filepath.Join(ws, "reports")+"/**)" {
 		t.Errorf("--allowedTools = %q, want the read-only posture writing only under reports/", got)
 	}
+	checkNoShell(t, argv)
 	// The tree being planned cannot widen that posture through its own
 	// .claude/ settings or .mcp.json: the run reads the user source alone.
 	if got := flag("--setting-sources"); got != "user" || !slices.Contains(argv, "--strict-mcp-config") {

@@ -29,7 +29,8 @@ const (
 //	  ran: true | false            # required
 //	  passed: true | false         # required; false when ran is false
 //	  command: "<go test ./...>"   # required when ran is true
-//	notes: []                      # at most 10 one-line items for reviewers
+//	notes: []                      # at most 10 one-line items for reviewers;
+//	                               # not held to the 500-character item bound
 //	reason: "<one line>"           # required exactly when success is false
 //	---
 //
@@ -125,7 +126,15 @@ func (b *Build) validate() error {
 		errs = append(errs, err)
 	}
 	errs = append(errs, b.validateTests())
-	errs = append(errs, lines("notes", b.Notes, BuildMaxNotes, ItemMaxChars))
+	// A note is a pointer for reviewers, not something the build rests on, so
+	// an over-long one is no reason to throw away a build that implemented
+	// and committed its plan (overdub-10 lost one to a 574-character note).
+	// It is accepted whole, not cut: patchy records the report's raw bytes,
+	// so a cut would reach no reader, and the whole note is still held to
+	// every other rule of a one-line item, along its whole length. Each is
+	// still capped, at the whole document's bound (ReportMaxBytes). The
+	// plan's lists keep ItemMaxChars: a plan is approved as its exact bytes.
+	errs = append(errs, lines("notes", b.Notes, BuildMaxNotes, ReportMaxBytes))
 	if b.Success != nil {
 		switch {
 		case !*b.Success:

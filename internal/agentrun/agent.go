@@ -436,6 +436,7 @@ func (a *Agent) investigate(ctx context.Context) *envelope.Investigation {
 	prompt, err := templates.RenderInvestigatePrompt(templates.InvestigatePrompt{
 		IssuePath:         a.cfg.issuePath(),
 		ReportPath:        a.cfg.investigationPath(),
+		ReadOnlyEnforced:  harness.EnforcesReadOnly(h),
 		AllowedModels:     a.cfg.ModelAllowlist,
 		AutoMaxTurns:      a.cfg.RemediateAutoMaxTurns,
 		AutoTokenBudget:   a.cfg.RemediateAutoTokenBudget,
@@ -456,6 +457,11 @@ func (a *Agent) investigate(ctx context.Context) *envelope.Investigation {
 		return ev
 	}
 
+	// The read-only posture with its writes scoped to the report's
+	// directory, as the plan stage's: the agent can write and fix up its
+	// report and nothing else, not the tree and not the settings under HOME
+	// that a report repair's resumed run reads. The repair resumes with this
+	// same request, so it keeps the scope.
 	sr := a.newStage(h, cli, harness.PromptRequest{
 		Prompt:    prompt,
 		Model:     a.cliModel(a.cfg.InvestigateModel, a.cfg.InvestigateHarness),
@@ -464,6 +470,7 @@ func (a *Agent) investigate(ctx context.Context) *envelope.Investigation {
 		SessionID: a.newSessionID(),
 		AddDirs:   []string{a.cfg.Workspace},
 		Env:       env,
+		WriteDirs: []string{filepath.Dir(a.cfg.investigationPath())},
 	}, a.cfg.InvestigateTimeout, a.cfg.InvestigateIdleTimeout, a.cfg.InvestigateTokenBudget)
 	res, idle, runErr := a.start(ctx, sr)
 	a.fillStage(&ev.Stage, h, res)

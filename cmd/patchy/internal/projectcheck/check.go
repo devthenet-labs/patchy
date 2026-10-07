@@ -70,6 +70,9 @@ type Config struct {
 	Resolver Resolver
 	// DialTLS completes the preview TLS handshake; nil is DialTLS.
 	DialTLS TLSDialer
+	// HTTP sends the preview sign-in checks' requests, never following a
+	// redirect; nil is NewHTTPDoer.
+	HTTP HTTPDoer
 }
 
 // run is one check of one Project.
@@ -97,6 +100,9 @@ func Run(ctx context.Context, cfg Config) (Report, error) {
 	}
 	if cfg.DialTLS == nil {
 		cfg.DialTLS = DialTLS
+	}
+	if cfg.HTTP == nil {
+		cfg.HTTP = NewHTTPDoer()
 	}
 	var p v1alpha1.Project
 	if err := cfg.Reader.Get(ctx, types.NamespacedName{Namespace: cfg.Namespace, Name: cfg.Project}, &p); err != nil {
@@ -437,6 +443,7 @@ func (r *run) previews(ctx context.Context, s settings) {
 		r.previewImage(ctx, rp, prefix, baseRuns)
 	}
 	r.previewHost(ctx, suffix)
+	r.previewAuth(ctx, s, suffix)
 }
 
 // previewImage checks one previewed repository's image repository: under

@@ -35,6 +35,9 @@ const (
 	sourceController  = "source-controller"
 	intentController  = "intent-controller"
 	previewController = "preview-controller"
+	// previewAuth is the preview sign-in relay, chart-only: it never reads
+	// kustomize's shared ConfigMap.
+	previewAuth = "preview-auth"
 )
 
 // The configuration keys the check reads; each is a PATCHY_* environment
@@ -89,6 +92,9 @@ func (c controllerConfig) list(key string) []string {
 // Secret: only ConfigMaps.
 type settings struct {
 	source, intent, preview controllerConfig
+	// auth is the preview sign-in relay's own settings, found only when the
+	// chart's previewAuth is on.
+	auth controllerConfig
 	// cosignKey is the PEM of source-controller's cosign key ConfigMap,
 	// empty when there is none.
 	cosignKey string
@@ -103,7 +109,7 @@ func loadSettings(ctx context.Context, r client.Reader, namespace string) settin
 	if err != nil {
 		err = fmt.Errorf("list the patchy ConfigMaps in namespace %s: %w", namespace, err)
 		failed := controllerConfig{err: err}
-		return settings{source: failed, intent: failed, preview: failed}
+		return settings{source: failed, intent: failed, preview: failed, auth: failed}
 	}
 	items := list.Items
 	slices.SortFunc(items, func(a, b corev1.ConfigMap) int { return strings.Compare(a.Name, b.Name) })
@@ -112,6 +118,7 @@ func loadSettings(ctx context.Context, r client.Reader, namespace string) settin
 		source:  overlay(shared, pick(items, sourceController)),
 		intent:  overlay(shared, pick(items, intentController)),
 		preview: overlay(shared, pick(items, previewController)),
+		auth:    overlay(nil, pick(items, previewAuth)),
 	}
 	for i := range items {
 		if items[i].Labels[labelName] == sourceController && items[i].Data[cosignKeyData] != "" {

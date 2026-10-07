@@ -38,8 +38,8 @@ func newCheckProjectCmd(opts *Options) *cobra.Command {
 			"tokens on every repository and ensures the labels in-cluster), the\n" +
 			"IntentNameConflict condition, and the Ready verdict of each covering Forge. The\n" +
 			"check never reads a Secret, so it never handles the App's private key: its\n" +
-			"cluster reads are Projects, Forges, ConfigMaps and the preview placeholder\n" +
-			"Ingress, with your kubeconfig.\n\n" +
+			"cluster reads are Projects, Forges, ConfigMaps, the preview placeholder\n" +
+			"Ingress and Previews, with your kubeconfig.\n\n" +
 			"The rest is checked with your own identity, and each reason says so: every\n" +
 			"repository resolves to exactly one Forge; each app repository's agent image,\n" +
 			"as .patchy/agent.yaml (or .devcontainer/devcontainer.json) declares it at the\n" +
@@ -61,6 +61,13 @@ func newCheckProjectCmd(opts *Options) *cobra.Command {
 			"Preview's status are the evidence for those. The preview load balancer admits\n" +
 			"only the chart's preview.inboundCIDRs, so from any other address the TLS check\n" +
 			"times out and is a SKIP, not a FAIL.\n\n" +
+			"With preview sign-in on (the chart's previewAuth), three more checks run:\n" +
+			"the relay answers its discovery document at its issuer; Dex accepts the relay's\n" +
+			"client with its one redirect URI, <relay>/dex/callback (asked of Dex's\n" +
+			"authorization endpoint without signing anyone in, since Dex's client list is\n" +
+			"not readable); and, once sign-in is required, the placeholder host and every\n" +
+			"Ready preview host of the Project answer a request without credentials with\n" +
+			"the load balancer's redirect to the relay for that slot's own client.\n\n" +
 			"-o json or -o yaml prints the whole report as data. The exit status is 1 when\n" +
 			"any check fails, 3 when the Project does not exist and 4 when you may not\n" +
 			"read it.",
@@ -81,6 +88,7 @@ func newCheckProjectCmd(opts *Options) *cobra.Command {
 				keychain: resolve.NewKeychain(),
 				resolver: net.DefaultResolver,
 				dialTLS:  projectcheck.DialTLS,
+				http:     projectcheck.NewHTTPDoer(),
 			})
 		},
 	}
@@ -109,6 +117,7 @@ type checkProjectDeps struct {
 	keychain authn.Keychain
 	resolver projectcheck.Resolver
 	dialTLS  projectcheck.TLSDialer
+	http     projectcheck.HTTPDoer
 }
 
 // runCheckProject runs the checks and renders the report; any failed check
@@ -134,6 +143,7 @@ func runCheckProject(ctx context.Context, opts *Options, name string, deps check
 	report, err := projectcheck.Run(ctx, projectcheck.Config{
 		Reader: env.Client, Namespace: env.Namespace, Project: name,
 		GitHub: deps.github, Keychain: deps.keychain, Resolver: deps.resolver, DialTLS: deps.dialTLS,
+		HTTP: deps.http,
 	})
 	if err != nil {
 		return fmt.Errorf("project %s in namespace %s: %w", name, env.Namespace, err)

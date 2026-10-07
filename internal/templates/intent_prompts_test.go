@@ -167,13 +167,29 @@ func TestPlanPromptStatesTheRules(t *testing.T) {
 		// A live planner spent its last turns writing scripts to check
 		// these rules after its plan was written, and ran out of turns:
 		// patchy checks them itself and asks for a repair.
-		"Do not check these rules yourself",
+		// Only what is checked in the pod for every plan: the repositories
+		// are not (one repository has no manifest to hold them to), so the
+		// planner is still told to get them right.
+		"Do not check the frontmatter limits or these layout rules yourself",
 		"if it refuses the report it tells you, in this same session, exactly what to correct",
-		"write no script or command to test the report",
-		"Write the report once, then\nend your turn.",
+		"Naming each repository exactly as the request lists it is still yours to get right.",
+		"write no script or command to\ntest the report",
+		"Write the report once, then end\nyour turn.",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("plan prompt lacks %q", want)
+		}
+	}
+	// A refused report is repaired in the same session, so no rule may
+	// still say it fails the run outright: that fear is what sends a
+	// planner to check its own report.
+	for _, stale := range []string{
+		"failing the run with no\nplan",
+		"fails the entire\nrun",
+		"every rule above",
+	} {
+		if strings.Contains(got, stale) {
+			t.Errorf("plan prompt still says %q", stale)
 		}
 	}
 }

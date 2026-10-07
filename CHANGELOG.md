@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.24](https://github.com/devthenet-labs/patchy/compare/v0.12.23...v0.12.24) (2026-10-07)
+
+
+### Features
+
+* **preview-auth:** sign previews in through a patchy relay (off by default) ([#151](https://github.com/devthenet-labs/patchy/issues/151)) ([f78d4f6](https://github.com/devthenet-labs/patchy/commit/f78d4f6e4cdcfb26c8e89390e1c3039915400cba))
+
 ## [0.12.23](https://github.com/devthenet-labs/patchy/compare/v0.12.22...v0.12.23) (2026-10-07)
 
 

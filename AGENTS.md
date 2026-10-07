@@ -257,6 +257,15 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   secret, one key per purpose), `Seal`/`Open` (AES-256-GCM of a JSON value with caller-supplied AAD, so a token of one
   kind never opens as another; every failure is `ErrOpen`) and `RandomToken`. Stdlib only (a test pins that), so a pure
   core may import it; callers bound a blob's length before opening it.
+- `previewauth` — the pure core of the preview sign-in relay (no HTTP server, Kubernetes client, Dex client or
+  signing key; the relay binary and its adapters are not built yet). The redirect-URI grammar (`Callbacks`: exactly
+  `https://<label>.<suffix>/oauth2/idpresponse`), the per-slot ALB clients and their client secrets, the `KeyRing`
+  (current and previous generation) that seals codes, access and refresh tokens, login states and relay sessions as
+  `pa1.<kind>.<gen>.<blob>` with the kind and generation in the AAD and strict base64, the binding every token is
+  checked against (client, slot, Preview UID, label: `Bound.Matches`), the pairwise subject, the login double-submit
+  (a cookie name per sealed state), the OAuth input checks and the access-review input (`ReviewFor`, refused for a
+  Preview with no Project). Access tokens carry no identity. Seeded properties; stdlib, `sealed` and `api/v1alpha1`
+  only (a test pins that).
 - `intentview` — the pure public projection of intents for the status page: board columns, fixed public wording
   for outcomes and block reasons (never a run's detail or a condition's message), limits with schema defaults, cost
   parsing, and `Text` (templates.VisibleText plus a cap) for every shown string. Copies of intent-controller facts

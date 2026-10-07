@@ -55,6 +55,8 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	f.String("preview-auth-dex-issuer-url", "", "Dex's issuer URL (https)")
 	f.String("preview-auth-dex-client-id", "", "the relay's static client id at Dex")
 	f.String("preview-auth-dex-client-secret-file", "", "mounted file holding the relay's Dex client secret")
+	f.String("preview-auth-dex-ca-file", "", "PEM certificates trusted for Dex besides the system roots "+
+		"(a Dex behind a private CA); empty trusts the system roots only")
 	f.String("preview-auth-username-claim", "preferred_username", "ID-token claim access reviews run for")
 	f.String("preview-auth-groups-claim", "groups", "ID-token claim holding the viewer's groups")
 	f.String("preview-auth-username-prefix", "", "prefix for the username in access reviews (required)")
@@ -150,9 +152,20 @@ func loadStatic(opts *cli.Options) (static, error) {
 	if err != nil {
 		return st, err
 	}
+	var httpClient *http.Client
+	if path := opts.String("preview-auth-dex-ca-file"); path != "" {
+		caPEM, err := os.ReadFile(path)
+		if err != nil {
+			return st, fmt.Errorf("dex CA bundle: %w", err)
+		}
+		if httpClient, err = dex.ClientWithCA(caPEM); err != nil {
+			return st, err
+		}
+	}
 	st.upstream, err = dex.New(dex.Config{
 		IssuerURL: opts.String("preview-auth-dex-issuer-url"), ClientID: opts.String("preview-auth-dex-client-id"),
 		ClientSecret: secret, RedirectURL: st.issuer + dex.CallbackPath, Claims: claims(opts),
+		HTTPClient: httpClient,
 	})
 	return st, err
 }

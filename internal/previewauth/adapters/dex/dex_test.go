@@ -5,6 +5,7 @@ package dex
 
 import (
 	"context"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -203,5 +204,47 @@ func TestConfigValidate(t *testing.T) {
 				t.Fatal("accepted")
 			}
 		})
+	}
+}
+
+// TestClientWithCA trusts a Dex behind a private CA: discovery succeeds
+// with the bundle and fails without it, and a bundle that is not a list of
+// certificates is refused.
+func TestClientWithCA(t *testing.T) {
+	d, err := fakedex.StartTLS("relay", "relay-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.Close)
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: d.Certificate().Raw})
+
+	ready := func(c *http.Client) error {
+		u, err := New(Config{IssuerURL: d.URL, ClientID: "relay", ClientSecret: "relay-secret",
+			RedirectURL: redirect, Claims: claims(), HTTPClient: c})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u.Ready(context.Background())
+	}
+	c, err := ClientWithCA(caPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ready(c); err != nil {
+		t.Fatalf("discovery with the CA bundle: %v", err)
+	}
+	if err := ready(&http.Client{Timeout: 5 * time.Second}); err == nil {
+		t.Fatal("discovery succeeded without trusting the private CA")
+	}
+
+	for name, bundle := range map[string][]byte{
+		"empty":       nil,
+		"not PEM":     []byte("hello"),
+		"a key block": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte{1}}),
+		"bad cert":    pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte{1, 2, 3}}),
+	} {
+		if _, err := ClientWithCA(bundle); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

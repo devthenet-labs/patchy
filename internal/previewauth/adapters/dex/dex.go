@@ -5,6 +5,9 @@ package dex
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
@@ -86,6 +89,39 @@ func CheckClaims(c auth.ClaimsConfig) error {
 		return errors.New("claims: the email username claim needs requireVerifiedEmail")
 	}
 	return nil
+}
+
+// ClientWithCA is an HTTP client for Dex that trusts the PEM certificates in
+// caPEM besides the system's roots: a Dex behind a private CA. Every
+// certificate in it must parse, and there must be at least one.
+func ClientWithCA(caPEM []byte) (*http.Client, error) {
+	pool, err := x509.SystemCertPool()
+	if err != nil {
+		pool = x509.NewCertPool()
+	}
+	n := 0
+	for rest := caPEM; ; {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			return nil, fmt.Errorf("dex CA bundle: a %s block, want CERTIFICATE", block.Type)
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("dex CA bundle: %w", err)
+		}
+		pool.AddCert(cert)
+		n++
+	}
+	if n == 0 {
+		return nil, errors.New("dex CA bundle holds no PEM certificate")
+	}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	return &http.Client{Transport: tr, Timeout: discoveryTimeout}, nil
 }
 
 // Upstream signs viewers in at Dex.

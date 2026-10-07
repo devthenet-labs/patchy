@@ -32,6 +32,23 @@ helm template patchy charts/patchy -f hack/testdata/chart-render/preview-foundat
   -f hack/testdata/chart-render/intent-controller.yaml \
   -f hack/testdata/chart-render/preview-controller.yaml >/dev/null
 
+# Preview sign-in (previewAuth, off by default) in both stages: permit over
+# the slots alone, require (confirmed, as a render without a cluster must)
+# over the whole preview runtime and the edge class.
+helm lint charts/patchy -f hack/testdata/chart-render/preview-foundation.yaml \
+  -f hack/testdata/chart-render/preview-auth.yaml
+helm lint charts/patchy -f hack/testdata/chart-render/preview-foundation.yaml \
+  -f hack/testdata/chart-render/intent-controller.yaml \
+  -f hack/testdata/chart-render/preview-controller.yaml \
+  -f hack/testdata/chart-render/preview-auth.yaml \
+  --set previewAuth.stage=require --set previewAuth.permitConfirmedGeneration=1
+helm template patchy charts/patchy -f hack/testdata/chart-render/preview-foundation.yaml \
+  -f hack/testdata/chart-render/auto-mode.yaml \
+  -f hack/testdata/chart-render/intent-controller.yaml \
+  -f hack/testdata/chart-render/preview-controller.yaml \
+  -f hack/testdata/chart-render/preview-auth.yaml \
+  --set previewAuth.stage=require --set previewAuth.permitConfirmedGeneration=1 >/dev/null
+
 # The EKS Auto Mode toggles (each default off): node-local DNS egress, the
 # preview NodeClass/NodePool and the edge IngressClass, over the whole stack.
 helm lint charts/patchy -f hack/testdata/chart-render/preview-foundation.yaml \

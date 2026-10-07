@@ -56,8 +56,10 @@ Thirteen binaries, one module. "Not monolithic" means separate binaries/deployme
   outbound, streams SSE with idle keep-alive pings, audits one slog line per request. Engine in
   `internal/broker`; deployed by the chart exactly when a claude runner is enabled (claude ⇒ broker;
   proxy-only, no in-pod credential mode).
-- `cmd/preview-auth` — OPTIONAL (default-off; chart wiring not built yet): the preview sign-in relay (NOT a
-  controller: no reconcilers, no leases), the OpenID provider every preview host's ALB signs viewers in through. It
+- `cmd/preview-auth` — OPTIONAL (default-off; chart `previewAuth`, two stages: `permit` admits the pinned sign-in
+  annotations, `require` puts every slot Ingress behind them, refused by a `lookup` until the permit stage is live;
+  chart-only, no kustomize component): the preview sign-in relay (NOT a controller: no reconcilers, no leases), the
+  OpenID provider every preview host's ALB signs viewers in through. It
   signs a viewer in once per browser session at Dex (one fixed redirect URI, `<relay>/dex/callback`), admits them by a
   SubjectAccessReview for get on `projects/previews` named for the Preview's `spec.project`, and hands the ALB only
   opaque, pairwise, short-lived values. Its Kubernetes access is Previews (get/list/watch, release namespace; no

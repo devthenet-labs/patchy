@@ -180,8 +180,9 @@ agent-log check is still open; absence of errors in Kubernetes events is not a s
 
 ## Sign-in on preview Ingresses (off by default)
 
-The sign-in relay (`cmd/preview-auth`) is not wired into the chart yet. Until it is, these flags stay off and every slot
-Ingress renders exactly as before. The controller's side:
+The chart sets these flags from `previewAuth` in its require stage only (see the chart README's preview sign-in
+section); off, and in the permit stage, they stay unset and every slot Ingress renders exactly as before. The
+controller's side:
 
 - `--preview-auth-required` (`PATCHY_PREVIEW_AUTH_REQUIRED`) renders each slot's pinned sign-in annotations onto every
   Ingress it writes, beside the health-check path. It names the slot's client Secret there and never reads it.

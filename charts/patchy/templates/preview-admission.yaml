@@ -20,6 +20,22 @@
 {{- range $i := until 4 }}{{ $guardSlots = append $guardSlots (printf "patchy-preview-%d" $i) }}{{ end }}
 {{- $prefix := include "patchy.previewImagePrefix" . }}
 {{- /*
+Preview sign-in (previewAuth, _preview-auth.tpl): with it enabled, the slot
+Ingress policy admits each admitted key generation's pinned sign-in
+annotations, exactly and as a whole set, and records the generations in its
+preview-auth-admits annotation (the require stage's lookup reads it). In the
+require stage a second, kept policy requires them. Disabled, both policies
+render exactly as before.
+*/}}
+{{- $pas := include "patchy.previewAuthState" . | fromJson }}
+{{- $authWant := "" }}
+{{- if $pas.enabled }}
+{{- $gens := list $pas.gen }}
+{{- if gt (int $pas.prevGen) 0 }}{{ $gens = append $gens $pas.prevGen }}{{ end }}
+{{- $authWant = include "patchy.previewAuthWant" (dict "st" $pas "gens" $gens) }}
+{{- end }}
+{{- $authKeys := list "alb.ingress.kubernetes.io/auth-type" "alb.ingress.kubernetes.io/auth-idp-oidc" "alb.ingress.kubernetes.io/auth-on-unauthenticated-request" "alb.ingress.kubernetes.io/auth-scope" "alb.ingress.kubernetes.io/auth-session-cookie" "alb.ingress.kubernetes.io/auth-session-timeout" | toJson }}
+{{- /*
 An UPDATE that changes nothing a load balancer reads: its spec and annotations
 are exactly what they were (a finalizer, label or owner reference change).
 EKS Auto Mode removes its group.ingress.eks.amazonaws.com finalizer with such
@@ -317,6 +333,11 @@ metadata:
     name: patchy-preview-ingresses
     annotations:
         helm.sh/resource-policy: keep
+        {{- if $pas.enabled }}
+        # The key generations whose sign-in annotations this policy admits;
+        # the require stage refuses to apply one not listed here.
+        patchy.bitwisemedia.uk/preview-auth-admits: {{ $pas.admits | quote }}
+        {{- end }}
 spec:
     failurePolicy: Fail
     matchConstraints:
@@ -333,6 +354,16 @@ spec:
     variables:
         - name: helmPlaceholder
           expression: "request.namespace == 'patchy-preview-0' && object.metadata.name == 'patchy-preview-placeholder'"
+        {{- if $pas.enabled }}
+        # Slot namespace -> the pinned sign-in sets admitted there, one per
+        # admitted key generation.
+        - name: authWant
+          expression: >-
+              {{ $authWant }}
+        - name: authKeys
+          expression: >-
+              {{ $authKeys }}
+        {{- end }}
     validations:
         - expression: >-
               object.spec.ingressClassName == 'alb-preview' &&
@@ -368,8 +399,20 @@ spec:
                 (variables.helmPlaceholder && (
                   (k == 'helm.sh/resource-policy' && v == 'keep') ||
                   (k == 'meta.helm.sh/release-name' && v == {{ .Release.Name | quote }}) ||
-                  (k == 'meta.helm.sh/release-namespace' && v == {{ .Release.Namespace | quote }}))))
-          message: preview Ingress annotations are restricted to a safe healthcheck path or the named placeholder's Helm ownership
+                  (k == 'meta.helm.sh/release-namespace' && v == {{ .Release.Namespace | quote }}))){{ if $pas.enabled }} ||
+                k in variables.authKeys{{ end }})
+          message: preview Ingress annotations are restricted to a safe healthcheck path or the named placeholder's Helm ownership{{ if $pas.enabled }}, plus the slot's pinned sign-in annotations{{ end }}
+        {{- if $pas.enabled }}
+        # Sign-in annotations come as one admitted generation's whole set for
+        # this very slot (its own client Secret and cookie), or not at all.
+        - expression: >-
+              !has(object.metadata.annotations) ||
+              !variables.authKeys.exists(k, k in object.metadata.annotations) ||
+              (request.namespace in variables.authWant &&
+                variables.authWant[request.namespace].exists(s,
+                  s.all(k, k in object.metadata.annotations && object.metadata.annotations[k] == s[k])))
+          message: preview Ingress sign-in annotations must be exactly one admitted key generation's pinned set for this slot
+        {{- end }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -395,6 +438,57 @@ spec:
         namespaceSelector:
             matchLabels:
                 kubernetes.io/metadata.name: {{ $slot }}
+{{- end }}
+{{- if and $pas.enabled (eq $pas.stage "require") }}
+---
+# Preview sign-in required: every slot Ingress carries its slot's whole pinned
+# set of an admitted key generation, the placeholder included. Its own policy
+# and kept, so a rollback that reverts the others still refuses an Ingress
+# that drops sign-in (scale preview-controller to zero and delete this
+# policy's binding first, and only while preview.inboundCIDRs is still set).
+# A slot beyond slotCount has no set and admits no Ingress. As with the
+# others, an UPDATE that changes neither spec nor annotations (Auto Mode
+# removing its finalizer) is not evaluated.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-ingress-auth
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [networking.k8s.io]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [ingresses]
+    matchConditions:
+        - name: exact-preview-slot
+          expression: 'request.namespace in {{ $guardSlots | toJson }}'
+        - name: not-metadata-only
+          expression: {{ $unchangedForLB | quote }}
+    variables:
+        - name: want
+          expression: >-
+              {{ $authWant }}
+    validations:
+        - expression: >-
+              request.namespace in variables.want &&
+              has(object.metadata.annotations) &&
+              variables.want[request.namespace].exists(s,
+                s.all(k, k in object.metadata.annotations && object.metadata.annotations[k] == s[k]))
+          message: preview Ingresses must carry their slot's pinned sign-in annotations (preview sign-in is required)
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-all-slots-ingress-auth
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-ingress-auth
+    validationActions: [Deny]
 {{- end }}
 ---
 apiVersion: admissionregistration.k8s.io/v1

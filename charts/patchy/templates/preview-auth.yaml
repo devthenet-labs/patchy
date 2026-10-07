@@ -1,0 +1,583 @@
+{{/*
+Copyright 2026 Bitwise Media Group Ltd.
+SPDX-License-Identifier: MIT
+
+The preview sign-in relay (cmd/preview-auth), in one file like the status
+server: the OpenID provider every preview host's ALB signs viewers in
+through. Off by default (previewAuth.enabled). Not a controller: no
+reconcilers, no leader election (every replica serves). Its Kubernetes
+access is Previews (get, list, watch, release namespace), access reviews,
+and get/update on its one code-ledger Lease; its keys and its Dex client
+secret are mounted, so it reads no Secret through the API.
+
+Also here, because they exist for the relay: each slot's OIDC client Secret
+(patchy-preview-oidc-g<generation>), the Role and RoleBinding that let EKS
+Auto Mode (Group eks:managed) read exactly those Secrets when it builds the
+preview ALB's authenticate-oidc rules, and the preview-viewer ClusterRole
+with its viewers' RoleBinding. The derived state (keys, generations, the
+pinned annotation sets) is _preview-auth.tpl's.
+
+A template comment, not YAML, so the file renders nothing at all while
+previewAuth is off.
+*/}}
+{{- $st := include "patchy.previewAuthState" . | fromJson }}
+{{- if $st.enabled }}
+{{- $vals := .Values.previewAuth }}
+{{- $name := "preview-auth" }}
+{{- $fullname := include "patchy.fullname" . }}
+{{- $sa := include "patchy.serviceAccountName" (dict "root" . "name" $name "vals" $vals) }}
+{{- $lease := printf "%s-preview-auth-codes" $fullname }}
+{{- $className := $vals.ingress.className | default (include "patchy.edgeIngressClassName" .) }}
+{{- if eq $className "alb-preview" }}{{ fail "previewAuth.ingress.className must not be alb-preview: the relay sits on the edge ALB, which the preview ALB's token calls reach from the internet" }}{{ end }}
+{{- if $vals.serviceAccount.create }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" . "extra" $vals.serviceAccount.annotations) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+{{- end }}
+{{- $data := dict
+    "PATCHY_HEALTH_ADDR" ":8081"
+    "PATCHY_LISTEN_ADDR" ":8080"
+    "PATCHY_LOG_LEVEL" ($vals.config.logLevel | default .Values.config.logLevel)
+    "PATCHY_PREVIEW_AUTH_ISSUER" $st.issuer
+    "PATCHY_PREVIEW_AUTH_HOST_SUFFIX" .Values.preview.hostSuffix
+    "PATCHY_PREVIEW_AUTH_SLOT_COUNT" .Values.preview.slotCount
+    "PATCHY_PREVIEW_AUTH_KEYS_DIR" "/etc/patchy/preview-auth/keys"
+    "PATCHY_PREVIEW_AUTH_DEX_ISSUER_URL" $vals.dex.issuerURL
+    "PATCHY_PREVIEW_AUTH_DEX_CLIENT_ID" $vals.dex.clientID
+    "PATCHY_PREVIEW_AUTH_DEX_CLIENT_SECRET_FILE" "/etc/patchy/preview-auth/dex/clientSecret"
+    "PATCHY_PREVIEW_AUTH_USERNAME_CLAIM" $vals.claims.usernameClaim
+    "PATCHY_PREVIEW_AUTH_GROUPS_CLAIM" $vals.claims.groupsClaim
+    "PATCHY_PREVIEW_AUTH_USERNAME_PREFIX" $vals.claims.usernamePrefix
+    "PATCHY_PREVIEW_AUTH_GROUPS_PREFIX" $vals.claims.groupsPrefix
+    "PATCHY_PREVIEW_AUTH_REQUIRE_VERIFIED_EMAIL" ($vals.claims.requireVerifiedEmail | default false)
+    "PATCHY_PREVIEW_AUTH_ACCESS_TOKEN_TTL" $vals.accessTokenTTL
+    "PATCHY_PREVIEW_AUTH_SESSION_MAX_AGE" $vals.sessionMaxAge
+    "PATCHY_PREVIEW_AUTH_LEDGER_LEASE" $lease
+    "PATCHY_PREVIEW_AUTH_RATE_PER_SECOND" $vals.rateLimit.perSecond
+    "PATCHY_PREVIEW_AUTH_RATE_BURST" $vals.rateLimit.burst
+    "PATCHY_PREVIEW_AUTH_FORWARDED_HOPS" $vals.forwardedHops
+    "PATCHY_PREVIEW_AUTH_PROBE_INTERVAL" $vals.probeInterval
+}}
+{{- range $k, $v := .Values.config.extra }}
+{{- $_ := set $data $k $v }}
+{{- end }}
+{{- range $k, $v := $vals.config.extra }}
+{{- $_ := set $data $k $v }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: {{ include "patchy.configMapName" (dict "root" . "name" $name) }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+    {{- /* The keys marker: this release generated keys of this generation.
+           Should the keys Secret go missing, the next render refuses to
+           replace it silently (_preview-auth.tpl). */}}
+    {{- $marker := dict }}
+    {{- if $st.managedKeys }}
+    {{- $_ := set $marker "patchy.bitwisemedia.uk/preview-auth-key-generation" (toString (int $st.gen)) }}
+    {{- end }}
+    {{- with include "patchy.annotations" (dict "root" . "extra" $marker) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+data:
+    {{- range $k, $v := $data }}
+    {{- $s := $v | toString }}
+    {{- if and (kindIs "float64" $v) (eq $v (floor $v)) }}
+    {{- $s = int64 $v | toString }}
+    {{- end }}
+    {{ $k }}: {{ $s | quote }}
+    {{- end }}
+{{- if $st.managedKeys }}
+---
+# The relay's keys: the master secret every token key, the pairwise key and
+# each slot's ALB client secret derive from, and the ID-token signing key; the
+# previous generation's beside them during a rotation. Generated on first
+# enablement and reused from the live Secret on every later upgrade (a
+# lookup), kept on uninstall and rollback. Mounted into the relay only.
+apiVersion: v1
+kind: Secret
+metadata:
+    name: {{ $st.keysSecret }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+    annotations:
+        {{- include "patchy.annotations" (dict "root" . "extra" (dict "helm.sh/resource-policy" "keep")) | nindent 8 }}
+type: Opaque
+data:
+    {{- range $k, $v := $st.keys }}
+    {{ $k }}: {{ $v | quote }}
+    {{- end }}
+{{- end }}
+---
+# The single-use code ledger (redeemed authorization codes, on an
+# annotation): one Lease the relay may get and update by name and nothing
+# else, so two replicas agree on a code without create or delete rights.
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
+    name: {{ $lease }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" .) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+spec: {}
+---
+# Previews to find the one at a host label (its slot, UID and Project), and
+# the ledger Lease. No Intents, no Secrets, no writes to any patchy kind.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: {{ $fullname }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [previews]
+      verbs: [get, list, watch]
+    - apiGroups: [coordination.k8s.io]
+      resources: [leases]
+      resourceNames: [{{ $lease }}]
+      verbs: [get, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: {{ $fullname }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: {{ $fullname }}-{{ $name }}
+subjects:
+    - kind: ServiceAccount
+      name: {{ $sa }}
+      namespace: {{ .Release.Namespace }}
+---
+# SubjectAccessReview is cluster-scoped: the power to ask "may viewer V get
+# projects/previews for Project P?", not to act.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+    name: {{ $fullname }}-{{ $name }}-authz
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+rules:
+    - apiGroups: [authorization.k8s.io]
+      resources: [subjectaccessreviews]
+      verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+    name: {{ $fullname }}-{{ $name }}-authz
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: {{ $fullname }}-{{ $name }}-authz
+subjects:
+    - kind: ServiceAccount
+      name: {{ $sa }}
+      namespace: {{ .Release.Namespace }}
+---
+# Who may view previews. The subresource is virtual: nothing on the API
+# server serves it, so this grants kubectl nothing; the relay's access reviews
+# are its only reader. Without resourceNames it covers every Project; bind it
+# with a RoleBinding in the release namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+    name: {{ $fullname }}-preview-viewer
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+rules:
+    - apiGroups: [patchy.bitwisemedia.uk]
+      resources: [projects/previews]
+      verbs: [get]
+{{- if or $vals.viewers.teams $vals.viewers.users }}
+---
+# previewAuth.viewers, with the claim prefixes the relay maps a Dex ID token
+# through, so a binding names exactly the user and groups a review runs for.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: {{ $fullname }}-preview-viewers
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: ClusterRole
+    name: {{ $fullname }}-preview-viewer
+subjects:
+    {{- range $team := $vals.viewers.teams }}
+    - kind: Group
+      apiGroup: rbac.authorization.k8s.io
+      name: {{ printf "%s%s" $vals.claims.groupsPrefix $team | quote }}
+    {{- end }}
+    {{- range $user := $vals.viewers.users }}
+    - kind: User
+      apiGroup: rbac.authorization.k8s.io
+      name: {{ printf "%s%s" $vals.claims.usernamePrefix $user | quote }}
+    {{- end }}
+{{- end }}
+{{- /* Each slot's ALB client, one Secret per admitted key generation, and
+       the read grant Auto Mode builds the authenticate-oidc rule with. The
+       Secret name carries the generation, so a rotation changes the
+       Ingress annotation and the load balancer re-reads it. Kept, like
+       every other slot object; a generation dropped after a rotation leaves
+       its Secret behind for the operator to delete. With
+       keys.existingSecret the operator supplies these Secrets. */}}
+{{- $gens := list (int $st.gen) }}
+{{- if gt (int $st.prevGen) 0 }}{{ $gens = append $gens (int $st.prevGen) }}{{ end }}
+{{- range $i := until (int .Values.preview.slotCount) }}
+{{- $slot := printf "patchy-preview-%d" $i }}
+{{- if $st.managedKeys }}
+{{- range $g := $gens }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+    name: patchy-preview-oidc-g{{ $g }}
+    namespace: {{ $slot }}
+    labels:
+        {{- include "patchy.labels" (dict "root" $ "name" $name) | nindent 8 }}
+    annotations:
+        {{- include "patchy.annotations" (dict "root" $ "extra" (dict "helm.sh/resource-policy" "keep")) | nindent 8 }}
+type: Opaque
+stringData:
+    clientID: patchy-preview-s{{ $i }}
+    clientSecret: {{ get (get $st.clientSecrets (toString $g)) (toString $i) | quote }}
+{{- end }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+    name: patchy-preview-oidc-reader
+    namespace: {{ $slot }}
+    labels:
+        {{- include "patchy.labels" (dict "root" $ "name" $name) | nindent 8 }}
+    annotations:
+        {{- include "patchy.annotations" (dict "root" $ "extra" (dict "helm.sh/resource-policy" "keep")) | nindent 8 }}
+rules:
+    - apiGroups: [""]
+      resources: [secrets]
+      resourceNames:
+        {{- range $g := $gens }}
+        - patchy-preview-oidc-g{{ $g }}
+        {{- end }}
+      verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+    name: patchy-preview-oidc-reader
+    namespace: {{ $slot }}
+    labels:
+        {{- include "patchy.labels" (dict "root" $ "name" $name) | nindent 8 }}
+    annotations:
+        {{- include "patchy.annotations" (dict "root" $ "extra" (dict "helm.sh/resource-policy" "keep")) | nindent 8 }}
+roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: patchy-preview-oidc-reader
+subjects:
+    - kind: Group
+      apiGroup: rbac.authorization.k8s.io
+      name: eks:managed
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: {{ $fullname }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name "component" $name) | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" .) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+spec:
+    replicas: {{ $vals.replicas }}
+    strategy:
+        type: RollingUpdate
+        rollingUpdate:
+            maxUnavailable: 0
+            maxSurge: 1
+    selector:
+        matchLabels:
+            {{- include "patchy.selectorLabels" (dict "root" . "name" $name) | nindent 12 }}
+    template:
+        metadata:
+            labels:
+                {{- include "patchy.labels" (dict "root" . "name" $name "component" $name) | nindent 16 }}
+                {{- with $vals.podLabels }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+            {{- /* The relay loads its keys at start, so a changed keys Secret
+                   (a rotation) rolls it; an existingSecret is the
+                   operator's to roll. */}}
+            {{- $checksums := dict "checksum/config" (toJson $data | sha256sum) }}
+            {{- if $st.managedKeys }}
+            {{- $_ := set $checksums "checksum/keys" (toJson $st.keys | sha256sum) }}
+            {{- end }}
+            {{- with include "patchy.annotations" (dict "root" . "extra" (merge $checksums ($vals.podAnnotations | default dict))) }}
+            annotations:
+                {{- . | nindent 16 }}
+            {{- end }}
+        spec:
+            serviceAccountName: {{ $sa }}
+            {{- with .Values.image.pullSecrets }}
+            imagePullSecrets:
+                {{- toYaml . | nindent 16 }}
+            {{- end }}
+            securityContext:
+                runAsNonRoot: true
+                runAsUser: 65532
+                runAsGroup: 65532
+                fsGroup: 65532
+                seccompProfile:
+                    type: RuntimeDefault
+            # Two replicas on different nodes, and zones where there are
+            # several: the relay is in every preview session's refresh path.
+            topologySpreadConstraints:
+                - maxSkew: 1
+                  topologyKey: topology.kubernetes.io/zone
+                  whenUnsatisfiable: ScheduleAnyway
+                  labelSelector:
+                      matchLabels:
+                          {{- include "patchy.selectorLabels" (dict "root" . "name" $name) | nindent 26 }}
+                - maxSkew: 1
+                  topologyKey: kubernetes.io/hostname
+                  whenUnsatisfiable: ScheduleAnyway
+                  labelSelector:
+                      matchLabels:
+                          {{- include "patchy.selectorLabels" (dict "root" . "name" $name) | nindent 26 }}
+            containers:
+                - name: relay
+                  image: {{ include "patchy.image" (dict "root" . "binary" $name "image" $vals.image) }}
+                  imagePullPolicy: {{ .Values.image.pullPolicy }}
+                  args: ["serve"]
+                  envFrom:
+                      - configMapRef:
+                            name: {{ include "patchy.configMapName" (dict "root" . "name" $name) }}
+                  env:
+                      - name: POD_NAMESPACE
+                        valueFrom:
+                            fieldRef:
+                                fieldPath: metadata.namespace
+                  ports:
+                      - name: http
+                        containerPort: 8080
+                        protocol: TCP
+                      - name: health
+                        containerPort: 8081
+                        protocol: TCP
+                  livenessProbe:
+                      httpGet:
+                          path: /healthz
+                          port: health
+                      initialDelaySeconds: 5
+                      periodSeconds: 20
+                  readinessProbe:
+                      httpGet:
+                          path: /readyz
+                          port: health
+                      initialDelaySeconds: 2
+                      periodSeconds: 10
+                  {{- with $vals.resources }}
+                  resources:
+                      {{- toYaml . | nindent 22 }}
+                  {{- end }}
+                  securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                          drop: ["ALL"]
+                      seccompProfile:
+                          type: RuntimeDefault
+                  volumeMounts:
+                      - name: keys
+                        mountPath: /etc/patchy/preview-auth/keys
+                        readOnly: true
+                      - name: dex
+                        mountPath: /etc/patchy/preview-auth/dex
+                        readOnly: true
+                      - name: tmp
+                        mountPath: /tmp
+            {{- with $vals.nodeSelector }}
+            nodeSelector:
+                {{- toYaml . | nindent 16 }}
+            {{- end }}
+            {{- with $vals.tolerations }}
+            tolerations:
+                {{- toYaml . | nindent 16 }}
+            {{- end }}
+            {{- with $vals.affinity }}
+            affinity:
+                {{- toYaml . | nindent 16 }}
+            {{- end }}
+            volumes:
+                - name: keys
+                  secret:
+                      secretName: {{ $st.keysSecret }}
+                      defaultMode: 0440
+                - name: dex
+                  secret:
+                      secretName: {{ $vals.dex.existingSecret }}
+                      defaultMode: 0440
+                      items:
+                          - key: {{ $vals.dex.clientSecretKey | default "clientSecret" }}
+                            path: clientSecret
+                - name: tmp
+                  emptyDir: {}
+{{- if gt (int $vals.replicas) 1 }}
+---
+# The relay is in every preview session's refresh path: keep one serving
+# through a node drain.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+    name: {{ $fullname }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+spec:
+    minAvailable: 1
+    selector:
+        matchLabels:
+            {{- include "patchy.selectorLabels" (dict "root" . "name" $name) | nindent 12 }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+    name: {{ $fullname }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" .) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+spec:
+    type: ClusterIP
+    selector:
+        {{- include "patchy.selectorLabels" (dict "root" . "name" $name) | nindent 8 }}
+    ports:
+        - name: http
+          port: 8080
+          targetPort: http
+          protocol: TCP
+{{- if $vals.networkPolicy.create }}
+---
+# Ingress: 8080 from the edge ALB (ingressFrom narrows it to the ALB's
+# subnets; it targets the pods by IP) plus 8081 probes. Egress: DNS, and TCP
+# 443 and 6443 anywhere: the API server (Previews, access reviews, the
+# Lease), Dex at its public issuer, and every preview host the probe asks.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: {{ $fullname }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+spec:
+    podSelector:
+        matchLabels:
+            {{- include "patchy.selectorLabels" (dict "root" . "name" $name) | nindent 12 }}
+    policyTypes: [Ingress, Egress]
+    ingress:
+        - ports:
+              - protocol: TCP
+                port: 8080
+          {{- with $vals.ingressFrom }}
+          from:
+              {{- range $cidr := . }}
+              - ipBlock:
+                    cidr: {{ $cidr }}
+              {{- end }}
+          {{- end }}
+        - ports:
+              - protocol: TCP
+                port: 8081
+    egress:
+        - to:
+              - namespaceSelector:
+                    matchLabels:
+                        kubernetes.io/metadata.name: kube-system
+          ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+        {{- with include "patchy.clusterDNSEgress" . }}
+        {{- . | nindent 8 }}
+        {{- end }}
+        - ports:
+              - protocol: TCP
+                port: 443
+              - protocol: TCP
+                port: 6443
+        {{- with $vals.networkPolicy.extraEgress }}
+        # Operator-supplied additions (previewAuth.networkPolicy.extraEgress).
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}
+---
+# The relay's public endpoint: the browser's sign-in and the preview ALB's
+# token and userinfo calls. On the edge class, never the preview ALB.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+    name: {{ $fullname }}-{{ $name }}
+    namespace: {{ .Release.Namespace }}
+    labels:
+        {{- include "patchy.labels" (dict "root" . "name" $name) | nindent 8 }}
+    {{- with include "patchy.annotations" (dict "root" . "extra" $vals.ingress.annotations) }}
+    annotations:
+        {{- . | nindent 8 }}
+    {{- end }}
+spec:
+    {{- with $className }}
+    ingressClassName: {{ . }}
+    {{- end }}
+    {{- with $vals.ingress.tls }}
+    tls:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    rules:
+        - host: {{ $vals.host | quote }}
+          http:
+              paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                        service:
+                            name: {{ $fullname }}-{{ $name }}
+                            port:
+                                name: http
+{{- end }}

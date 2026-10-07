@@ -1,0 +1,19 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# chart-render-test fixture: preview sign-in on in its permit stage (B1),
+# rendered over preview-foundation.yaml (plus intent-controller.yaml and
+# preview-controller.yaml for the require stage), with one viewer team and
+# one viewer user.
+previewAuth:
+    enabled: true
+    host: preview-auth.patchy.devthe.net
+    dex:
+        issuerURL: https://dex.patchy.devthe.net
+        clientID: patchy-preview-auth
+        existingSecret: patchy-preview-auth-dex
+    viewers:
+        teams:
+            - devthenet-labs:reviewers
+        users:
+            - octocat

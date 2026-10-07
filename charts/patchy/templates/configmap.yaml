@@ -280,6 +280,20 @@ blocks on ImageRequired. The changeset entry cap is remediation's value.
 {{- $_ := set $data "PATCHY_PREVIEW_POLL_INTERVAL" $own.pollInterval }}
 {{- $_ := set $data "PATCHY_PREVIEW_MAX_RETRIES" $own.maxRetries }}
 {{- $_ := set $data "PATCHY_PREVIEW_TARGET_HEALTH" $own.targetHealth }}
+{{- /*
+Preview sign-in required (previewAuth.stage require): the pinned annotation
+sets, rendered once in _preview-auth.tpl, so every Ingress the controller
+writes carries exactly what the slot admission policies compare. The previous
+generation's sets ride beside them during a rotation's overlap.
+*/}}
+{{- $pas := include "patchy.previewAuthState" $root | fromJson }}
+{{- if and $pas.enabled (eq $pas.stage "require") }}
+{{- $_ := set $data "PATCHY_PREVIEW_AUTH_REQUIRED" "true" }}
+{{- $_ := set $data "PATCHY_PREVIEW_AUTH_ANNOTATIONS" (get $pas.sets (toString (int $pas.applyGen)) | toJson) }}
+{{- if gt (int $pas.otherGen) 0 }}
+{{- $_ := set $data "PATCHY_PREVIEW_AUTH_PREVIOUS_ANNOTATIONS" (get $pas.sets (toString (int $pas.otherGen)) | toJson) }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{/*
 The global egress proxy (spec.proxy on a Forge/GitHub Integration overrides

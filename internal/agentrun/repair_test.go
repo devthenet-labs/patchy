@@ -50,12 +50,14 @@ var (
 	badInvestigation = "---\nrecommendation: nonsense\n---\n"
 	badRemediation   = strings.Replace(goodRemediation, "confidence: 0.88", "confidence: .nan", 1)
 	badPlan          = strings.Replace(goodPlan, "https://github.com", "http://github.com", 1)
-	// longNoteBuild is overdub-10's build report: one note of 574 characters.
-	longNoteBuild = strings.Replace(goodBuild, "notes: []", `notes:`+"\n"+`  - "`+strings.Repeat("n", 574)+`"`, 1)
-	// scalarNotesBuild is the other live slip: notes written as one string.
+	// scalarNotesBuild is a live slip: notes written as one string.
 	scalarNotesBuild = strings.Replace(goodBuild, "notes: []",
 		`notes: "What was built: the handler, and a test of its JSON shape"`, 1)
 )
+
+// longNoteBuild is overdub-10's build report: one note of 574 characters.
+// It once failed its parser; the note is now cut instead.
+var longNoteBuild = strings.Replace(goodBuild, "notes: []", `notes:`+"\n"+`  - "`+strings.Repeat("n", 574)+`"`, 1)
 
 // repairCase is one stage as the repair tests drive it: its report, a good
 // and a bad one, and what its first run leaves beside the report (a
@@ -81,7 +83,7 @@ func repairCases() []repairCase {
 			writable: true, parse: func(b []byte) error { _, err := report.ParseRemediation(b); return err }},
 		PhasePlan: {report: "reports/plan.md", good: goodPlan, bad: badPlan,
 			parse: func(b []byte) error { _, err := report.ParsePlan(b); return err }},
-		PhaseBuild: {report: "reports/build.md", good: goodBuild, bad: longNoteBuild,
+		PhaseBuild: {report: "reports/build.md", good: goodBuild, bad: scalarNotesBuild,
 			outputs: map[string]string{"commit.sh": buildCommitScript}, repo: map[string]string{"app.js": "version();\n"},
 			writable: true, parse: func(b []byte) error { _, err := report.ParseBuild(b); return err }},
 	}
@@ -468,13 +470,12 @@ func TestRepairRunEndings(t *testing.T) {
 	}
 }
 
-// TestRepairRegressions are the two build reports that threw away whole
-// builds live (they fail on a runner without repair): a 574-character note
-// and notes written as one string. Each is repaired in one round, and the
-// build is packaged.
+// TestRepairRegressions is the build report that threw away a whole build
+// live (it fails on a runner without repair): notes written as one string.
+// It is repaired in one round, and the build is packaged.
 func TestRepairRegressions(t *testing.T) {
 	build := repairCases()[3]
-	for name, bad := range map[string]string{"a 574-character note": longNoteBuild, "scalar notes": scalarNotesBuild} {
+	for name, bad := range map[string]string{"scalar notes": scalarNotesBuild} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := report.ParseBuild([]byte(bad)); err == nil {
 				t.Fatal("the report parses; it is not the live failure")
@@ -489,6 +490,20 @@ func TestRepairRegressions(t *testing.T) {
 				t.Fatalf("build = %+v after %d commands, want ok and packaged after one repair", rem, len(fx.specs))
 			}
 		})
+	}
+}
+
+// TestLongNoteNeedsNoRepair: overdub-10's build, whose one note ran to 574
+// characters, failed as report_invalid. A note over the bound is now cut, so
+// the build is packaged on its first run, with no repair round.
+func TestLongNoteNeedsNoRepair(t *testing.T) {
+	build := repairCases()[3]
+	var out bytes.Buffer
+	cfg, ws := build.setup(t, &out)
+	fx := &fakeExec{steps: []step{build.first(ws, longNoteBuild)}}
+	rem := onlyEvent(t, cfg, fx, &out).Remediation
+	if rem == nil || rem.Outcome != envelope.OutcomeOK || !rem.Success || rem.Changeset == nil || len(fx.specs) != 1 {
+		t.Fatalf("build = %+v after %d commands, want ok and packaged with no repair", rem, len(fx.specs))
 	}
 }
 

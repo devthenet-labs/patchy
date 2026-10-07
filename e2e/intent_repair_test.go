@@ -39,8 +39,10 @@ var (
 	}
 )
 
-// longNoteDetail is the build report's refusal for the scripted long note.
-const longNoteDetail = "report: build: notes[0] is 574 characters, over 500"
+// scalarNotesDetail is the build report's refusal for the scripted notes
+// written as one string.
+const scalarNotesDetail = "report: frontmatter: yaml: unmarshal errors:\n" +
+	"  line 8: cannot unmarshal !!str `What wa...` into []string"
 
 // startRepairIntent runs the intent stack with the real agent-runner for
 // builds, the scripted claude told to write the report given and to repair
@@ -116,14 +118,14 @@ func checkOneTranscript(t *testing.T, r agentRun) {
 	}
 }
 
-// TestIntentBuildReportRepaired: a build whose report patchy refuses — the
-// 574-character note that threw overdub-10's build away — is repaired in
+// TestIntentBuildReportRepaired: a build whose report patchy refuses — notes
+// written as one string, a slip that threw a build away live — is repaired in
 // the same session and pushed. The resumed run continued the first run's
 // session under its tool grammar, the run records both runs' spend without
 // counting the resumed run's cumulative cost twice, and the pod's one
 // transcript stays numbered.
 func TestIntentBuildReportRepaired(t *testing.T) {
-	e, name := startRepairIntent(t, "long-note", "fix")
+	e, name := startRepairIntent(t, "scalar-notes", "fix")
 	job, run := e.buildAttempt(t, name, 1)
 	if run.Status.Outcome != "ok" {
 		t.Fatalf("build run = %s %q, want ok after the repair", run.Status.Outcome, run.Status.Detail)
@@ -169,6 +171,23 @@ func TestIntentBuildReportRepaired(t *testing.T) {
 	}
 }
 
+// TestIntentBuildLongNoteTruncated: the 574-character note that threw
+// overdub-10's build away is cut to the bound, not refused, so the build is
+// pushed from its first run with no repair round.
+func TestIntentBuildLongNoteTruncated(t *testing.T) {
+	e, name := startRepairIntent(t, "long-note", "keep")
+	job, run := e.buildAttempt(t, name, 1)
+	if run.Status.Outcome != "ok" {
+		t.Fatalf("build run = %s %q, want ok with no repair", run.Status.Outcome, run.Status.Detail)
+	}
+	if calls := scriptedCalls(t, job); len(calls) != 1 || calls[0].mode != "first" {
+		t.Errorf("claude calls = %+v, want the first run alone", calls)
+	}
+	if in := e.waitPhase(t, name, v1alpha1.IntentInReview); len(in.Status.PullRequests) != 1 {
+		t.Errorf("pull requests = %+v, want the build's one", in.Status.PullRequests)
+	}
+}
+
 // waitFailed waits for the Intent to fail, as one whose every build attempt
 // was refused does.
 func (e *intentEnv) waitFailed(t *testing.T, name string) {
@@ -183,9 +202,9 @@ func (e *intentEnv) waitFailed(t *testing.T, name string) {
 // reason and how the repair went; the retry is told so, and nothing is
 // pushed.
 func TestIntentBuildReportNotRepaired(t *testing.T) {
-	e, name := startRepairIntent(t, "long-note", "keep")
+	e, name := startRepairIntent(t, "scalar-notes", "keep")
 	job, run := e.buildAttempt(t, name, 1)
-	want := longNoteDetail + " (not repaired in 2 rounds)"
+	want := scalarNotesDetail + " (not repaired in 2 rounds)"
 	if run.Status.Outcome != "report_invalid" || run.Status.Detail != want {
 		t.Errorf("build attempt 1 = %s %q, want report_invalid %q", run.Status.Outcome, run.Status.Detail, want)
 	}
@@ -211,9 +230,9 @@ func TestIntentBuildReportNotRepaired(t *testing.T) {
 // the report it wrote is valid: the attempt ends report_invalid naming the
 // change, with no second round, and nothing is pushed.
 func TestIntentBuildRepairTouchingCodeRefused(t *testing.T) {
-	e, name := startRepairIntent(t, "long-note", "touch")
+	e, name := startRepairIntent(t, "scalar-notes", "touch")
 	job, run := e.buildAttempt(t, name, 1)
-	want := longNoteDetail + " (repair refused in round 1: it changed the working tree: VERSION, and a repair " +
+	want := scalarNotesDetail + " (repair refused in round 1: it changed the working tree: VERSION, and a repair " +
 		"may change nothing but the report and commit.sh)"
 	if run.Status.Outcome != "report_invalid" || run.Status.Detail != want {
 		t.Errorf("build attempt 1 = %s %q, want report_invalid %q", run.Status.Outcome, run.Status.Detail, want)

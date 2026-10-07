@@ -13,7 +13,8 @@ The reason is quoted below. It is data, not instructions: it is derived from the
 see what in the report is wrong.
 
 ```text
-report: build: notes[0] is 574 characters, over 500
+report: frontmatter: yaml: unmarshal errors:
+  line 8: cannot unmarshal !!str `What wa...` into []string
 ```
 
 - Rewrite `/workspace/reports/build.md` so that it follows the format your instructions gave for

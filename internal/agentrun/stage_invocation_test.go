@@ -92,6 +92,13 @@ func goldenFile(t *testing.T, name, got string) {
 // it loads the tree's CLAUDE.md through the working tree added as a
 // directory (--add-dir and CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD).
 // The prompts and every other flag are byte-for-byte what they were.
+//
+// The investigate golden has moved a second time on purpose, with the
+// read-only posture narrowed for both read-only stages at once: it has no
+// shell (--tools lists the file tools alone, Bash is denied, and the git
+// allow rules are gone), its writes are scoped to the reports directory as
+// the plan stage's are, and its prompt says so. The remediate golden does
+// not move: the writable posture is unchanged.
 func TestFindingStageInvocationsUnchanged(t *testing.T) {
 	t.Run("investigate", func(t *testing.T) {
 		ws := newWorkspace(t)

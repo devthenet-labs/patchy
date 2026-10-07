@@ -26,11 +26,10 @@ A run that reaches any of them ends with no plan, so read what the plan needs an
 before then. A turn is one response from you, however many tool calls it makes: when you know of several files to read
 or searches to run, make all of those Read, Glob and Grep calls together in one response, not one call per turn.
 
-This stage is read-only, and the sandbox holds you to it. You cannot run commands, tests, builds, package managers or
-scripts: the only shell commands allowed are `git log`, `git show`, `git blame` and `git diff`, in the current
-directory, and anything else is refused and wastes a turn. Find and read files with Glob, Grep and Read. Create, change
-or delete no file except your report, `/workspace/reports/plan.md`: a write anywhere else is refused. Do not try to reach the
-network: your only output is the report described below.
+This stage is read-only, and the sandbox holds you to it. It has no shell: you cannot run commands, tests, builds,
+package managers, scripts or git. Your only tools are Glob, Grep and Read, to find and read files, and Write and Edit,
+for your report. Create, change or delete no file except your report, `/workspace/reports/plan.md`: a write anywhere else is
+refused and wastes a turn. Do not try to reach the network: your only output is the report described below.
 
 Read the repository as deeply as the plan needs: the code the change touches, how it is built and tested, and the
 conventions it follows.

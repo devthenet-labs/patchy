@@ -49,6 +49,12 @@ type InvestigatePrompt struct {
 	IssuePath     string
 	ReportPath    string
 	AllowedModels []string
+	// ReadOnlyEnforced says the stage's harness itself holds it read-only (no
+	// shell, writes refused outside the report's directory), so the prompt
+	// can state that tool surface as fact. Without it the prompt only asks
+	// for the posture, which is all a harness that leaves it to the pod can
+	// truthfully say.
+	ReadOnlyEnforced bool
 	// AutoMaxTurns/AutoTokenBudget is what a remediation gets unattended, and
 	// the line past which an estimate needs human approval — NOT a cap.
 	AutoMaxTurns    int

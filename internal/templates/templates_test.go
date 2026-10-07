@@ -169,6 +169,7 @@ func TestGoldens(t *testing.T) {
 			return RenderInvestigatePrompt(InvestigatePrompt{
 				IssuePath:         "/workspace/input/issue.md",
 				ReportPath:        "/workspace/reports/investigation.md",
+				ReadOnlyEnforced:  true,
 				AllowedModels:     []string{"claude-sonnet-5", "claude-opus-5"},
 				AutoMaxTurns:      80,
 				AutoTokenBudget:   400000,
@@ -183,6 +184,7 @@ func TestGoldens(t *testing.T) {
 			return RenderInvestigatePrompt(InvestigatePrompt{
 				IssuePath:         "/workspace/input/issue.md",
 				ReportPath:        "/workspace/reports/investigation.md",
+				ReadOnlyEnforced:  true,
 				AllowedModels:     []string{"claude-sonnet-5", "claude-opus-5"},
 				AutoMaxTurns:      80,
 				AutoTokenBudget:   400000,
@@ -222,6 +224,7 @@ func TestGoldens(t *testing.T) {
 			return RenderInvestigatePrompt(InvestigatePrompt{
 				IssuePath:         "/workspace/input/issue.md",
 				ReportPath:        "/workspace/reports/investigation.md",
+				ReadOnlyEnforced:  true,
 				AllowedModels:     []string{"claude-sonnet-5", "claude-opus-5"},
 				AutoMaxTurns:      80,
 				AutoTokenBudget:   400000,

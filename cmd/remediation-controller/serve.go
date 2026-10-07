@@ -59,6 +59,7 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	runnercfg.RegisterFlags(f)
 	runnercfg.RegisterRepositoryImageFlags(f)
 	runnercfg.RegisterAgentResourceFlags(f)
+	runnercfg.RegisterAgentDNSFlag(f)
 	f.Duration("job-deadline", time.Hour, "activeDeadlineSeconds for an agent Job")
 	f.Duration("job-ttl", time.Hour, "ttlSecondsAfterFinished for a finished agent Job")
 
@@ -167,6 +168,10 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	if err != nil {
 		return err
 	}
+	agentDNS, err := runnercfg.AgentDNS(opts, runners, enabled)
+	if err != nil {
+		return err
+	}
 	log.LogAttrs(ctx, slog.LevelInfo, "harnesses enabled",
 		slog.Any("enabled", enabled), slog.String("default_remediate_model", remediateModel))
 
@@ -186,6 +191,7 @@ func serve(ctx context.Context, opts *cli.Options) error {
 
 		EphemeralStorage:      ephemeralStorage,
 		AllowRepositoryImages: repositoryImages,
+		DNS:                   agentDNS,
 	}, log)
 
 	forges := forge.NewStore(mgr.GetAPIReader())

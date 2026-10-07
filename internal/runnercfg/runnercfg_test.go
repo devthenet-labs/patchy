@@ -830,3 +830,79 @@ func TestAgentResourcesFromTheEnvironment(t *testing.T) {
 		t.Errorf("AgentResources = %s", got)
 	}
 }
+
+func newDNSOpts(t *testing.T, args ...string) *cli.Options {
+	t.Helper()
+	o := cli.NewOptions()
+	cmd := &cobra.Command{Use: "test", RunE: func(*cobra.Command, []string) error { return nil }}
+	o.Bind(cmd)
+	RegisterAgentDNSFlag(cmd.Flags())
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if err := o.Load(cmd); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return o
+}
+
+// TestAgentDNS: the default is the cluster resolver, whatever runs; none is
+// accepted only while every enabled harness reaches its model through the
+// broker (or reaches none), and a harness that dials its vendor by name
+// fails startup, naming it, unless it is configured but not enabled.
+func TestAgentDNS(t *testing.T) {
+	runners := map[string]jobs.Runner{
+		"claude": {Image: "claude:1", Brokered: true},
+		"codex":  {Image: "codex:1", Secret: "patchy-openai", SecretEnv: "OPENAI_API_KEY"},
+		"fake":   {Image: "fake:1"},
+	}
+	tests := []struct {
+		name    string
+		args    []string
+		enabled []string
+		want    jobs.DNSMode
+		wantErr string
+	}{
+		{name: "the default", enabled: []string{"claude", "codex"}, want: jobs.DNSCluster},
+		{name: "cluster, named", args: []string{"--agent-dns", "cluster"}, enabled: []string{"codex"},
+			want: jobs.DNSCluster},
+		{name: "none, brokered claude", args: []string{"--agent-dns", "none"}, enabled: []string{"claude"},
+			want: jobs.DNSNone},
+		{name: "none, the fake harness", args: []string{"--agent-dns", "none"}, enabled: []string{"fake"},
+			want: jobs.DNSNone},
+		{name: "none, codex configured but not enabled", args: []string{"--agent-dns", "none"},
+			enabled: []string{"claude"}, want: jobs.DNSNone},
+		{name: "none, codex enabled", args: []string{"--agent-dns", "none"}, enabled: []string{"claude", "codex"},
+			wantErr: "--agent-dns none: the codex harness dials its model API by name"},
+		{name: "a typo", args: []string{"--agent-dns", "off"}, enabled: []string{"claude"},
+			wantErr: `--agent-dns: agent DNS "off" is not cluster or none`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := AgentDNS(newDNSOpts(t, tt.args...), runners, tt.enabled)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("AgentDNS err = %v, want one containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("AgentDNS: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("AgentDNS = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAgentDNSFromTheEnvironment: the chart delivers the mode as
+// PATCHY_AGENT_DNS.
+func TestAgentDNSFromTheEnvironment(t *testing.T) {
+	t.Setenv("PATCHY_AGENT_DNS", "none")
+	got, err := AgentDNS(newDNSOpts(t), map[string]jobs.Runner{"claude": {Brokered: true}}, []string{"claude"})
+	if err != nil || got != jobs.DNSNone {
+		t.Errorf("AgentDNS = %q, %v; want none", got, err)
+	}
+}

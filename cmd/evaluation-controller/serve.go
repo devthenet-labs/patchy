@@ -59,6 +59,7 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 		"file holding the shared bearer token for the internal blob endpoint (optional)")
 	runnercfg.RegisterEvolveFlags(f)
 	runnercfg.RegisterAgentResourceFlags(f)
+	runnercfg.RegisterAgentDNSFlag(f)
 	return cmd
 }
 
@@ -97,6 +98,10 @@ func resolveFleet(ctx context.Context, opts *cli.Options, agentNS string,
 		return nil, nil, errors.New(
 			"no evolve runner enabled: no configured runner has its credential Secret in the agent namespace")
 	}
+	agentDNS, err := runnercfg.AgentDNS(opts, runners, enabled)
+	if err != nil {
+		return nil, nil, err
+	}
 	runner := jobs.New(cs, jobs.Config{
 		Namespace:      agentNS,
 		ServiceAccount: opts.String("agent-service-account"),
@@ -108,6 +113,7 @@ func resolveFleet(ctx context.Context, opts *cli.Options, agentNS string,
 		MemoryRequest:  memoryRequest,
 		CPULimit:       cpuLimit,
 		MemoryLimit:    memoryLimit,
+		DNS:            agentDNS,
 	}, log)
 	return runner, enabled, nil
 }

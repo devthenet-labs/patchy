@@ -232,6 +232,41 @@ every checksum/config, exactly as it was. Context: dict "root" $ "data" <dict>.
 {{- end }}
 
 {{/*
+Whether the agent pods run without a resolver (agent.networkPolicy.dns: none),
+with the render-time guards that setting needs; returns a non-empty string for
+yes. Under none every runner but brokered claude is refused, on either fleet
+(patchy.harnessEnabled): codex and copilot dial their vendor's API by name, and
+an internet name cannot be pinned at launch the way a ClusterIP Service can.
+So is mode istio: the agent pod's sidecar must resolve istiod before the Job
+can run at all.
+*/}}
+{{- define "patchy.agentDNSNone" -}}
+{{- if eq (.Values.agent.networkPolicy.dns | default "cluster") "none" -}}
+{{- range $id, $r := .Values.agent.runners -}}
+{{- if and (ne $id "claude") (include "patchy.harnessEnabled" (dict "root" $ "id" $id)) -}}
+{{- fail (printf "agent.networkPolicy.dns none: the %s runner dials its model API by name and needs a resolver; disable it (agent.runners.%s.enabled, evaluationController.runners.%s.enabled) or keep dns: cluster" $id $id $id) -}}
+{{- end -}}
+{{- end -}}
+{{- if eq (include "patchy.egressMode" .) "istio" -}}
+{{- fail "agent.networkPolicy.dns none is incompatible with mode istio: the agent pod's sidecar must resolve istiod" -}}
+{{- end -}}
+yes
+{{- end -}}
+{{- end }}
+
+{{/*
+PATCHY_AGENT_DNS for every controller that launches agent Jobs (investigation,
+remediation, intent and evaluation): set into .data only under dns: none, so
+the default leaves every ConfigMap, and every checksum/config, as it was.
+Context: dict "root" $ "data" <dict>.
+*/}}
+{{- define "patchy.agentDNSData" -}}
+{{- if include "patchy.agentDNSNone" .root -}}
+{{- $_ := set .data "PATCHY_AGENT_DNS" "none" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Render a map as the comma-joined key=value wire form the runnercfg flags
 parse (--claude-model-map, --claude-provider-env). Keys sort deterministically.
 */}}

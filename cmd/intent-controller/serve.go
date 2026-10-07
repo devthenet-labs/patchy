@@ -94,6 +94,7 @@ func newServeCmd(opts *cli.Options) *cobra.Command {
 	runnercfg.RegisterFlags(f)
 	runnercfg.RegisterRepositoryImageFlags(f)
 	runnercfg.RegisterAgentResourceFlags(f)
+	runnercfg.RegisterAgentDNSFlag(f)
 	f.Int("changeset-max-entries", changeset.DefaultMaxEntries,
 		"most files (upserts plus deletes) a build's changeset may touch before it is rejected without any forge call")
 	return cmd
@@ -246,6 +247,19 @@ func harness(ctx context.Context, opts *cli.Options, cs kubernetes.Interface, ag
 	return plan, nil
 }
 
+// harnessAndDNS is harness, then --agent-dns held to that one harness: the
+// intent Jobs' pods can run without a resolver only on brokered claude or the
+// fake harness, which is all harness admits.
+func harnessAndDNS(ctx context.Context, opts *cli.Options, cs kubernetes.Interface, agentNS string,
+	runners map[string]jobs.Runner) (string, jobs.DNSMode, error) {
+	id, err := harness(ctx, opts, cs, agentNS, runners)
+	if err != nil {
+		return "", "", err
+	}
+	mode, err := runnercfg.AgentDNS(opts, runners, []string{id})
+	return id, mode, err
+}
+
 func serve(ctx context.Context, opts *cli.Options) error {
 	prov, shutdown, err := telemetry.Init(ctx, telemetry.Config{
 		Dir:            os.Getenv("PATCHY_TELEMETRY_DIR"),
@@ -308,7 +322,7 @@ func serve(ctx context.Context, opts *cli.Options) error {
 	if err != nil {
 		return fmt.Errorf("kubernetes clientset: %w", err)
 	}
-	harnessID, err := harness(ctx, opts, cs, agentNS, runners)
+	harnessID, agentDNS, err := harnessAndDNS(ctx, opts, cs, agentNS, runners)
 	if err != nil {
 		return err
 	}
@@ -328,6 +342,7 @@ func serve(ctx context.Context, opts *cli.Options) error {
 
 		EphemeralStorage:      sizes.ephemeralStorage,
 		AllowRepositoryImages: sizes.repositoryImages,
+		DNS:                   agentDNS,
 	}, log)
 	// Forges come from the cache; their Secrets are never cached, so the
 	// manager's client reads each one live.

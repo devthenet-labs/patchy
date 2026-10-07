@@ -12,6 +12,8 @@ deploy/
 │   │                          #   Services, network policies
 │   ├── components/cilium/     # optional FQDN egress (CiliumNetworkPolicy)
 │   ├── components/gke-fqdn/   # optional FQDN egress (GKE Dataplane V2 FQDNNetworkPolicy)
+│   ├── components/agent-dns-none/
+│   │                          # optional: no resolver in agent pods (brokered claude only)
 │   ├── components/istio/      # optional Sidecar + ServiceEntry + netpol
 │   ├── components/intent-controller/
 │   │                          # optional intent-driven development

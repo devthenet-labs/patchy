@@ -89,7 +89,7 @@ func (c *Client) CreateEval(ctx context.Context, spec EvalSpec) (string, error) 
 		return "", fmt.Errorf("jobs: eval spec requires Evaluation and Unit")
 	}
 	name := EvalNameFor(spec.Unit)
-	job, err := c.buildEvalJob(name, spec)
+	job, err := c.buildEval(ctx, name, spec)
 	if err != nil {
 		return "", err
 	}
@@ -140,6 +140,24 @@ func buildEvalSecret(name, namespace string, spec EvalSpec) *corev1.Secret {
 		Type:       corev1.SecretTypeOpaque,
 		Data:       map[string][]byte{secretKeyUnit: spec.UnitJSON},
 	}
+}
+
+// buildEval is the Job CreateEval submits: buildEvalJob's shape, then the
+// pod's name resolution under Config.DNS, as build is for a finding Job.
+func (c *Client) buildEval(ctx context.Context, name string, spec EvalSpec) (*batchv1.Job, error) {
+	job, err := c.buildEvalJob(name, spec)
+	if err != nil {
+		return nil, err
+	}
+	runner, err := c.runnerFor(spec.Harness)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.isolateDNS(ctx, &job.Spec.Template.Spec, spec.Harness, runner,
+		endpointURLs(runner, spec.ArtifactURL)); err != nil {
+		return nil, err
+	}
+	return job, nil
 }
 
 func (c *Client) buildEvalJob(name string, spec EvalSpec) (*batchv1.Job, error) {

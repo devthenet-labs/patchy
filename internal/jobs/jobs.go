@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -249,6 +250,13 @@ type Config struct {
 	// keeps re-probing while egress is open before concluding that
 	// NetworkPolicy is not enforced (default DefaultSandboxProbeTimeout).
 	SandboxProbeTimeout time.Duration
+	// DNS is how the agent pods resolve names: DNSCluster (or empty) leaves
+	// every Job exactly as before; DNSNone gives the pod no resolver and
+	// pins the hosts its URLs name in its hosts file (dns.go).
+	DNS DNSMode
+	// Resolver resolves those hosts as a DNSNone Job is created (default
+	// net.DefaultResolver, the controller's own).
+	Resolver Resolver
 }
 
 // Spec is one agent Job to create.
@@ -381,6 +389,9 @@ func New(cs kubernetes.Interface, cfg Config, log *slog.Logger) *Client {
 	if cfg.SandboxProbeTimeout <= 0 {
 		cfg.SandboxProbeTimeout = DefaultSandboxProbeTimeout
 	}
+	if cfg.Resolver == nil {
+		cfg.Resolver = net.DefaultResolver
+	}
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
@@ -424,7 +435,7 @@ func (c *Client) Create(ctx context.Context, spec Spec) (string, v1alpha1.Runner
 		return "", v1alpha1.RunnerImageRef{}, fmt.Errorf("jobs: spec requires Kind and Finding")
 	}
 	name := NameFor(spec.Finding, spec.Kind, int32(spec.Attempt))
-	job, err := c.buildJob(name, spec)
+	job, err := c.build(ctx, name, spec)
 	if err != nil {
 		return "", v1alpha1.RunnerImageRef{}, err
 	}
@@ -592,6 +603,30 @@ func buildSecret(name, namespace string, spec Spec) *corev1.Secret {
 		Type:       corev1.SecretTypeOpaque,
 		Data:       data,
 	}
+}
+
+// build is the Job Create submits: buildJob's shape, then the pod's name
+// resolution under Config.DNS (isolateDNS), the one step that needs the
+// network. Both run before anything is created, so a Job whose endpoints do
+// not resolve leaves no Secret behind.
+func (c *Client) build(ctx context.Context, name string, spec Spec) (*batchv1.Job, error) {
+	job, err := c.buildJob(name, spec)
+	if err != nil {
+		return nil, err
+	}
+	runner, err := c.runnerFor(spec.Harness)
+	if err != nil {
+		return nil, err
+	}
+	artifacts := []string{spec.ArtifactURL}
+	for _, tr := range spec.Trees {
+		artifacts = append(artifacts, tr.ArtifactURL)
+	}
+	if err := c.isolateDNS(ctx, &job.Spec.Template.Spec, spec.Harness, runner,
+		endpointURLs(runner, artifacts...)); err != nil {
+		return nil, err
+	}
+	return job, nil
 }
 
 func (c *Client) buildJob(name string, spec Spec) (*batchv1.Job, error) {

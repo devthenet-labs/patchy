@@ -113,6 +113,42 @@ func TestEnv(t *testing.T) {
 	}
 }
 
+// TestBaseURLEnvNames: every name Env points at the broker, for every
+// provider, is one internal/jobs reads a host from, and every one of those is
+// a gateway name. A provider whose route rode a name missing here would leave
+// a pod without a resolver unable to reach the broker.
+func TestBaseURLEnvNames(t *testing.T) {
+	cfgs := []Config{
+		{Name: Anthropic, BrokerURL: broker},
+		{Name: Bedrock, BrokerURL: broker, Region: "us-east-1"},
+		{Name: Vertex, BrokerURL: broker, Region: "europe-west1", ProjectID: "proj"},
+		{Name: Foundry, BrokerURL: broker},
+	}
+	if len(cfgs) != len(Names) {
+		t.Fatalf("the test covers %d providers, and there are %d", len(cfgs), len(Names))
+	}
+	seen := map[string]bool{}
+	for _, cfg := range cfgs {
+		for k, v := range Env(cfg, nil) {
+			if !strings.HasPrefix(v, broker) {
+				continue
+			}
+			if !slices.Contains(BaseURLEnvNames, k) {
+				t.Errorf("provider %s points %s at the broker, and BaseURLEnvNames does not list it", cfg.Name, k)
+			}
+			seen[k] = true
+		}
+	}
+	for _, k := range BaseURLEnvNames {
+		if !slices.Contains(GatewayEnvNames, k) {
+			t.Errorf("BaseURLEnvNames lists %s, which is not a gateway name", k)
+		}
+		if !seen[k] {
+			t.Errorf("BaseURLEnvNames lists %s, which no provider sets", k)
+		}
+	}
+}
+
 func TestEnvModelMapAndExtra(t *testing.T) {
 	cfg := Config{Name: Anthropic, BrokerURL: broker, ExtraEnv: map[string]string{"HTTPS_PROXY": "http://p"}}
 	got := Env(cfg, map[string]string{"anthropic/claude-sonnet-5": "claude-sonnet-5"})

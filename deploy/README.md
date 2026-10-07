@@ -23,6 +23,7 @@ deploy/
 │   ├── base/                        # CRDs, namespaces, RBAC, config, deployments, services, netpol
 │   ├── components/cilium/           # optional: FQDN egress policy for the agent sandbox (Cilium CNI)
 │   ├── components/gke-fqdn/         # optional: the same allowlist as an FQDNNetworkPolicy (GKE Dataplane V2)
+│   ├── components/agent-dns-none/   # optional: no resolver in agent pods (brokered claude only)
 │   ├── components/istio/            # optional: the same allowlist as a Sidecar + ServiceEntry (Istio mesh)
 │   ├── components/intent-controller/ # optional: intent-driven development (Deployment, RBAC, its ConfigMap)
 │   └── overlays/{dev,prod}/
@@ -255,6 +256,15 @@ survives either patch, so a missing CRD fails the sandbox closed.
 
 If you have none of the three, drop the components. The base policy still applies and is then the whole of the L3/L4
 story.
+
+**4. No resolver — closing DNS.** Every layer above still lets an agent pod reach the cluster resolver, which forwards
+names it does not own upstream, so data can leave in query names. `components/agent-dns-none` (list it after
+`components/cilium`) sets `PATCHY_AGENT_DNS=none` for the job controllers, which then give each agent pod
+`dnsPolicy: None`, a dead loopback nameserver, and the artifact server and broker pinned in its hosts file (resolved by
+the controller at launch), and removes the DNS rule from `patchy-agents-egress` and the claude `CiliumNetworkPolicy`.
+Brokered claude only: a controller with codex or copilot enabled refuses to start. Not with `components/istio`. A DNS
+allow policy for `patchy-agents` managed outside these manifests must be removed or narrowed too, since policies are
+additive.
 
 ## Applying
 

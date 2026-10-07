@@ -234,3 +234,16 @@ func TestHarnessSkipsBrokerProbe(t *testing.T) {
 		t.Errorf("intent controller made %d broker readiness requests, want none", n)
 	}
 }
+
+// TestAgentDNSFlag: intent-controller registers --agent-dns (unprefixed, like
+// the other agent Job flags), defaulting to the cluster resolver.
+func TestAgentDNSFlag(t *testing.T) {
+	_, _, serve := command(t)
+	f := serve.Flags().Lookup("agent-dns")
+	if f == nil {
+		t.Fatal("--agent-dns is not registered")
+	}
+	if f.DefValue != "cluster" {
+		t.Errorf("--agent-dns defaults to %q, want cluster", f.DefValue)
+	}
+}

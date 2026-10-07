@@ -1,0 +1,71 @@
+# Copyright 2026 Bitwise Media Group Ltd.
+# SPDX-License-Identifier: MIT
+#
+# Optional component: no resolver in the agent pods, the kustomize twin of the
+# chart's agent.networkPolicy.dns: none. Enable it from an overlay with
+#
+#     components:
+#         - ../../components/agent-dns-none
+#
+# listed AFTER ../cilium when you use it, since a component patches only what
+# the components before it rendered.
+#
+# The base lets an agent pod reach the cluster resolver, which forwards any
+# name it does not own upstream, so a command in the pod can carry data out in
+# query names (<chunk>.attacker.example) with every other route closed. This
+# component closes that channel:
+#
+#   * PATCHY_AGENT_DNS=none for the job controllers (investigation,
+#     remediation, evaluation, and intent through its component; the other
+#     binaries do not bind the key). Each Job's pod then gets dnsPolicy None,
+#     its own loopback as its only nameserver (nothing answers there), and the
+#     two names it dials, the artifact server and the egress broker, pinned in
+#     its hosts file, resolved by the controller as it creates the Job. A
+#     launch whose names do not resolve is retried, never run. Nothing in
+#     the pod can resolve any other name, the agent's own commands included
+#     (npm install, go mod download, pip, apt, git clone): every toolchain
+#     and dependency a run needs must already be in the runner image.
+#   * the DNS rule of base/networkpolicy.yaml's patchy-agents-egress and, with
+#     ../cilium, of the claude CiliumNetworkPolicy. A `test` op guards each
+#     removal, so a reordered policy fails the build instead of losing another
+#     rule.
+#
+# Brokered claude only: a controller with codex or copilot in PATCHY_HARNESSES
+# refuses to start, since those dial their vendor's API by name. Not with
+# ../istio: the agent pod's sidecar must resolve istiod.
+#
+# It closes DNS, not addresses: the base policy's TCP 443 rule, wherever a
+# component has not removed it, still admits a raw address. No runner that can
+# run here uses that rule, so an overlay may remove it too. And network
+# policies are additive, so a DNS allow policy for patchy-agents managed
+# outside these manifests (an operator's own allow-dns for a node-local
+# resolver, say) must be removed or narrowed too, or it keeps the channel open.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+    - target:
+          kind: ConfigMap
+          name: patchy-config
+      patch: |
+          - op: add
+            path: /data/PATCHY_AGENT_DNS
+            value: none
+    - target:
+          kind: NetworkPolicy
+          name: patchy-agents-egress
+      patch: |
+          - op: test
+            path: /spec/egress/0/ports/0/port
+            value: 53
+          - op: remove
+            path: /spec/egress/0
+    - target:
+          kind: CiliumNetworkPolicy
+          name: patchy-agent-egress-claude
+      patch: |
+          - op: test
+            path: /spec/egress/0/toPorts/0/ports/0/port
+            value: "53"
+          - op: remove
+            path: /spec/egress/0

@@ -171,10 +171,10 @@ func TestIntentBuildReportRepaired(t *testing.T) {
 	}
 }
 
-// TestIntentBuildLongNoteTruncated: the 574-character note that threw
-// overdub-10's build away is cut to the bound, not refused, so the build is
-// pushed from its first run with no repair round.
-func TestIntentBuildLongNoteTruncated(t *testing.T) {
+// TestIntentBuildLongNoteAccepted: the 574-character note that threw
+// overdub-10's build away is accepted, not refused, so the build is pushed
+// from its first run with no repair round.
+func TestIntentBuildLongNoteAccepted(t *testing.T) {
 	e, name := startRepairIntent(t, "long-note", "keep")
 	job, run := e.buildAttempt(t, name, 1)
 	if run.Status.Outcome != "ok" {

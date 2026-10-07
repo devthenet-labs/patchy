@@ -543,8 +543,10 @@ func buildWithinBounds(b *Build) bool {
 	ran, passed, success := *b.Tests.Ran, *b.Tests.Passed, *b.Success
 	consistent := (!ran || b.Tests.Command != "") && (ran || !passed) && (!success || !ran || passed) &&
 		success == (b.Reason == "")
+	// A note is not held to ItemMaxChars (an over-long one is accepted
+	// whole), only to every other rule of a line and the document's bound.
 	notes := len(b.Notes) <= BuildMaxNotes &&
-		!slices.ContainsFunc(b.Notes, func(s string) bool { return s == "" || !boundedLine(s, ItemMaxChars) })
+		!slices.ContainsFunc(b.Notes, func(s string) bool { return s == "" || !boundedLine(s, ReportMaxBytes) })
 	return consistent && notes && len(b.Body) <= BodyMaxBytes && b.Summary != "" &&
 		boundedLine(b.Summary, SummaryMaxChars) && boundedLine(b.Tests.Command, ItemMaxChars) &&
 		boundedLine(b.Reason, ReasonMaxChars)

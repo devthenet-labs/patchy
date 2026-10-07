@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"unicode/utf8"
 )
 
 const validBuild = `---
@@ -166,10 +165,14 @@ func TestParseBuildErrors(t *testing.T) {
 		{"eleven notes", buildWith(`notes:
   - "The build time comes from a linker flag; check the Dockerfile sets it."`, items("notes", BuildMaxNotes+1,
 			func(i int) string { return fmt.Sprintf("note %d", i) })), "over 10"},
-		{"a note over 500 characters with a separator in what is kept", buildWith(
+		{"a note over 500 characters with a separator", buildWith(
 			`  - "The build time comes from a linker flag; check the Dockerfile sets it."`,
 			`  - "Check.\u2029`+strings.Repeat("n", ItemMaxChars)+`"`),
 			"notes[0] holds U+2029, a line or paragraph separator"},
+		{"a hidden character past 500 characters of a note", buildWith(
+			`  - "The build time comes from a linker flag; check the Dockerfile sets it."`,
+			`  - "`+strings.Repeat("n", ItemMaxChars)+`\u200b"`),
+			"notes[0] holds U+200B"},
 		{"failure without a reason", buildWith("success: true", "success: false"),
 			"reason is required when success is false"},
 		{"success with a reason", buildWith("notes:", "reason: \"none\"\nnotes:"), "reason is set but success is true"},
@@ -193,27 +196,21 @@ func TestParseBuildErrors(t *testing.T) {
 	}
 }
 
-// TestParseBuildTruncatesLongNotes: a note over ItemMaxChars is cut to it,
-// ending in NoteTruncated, rather than refusing the report and with it the
-// whole build (overdub-10 lost one to a 574-character note). A note within
-// the bound is kept as written.
-func TestParseBuildTruncatesLongNotes(t *testing.T) {
-	keep := ItemMaxChars - utf8.RuneCountInString(NoteTruncated)
+// TestParseBuildAcceptsLongNotes: a note over ItemMaxChars is accepted
+// whole rather than refusing the report and with it the whole build
+// (overdub-10 lost one to a 574-character note). It is not cut: patchy
+// records the report's raw bytes, so a cut would reach no reader.
+func TestParseBuildAcceptsLongNotes(t *testing.T) {
 	tests := []struct {
 		name string
 		note string
 		want string
 	}{
 		{"exactly 500", strings.Repeat("n", ItemMaxChars), strings.Repeat("n", ItemMaxChars)},
-		{"501", strings.Repeat("n", ItemMaxChars+1), strings.Repeat("n", keep) + NoteTruncated},
-		{"overdub-10's 574", strings.Repeat("n", 574), strings.Repeat("n", keep) + NoteTruncated},
-		{"counted in characters, not bytes", strings.Repeat("é", 600), strings.Repeat("é", keep) + NoteTruncated},
-		{"a space at the cut is dropped", strings.Repeat("n", keep-1) + " " + strings.Repeat("m", 100),
-			strings.Repeat("n", keep-1) + NoteTruncated},
-		{"surrounding space is trimmed first", "  " + strings.Repeat("n", ItemMaxChars) + "  ",
-			strings.Repeat("n", ItemMaxChars)},
-		{"a hidden character past the cut goes with it", strings.Repeat("n", ItemMaxChars) + `\u200b`,
-			strings.Repeat("n", keep) + NoteTruncated},
+		{"501", strings.Repeat("n", ItemMaxChars+1), strings.Repeat("n", ItemMaxChars+1)},
+		{"overdub-10's 574", strings.Repeat("n", 574), strings.Repeat("n", 574)},
+		{"many characters", strings.Repeat("é", 2000), strings.Repeat("é", 2000)},
+		{"surrounding space is trimmed", "  " + strings.Repeat("n", 600) + "  ", strings.Repeat("n", 600)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -221,13 +218,10 @@ func TestParseBuildTruncatesLongNotes(t *testing.T) {
 				`  - "`+tt.note+`"`+"\n"+`  - "A second note."`)
 			b, err := ParseBuild([]byte(src))
 			if err != nil {
-				t.Fatalf("ParseBuild() error = %v, want the note cut", err)
+				t.Fatalf("ParseBuild() error = %v, want the note accepted", err)
 			}
 			if want := []string{tt.want, "A second note."}; !slices.Equal(b.Notes, want) {
 				t.Errorf("Notes = %q, want %q", b.Notes, want)
-			}
-			if n := utf8.RuneCountInString(b.Notes[0]); n > ItemMaxChars {
-				t.Errorf("note is %d characters, over %d", n, ItemMaxChars)
 			}
 		})
 	}

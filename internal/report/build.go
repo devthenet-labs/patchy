@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 )
 
 // Build report bounds, beyond the ones every intent report shares
@@ -18,8 +16,6 @@ const (
 	BuildMaxNotes = 10
 	// ReasonMaxChars bounds the reason a build could not be done.
 	ReasonMaxChars = 1000
-	// NoteTruncated ends a note cut to ItemMaxChars.
-	NoteTruncated = "… (truncated)"
 )
 
 // Build is the parsed build report: the intent build stage's contract, for
@@ -34,7 +30,7 @@ const (
 //	  passed: true | false         # required; false when ran is false
 //	  command: "<go test ./...>"   # required when ran is true
 //	notes: []                      # at most 10 one-line items for reviewers;
-//	                               # one over 500 characters is cut, not refused
+//	                               # not held to the 500-character item bound
 //	reason: "<one line>"           # required exactly when success is false
 //	---
 //
@@ -130,8 +126,15 @@ func (b *Build) validate() error {
 		errs = append(errs, err)
 	}
 	errs = append(errs, b.validateTests())
-	truncateNotes(b.Notes)
-	errs = append(errs, lines("notes", b.Notes, BuildMaxNotes, ItemMaxChars))
+	// A note is a pointer for reviewers, not something the build rests on, so
+	// an over-long one is no reason to throw away a build that implemented
+	// and committed its plan (overdub-10 lost one to a 574-character note).
+	// It is accepted whole, not cut: patchy records the report's raw bytes,
+	// so a cut would reach no reader, and the whole note is still held to
+	// every other rule of a one-line item, along its whole length. Each is
+	// still capped, at the whole document's bound (ReportMaxBytes). The
+	// plan's lists keep ItemMaxChars: a plan is approved as its exact bytes.
+	errs = append(errs, lines("notes", b.Notes, BuildMaxNotes, ReportMaxBytes))
 	if b.Success != nil {
 		switch {
 		case !*b.Success:
@@ -143,25 +146,6 @@ func (b *Build) validate() error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-// truncateNotes cuts every note over ItemMaxChars characters to that bound,
-// ending it in NoteTruncated, in place. A note is a pointer for reviewers,
-// not something the build rests on, so an over-long one is no reason to throw
-// away a build that implemented and committed its plan (overdub-10 lost one
-// to a 574-character note). Only the length is lenient: the kept text is
-// still held to every other rule of a one-line item, and a note that is not
-// valid UTF-8 is left whole for oneLine to refuse. The plan's lists are not
-// cut: a plan is approved as the exact bytes it was written in.
-func truncateNotes(notes []string) {
-	keep := ItemMaxChars - utf8.RuneCountInString(NoteTruncated)
-	for i, n := range notes {
-		n = strings.TrimSpace(n)
-		if !utf8.ValidString(n) || utf8.RuneCountInString(n) <= ItemMaxChars {
-			continue
-		}
-		notes[i] = strings.TrimRightFunc(string([]rune(n)[:keep]), unicode.IsSpace) + NoteTruncated
-	}
 }
 
 // validateTests checks the tests block, including against the success claim.

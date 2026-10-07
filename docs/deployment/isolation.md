@@ -73,7 +73,8 @@ from changing what a stage may run.
   build and test; network tools stay denied.
 
 codex and copilot do not express these postures (see [extending](../extending.md)); on them the pod is the boundary, and
-the intent stages run on brokered claude only.
+the intent stages run on brokered claude only. An investigation on either still has a shell and unscoped writes, so its
+prompt asks the agent to stay read-only without telling it that the sandbox enforces it.
 
 ## Repository-declared images
 

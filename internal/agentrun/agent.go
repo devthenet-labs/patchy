@@ -436,6 +436,7 @@ func (a *Agent) investigate(ctx context.Context) *envelope.Investigation {
 	prompt, err := templates.RenderInvestigatePrompt(templates.InvestigatePrompt{
 		IssuePath:         a.cfg.issuePath(),
 		ReportPath:        a.cfg.investigationPath(),
+		ReadOnlyEnforced:  harness.EnforcesReadOnly(h),
 		AllowedModels:     a.cfg.ModelAllowlist,
 		AutoMaxTurns:      a.cfg.RemediateAutoMaxTurns,
 		AutoTokenBudget:   a.cfg.RemediateAutoTokenBudget,

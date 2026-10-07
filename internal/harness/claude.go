@@ -20,6 +20,17 @@ type Claude struct {
 	base
 }
 
+// EnforcesReadOnly reports whether h holds a SandboxReadOnly run to the
+// posture itself: no shell, and writes refused outside the request's
+// WriteDirs (claudeTools). Only the claude harness does; codex and copilot
+// cannot express the posture and leave it to the pod (their PromptSpec
+// docs), and the fake harness runs no agent. A prompt states the read-only
+// tool surface as fact only when this holds.
+func EnforcesReadOnly(h Harness) bool {
+	_, ok := h.(*Claude)
+	return ok
+}
+
 // NewClaude returns the builtin Claude Code harness.
 func NewClaude() *Claude {
 	return &Claude{base: base{

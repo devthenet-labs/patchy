@@ -14,8 +14,9 @@ import (
 // allowed.
 func TestReadOnlyPromptsStateTheToolSurface(t *testing.T) {
 	investigate, err := RenderInvestigatePrompt(InvestigatePrompt{
-		IssuePath:  "/workspace/input/issue.md",
-		ReportPath: "/workspace/reports/investigation.md",
+		IssuePath:        "/workspace/input/issue.md",
+		ReportPath:       "/workspace/reports/investigation.md",
+		ReadOnlyEnforced: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -50,5 +51,33 @@ func TestReadOnlyPromptsStateTheToolSurface(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestInvestigatePromptUnenforcedClaimsNoSandbox: on a harness that leaves
+// the read-only posture to the pod (codex, copilot), the investigation
+// prompt still asks for it but does not claim a tool surface the run does
+// not have: no "no shell", no refused writes.
+func TestInvestigatePromptUnenforcedClaimsNoSandbox(t *testing.T) {
+	got, err := RenderInvestigatePrompt(InvestigatePrompt{
+		IssuePath:  "/workspace/input/issue.md",
+		ReportPath: "/workspace/reports/investigation.md",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "This stage is read-only. Do not run commands, tests, builds or git. " +
+		"Find and read files with your file search and read\n" +
+		"tools, and create or change no file except your report, `/workspace/reports/investigation.md`.\n"
+	if !strings.Contains(got, want) {
+		t.Errorf("prompt lacks the unenforced read-only paragraph %q:\n%s", want, got)
+	}
+	for _, claim := range []string{"no shell", "is refused", "`git log`"} {
+		if strings.Contains(got, claim) {
+			t.Errorf("prompt claims %q on a harness that does not enforce it", claim)
+		}
+	}
+	if !strings.Contains(got, "described below.\n\nThis stage is read-only.") {
+		t.Errorf("the read-only paragraph is not its own paragraph:\n%s", got)
 	}
 }

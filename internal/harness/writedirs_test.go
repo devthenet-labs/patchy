@@ -123,3 +123,13 @@ func TestClaudeReadOnlyWriteScopeExcludesSettingsAndGit(t *testing.T) {
 		})
 	}
 }
+
+// TestEnforcesReadOnly: only the claude harness renders the read-only
+// posture itself; the prompts state its tool surface as fact on it alone.
+func TestEnforcesReadOnly(t *testing.T) {
+	for _, h := range All() {
+		if got, want := EnforcesReadOnly(h), h.ID() == "claude"; got != want {
+			t.Errorf("EnforcesReadOnly(%s) = %v, want %v", h.ID(), got, want)
+		}
+	}
+}

@@ -89,6 +89,11 @@ func TestReadOnlyStagesWriteOnlyTheirReports(t *testing.T) {
 			}
 			argv := fx.specs[0].Argv
 			checkNoShell(t, argv)
+			// The claude harness enforces the posture, so the prompt states
+			// it as fact (harness.EnforcesReadOnly).
+			if len(argv) < 3 || !strings.Contains(argv[2], "It has no shell") {
+				t.Errorf("the %s prompt does not state that the stage has no shell", st.name)
+			}
 			allow := argvFlag(t, argv, "--allowedTools")
 			if report := filepath.Join(ws, "reports", st.file); !writableUnder(allow, report) {
 				t.Errorf("--allowedTools = %q cannot write the report %s", allow, report)

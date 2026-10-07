@@ -18,7 +18,8 @@ var files embed.FS
 // tmpl parses every embedded template once; a parse failure is a programmer
 // error caught by the package's golden tests, so panicking at init is right.
 var tmpl = template.Must(template.New("").
-	Funcs(template.FuncMap{"join": strings.Join, "code": code, "fence": fence, "chomp": chomp}).
+	Funcs(template.FuncMap{"join": strings.Join, "code": code, "fence": fence, "chomp": chomp,
+		"openPullRequests": openPullRequestsListing}).
 	ParseFS(files, "*.md.tmpl"))
 
 // chomp drops trailing line breaks, so a block ending in one (fence) can sit

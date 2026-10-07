@@ -126,6 +126,8 @@ type fakePR struct {
 	// repo is the "owner/name" of the repository it is in; "" is the app
 	// repository, acme/app. Numbers are unique across repositories here.
 	repo string
+	// files are the files it changes, as ListPullRequestFiles lists them.
+	files []ghclient.PullRequestFile
 }
 
 // in reports whether the pull request is in repoURL.
@@ -1016,6 +1018,25 @@ func (f *fakeGitHub) GetPullRequest(_ context.Context, repoURL string, number in
 	}
 	cp := pr.pr
 	return &cp, nil
+}
+
+// ListPullRequestFiles lists the first limit files of a pull request of
+// repoURL; one that is not there is a 404.
+func (f *fakeGitHub) ListPullRequestFiles(_ context.Context, repoURL string, number int64, limit int) (
+	[]ghclient.PullRequestFile, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.call("ListPullRequestFiles"); err != nil {
+		return nil, err
+	}
+	if err := f.repoErr("ListPullRequestFiles", repoURL); err != nil {
+		return nil, err
+	}
+	pr, ok := f.prs[number]
+	if !ok || !pr.in(repoURL) {
+		return nil, ghError(http.StatusNotFound, "Not Found")
+	}
+	return slices.Clone(pr.files[:min(len(pr.files), limit)]), nil
 }
 
 func (f *fakeGitHub) ListPullRequestReviews(_ context.Context, repoURL string, number int64) ([]ghclient.Review,

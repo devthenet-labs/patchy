@@ -122,6 +122,13 @@ type Config struct {
 	// Its text is untrusted; the prompt bounds and fences it.
 	PreviousAttempt *templates.PreviousAttempt
 
+	// OpenPullRequests are other intents' pull requests open in the
+	// repositories an intent's plan may change, which the plan prompt lists
+	// so the plan steers clear of their files. Nil omits the section, as on
+	// every Job but an intent plan's. Their text is untrusted; the prompt
+	// bounds, strips and fences it.
+	OpenPullRequests []templates.OpenPullRequest
+
 	InvestigateTimeout time.Duration
 	RemediateTimeout   time.Duration
 	// InvestigateIdleTimeout/RemediateIdleTimeout end a run of the stage
@@ -311,6 +318,11 @@ func FromEnv(getenv func(string) string) (Config, error) {
 		} else {
 			cfg.PreviousAttempt = &p
 		}
+	}
+	if prs, err := templates.DecodeOpenPullRequests(get("OPEN_PULL_REQUESTS", "")); err != nil {
+		errs = append(errs, fmt.Sprintf("PATCHY_OPEN_PULL_REQUESTS is not valid JSON: %v", err))
+	} else {
+		cfg.OpenPullRequests = prs
 	}
 	// Approving a fix must never buy less than leaving it alone would: a
 	// manual budget below the automated one inverts the whole model.

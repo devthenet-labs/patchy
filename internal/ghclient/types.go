@@ -96,6 +96,11 @@ type PullRequest struct {
 	// has, and HeadSHA the head commit now; empty when not reported.
 	NodeID  string
 	HeadSHA string
+	// Title is the pull request's title now, which anyone who can edit the
+	// pull request may have written: untrusted text. ChangedFiles is how
+	// many files it changes, as GitHub counts them.
+	Title        string
+	ChangedFiles int
 }
 
 // IssueRequest is the payload for creating an issue.

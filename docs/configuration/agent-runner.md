@@ -143,13 +143,24 @@ remediation, build or revise run early.
 the analysis prompt so the next estimate can correct for the observed skew. It is advisory — absent on a cold start, and
 the prompt then omits the section entirely.
 
-`PATCHY_PREVIOUS_ATTEMPT` is the last per-Job variable: on a retry, a JSON copy of the failed attempt's
+`PATCHY_PREVIOUS_ATTEMPT` is another per-Job variable: on a retry, a JSON copy of the failed attempt's
 `spec.previousAttempt` (`attempt`, `outcome`, `detail`), rendered into that stage's prompt as a "previous attempt"
 section so the agent does not repeat the failure. The outcome is one the controller recognizes as a stage failure, or
 `unknown` — the pod reports its own outcome, and the prompt states it as fact. The detail is untrusted — it can quote
 the repository or its image, such as the `git status` behind a `commit_failed` — so the prompt caps it (4 KiB), drops
 control characters, and quotes it in a fence no line of it can close, stated to be data, not instructions. Absent on a
 first attempt, and the prompt then omits the section.
+
+`PATCHY_OPEN_PULL_REQUESTS` is the last per-Job variable, set only on an intent's plan Job, and only when other intents
+of its Project have pull requests open in the Project's repositories: a JSON list of at most 5 of them, each with its
+intent, repository, number, URL and title, the first 50 files it changes and how many it changes in all. The plan prompt
+lists them in an "Other open pull requests" section, which asks the plan to avoid the files they change wherever the
+request allows, and to name each overlap it cannot avoid among its questions. Everything in it is untrusted, written by
+whoever can edit or push to those pull requests, so agent-runner bounds it again as it reads it: each text field on one
+line, free of control and format characters and cut to its bound (a title to 256 bytes); a path over 256 bytes, or
+holding a control or format character or any white space but a plain space, left out and counted with the files not
+listed rather than shown altered; and at most 16 KiB of paths across the list. The prompt quotes the list in a fence no
+line of it can close, stated to be data, not instructions. Absent otherwise, and the prompt then omits the section.
 
 Brokered (claude) Jobs add two more:
 

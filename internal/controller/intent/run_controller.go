@@ -730,10 +730,12 @@ func launchRefused(err error) bool {
 }
 
 // stageSpec completes spec for the run's stage from its input. A plan's
-// request is re-hashed against the snapshot the run was created for; a
-// build's plan against the approved digest, its request must be empty, and
-// it runs the repository's pinned image, which its Project may require.
-// refusal is how the run ends without launching, nil to launch.
+// request is re-hashed against the snapshot the run was created for, and it
+// is handed the other intents' open pull requests its input lists
+// (planOpenPullRequests); a build's plan against the approved digest, its
+// request must be empty, and it runs the repository's pinned image, which
+// its Project may require. refusal is how the run ends without launching,
+// nil to launch.
 func (r *RunReconciler) stageSpec(run *v1alpha1.IntentRun, spec *jobs.Spec, cm *corev1.ConfigMap,
 	proj *v1alpha1.Project, repo *v1alpha1.Repository) (requireImage bool, refusal *result) {
 	switch run.Spec.Stage {
@@ -744,6 +746,7 @@ func (r *RunReconciler) stageSpec(run *v1alpha1.IntentRun, spec *jobs.Spec, cm *
 					got, run.Spec.Inputs.InputDigest)}
 		}
 		spec.Model = r.PlanModel
+		spec.OpenPullRequests = r.planOpenPullRequests(run, cm)
 		return false, nil
 	case v1alpha1.IntentStageBuild:
 		spec.Model = r.BuildModel
@@ -789,6 +792,21 @@ func (r *RunReconciler) stageSpec(run *v1alpha1.IntentRun, spec *jobs.Spec, cm *
 	}
 	return false, &result{outcome: OutcomeAborted,
 		detail: fmt.Sprintf("stage %q is not run by this controller", run.Spec.Stage)}
+}
+
+// planOpenPullRequests is what a plan run's Job is handed of the other
+// intents' open pull requests: its input's list, decoded and bounded again,
+// so the Job's environment holds at most templates.OpenPullRequestsMaxBytes
+// of it whatever the ConfigMap holds. A list that does not decode is left
+// out, with a log line, and the plan runs as it would without one.
+func (r *RunReconciler) planOpenPullRequests(run *v1alpha1.IntentRun, cm *corev1.ConfigMap) string {
+	prs, err := templates.DecodeOpenPullRequests(cm.Data[keyOpenPullRequests])
+	if err != nil {
+		r.log().Warn("the plan run's open pull requests do not decode; the plan is launched without them",
+			"run", run.Name, "configMap", cm.Name, "error", err)
+		return ""
+	}
+	return templates.EncodeOpenPullRequests(prs)
 }
 
 // requeuePending hands a granted run's slot back when it cannot launch yet.

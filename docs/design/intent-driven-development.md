@@ -372,7 +372,11 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
    - Snapshot the issue title and body into the immutable ConfigMap `<intent>-input-r<N>`, together with its digest. On
      a replan, the snapshot also includes approver comments made since the last plan.
    - Create a Repository at the default branch.
-   - Create the IntentRun `…-plan-r1-a1`.
+   - Create the IntentRun `…-plan-r1-a1`. Its input ConfigMap also records the other intents of the Project that have
+     not ended and the pull requests they have open in its repositories (at most five, each with its title and its first
+     50 files), read from GitHub once, outside the input digest. The plan prompt lists them as data, so the plan steers
+     clear of their files or names the overlap among its questions. A failed read leaves the list out; it never fails
+     the plan.
    - When a slot frees, launch the plan Job: default runner image, read-only, brokered.
 4. **Collect.**
    - Persist the transcript and parse the plan frontmatter.

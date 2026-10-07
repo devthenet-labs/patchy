@@ -54,6 +54,11 @@ const (
 	keyCheckNames   = "check-names"
 	keyInputRefusal = "input-refusal"
 	keyNoFeedback   = "no-usable-feedback"
+	// keyOpenPullRequests is a plan run's list of the other intents' open
+	// pull requests (templates.EncodeOpenPullRequests), absent for none:
+	// the plan Job's PATCHY_OPEN_PULL_REQUESTS, never part of its request or
+	// its digest.
+	keyOpenPullRequests = "open-pull-requests.json"
 	// keyPlan is the plan report exactly as the planner wrote it.
 	keyPlan = "plan.md"
 	// The input snapshot's parts, kept beside the rendered request so an

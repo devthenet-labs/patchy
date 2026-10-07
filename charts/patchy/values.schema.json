@@ -376,6 +376,7 @@
                 "albSubnetCIDRs": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}/(2[0-9]|3[0-2])$"}},
                 "albSubnetIDs": {"type": "array", "maxItems": 4, "uniqueItems": true, "items": {"type": "string", "pattern": "^subnet-([0-9a-f]{8}|[0-9a-f]{17})$"}},
                 "inboundCIDRs": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}/32$"}},
+                "prefixListsIDs": {"type": "array", "description": "Managed prefix list IDs the preview ALB admits beside inboundCIDRs; optional", "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "pattern": "^pl-([0-9a-f]{8}|[0-9a-f]{17})$"}},
                 "certificateARN": {"type": "string", "pattern": "^$|^arn:aws:acm:[a-z0-9-]+:[0-9]{12}:certificate/[0-9a-f-]+$"},
                 "hostSuffix": {"type": "string", "pattern": "^$|^[a-z0-9-]+(\\.[a-z0-9-]+)+$"},
                 "albName": {"type": "string", "pattern": "^$|^[a-z][a-z0-9-]{0,31}$"}

@@ -19,6 +19,16 @@
 {{- $guardSlots := list }}
 {{- range $i := until 4 }}{{ $guardSlots = append $guardSlots (printf "patchy-preview-%d" $i) }}{{ end }}
 {{- $prefix := include "patchy.previewImagePrefix" . }}
+{{- /*
+An UPDATE that removes nothing a load balancer reads: the object is already
+being deleted, or its spec and annotations are exactly what they were (a
+finalizer, label or owner reference change). EKS Auto Mode removes its
+group.ingress.eks.amazonaws.com finalizer with such an UPDATE; refusing it on
+an Ingress or Service that no longer conforms (one created before a rule
+tightened) would leave that object Terminating forever and its slot wedged.
+Neither change alters what the load balancer is told to do.
+*/}}
+{{- $unchangedForLB := "request.operation != 'UPDATE' || !(has(object.metadata.deletionTimestamp) || (object.spec == oldObject.spec && has(object.metadata.annotations) == has(oldObject.metadata.annotations) && (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations)))" }}
 {{- range $kind := list (dict "name" "pods" "resource" "pods" "pod" "object.spec") (dict "name" "deployments" "resource" "deployments" "pod" "object.spec.template.spec") }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -174,6 +184,63 @@ spec:
     validationActions: [Deny]
 {{- end }}
 ---
+# No slot workload may name a Secret through its environment. The emptyDir-only
+# volume rule already refuses secret and projected volumes; this closes env
+# valueFrom.secretKeyRef and envFrom secretRef, for every container kind, so a
+# Secret placed in a slot namespace (a preview sign-in client secret, say) can
+# never reach preview code. Kept, and its own policy, so it outlives a rollback
+# of the others. Only the pod spec is read, so an UPDATE that leaves the spec
+# as it was (labels, annotations, finalizers) is not evaluated.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: patchy-preview-secret-refs
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: [""]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [pods, pods/ephemeralcontainers]
+            - apiGroups: [apps]
+              apiVersions: [v1]
+              operations: [CREATE, UPDATE]
+              resources: [deployments]
+    matchConditions:
+        - name: exact-preview-slot
+          expression: 'request.namespace in {{ $guardSlots | toJson }}'
+        - name: pod-spec-changed
+          expression: "request.operation != 'UPDATE' || object.spec != oldObject.spec"
+    variables:
+        # One policy for both kinds: dyn() because a Pod has no template and a
+        # Deployment no containers at the top of its spec.
+        - name: pod
+          expression: "request.resource.resource == 'deployments' ? dyn(object).spec.template.spec : dyn(object).spec"
+        - name: containers
+          expression: >-
+              (has(variables.pod.containers) ? variables.pod.containers : []) +
+              (has(variables.pod.initContainers) ? variables.pod.initContainers : []) +
+              (has(variables.pod.ephemeralContainers) ? variables.pod.ephemeralContainers : [])
+    validations:
+        - expression: >-
+              variables.containers.all(c,
+                (!has(c.env) || c.env.all(e, !has(e.valueFrom) || !has(e.valueFrom.secretKeyRef))) &&
+                (!has(c.envFrom) || c.envFrom.all(f, !has(f.secretRef))))
+          message: preview containers may not read a Secret through env valueFrom.secretKeyRef or envFrom secretRef
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: patchy-preview-all-slots-secret-refs
+    annotations:
+        helm.sh/resource-policy: keep
+spec:
+    policyName: patchy-preview-secret-refs
+    validationActions: [Deny]
+---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -191,6 +258,8 @@ spec:
     matchConditions:
         - name: exact-preview-slot
           expression: 'request.namespace in {{ $guardSlots | toJson }}'
+        - name: not-deleting-or-metadata-only
+          expression: {{ $unchangedForLB | quote }}
     variables:
         - name: helmPlaceholder
           expression: "request.namespace == 'patchy-preview-0' && object.metadata.name == 'patchy-preview-placeholder'"
@@ -258,6 +327,8 @@ spec:
     matchConditions:
         - name: exact-preview-slot
           expression: 'request.namespace in {{ $guardSlots | toJson }}'
+        - name: not-deleting-or-metadata-only
+          expression: {{ $unchangedForLB | quote }}
     variables:
         - name: helmPlaceholder
           expression: "request.namespace == 'patchy-preview-0' && object.metadata.name == 'patchy-preview-placeholder'"

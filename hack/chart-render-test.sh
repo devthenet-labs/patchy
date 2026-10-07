@@ -295,7 +295,28 @@ expect_fail 'preview subnet IDs not one per CIDR' 'must name one subnet per prev
   -f "$fixtures/preview-foundation.yaml" --set 'preview.albSubnetIDs={subnet-0123456789abcdef0}'
 expect_fail 'preview subnet ID that is not one' 'does not match pattern' \
   -f "$fixtures/preview-foundation.yaml" --set 'preview.albSubnetIDs={sg-0123456789abcdef0,subnet-0123456789abcdef1}'
+# prefixListsIDs admits managed prefix lists beside inboundCIDRs; unset, the
+# class renders exactly as before.
+expect preview 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec | has("prefixListsIDs")' 'false'
+render preview-prefix-lists -f "$fixtures/preview-foundation.yaml" \
+  --set 'preview.prefixListsIDs={pl-0123456789abcdef0,pl-01234567}'
+expect preview-prefix-lists 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.prefixListsIDs | join(",")' 'pl-0123456789abcdef0,pl-01234567'
+expect preview-prefix-lists 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec.inboundCIDRs | join(",")' '203.0.113.10/32'
+expect_fail 'preview prefix list ID that is not one' 'does not match pattern' \
+  -f "$fixtures/preview-foundation.yaml" --set 'preview.prefixListsIDs={sg-0123456789abcdef0}'
+printf 'preview:\n    inboundCIDRs: []\n    prefixListsIDs: [pl-0123456789abcdef0]\n' >"$out/prefix-lists-only.yaml"
+expect_fail 'preview prefix lists without inbound CIDRs' 'preview.inboundCIDRs is required' \
+  -f "$fixtures/preview-foundation.yaml" -f "$out/prefix-lists-only.yaml"
+# No slot workload may read a Secret through its environment (kept, its own
+# policy), and the slot Service and Ingress policies never evaluate an UPDATE
+# that is a deletion's or changes neither spec nor annotations, so Auto Mode
+# can always remove its finalizer from an Ingress that no longer conforms.
+expect preview 'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name == "patchy-preview-secret-refs") | .metadata.annotations."helm.sh/resource-policy"' 'keep'
+expect preview 'select(.kind == "ValidatingAdmissionPolicyBinding" and .metadata.name == "patchy-preview-all-slots-secret-refs") | .spec.policyName + "/" + (.spec.validationActions | join(","))' 'patchy-preview-secret-refs/Deny'
+expect preview 'select(.kind == "ValidatingAdmissionPolicy" and .spec.matchConditions[].name == "not-deleting-or-metadata-only") | .metadata.name' 'patchy-preview-services
+patchy-preview-ingresses'
 expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name | test("^patchy-preview-"))) | .spec.failurePolicy' 'Fail
+Fail
 Fail
 Fail
 Fail
@@ -311,8 +332,10 @@ expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name 
 expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name | test("^patchy-preview-")) and (.metadata.name | test("^patchy-preview-outside-") | not)) | .spec.matchConditions[0].expression' 'request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]
 request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]
 request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]
+request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]
 request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]'
 expect preview 'select(.kind == "ValidatingAdmissionPolicyBinding" and (.metadata.name | test("^patchy-preview-all-slots-"))) | has("spec")' 'true
+true
 true
 true
 true'
@@ -343,9 +366,12 @@ expect_fail 'preview missing cert' 'preview.certificateARN' -f "$fixtures/previe
 # path the admission policies are byte for byte what main rendered before the
 # path was configurable, blank lines aside (same_render: helm versions differ
 # in those alone): preview-admission.default.yaml is that render (helm 4.2.3),
-# and is never regenerated to make this pass. A custom path changes only the
-# prefix and its length (preview-admission.custom.yaml; regenerate it with the
-# same helm template command and review the diff against the default).
+# and is never regenerated to make this pass; only a deliberate, reviewed
+# policy change regenerates it (the preview sign-in phase 0 did: the
+# secret-refs policy and the deletion/metadata-only exemption). A custom path
+# changes only the prefix and its length (preview-admission.custom.yaml;
+# regenerate it with the same helm template command and review the diff
+# against the default).
 golden=$fixtures/golden
 pv=$fixtures/preview-foundation.yaml
 reg=111122223333.dkr.ecr.us-east-1.amazonaws.com

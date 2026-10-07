@@ -26,7 +26,7 @@ locals {
       }
     }],
     [for previews in(local.previews_enabled ? [var.previews] : []) : {
-      preview = {
+      preview = merge({
         imageRegistry   = local.registry
         imagePathPrefix = var.preview_path_prefix
         dnsCIDR         = local.preview_dns_cidr
@@ -37,7 +37,10 @@ locals {
         certificateARN = local.preview_certificate_arn
         hostSuffix     = previews.host_suffix
         albName        = local.preview_alb_name
-      }
+        },
+        # Only when set, so an install without prefix lists renders as before.
+        length(previews.prefix_list_ids) == 0 ? {} : { prefixListsIDs = previews.prefix_list_ids },
+      )
       previewController = {
         config = {
           apiServerCIDR = local.preview_api_server_cidr

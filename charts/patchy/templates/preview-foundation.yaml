@@ -149,6 +149,15 @@ spec:
         {{- range $cidr := $p.inboundCIDRs }}
         - {{ $cidr }}
         {{- end }}
+    {{- with $p.prefixListsIDs }}
+    # Managed prefix lists admitted beside inboundCIDRs (a VPN's or an
+    # office's egress ranges kept in one place). Optional; inboundCIDRs stays
+    # required.
+    prefixListsIDs:
+        {{- range $id := . }}
+        - {{ $id }}
+        {{- end }}
+    {{- end }}
     namespaceSelector:
         matchExpressions:
             - key: kubernetes.io/metadata.name

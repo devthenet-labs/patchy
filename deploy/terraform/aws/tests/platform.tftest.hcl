@@ -843,6 +843,48 @@ run "custom_preview_prefix" {
   }
 }
 
+# Managed prefix lists are optional and additive: they reach the chart's
+# preview.prefixListsIDs beside inbound_cidrs, which they never replace.
+run "preview_prefix_lists" {
+  command = apply
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-a", "subnet-node-b"]
+      inbound_cidrs   = ["203.0.113.7/32"]
+      prefix_list_ids = ["pl-0123456789abcdef0", "pl-01234567"]
+    }
+  }
+
+  assert {
+    condition = (
+      yamldecode(output.helm_values).preview.prefixListsIDs == ["pl-0123456789abcdef0", "pl-01234567"] &&
+      yamldecode(output.helm_values).preview.inboundCIDRs == ["203.0.113.7/32"]
+    )
+    error_message = "helm_values carries the prefix lists as preview.prefixListsIDs beside inboundCIDRs."
+  }
+}
+
+run "preview_prefix_list_id_must_be_one" {
+  command = plan
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-a", "subnet-node-b"]
+      inbound_cidrs   = ["203.0.113.7/32"]
+      prefix_list_ids = ["sg-0123456789abcdef0"]
+    }
+  }
+
+  expect_failures = [var.previews]
+}
+
 run "preview_prefix_must_not_contain_agent_prefix" {
   command = plan
 

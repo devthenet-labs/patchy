@@ -152,6 +152,10 @@ preview:
     # must then cover every such subnet, or the slots drop that zone's traffic.
     albSubnetIDs: []
     inboundCIDRs: [] # Reviewer IPs, each a /32 (the schema refuses wider), at most 8.
+    # Managed prefix list IDs (pl-...) the preview ALB also admits, at most 8:
+    # the IngressClassParams prefixListsIDs. Optional and additive; it does
+    # not replace inboundCIDRs, which stays required.
+    prefixListsIDs: []
     certificateARN: "" # Issued wildcard certificate for preview hosts.
     hostSuffix: "" # e.g. preview.example.com, without leading dot.
     albName: "" # Distinct from the normal patchy ALB.

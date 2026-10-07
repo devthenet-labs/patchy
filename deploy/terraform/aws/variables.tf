@@ -176,6 +176,8 @@ variable "previews" {
       preview workloads must never get public IPs, so a subnet that assigns them fails the plan. The nodes join the
       cluster and pull from ECR out of these subnets, so they need a NAT gateway or EKS, ECR and S3 endpoints.
     - inbound_cidrs: who may reach previews: 1 to 8 IPv4 /32s.
+    - prefix_list_ids: managed prefix lists (pl-...) the preview ALB admits beside inbound_cidrs, at most 8. Optional
+      and additive: inbound_cidrs stays required. helm_values passes them as preview.prefixListsIDs.
     - dns_cidr, api_server_cidr: the cluster DNS and Kubernetes API Service /32s. Null derives .10 and .1 of the
       cluster's service CIDR, which is what EKS assigns.
   EOT
@@ -186,6 +188,7 @@ variable "previews" {
     alb_subnet_ids  = list(string)
     node_subnet_ids = list(string)
     inbound_cidrs   = list(string)
+    prefix_list_ids = optional(list(string), [])
     dns_cidr        = optional(string)
     api_server_cidr = optional(string)
   })
@@ -235,6 +238,14 @@ variable "previews" {
       alltrue([for cidr in var.previews.inbound_cidrs : can(cidrhost(cidr, 0)) && can(regex("^[0-9.]+/32$", cidr))])
     )
     error_message = "previews.inbound_cidrs must list 1 to 8 distinct IPv4 /32s: the preview ALB is never open to the internet."
+  }
+  validation {
+    condition = var.previews == null ? true : (
+      length(var.previews.prefix_list_ids) <= 8 &&
+      length(distinct(var.previews.prefix_list_ids)) == length(var.previews.prefix_list_ids) &&
+      alltrue([for id in var.previews.prefix_list_ids : can(regex("^pl-([0-9a-f]{8}|[0-9a-f]{17})$", id))])
+    )
+    error_message = "previews.prefix_list_ids must list at most 8 distinct managed prefix list IDs (pl- and 8 or 17 hex digits)."
   }
   validation {
     condition = var.previews == null ? true : alltrue([

@@ -18,6 +18,7 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -35,6 +36,8 @@ type Reconciler struct {
 	Settings Settings
 	Now      func() time.Time
 	Log      *slog.Logger
+	// Events records Warning Events on Previews (nil records none).
+	Events events.EventRecorder
 }
 
 func (r *Reconciler) now() time.Time {
@@ -318,6 +321,9 @@ func (r *Reconciler) deploy(ctx context.Context, p *v1alpha1.Preview) (ctrl.Resu
 		if err := r.ensureIngress(ctx, p, slot); err != nil {
 			return r.renderError(ctx, p, err)
 		}
+		if wrote, err := r.resumeAfterRefusal(ctx, p); wrote || err != nil {
+			return ctrl.Result{}, err
+		}
 		// A Preview already Ready has its Pods; it does not wait again.
 		if p.Status.Phase != v1alpha1.PreviewReady {
 			admitted, err := r.ingressAdmitted(ctx, p, slot)
@@ -348,13 +354,66 @@ func (r *Reconciler) deploy(ctx context.Context, p *v1alpha1.Preview) (ctrl.Resu
 	return r.completeDeployment(ctx, p, slot)
 }
 
-// renderError waits for a rendered object that is still deleting, and spends
-// a retry on any other failure to render one.
+// renderError waits for a rendered object that is still deleting, and for an
+// Ingress write the API server refused, and spends a retry on any other
+// failure to render one.
 func (r *Reconciler) renderError(ctx context.Context, p *v1alpha1.Preview, err error) (ctrl.Result, error) {
 	if errors.Is(err, errDeleting) {
 		return r.wait(), nil
 	}
+	if errors.Is(err, errIngressRefused) {
+		return r.ingressRefused(ctx, p, err)
+	}
 	return r.retryError(ctx, p, err)
+}
+
+// ingressRefused waits out a refused Ingress write. The Preview keeps its
+// phase, its Deployments and its retries: a Ready one keeps serving behind the
+// Ingress it has. The refusal is a Warning Event on the Preview, a counter and
+// a log line, so an operator sees a rollout whose policy has not caught up, or
+// a rollback that left one behind.
+func (r *Reconciler) ingressRefused(ctx context.Context, p *v1alpha1.Preview, err error) (ctrl.Result, error) {
+	slot := int32(-1)
+	if p.Status.Slot != nil {
+		slot = *p.Status.Slot
+	}
+	recordIngressRefused(ctx, slot)
+	if r.Log != nil {
+		r.Log.LogAttrs(ctx, slog.LevelWarn, "preview Ingress write refused; waiting",
+			slog.String("preview", p.Name), slog.Int("slot", int(slot)), slog.Any("error", err))
+	}
+	if r.Events != nil {
+		r.Events.Eventf(p, nil, corev1.EventTypeWarning, "IngressRefused", "WriteIngress",
+			"the API server refused the preview's Ingress write; the preview keeps its workload and "+
+				"the controller retries at the next poll: %v", err)
+	}
+	// A Preview still deploying records the refusal once, so the attempt
+	// starts afresh once the write is admitted (resumeAfterRefusal): the
+	// time spent refused is not the rollout's. Its expiry still runs from
+	// the attempt's start, so one refused for good does not hold its slot.
+	if p.Status.Phase != v1alpha1.PreviewReady && p.Status.Message != msgIngressRefused {
+		p.Status.Message = msgIngressRefused
+		return r.wait(), r.Status().Update(ctx, p)
+	}
+	return r.wait(), nil
+}
+
+// msgIngressRefused is a deploying Preview's message while its Ingress write
+// is refused.
+const msgIngressRefused = "waiting: the API server refused the preview's Ingress write"
+
+// resumeAfterRefusal restarts the attempt of a Preview whose Ingress write was
+// refused and has just been admitted, so the waits that follow (the load
+// balancer admitting the Ingress, the Pods becoming Ready) get the whole
+// rollout timeout. It reports whether it wrote the status.
+func (r *Reconciler) resumeAfterRefusal(ctx context.Context, p *v1alpha1.Preview) (bool, error) {
+	if p.Status.Message != msgIngressRefused {
+		return false, nil
+	}
+	p.Status.Message = ""
+	t := metav1.NewTime(r.now())
+	p.Status.AttemptStartedAt = &t
+	return true, r.Status().Update(ctx, p)
 }
 
 // oldPodsRemain reports whether component i's Deployment is gone while its

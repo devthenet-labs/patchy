@@ -204,7 +204,10 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   phase machine and its GitHub writes, the IntentRun scheduler with launch/collect/push, the Intent TTL; one
   writer reconciler per status and its own phase table, `v1alpha1.SetIntentPhase`, beside Finding's; `doc.go` holds
   the single-writer table and the durable-settle rules), `controller/preview` (fixed slot workload renderer,
-  bounded rollout, cleanup and orphan sweep; no forge access).
+  bounded rollout, cleanup and orphan sweep; no forge access; with `--preview-auth-required`, default off, it renders
+  each slot's pinned sign-in annotations from the chart's JSON, the one the slot admission policy compares, and the
+  sweep reports a slot Ingress without the current or previous generation's set, deleting it only after three poll
+  intervals; an Ingress write refused at admission or by RBAC waits and requeues, never spending a retry).
 - `kube` — the controller-runtime manager wrapper: scheme, kubeconfig/in-cluster config, leader election,
   multi-namespace cache, health probes, logr↔slog bridge. Secrets are never cached; a controller that needs only
   its own ConfigMaps confines their informer by label (`ConfigMapSelector`; intent-controller does, so the Finding

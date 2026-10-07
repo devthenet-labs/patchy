@@ -105,7 +105,7 @@ func (r *Reconciler) ensureIngress(ctx context.Context, p *v1alpha1.Preview, slo
 	var live networkingv1.Ingress
 	err := r.Get(ctx, client.ObjectKeyFromObject(desired), &live)
 	if kerrors.IsNotFound(err) {
-		return r.Create(ctx, desired)
+		return ingressWrite(r.Create(ctx, desired))
 	}
 	if err != nil {
 		return err
@@ -123,7 +123,44 @@ func (r *Reconciler) ensureIngress(ctx context.Context, p *v1alpha1.Preview, slo
 	old := live.DeepCopy()
 	live.Spec = desired.Spec
 	live.Annotations = desired.Annotations
-	return r.Patch(ctx, &live, client.MergeFrom(old))
+	return ingressWrite(r.Patch(ctx, &live, client.MergeFrom(old)))
+}
+
+// errIngressRefused marks an Ingress write the API server refused at
+// admission (a slot policy, during a rollout before the policy that admits
+// the new annotations is live, or after a rollback) or for want of RBAC.
+// Neither is the rendered workload failing: the reconcile waits and tries
+// again at the next poll, never deleting a Deployment or spending a retry
+// (renderError), so a refusal never restarts or fails a live preview.
+var errIngressRefused = errors.New("ingress write refused")
+
+// ingressWrite marks err as errIngressRefused when the API server refused
+// the write at admission or authorisation.
+func ingressWrite(err error) error {
+	if err != nil && admissionRefused(err) {
+		return fmt.Errorf("%w: %w", errIngressRefused, err)
+	}
+	return err
+}
+
+// admissionRefused reports whether the API server refused a write at
+// admission or authorisation, quota aside: Forbidden (RBAC, a webhook, a
+// policy whose validation names that reason), or any status that a
+// ValidatingAdmissionPolicy or an admission webhook denied, which by default
+// is Invalid.
+func admissionRefused(err error) bool {
+	if quotaExceeded(err) {
+		return false
+	}
+	if kerrors.IsForbidden(err) {
+		return true
+	}
+	var status kerrors.APIStatus
+	if !errors.As(err, &status) {
+		return false
+	}
+	msg := status.Status().Message
+	return strings.Contains(msg, "ValidatingAdmissionPolicy '") || strings.Contains(msg, "admission webhook ")
 }
 
 // prepareIngress readies a kept Ingress for the current spec before anything

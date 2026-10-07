@@ -203,6 +203,7 @@ expect preview-runtime 'select(.kind == "Role" and .metadata.name == "patchy-pre
 # It records Events (leader election, reconciles) in its own namespace like every other controller; without this its
 # event recorder is refused at startup.
 expect preview-runtime 'select(.kind == "Role" and .metadata.namespace == "patchy" and .metadata.name == "patchy-preview-controller") | .rules[] | select(.resources[] == "events") | .verbs | join(",")' create,patch
+expect preview-runtime 'select(.kind == "Role" and .metadata.namespace == "patchy" and .metadata.name == "patchy-preview-controller") | .rules[] | select(.resources[] == "events") | .apiGroups | join(",")' ',events.k8s.io'
 expect preview-runtime 'select(.kind == "NetworkPolicy" and .metadata.name == "patchy-preview-controller") | .spec.egress[].to[].ipBlock.cidr | select(. != null)' 172.20.0.1/32
 cm preview-runtime preview-controller PATCHY_PREVIEW_SLOT_COUNT 2
 cm preview-runtime preview-controller PATCHY_PREVIEW_IMAGE_PREFIX 111122223333.dkr.ecr.us-east-1.amazonaws.com/patchy/previews/

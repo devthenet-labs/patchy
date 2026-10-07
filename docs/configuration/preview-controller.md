@@ -177,3 +177,32 @@ Before enabling any Project preview, complete the separate ALB, placeholder Ingr
 the cold-start isolation gate in `hack/preview-isolation-probe/README.md` with a disposable PR image. Repeat that gate
 after any EKS, Auto Mode or VPC CNI upgrade and before relying on previews again. The direct Auto Mode network-policy
 agent-log check is still open; absence of errors in Kubernetes events is not a substitute.
+
+## Sign-in on preview Ingresses (off by default)
+
+The sign-in relay (`cmd/preview-auth`) is not wired into the chart yet. Until it is, these flags stay off and every slot
+Ingress renders exactly as before. The controller's side:
+
+- `--preview-auth-required` (`PATCHY_PREVIEW_AUTH_REQUIRED`) renders each slot's pinned sign-in annotations onto every
+  Ingress it writes, beside the health-check path. It names the slot's client Secret there and never reads it.
+- `--preview-auth-annotations` (`PATCHY_PREVIEW_AUTH_ANNOTATIONS`) is a JSON object mapping each slot namespace
+  (`patchy-preview-<n>`) to its six `alb.ingress.kubernetes.io/auth-*` values. The chart renders it once, for both this
+  controller and the slot admission policy, so the controller writes exactly the bytes the policy compares. The
+  controller refuses to start unless every configured slot, and only those, has exactly the six keys, the slot's own
+  cookie name, `auth-type: oidc`, `authenticate` on an unauthenticated request, the `openid` scope, a session timeout
+  the load balancer accepts, and one https issuer whose endpoints sit under it.
+- `--preview-auth-previous-annotations` is the previous key generation's sets during a rotation. An Ingress still on
+  them conforms. Its own reconcile patches it to the current set, and the sweeper never deletes it.
+
+An Ingress write that the API server refuses (at admission, or for want of RBAC) is not a failed deploy attempt. The
+Preview keeps its Deployments, its retries and the Ingress it has, and a `Ready` one keeps serving. The controller
+records a Warning Event `IngressRefused` on the Preview, counts `patchy.preview.ingress.refused{slot}`, and tries again
+at the next poll. A Preview still deploying notes the refusal in its message, and its attempt restarts once the write is
+admitted.
+
+With auth required, the orphan sweep also lists every Ingress of the `alb-preview` class in each slot, labelled or not,
+and reports each one without either generation's pinned set: the gauge `patchy.preview.ingress.unauthenticated{slot}`, a
+log line, and a Warning Event on the Preview that owns it. It deletes such an Ingress only after it has stayed
+unauthenticated for three poll intervals, which gives the owning reconcile time to patch it first, and counts the
+deletion in `patchy.preview.ingress.unauthenticated.deleted`. It never deletes the chart's placeholder Ingress. The
+Events use the `events.k8s.io` API in the release namespace.

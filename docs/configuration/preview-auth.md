@@ -167,9 +167,10 @@ As everywhere, each flag is also the matching `PATCHY_*` environment variable (`
 | `--preview-auth-probe-interval`         | `1m`                            | How often every Ready preview host is probed without credentials; `0` disables the probe                                                          |
 | `--preview-auth-probe-timeout`          | (built in)                      | One host probe's timeout                                                                                                                          |
 
-The chart sets all of these from `previewAuth` (`previewAuth.config.extra` adds any other key). Behind the ALB, the
-per-address rate limit applies per ALB node for `/token` and `/userinfo`, since those calls come from the ALB itself:
-size `previewAuth.rateLimit` for the preview traffic you expect.
+The chart sets all of these from `previewAuth` (`previewAuth.config.extra` adds any other key). `/token` and `/userinfo`
+are the ALB's own calls, so every one of them arrives from an ALB node's address: they charge the per-address limit only
+for a request that fails to authenticate (no valid client secret, or an access token that does not open). The ALB's
+authenticated calls are never limited, so nobody can starve sign-ins by making the ALB redeem junk codes.
 
 ## Observability
 

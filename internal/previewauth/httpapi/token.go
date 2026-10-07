@@ -60,6 +60,9 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 	f, err := form(r)
 	if err != nil {
+		if s.backchannelThrottled(w, r) {
+			return
+		}
 		if isTooLarge(err) {
 			fail(&previewauth.Error{Status: http.StatusRequestEntityTooLarge, Code: previewauth.CodeInvalidRequest,
 				Description: "body too large"})
@@ -71,6 +74,9 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 	client, err := s.cfg.Ring.AuthenticateClient(r.Header.Get("Authorization"), f, s.cfg.SlotCount)
 	if err != nil {
+		if s.backchannelThrottled(w, r) {
+			return
+		}
 		fail(err)
 		return
 	}
@@ -193,6 +199,9 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		v, err := form(r)
 		if err != nil {
+			if s.backchannelThrottled(w, r) {
+				return
+			}
 			fail(&previewauth.Error{Status: http.StatusBadRequest, Code: previewauth.CodeInvalidRequest,
 				Description: "body must be a form"})
 			return
@@ -201,6 +210,9 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	}
 	tok, err := previewauth.ParseBearer(r.Method, r.Header.Get("Authorization"), f)
 	if err != nil {
+		if s.backchannelThrottled(w, r) {
+			return
+		}
 		var e *previewauth.Error
 		if errors.As(err, &e) && e.Status == http.StatusMethodNotAllowed {
 			w.Header().Set("Allow", "GET, POST")
@@ -210,6 +222,9 @@ func (s *Server) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	}
 	acc, err := s.cfg.Ring.OpenAccess(tok, s.now())
 	if err != nil {
+		if s.backchannelThrottled(w, r) {
+			return
+		}
 		fail(err)
 		return
 	}

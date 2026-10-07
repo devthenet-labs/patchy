@@ -31,7 +31,10 @@
 // Every response carries HSTS (without includeSubDomains), nosniff,
 // a CSP with frame-ancestors 'none', no-referrer and, but for discovery and
 // the JWKS, Cache-Control: no-store. Each source address is rate limited
-// (critique F10). One audit line per request names the endpoint, slot, host
+// (critique F10), except that /token and /userinfo charge it only for a
+// request that fails to authenticate: those calls all come from the ALB's
+// own addresses, so a limit in front of client authentication would let a
+// stranger driving the ALB starve every viewer. One audit line per request names the endpoint, slot, host
 // label, Project, result, pairwise subject and a short hash of the token id;
 // never a token, code, state, cookie or login, except that a refused access
 // review is logged at warn with the viewer's login for operators.

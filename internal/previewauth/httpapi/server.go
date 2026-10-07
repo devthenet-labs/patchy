@@ -186,23 +186,43 @@ func (s *Server) envelope(next http.Handler) http.Handler {
 			renderPage(sw, http.StatusMethodNotAllowed, pageNotAllowed)
 			return
 		}
-		if !s.limiter.allow(r) {
+		// The backchannel (/token, /userinfo) is not limited here: every ALB
+		// call arrives from one ALB node address, so an address bucket in
+		// front of client authentication would let anyone who can make the
+		// ALB redeem junk codes starve every viewer's sign-in. Those
+		// handlers charge the address only for a request that fails to
+		// authenticate (backchannelThrottled).
+		if !backchannel(a.endpoint) && !s.limiter.allow(r) {
 			a.result = "rate_limited"
 			count(r.Context(), limitedCounter)
 			h.Set("Retry-After", "1")
-			if a.endpoint == "token" || a.endpoint == "userinfo" {
-				// The ALB's backchannel: a 503, which it does not treat as a
-				// sign-out.
-				writeOAuthError(sw, &previewauth.Error{Status: http.StatusServiceUnavailable,
-					Code: previewauth.CodeTemporarilyUnavailable, Description: "try again"})
-				return
-			}
 			renderPage(sw, http.StatusTooManyRequests, pageRateLimited)
 			return
 		}
 		r.Body = http.MaxBytesReader(sw, r.Body, MaxBodyBytes)
 		next.ServeHTTP(sw, r.WithContext(context.WithValue(r.Context(), auditKey{}, a)))
 	})
+}
+
+// backchannel reports whether an endpoint is one the ALB calls itself.
+func backchannel(endpoint string) bool { return endpoint == "token" || endpoint == "userinfo" }
+
+// backchannelThrottled charges r's source address for a backchannel request
+// that did not authenticate (no valid client secret on /token, no access
+// token that opens on /userinfo). Over the limit it answers 503
+// temporarily_unavailable, which the ALB does not treat as a sign-out, and
+// reports true. An authenticated backchannel call is never charged: the
+// client secrets and tokens are 256-bit, so the limit sheds load from
+// strangers rather than slowing a guess.
+func (s *Server) backchannelThrottled(w http.ResponseWriter, r *http.Request) bool {
+	if s.limiter.allow(r) {
+		return false
+	}
+	rec(r).result = "rate_limited"
+	count(r.Context(), limitedCounter)
+	writeOAuthError(w, &previewauth.Error{Status: http.StatusServiceUnavailable,
+		Code: previewauth.CodeTemporarilyUnavailable, Description: "try again"})
+	return true
 }
 
 func endpointName(path string) string {

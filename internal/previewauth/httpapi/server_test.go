@@ -556,6 +556,58 @@ func TestRateLimit(t *testing.T) {
 	}
 }
 
+// TestBackchannelRateLimitFollowsAuthentication: every /token and /userinfo
+// call comes from the ALB's own address, so junk codes the ALB is driven to
+// redeem (with its valid client secret) must never drain the bucket that
+// real sign-ins share. Only requests that fail to authenticate are charged.
+func TestBackchannelRateLimitFollowsAuthentication(t *testing.T) {
+	r := newRelay(t, func(c *Config) { c.RateLimit = RateLimit{PerSecond: 0.001, Burst: 3} })
+	junk := url.Values{"grant_type": {"authorization_code"}, "code": {"junk"}, "redirect_uri": {callback}}
+	for i := range 50 {
+		resp := r.tokenRequest("basic", 1, r.ring.ClientSecret(1), junk)
+		if got := decodeToken(t, resp); resp.StatusCode != 400 || got.Error != "invalid_grant" {
+			t.Fatalf("authenticated junk code %d: %d %q", i, resp.StatusCode, got.Error)
+		}
+	}
+	// A real redemption from the same address still succeeds.
+	good := url.Values{"grant_type": {"authorization_code"}, "code": {r.codeFor("")}, "redirect_uri": {callback}}
+	resp := r.tokenRequest("post", 1, r.ring.ClientSecret(1), good)
+	tok := decodeToken(t, resp)
+	if resp.StatusCode != 200 || tok.AccessToken == "" {
+		t.Fatalf("redeem after junk: %d %q", resp.StatusCode, tok.Error)
+	}
+	for i := range 20 {
+		if resp, b := userinfo(t, r, http.MethodGet, tok.AccessToken); resp.StatusCode != 200 {
+			t.Fatalf("userinfo %d: %d %s", i, resp.StatusCode, b)
+		}
+	}
+	// Strangers are charged: a wrong client secret, then a token that does
+	// not open, from the same address.
+	wrong := strings.Repeat("0", 64)
+	for i := range 3 {
+		resp := r.tokenRequest("basic", 1, wrong, junk)
+		if got := decodeToken(t, resp); resp.StatusCode != 401 || got.Error != "invalid_client" {
+			t.Fatalf("wrong secret %d: %d %q", i, resp.StatusCode, got.Error)
+		}
+	}
+	resp = r.tokenRequest("basic", 1, wrong, junk)
+	if got := decodeToken(t, resp); resp.StatusCode != 503 || got.Error != "temporarily_unavailable" {
+		t.Fatalf("wrong secret over the limit: %d %q", resp.StatusCode, got.Error)
+	}
+	if resp, b := userinfo(t, r, http.MethodGet, "junk"); resp.StatusCode != 503 {
+		t.Fatalf("junk userinfo over the limit: %d %s", resp.StatusCode, b)
+	}
+	// The address is exhausted, yet the ALB's authenticated calls go on.
+	resp = r.tokenRequest("basic", 1, r.ring.ClientSecret(1), url.Values{
+		"grant_type": {"refresh_token"}, "refresh_token": {tok.RefreshToken}})
+	if got := decodeToken(t, resp); resp.StatusCode != 200 {
+		t.Fatalf("refresh with the address exhausted: %d %q", resp.StatusCode, got.Error)
+	}
+	if resp, b := userinfo(t, r, http.MethodPost, tok.AccessToken); resp.StatusCode != 200 {
+		t.Fatalf("userinfo with the address exhausted: %d %s", resp.StatusCode, b)
+	}
+}
+
 func TestClientIP(t *testing.T) {
 	tests := []struct {
 		xff  []string

@@ -287,22 +287,26 @@ request's head, in the same image as its build, pushed as a fast-forward of the 
   already in flight keep running; their re-run requests are refused, and each falls back to the CI-fix round at once.
 
 Each round posts one comment on the pull request saying what kind of round it was ("Revision round", or "CI-fix round
-for `test`") and what it pushed, and when it pushed, asks the approvers to review again. The summary patchy posts when
-the intent ends counts revisions and CI-fix rounds apart.
+for `test`") and what it pushed, and when it pushed, asks the approvers to review again. Once the intent has a pull
+request, the issue's status comment counts its revision rounds against `limits.maxRevisions` ("Revisions: 1 of 3") as
+the limit counts them: a round that failed counts, and a CI-fix round is not a revision. The summary patchy posts when
+the intent ends counts revision and CI-fix rounds apart, the same way.
 
 ### The preview link
 
 With `--intent-previews-enabled` and a Project that previews the pull request's repository, patchy tells reviewers where
 the preview is, in two places:
 
-- **The issue's status comment** gains a **Preview** line: the link once the preview is live, "being deployed" while
+- **The issue's status comment** gains a **Preview** line: the link once the preview is live, "waiting for a free
+  preview slot" while its Preview is `Queued` behind others (every slot is taken), "being deployed" while
   preview-controller rolls it out, or why it is not available (it could not be deployed, or it expired after its time to
   live). With several previewed repositories it lists what each path serves, at which commit.
 - **Each previewed pull request** gets one comment of its own, posted the first time the preview is live at that pull
   request's head. patchy then edits that same comment, never posting another: to "being deployed" when a round or a push
-  moves the head, back to live with the new commit once it is served, to say why when the preview fails or expires, and
-  last to say the preview was removed once the intent ends. Edits notify nobody; the round's own comment already asks
-  for the review. A pull request whose repository is not previewed (a library) gets no preview comment.
+  moves the head (or "waiting for a free preview slot" when there is none to deploy it in yet), back to live with the
+  new commit once it is served, to say why when the preview fails or expires, and last to say the preview was removed
+  once the intent ends. Edits notify nobody; the round's own comment already asks for the review. A pull request whose
+  repository is not previewed (a library) gets no preview comment.
 
 The link is posted only when it can be checked: the Preview is this intent's, has rolled out its current spec, serves
 exactly the commits the intent recorded (each pull request's head, or a preview base), and its address is a bare

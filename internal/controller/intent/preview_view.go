@@ -32,11 +32,13 @@ import (
 // cluster, is never read.
 
 // previewView is what an intent's Preview says about it now: whether it is
-// live, being deployed or unavailable, and what it serves.
+// live, waiting for a free slot, being deployed or unavailable, and what it
+// serves.
 type previewView struct {
 	// state is "" when the intent has no preview to show (none exists, it
 	// is another Intent's or being deleted, the Intent wants none), else
-	// templates.PreviewLive, PreviewUpdating or PreviewUnavailable.
+	// templates.PreviewLive, PreviewUpdating, PreviewWaiting or
+	// PreviewUnavailable.
 	state string
 	// reason is why an unavailable preview is not available:
 	// templates.PreviewFailed, PreviewExpired or PreviewUnlinkable.
@@ -101,8 +103,9 @@ func previewHost(raw, intent, hostLabel string) (string, bool) {
 // records, it is Ready with every component serving its derived revision,
 // and its URL passes previewHost; a Ready one whose URL does not is
 // unavailable (unlinkable). A Failed or Expired one at the current spec is
-// unavailable; any other is being deployed, the spec in.Status names
-// included while the preview projection has yet to write it.
+// unavailable, and a Queued one there waits for a free slot; any other is
+// being deployed, the spec in.Status names included while the preview
+// projection has yet to write it.
 func viewPreview(proj *v1alpha1.Project, in *v1alpha1.Intent, pv *v1alpha1.Preview) previewView {
 	desired, ok := v1alpha1.DesiredPreviewComponents(proj, in)
 	if !ok || pv == nil || pv.Spec.IntentRef.UID != in.UID || !pv.DeletionTimestamp.IsZero() {
@@ -124,6 +127,8 @@ func viewPreview(proj *v1alpha1.Project, in *v1alpha1.Intent, pv *v1alpha1.Previ
 		v.state, v.reason = templates.PreviewUnavailable, templates.PreviewFailed
 	case pv.Status.Phase == v1alpha1.PreviewExpired:
 		v.state, v.reason = templates.PreviewUnavailable, templates.PreviewExpired
+	case pv.Status.Phase == v1alpha1.PreviewQueued:
+		v.state = templates.PreviewWaiting
 	default:
 		v.state = templates.PreviewUpdating
 	}

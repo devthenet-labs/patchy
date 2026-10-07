@@ -275,6 +275,52 @@ func TestPreviewCommentWithdrawnOnFailureAndExpiry(t *testing.T) {
 	}
 }
 
+// TestPreviewWaitingForSlot: a Preview Queued behind others for a free slot
+// is said to wait for one in both comments, never to be deployed, with no
+// link and no word of the preview controller's; once it takes a slot it is
+// being deployed, and once Ready it is live again. It gets back into the
+// queue the way a live preview does: it failed, which freed its slot, and a
+// push gave it a new head while every slot was taken.
+func TestPreviewWaitingForSlot(t *testing.T) {
+	const waits = "waiting for a free preview slot"
+	e := newOnePreviewEnv(t)
+	name, n := e.inReviewOne()
+	e.servePreview(name, v1alpha1.PreviewReady, "https://"+previewHostOf(name))
+	e.settleActions(name)
+	e.servePreview(name, v1alpha1.PreviewFailed, "")
+	e.settleActions(name)
+	moved := strings.Repeat("9", 40)
+	e.pushHead(n, moved)
+	e.settleActions(name)
+	e.previewOf(name) // the new spec
+	e.servePreview(name, v1alpha1.PreviewQueued, "")
+	e.settleActions(name)
+	c := e.onePreviewComment(name, n)
+	if !strings.Contains(c.Body, "`"+moved[:12]+"`, is "+waits+"; the link appears here once it is deployed.") ||
+		strings.Contains(c.Body, "being deployed") || strings.Contains(c.Body, "https://") {
+		t.Errorf("preview comment while queued:\n%s", c.Body)
+	}
+	if body := e.statusBody(); !strings.Contains(body, "**Preview:** "+waits+" for `"+moved[:12]+"`") ||
+		strings.Contains(body, "being deployed") || strings.Contains(body, "https://"+previewHostOf(name)) {
+		t.Errorf("status comment while queued:\n%s", body)
+	}
+	e.servePreview(name, v1alpha1.PreviewDeploying, "")
+	e.settleActions(name)
+	if c := e.onePreviewComment(name, n); !strings.Contains(c.Body, "`"+moved[:12]+"`, is being deployed") ||
+		strings.Contains(c.Body, waits) {
+		t.Errorf("preview comment once it took a slot:\n%s", c.Body)
+	}
+	e.servePreview(name, v1alpha1.PreviewReady, "https://"+previewHostOf(name))
+	e.settleActions(name)
+	if c2 := e.onePreviewComment(name, n); c2.ID != c.ID ||
+		!strings.Contains(c2.Body, "`"+moved[:12]+"`, is live at "+linkTo(previewHostOf(name))) {
+		t.Errorf("preview comment live again (id %d, queued %d):\n%s", c2.ID, c.ID, c2.Body)
+	}
+	if strings.Contains(e.everyBody(), previewMessage) {
+		t.Error("the Preview's status message reached GitHub")
+	}
+}
+
 // TestPreviewCommentRemovedWhenIntentEnds: once the intent ends, its pull
 // request's preview comment says the preview was removed, and the status
 // comment has no preview line. An intent whose preview was never live wrote

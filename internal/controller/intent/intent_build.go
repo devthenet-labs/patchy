@@ -561,13 +561,14 @@ func (p *pass) endReview(ctx context.Context, prs []v1alpha1.IntentPullRequest, 
 
 // partialNotice posts, once, the notice of a multi-repository intent that
 // ended with some of its pull requests closed unmerged: which merged and
-// which did not, with the round counts and the spend. It can only have been
-// posted once every pull request had settled, so after the earliest merge
-// when any merged, and in any case after the builds finished.
+// which did not, with the round counts (as the summary counts them) and the
+// spend. It can only have been posted once every pull request had settled,
+// so after the earliest merge when any merged, and in any case after the
+// builds finished.
 func (p *pass) partialNotice(ctx context.Context, prs []v1alpha1.IntentPullRequest, mergedAt time.Time) error {
 	n := templates.IntentPartialNotice{
-		Namespace: p.in.Namespace, Intent: p.in.Name, Revisions: p.in.Status.Revisions,
-		CheckFixes: p.in.Status.CheckFixes, CostMicroUSD: p.in.Status.Usage.CostMicroUSD,
+		Namespace: p.in.Namespace, Intent: p.in.Name, Revisions: p.revisionRounds(),
+		CheckFixes: p.checkFixRounds(), CostMicroUSD: p.in.Status.Usage.CostMicroUSD,
 	}
 	for _, pr := range prs {
 		t := templates.IntentPullRequest{Repository: repoSlug(pr.Repository), Number: pr.Number, URL: pr.URL,
@@ -750,15 +751,18 @@ func (p *pass) readPullRequest(ctx context.Context, rec *v1alpha1.IntentPullRequ
 }
 
 // merged completes the Intent: the summary comment once, the issue closed as
-// completed, then the phase.
+// completed, then the phase. The summary counts rounds as the limits, the
+// status comment and the dashboard do (revisionRounds, checkFixRounds), so a
+// failed round is counted; status.revisions and status.checkFixes count
+// completed rounds only.
 func (p *pass) merged(ctx context.Context, prs []v1alpha1.IntentPullRequest, mergedAt time.Time) error {
 	since := mergedAt
 	if since.IsZero() {
 		since = p.enteredAt().Add(-clockSkew)
 	}
 	summary := templates.IntentSummaryComment{
-		Namespace: p.in.Namespace, Intent: p.in.Name, Revisions: p.in.Status.Revisions,
-		CheckFixes: p.in.Status.CheckFixes, CostMicroUSD: p.in.Status.Usage.CostMicroUSD,
+		Namespace: p.in.Namespace, Intent: p.in.Name, Revisions: p.revisionRounds(),
+		CheckFixes: p.checkFixRounds(), CostMicroUSD: p.in.Status.Usage.CostMicroUSD,
 	}
 	for _, pr := range prs {
 		summary.PullRequests = append(summary.PullRequests, templates.IntentPullRequest{

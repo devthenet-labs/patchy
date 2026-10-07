@@ -174,10 +174,11 @@ type IntentSummaryComment struct {
 	Intent    string
 	// PullRequests are the pull requests patchy opened, all merged.
 	PullRequests []IntentPullRequest
-	// Revisions counts the revision rounds review feedback started.
+	// Revisions counts the revision rounds review feedback started, as the
+	// Project's maxRevisions counts them: a round that failed included.
 	Revisions int32
 	// CheckFixes counts the CI-fix rounds failed checks started, apart from
-	// the revisions; 0 omits the line.
+	// the revisions and as maxCheckFixes counts them; 0 omits the line.
 	CheckFixes int32
 	// CostMicroUSD is the reported spend.
 	CostMicroUSD int64

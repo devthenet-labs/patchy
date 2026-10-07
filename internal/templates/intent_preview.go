@@ -29,6 +29,9 @@ const (
 	// PreviewUpdating: the preview is being deployed (or redeployed) and is
 	// not reachable yet.
 	PreviewUpdating = "updating"
+	// PreviewWaiting: the preview waits in line for a free preview slot
+	// (its Preview is Queued behind others) and is not being deployed yet.
+	PreviewWaiting = "waiting"
 	// PreviewUnavailable: there is no reachable preview; Reason says why.
 	PreviewUnavailable = "unavailable"
 	// PreviewRemoved: the intent ended and its preview was removed. Only a
@@ -54,7 +57,8 @@ const (
 // status comment of an intent without a preview is byte-identical to what
 // it was before previews were linked.
 type IntentPreview struct {
-	// State is PreviewLive, PreviewUpdating or PreviewUnavailable.
+	// State is PreviewLive, PreviewUpdating, PreviewWaiting or
+	// PreviewUnavailable.
 	State string
 	// Reason is why an unavailable preview is not available: PreviewFailed,
 	// PreviewExpired, PreviewUnlinkable, or "" when there is none now.
@@ -89,8 +93,8 @@ type IntentPreviewComment struct {
 	// Namespace and Intent name the Intent, for the marker.
 	Namespace string
 	Intent    string
-	// State is PreviewLive, PreviewUpdating, PreviewUnavailable or
-	// PreviewRemoved.
+	// State is PreviewLive, PreviewUpdating, PreviewWaiting,
+	// PreviewUnavailable or PreviewRemoved.
 	State string
 	// Reason is why an unavailable preview is not available, as
 	// IntentPreview's.
@@ -192,6 +196,12 @@ func renderStatusPreview(p *IntentPreview) *statusPreview {
 			s += " at " + shortRevision(p.Components[0].Revision)
 		}
 		s += "; the link appears here once it is ready."
+	case PreviewWaiting:
+		s = "waiting for a free preview slot"
+		if single {
+			s += " for " + shortRevision(p.Components[0].Revision)
+		}
+		s += "; the link appears here once it is deployed."
 	default:
 		s = "not available."
 		if clause := unavailableClause(reason, p.Resource, "deployed"); clause != "" {
@@ -223,6 +233,8 @@ func RenderIntentPreviewComment(c IntentPreviewComment) (string, error) {
 		s += "."
 	case PreviewUpdating:
 		s = head + " is being deployed to the intent's preview; the link appears here once it is ready."
+	case PreviewWaiting:
+		s = head + " is waiting for a free preview slot; the link appears here once it is deployed."
 	case PreviewRemoved:
 		s = "The intent has ended, and its preview was removed."
 	default:

@@ -710,7 +710,10 @@ func intentLifecycle(t *testing.T, e *intentEnv) string {
 }
 
 // The first PR revision is requested by a real approver command; the next
-// comes from a failed named check on the pushed head. Both use the shipped
+// comes from a failed named check on the pushed head, after the Project's
+// checks.rerunFailed re-ran its Actions run once and it failed again. The
+// check-fix round's own head then fails once more, a flake: its re-run
+// passes and no further round is spent. All of it uses the shipped
 // controllers, source-controller, fake GitHub HTTP API and agent Job path.
 func (e *intentEnv) exerciseReviseAndCheckFix(t *testing.T, name string, number int, buildSHA string) {
 	t.Helper()
@@ -754,18 +757,47 @@ func (e *intentEnv) exerciseReviseAndCheckFix(t *testing.T, name string, number 
 		t.Fatal(err)
 	}
 	project.Spec.Checks.Fix = []string{"test"}
+	project.Spec.Checks.RerunFailed = true
 	if err := e.cl.client.Update(ctx, &project); err != nil {
 		t.Fatal(err)
 	}
 	head := revise.Status.PushedCommit
+	fixName := v1alpha1.IntentRunName(name, v1alpha1.IntentStageRevise, 2, appRepo, 1)
 	e.gh.SetComparePatch(fakegithub.BaseSHA, head, "diff --git a/VERSION b/VERSION\n+0.1.0\n")
+	// The first failure at the head is re-run once, before any round.
 	e.gh.SetCheckRun(head, fakegithub.CheckRun{ID: 71, Name: "test", Status: "completed", Conclusion: "failure",
+		Title: "Go test failed", Summary: "first attempt", RunID: 72})
+	e.gh.SetWorkflowJob(72, fakegithub.WorkflowJob{ID: 73, CheckRunID: 71, HeadSHA: head,
+		Name: "go test", Conclusion: "failure", Log: "go test ./...\nFAIL first attempt"})
+	e.gh.SetWorkflowRun(fakegithub.WorkflowRun{ID: 72, HeadSHA: head, Status: "completed", Conclusion: "failure"})
+	eventually(t, "the failed check's Actions run to be re-run", func() bool {
+		return slices.Equal(e.gh.Reruns(), []int64{72})
+	})
+	eventually(t, "the re-run to be recorded on the pull request", func() bool {
+		rec := e.intent(t, name).Status.PullRequests[0].ChecksRerun
+		return rec != nil && rec.HeadSHA == head && slices.Equal(rec.CheckRunIDs, []int64{71}) &&
+			slices.Equal(rec.WorkflowRunIDs, []int64{72}) && slices.Equal(rec.Checks, []string{"test"})
+	})
+	// While GitHub still lists the failure as the check's latest run, the
+	// re-run has not reported: nothing more is asked or started.
+	consistently(t, "no check-fix round and no second re-run while the re-run reports", func() bool {
+		var run v1alpha1.IntentRun
+		err := e.cl.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: fixName}, &run)
+		return apierrors.IsNotFound(err) && e.intent(t, name).Status.Phase == v1alpha1.IntentInReview &&
+			slices.Equal(e.gh.Reruns(), []int64{72})
+	})
+	// The re-run, the run's next attempt, fails again: the check-fix round
+	// starts on that failure.
+	e.gh.SetWorkflowRun(fakegithub.WorkflowRun{ID: 72, HeadSHA: head, Status: "completed", Conclusion: "failure"})
+	e.gh.SetCheckRun(head, fakegithub.CheckRun{ID: 74, Name: "test", Status: "completed", Conclusion: "failure",
 		Title: "Go test failed", Summary: "VERSION regression", RunID: 72,
 		Annotations: []fakegithub.CheckAnnotation{{Path: "version_test.go", Line: 10, Message: "want VERSION"}}})
-	e.gh.SetWorkflowJob(72, fakegithub.WorkflowJob{ID: 73, CheckRunID: 71, HeadSHA: head,
+	e.gh.SetWorkflowJob(72, fakegithub.WorkflowJob{ID: 75, CheckRunID: 74, HeadSHA: head,
 		Name: "go test", Conclusion: "failure", Log: "go test ./...\nFAIL VERSION regression"})
 	e.waitPhase(t, name, v1alpha1.IntentRevising)
-	fixName := v1alpha1.IntentRunName(name, v1alpha1.IntentStageRevise, 2, appRepo, 1)
+	if run := e.run(t, fixName); !slices.Equal(run.Spec.Inputs.CheckRunIDs, []int64{74}) {
+		t.Errorf("check-fix round consumed check runs %v, want the re-run's failure 74", run.Spec.Inputs.CheckRunIDs)
+	}
 	fixJobName := jobs.NameFor(fixName, intentRunKind, 1)
 	fixJob := e.kubelet.waitRun(t, "the check-fix Job to run", func(r agentRun) bool {
 		return r.Job.Name == fixJobName && phaseIs("build")(r)
@@ -798,6 +830,35 @@ func (e *intentEnv) exerciseReviseAndCheckFix(t *testing.T, name string, number 
 	if last := writes[len(writes)-1]; last.Op != "update" || last.Force || last.SHA != fix.Status.PushedCommit {
 		t.Errorf("check-fix ref write = %+v, want non-forcing fast-forward", last)
 	}
+	if strings.Contains(string(fixJob.Investigation), "FAIL first attempt") {
+		t.Error("the check-fix handoff carried the re-run failure it was not started on")
+	}
+
+	// The round's own head fails once, a flake: its re-run passes, and no
+	// further round is spent.
+	fixed := fix.Status.PushedCommit
+	e.gh.SetCheckRun(fixed, fakegithub.CheckRun{ID: 76, Name: "test", Status: "completed", Conclusion: "failure",
+		Title: "Go test failed", Summary: "flaky", RunID: 77})
+	e.gh.SetWorkflowJob(77, fakegithub.WorkflowJob{ID: 78, CheckRunID: 76, HeadSHA: fixed,
+		Name: "go test", Conclusion: "failure", Log: "go test ./...\nFAIL flaky"})
+	e.gh.SetWorkflowRun(fakegithub.WorkflowRun{ID: 77, HeadSHA: fixed, Status: "completed", Conclusion: "failure"})
+	eventually(t, "the check-fix round's own head to be re-run once", func() bool {
+		return slices.Equal(e.gh.Reruns(), []int64{72, 77})
+	})
+	e.gh.SetWorkflowRun(fakegithub.WorkflowRun{ID: 77, HeadSHA: fixed, Status: "completed", Conclusion: "success"})
+	e.gh.SetCheckRun(fixed, fakegithub.CheckRun{ID: 79, Name: "test", Status: "completed", Conclusion: "success",
+		RunID: 77})
+	eventually(t, "the green re-run to settle the head", func() bool {
+		return e.intent(t, name).Status.PullRequests[0].ChecksObservedHeadSHA == fixed
+	})
+	consistently(t, "no round after a green re-run", func() bool {
+		cur := e.intent(t, name)
+		var run v1alpha1.IntentRun
+		err := e.cl.client.Get(ctx, types.NamespacedName{Namespace: namespace,
+			Name: v1alpha1.IntentRunName(name, v1alpha1.IntentStageRevise, 3, appRepo, 1)}, &run)
+		return apierrors.IsNotFound(err) && cur.Status.Phase == v1alpha1.IntentInReview &&
+			cur.Status.CheckFixes == 1 && slices.Equal(e.gh.Reruns(), []int64{72, 77})
+	})
 }
 
 // issue reads one issue off the fake.

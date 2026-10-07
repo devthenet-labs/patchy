@@ -259,6 +259,16 @@ type ProjectChecks struct {
 	// +kubebuilder:default="30m"
 	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1m') && duration(self) <= duration('6h')",message="checks.timeout must be between 1m and 6h"
 	Timeout *metav1.Duration `json:"timeout,omitempty"`
+	// RerunFailed re-runs the failed jobs of the GitHub Actions runs behind
+	// a failed named check once, on patchy's own head, before a fix round
+	// is spent on it: a flaky test that passes again costs no round. Only a
+	// second failure at the same head starts the round, as does a failure
+	// that is not an Actions check run (a commit status, another App's
+	// check), which has no run to re-run. It acts only on the checks Fix
+	// names, and needs the App's actions write permission on every app
+	// repository (the Project is not Ready otherwise).
+	// +optional
+	RerunFailed bool `json:"rerunFailed,omitempty"`
 }
 
 // MaxPreviewComponents bounds how many of a Project's repositories are

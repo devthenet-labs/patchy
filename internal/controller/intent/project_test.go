@@ -133,6 +133,41 @@ func TestProjectValidationProvesCheckFixReads(t *testing.T) {
 	}
 }
 
+// TestProjectValidationProvesTheRerunWrite: a Project that re-runs failed
+// checks (spec.checks.rerunFailed) is Ready only once the App may re-run
+// Actions jobs on its application repository: refused actions write, it is
+// not Ready, naming the permission, what it is for and what to grant. A
+// Project that fixes checks without re-running them never asks for it.
+func TestProjectValidationProvesTheRerunWrite(t *testing.T) {
+	refused := map[ghclient.TokenPerms]error{{Actions: ghclient.PermWrite}: ghError(http.StatusUnprocessableEntity,
+		"The permissions requested are not granted to this installation.")}
+	p := testProject()
+	p.Spec.Checks.Fix, p.Spec.Checks.RerunFailed = []string{"test"}, true
+	e := newEnv(t, p)
+	e.gh.refused = refused
+	e.reconcileProject()
+	c := meta.FindStatusCondition(e.getProject().Status.Conditions, v1alpha1.ConditionReady)
+	if c == nil || c.Status != metav1.ConditionFalse || c.Reason != v1alpha1.ReasonAppNotInstalled {
+		t.Fatalf("Ready = %+v, want False/%s", c, v1alpha1.ReasonAppNotInstalled)
+	}
+	for _, want := range []string{appRepoURL + " with actions: write", "spec.checks.rerunFailed",
+		"Actions read and write"} {
+		if !strings.Contains(c.Message, want) {
+			t.Errorf("message %q does not say %q", c.Message, want)
+		}
+	}
+
+	p = testProject()
+	p.Spec.Checks.Fix = []string{"test"}
+	e = newEnv(t, p)
+	e.gh.refused = refused
+	e.reconcileProject()
+	if c := meta.FindStatusCondition(e.getProject().Status.Conditions, v1alpha1.ConditionReady); c == nil ||
+		c.Reason != ReasonValidated {
+		t.Errorf("a Project that only fixes checks: Ready = %+v, want Validated without actions write", c)
+	}
+}
+
 // TestProjectValidationProvesTheRepositoryReads is the regression test for
 // an application repository whose App holds contents and pull requests
 // write but no issues read: it used to report Ready, then fail every pass
@@ -157,7 +192,8 @@ func TestProjectValidationProvesTheRepositoryReads(t *testing.T) {
 
 // TestProjectValidationMintsTheTable: Ready mints one token per grant of
 // the intentperm table, each with that one permission on its repository;
-// the check-fix reads only when spec.checks.fix names a check.
+// the check-fix reads only when spec.checks.fix names a check, and actions
+// write only when spec.checks.rerunFailed is set beside it.
 // TestEveryTokenIsInTheTable is the other half: every token an intent asks
 // for is a grant of that table.
 func TestProjectValidationMintsTheTable(t *testing.T) {
@@ -172,17 +208,21 @@ func TestProjectValidationMintsTheTable(t *testing.T) {
 		installCheck{appRepoURL, ghclient.TokenPerms{Statuses: ghclient.PermRead}},
 		installCheck{appRepoURL, ghclient.TokenPerms{Actions: ghclient.PermRead}},
 	)
+	rerun := append(slices.Clone(checkFix), installCheck{appRepoURL, ghclient.TokenPerms{Actions: ghclient.PermWrite}})
 	for _, tt := range []struct {
-		name string
-		fix  []string
-		want []installCheck
+		name  string
+		fix   []string
+		rerun bool
+		want  []installCheck
 	}{
 		{name: "no check fixes", want: base},
 		{name: "check fixes", fix: []string{"test", "lint"}, want: checkFix},
+		{name: "check fixes and re-runs", fix: []string{"test"}, rerun: true, want: rerun},
+		{name: "re-runs with no check to fix", rerun: true, want: base},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p := testProject()
-			p.Spec.Checks.Fix = tt.fix
+			p.Spec.Checks.Fix, p.Spec.Checks.RerunFailed = tt.fix, tt.rerun
 			e := newEnv(t, p)
 			e.reconcileProject()
 			if c := meta.FindStatusCondition(e.getProject().Status.Conditions, v1alpha1.ConditionReady); c == nil ||

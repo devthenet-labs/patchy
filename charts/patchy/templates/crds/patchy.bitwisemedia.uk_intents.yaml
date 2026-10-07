@@ -665,6 +665,62 @@ spec:
                       format: int64
                       minimum: 0
                       type: integer
+                    checksRerun:
+                      description: |-
+                        ChecksRerun is the one re-run of failed Actions jobs patchy asked for
+                        on this pull request's head (the Project's checks.rerunFailed). It
+                        stands only while its head is the pull request's: a failure at that
+                        head after it starts the fix round, and a new pushed head may be
+                        re-run once again. Written by the intent reconciler only.
+                      properties:
+                        checkRunIDs:
+                          description: |-
+                            CheckRunIDs are the failed check runs whose Actions runs were re-run,
+                            sorted. While one of them is still the latest run of its check, the
+                            re-run has not reported yet.
+                          items:
+                            format: int64
+                            type: integer
+                          maxItems: 32
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                        checks:
+                          description: Checks are those check runs' names, sorted.
+                          items:
+                            maxLength: 128
+                            type: string
+                          maxItems: 32
+                          type: array
+                          x-kubernetes-list-type: set
+                        headSHA:
+                          description: HeadSHA is the pull request head whose failed
+                            checks were re-run.
+                          pattern: ^([0-9a-f]{40}|[0-9a-f]{64})$
+                          type: string
+                        requestedAt:
+                          description: |-
+                            RequestedAt is when the re-run was requested. The checks timeout
+                            counts from it again.
+                          format: date-time
+                          type: string
+                        workflowRunIDs:
+                          description: |-
+                            WorkflowRunIDs are the Actions runs whose failed jobs were re-run,
+                            sorted.
+                          items:
+                            format: int64
+                            type: integer
+                          maxItems: 32
+                          minItems: 1
+                          type: array
+                          x-kubernetes-list-type: set
+                      required:
+                      - checkRunIDs
+                      - headSHA
+                      - requestedAt
+                      - workflowRunIDs
+                      type: object
                     headSHA:
                       description: |-
                         HeadSHA is the head commit last observed (patchy's push, or a human's

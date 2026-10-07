@@ -17,7 +17,8 @@ import (
 
 // TestForApp pins what an App holds for each selection: the findings
 // pipeline's grants and four events; the intent grants and no event; the
-// check-fix reads only with checks; metadata read always.
+// check-fix reads only with checks; actions write only with rerun-failed;
+// metadata read always.
 func TestForApp(t *testing.T) {
 	metadataR := Grant{Permission: Metadata, Access: Read}
 	securityW := Grant{Permission: SecurityEvents, Access: Write}
@@ -27,6 +28,7 @@ func TestForApp(t *testing.T) {
 	checksR := Grant{Permission: Checks, Access: Read}
 	statusesR := Grant{Permission: Statuses, Access: Read}
 	actionsR := Grant{Permission: Actions, Access: Read}
+	actionsW := Grant{Permission: Actions, Access: Write}
 	findingEvs := []string{EventCodeScanningAlert, EventIssueComment, EventIssues, EventPullRequest}
 
 	tests := []struct {
@@ -41,8 +43,13 @@ func TestForApp(t *testing.T) {
 			Grants: []Grant{contentsW, issuesW, metadataR, pullsW}}},
 		{"intents and checks", []Feature{FeatureIntents, FeatureChecks}, Needs{
 			Grants: []Grant{actionsR, checksR, contentsW, issuesW, metadataR, pullsW, statusesR}}},
-		{"everything", Features(), Needs{
+		{"intents, checks and re-runs", []Feature{FeatureIntents, FeatureChecks, FeatureRerunFailed}, Needs{
+			Grants: []Grant{actionsW, checksR, contentsW, issuesW, metadataR, pullsW, statusesR}}},
+		{"everything but re-runs", []Feature{FeatureSecurity, FeatureIntents, FeatureChecks}, Needs{
 			Grants: []Grant{actionsR, checksR, contentsW, issuesW, metadataR, pullsW, securityW, statusesR},
+			Events: findingEvs}},
+		{"everything", Features(), Needs{
+			Grants: []Grant{actionsW, checksR, contentsW, issuesW, metadataR, pullsW, securityW, statusesR},
 			Events: findingEvs}},
 		{"a feature named twice counts once", []Feature{FeatureSecurity, FeatureSecurity}, Needs{
 			Grants: []Grant{contentsW, issuesW, metadataR, pullsW, securityW}, Events: findingEvs}},
@@ -60,9 +67,10 @@ func TestForApp(t *testing.T) {
 	}
 }
 
-// TestForAppRefuses: a feature the table does not know, or check fixes
-// without the intents they extend, is an error rather than an App that
-// holds something no controller uses.
+// TestForAppRefuses: a feature the table does not know, check fixes
+// without the intents they extend, or re-runs without the check fixes they
+// extend, is an error rather than an App that holds something no controller
+// uses.
 func TestForAppRefuses(t *testing.T) {
 	for _, tt := range []struct {
 		features []Feature
@@ -71,6 +79,9 @@ func TestForAppRefuses(t *testing.T) {
 		{[]Feature{FeatureChecks}, "extends intents"},
 		{[]Feature{FeatureSecurity, FeatureChecks}, "extends intents"},
 		{[]Feature{FeatureIntents, "previews"}, `unknown feature "previews"`},
+		{[]Feature{FeatureRerunFailed}, "extends checks"},
+		{[]Feature{FeatureIntents, FeatureRerunFailed}, "extends checks"},
+		{[]Feature{FeatureChecks, FeatureRerunFailed}, "extends intents"},
 	} {
 		if got, err := ForApp(tt.features...); err == nil || !strings.Contains(err.Error(), tt.want) {
 			t.Errorf("ForApp(%v) = %+v, %v; want an error containing %q", tt.features, got, err, tt.want)
@@ -80,20 +91,24 @@ func TestForAppRefuses(t *testing.T) {
 
 // TestForAppServesEveryProject: an App registered for intents holds, at
 // sufficient access, every grant For asks of any Project; with checks, of a
-// Project with check fixes too. Without checks it holds none of the
-// check-fix reads, and an intents App holds no findings grant or event: the
-// least each selection can hold.
+// Project with check fixes too; with rerun-failed as well, of a Project that
+// re-runs failed checks. Without checks it holds none of the check-fix
+// reads, without rerun-failed no actions write, and an intents App holds no
+// findings grant or event: the least each selection can hold.
 func TestForAppServesEveryProject(t *testing.T) {
-	spec := func(fix []string) *v1alpha1.ProjectSpec {
+	spec := func(fix []string, rerun bool) *v1alpha1.ProjectSpec {
 		return &v1alpha1.ProjectSpec{IntentRepository: intentURL,
 			Repositories: []v1alpha1.ProjectRepository{{Name: "web", URL: webURL}, {Name: "api", URL: apiURL}},
-			Checks:       v1alpha1.ProjectChecks{Fix: fix}}
+			Checks:       v1alpha1.ProjectChecks{Fix: fix, RerunFailed: rerun}}
 	}
-	for _, checks := range []bool{false, true} {
+	for _, tc := range []struct{ checks, rerun bool }{{false, false}, {true, false}, {true, true}} {
 		features := []Feature{FeatureIntents}
 		var fix []string
-		if checks {
+		if tc.checks {
 			features, fix = append(features, FeatureChecks), []string{"test"}
+		}
+		if tc.rerun {
+			features = append(features, FeatureRerunFailed)
 		}
 		app, err := ForApp(features...)
 		if err != nil {
@@ -103,21 +118,24 @@ func TestForAppServesEveryProject(t *testing.T) {
 		for _, g := range app.Grants {
 			held[g.Permission] = g.Access
 		}
-		for _, need := range For(spec(fix)) {
+		for _, need := range For(spec(fix, tc.rerun)) {
 			for _, g := range need.Grants {
 				if have := held[g.Permission]; have != g.Access && have != Write {
-					t.Errorf("checks=%v: the App holds %s %q; the Project needs %s on %s", checks, g.Permission, have,
+					t.Errorf("%+v: the App holds %s %q; the Project needs %s on %s", tc, g.Permission, have,
 						g, need.URL)
 				}
 			}
 		}
 		for _, g := range CheckFix() {
-			if _, has := held[g.Permission]; has != checks {
-				t.Errorf("checks=%v: the App holds %s: %v", checks, g.Permission, has)
+			if _, has := held[g.Permission]; has != tc.checks {
+				t.Errorf("%+v: the App holds %s: %v", tc, g.Permission, has)
 			}
 		}
+		if wrote := held[Actions] == Write; wrote != tc.rerun {
+			t.Errorf("%+v: the App holds actions write: %v", tc, wrote)
+		}
 		if _, has := held[SecurityEvents]; has || len(app.Events) != 0 {
-			t.Errorf("checks=%v: an intents App holds %s or events %v", checks, SecurityEvents, app.Events)
+			t.Errorf("%+v: an intents App holds %s or events %v", tc, SecurityEvents, app.Events)
 		}
 	}
 }
@@ -160,9 +178,7 @@ func TestForAppProperties(t *testing.T) {
 		for range r.Intn(6) {
 			out = append(out, all[r.Intn(len(all))])
 		}
-		if slices.Contains(out, FeatureChecks) && !slices.Contains(out, FeatureIntents) {
-			out = append(out, FeatureIntents)
-		}
+		out = withRequired(out)
 		r.Shuffle(len(out), func(i, j int) { out[i], out[j] = out[j], out[i] })
 		return out
 	}
@@ -195,6 +211,19 @@ func TestForAppProperties(t *testing.T) {
 	if err := quick.Check(prop, cfg); err != nil {
 		t.Error(err)
 	}
+}
+
+// withRequired is sel with every feature a selected one Requires, and
+// theirs in turn, appended: a selection ForApp accepts.
+func withRequired(sel []Feature) []Feature {
+	for i := 0; i < len(sel); i++ {
+		for _, r := range sel[i].Requires() {
+			if !slices.Contains(sel, r) {
+				sel = append(sel, r)
+			}
+		}
+	}
+	return sel
 }
 
 // accessRank orders access levels; nothing ranks below read.
@@ -245,9 +274,9 @@ func orderFree(sel []Feature, got Needs) string {
 }
 
 // monotone reports a grant, access level or event that adding extra to sel
-// (with intents, which checks extends) takes away.
+// (with the features it extends) takes away.
 func monotone(sel []Feature, extra Feature, got Needs) string {
-	grown := append(slices.Clone(sel), extra, FeatureIntents)
+	grown := withRequired(append(slices.Clone(sel), extra))
 	more, err := ForApp(grown...)
 	if err != nil {
 		return fmt.Sprintf("ForApp(%v): %v", grown, err)

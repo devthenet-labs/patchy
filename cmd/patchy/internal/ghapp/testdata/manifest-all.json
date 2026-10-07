@@ -1,7 +1,7 @@
 {
   "name": "patchy-acme",
   "url": "https://github.com/bitwise-media-group/patchy",
-  "description": "patchy: security findings, intents, check-fix rounds",
+  "description": "patchy: security findings, intents, check-fix rounds, failed-check re-runs",
   "hook_attributes": {
     "url": "https://patchy.acme.test/github/webhooks",
     "active": true
@@ -9,7 +9,7 @@
   "redirect_url": "http://127.0.0.1:49152/callback",
   "public": false,
   "default_permissions": {
-    "actions": "read",
+    "actions": "write",
     "checks": "read",
     "contents": "write",
     "issues": "write",

@@ -162,6 +162,10 @@ type Server struct {
 	statuses            map[string][]CommitStatus
 	workflowJobs        map[int64][]WorkflowJob
 	jobLogs             map[int64]string
+	// workflowRuns are the Actions runs by id; reruns the ones whose failed
+	// jobs were re-run, in order.
+	workflowRuns map[int64]WorkflowRun
+	reruns       []int64
 	// pullReadFailures is how many single-PR reads still answer 502.
 	pullReadFailures int
 	git              gitData
@@ -207,6 +211,7 @@ func newState() (*Server, *http.ServeMux) {
 		statuses:       make(map[string][]CommitStatus),
 		workflowJobs:   make(map[int64][]WorkflowJob),
 		jobLogs:        make(map[int64]string),
+		workflowRuns:   make(map[int64]WorkflowRun),
 		git:            newGitData(),
 		next:           100,
 		events:         make(map[int][]issueEvent),
@@ -376,6 +381,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	handle("GET /repos/{owner}/{repo}/check-runs/{id}/annotations", permChecks, s.listCheckAnnotations)
 	handle("GET /repos/{owner}/{repo}/commits/{sha}/statuses", permStatuses, s.listCommitStatuses)
 	handle("GET /repos/{owner}/{repo}/actions/runs/{id}/jobs", permActions, s.listWorkflowJobs)
+	handle("GET /repos/{owner}/{repo}/actions/runs", permActions, s.listWorkflowRuns)
+	handle("POST /repos/{owner}/{repo}/actions/runs/{id}/rerun-failed-jobs", permActions, s.rerunFailedJobs)
 	handle("GET /repos/{owner}/{repo}/actions/jobs/{id}/logs", permActions, s.jobLogRedirect)
 	mux.HandleFunc("GET /_logs/{id}", s.jobLogDownload)
 	handle("GET /repos/{owner}/{repo}/tarball/{ref...}", permContents, s.tarballRedirect)

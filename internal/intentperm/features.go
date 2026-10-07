@@ -39,11 +39,17 @@ const (
 	// reads that find a failed check and what it reported. It extends
 	// FeatureIntents.
 	FeatureChecks Feature = "checks"
+	// FeatureRerunFailed is a Project's re-run of failed Actions jobs before
+	// a check-fix round (spec.checks.rerunFailed): actions write, the one
+	// write on a repository's CI an App can be registered for. It extends
+	// FeatureChecks, and is its own feature so that check fixes alone never
+	// widen to it.
+	FeatureRerunFailed Feature = "rerun-failed"
 )
 
 // Features is every feature, in the order the CLI documents them.
 func Features() []Feature {
-	return []Feature{FeatureSecurity, FeatureIntents, FeatureChecks}
+	return []Feature{FeatureSecurity, FeatureIntents, FeatureChecks, FeatureRerunFailed}
 }
 
 // Needs is what a GitHub App must hold to serve a feature, or a set of
@@ -74,15 +80,21 @@ func (f Feature) Needs() (Needs, bool) {
 		return Needs{Grants: Merge(Intent(), App(false))}, true
 	case FeatureChecks:
 		return Needs{Grants: Merge(CheckFix())}, true
+	case FeatureRerunFailed:
+		return Needs{Grants: Merge(CheckRerun())}, true
 	}
 	return Needs{}, false
 }
 
 // Requires is the features f extends and means nothing without: check-fix
-// rounds are part of intents.
+// rounds are part of intents, and a re-run only ever precedes a check-fix
+// round.
 func (f Feature) Requires() []Feature {
-	if f == FeatureChecks {
+	switch f {
+	case FeatureChecks:
 		return []Feature{FeatureIntents}
+	case FeatureRerunFailed:
+		return []Feature{FeatureChecks}
 	}
 	return nil
 }

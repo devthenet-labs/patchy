@@ -475,6 +475,13 @@ type IntentPullRequest struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	ChecksObservedProjectGeneration int64 `json:"checksObservedProjectGeneration,omitempty"`
+	// ChecksRerun is the one re-run of failed Actions jobs patchy asked for
+	// on this pull request's head (the Project's checks.rerunFailed). It
+	// stands only while its head is the pull request's: a failure at that
+	// head after it starts the fix round, and a new pushed head may be
+	// re-run once again. Written by the intent reconciler only.
+	// +optional
+	ChecksRerun *IntentChecksRerun `json:"checksRerun,omitempty"`
 	// PreviewCommentID is GitHub's id of the sticky preview comment on this
 	// pull request (marker <!-- patchy:notice <namespace>/<intent> preview
 	// -->): posted once the intent's preview is first live at the pull
@@ -489,6 +496,36 @@ type IntentPullRequest struct {
 	// +optional
 	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
 	PreviewDigest string `json:"previewDigest,omitempty"`
+}
+
+// IntentChecksRerun records the re-run of failed GitHub Actions jobs patchy
+// requested on one pull request head before a check-fix round.
+type IntentChecksRerun struct {
+	// HeadSHA is the pull request head whose failed checks were re-run.
+	// +kubebuilder:validation:Pattern=`^([0-9a-f]{40}|[0-9a-f]{64})$`
+	HeadSHA string `json:"headSHA"`
+	// CheckRunIDs are the failed check runs whose Actions runs were re-run,
+	// sorted. While one of them is still the latest run of its check, the
+	// re-run has not reported yet.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=set
+	CheckRunIDs []int64 `json:"checkRunIDs"`
+	// Checks are those check runs' names, sorted.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=set
+	// +kubebuilder:validation:items:MaxLength=128
+	Checks []string `json:"checks,omitempty"`
+	// WorkflowRunIDs are the Actions runs whose failed jobs were re-run,
+	// sorted.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=set
+	WorkflowRunIDs []int64 `json:"workflowRunIDs"`
+	// RequestedAt is when the re-run was requested. The checks timeout
+	// counts from it again.
+	RequestedAt metav1.Time `json:"requestedAt"`
 }
 
 // IntentPreviewBase records the default-branch head an intent previews for a

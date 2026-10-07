@@ -97,6 +97,15 @@ resource "aws_iam_role" "preview_node" {
 
   lifecycle {
     precondition {
+      # Only sign-in may stand in for the allowlist, and the chart decides
+      # when it may (the require stage, an explicit confirmation and a short
+      # session); without preview_auth there is nothing to stand in. Here,
+      # not on var.previews, because var.preview_auth's own validations
+      # already read var.previews.
+      condition     = length(var.previews.inbound_cidrs) >= 1 || var.preview_auth != null
+      error_message = "previews.inbound_cidrs must list at least one IPv4 /32 unless preview_auth is set: without sign-in the preview ALB is never open to the internet."
+    }
+    precondition {
       condition     = local.preview_dns_cidr != null && local.preview_api_server_cidr != null
       error_message = "The cluster has no IPv4 service CIDR to derive the DNS and API server /32s from: set previews.dns_cidr and previews.api_server_cidr."
     }

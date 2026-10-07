@@ -1201,3 +1201,238 @@ run "oidc_provider_for_another_issuer_is_refused" {
 
   expect_failures = [var.github_oidc_provider_arn]
 }
+
+# Preview sign-in: the relay's host joins the edge certificate and aliases,
+# helm_values carries its host and edge Ingress annotations and nothing that
+# turns sign-in on, and the Dex redirect URI is an output.
+run "preview_auth_on_the_edge" {
+  command = apply
+
+  override_resource {
+    target = aws_acm_certificate.edge[0]
+    values = {
+      arn = "arn:aws:acm:eu-west-2:111122223333:certificate/22222222-2222-2222-2222-222222222222"
+      domain_validation_options = [
+        {
+          domain_name           = "patchy.acme.dev"
+          resource_record_name  = "_a2.patchy.acme.dev."
+          resource_record_type  = "CNAME"
+          resource_record_value = "_b2.acm-validations.aws."
+        },
+        {
+          domain_name           = "status.patchy.acme.dev"
+          resource_record_name  = "_a3.status.patchy.acme.dev."
+          resource_record_type  = "CNAME"
+          resource_record_value = "_b3.acm-validations.aws."
+        },
+        {
+          domain_name           = "preview-auth.patchy.acme.dev"
+          resource_record_name  = "_a4.preview-auth.patchy.acme.dev."
+          resource_record_type  = "CNAME"
+          resource_record_value = "_b4.acm-validations.aws."
+        },
+      ]
+    }
+  }
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-a"]
+      inbound_cidrs   = ["203.0.113.7/32"]
+    }
+    edge = {
+      zone_id      = "Z0EDGE"
+      webhook_host = "patchy.acme.dev"
+      status_host  = "status.patchy.acme.dev"
+      alb_name     = "acme-prod"
+    }
+    preview_auth = {
+      host = "preview-auth.patchy.acme.dev"
+    }
+    create_edge_alias_records = true
+  }
+
+  assert {
+    condition = yamldecode(output.helm_values).previewAuth == {
+      host = "preview-auth.patchy.acme.dev"
+      ingress = { annotations = {
+        "alb.ingress.kubernetes.io/certificate-arn" = "arn:aws:acm:eu-west-2:111122223333:certificate/22222222-2222-2222-2222-222222222222"
+        "alb.ingress.kubernetes.io/listen-ports"    = "[{\"HTTP\": 80}, {\"HTTPS\": 443}]"
+        "alb.ingress.kubernetes.io/ssl-redirect"    = "443"
+      } }
+    }
+    error_message = "helm_values sets the relay's host and edge Ingress annotations, and never enabled, the stage, Dex or the viewers."
+  }
+
+  assert {
+    condition     = yamldecode(output.helm_values).preview.inboundCIDRs == ["203.0.113.7/32"]
+    error_message = "Turning sign-in's edge on leaves the preview allowlist as it is."
+  }
+
+  assert {
+    condition = (
+      contains(aws_acm_certificate.edge[0].subject_alternative_names, "preview-auth.patchy.acme.dev") &&
+      contains(keys(aws_route53_record.edge_validation), "preview-auth.patchy.acme.dev") &&
+      sort(keys(aws_route53_record.edge)) == tolist(["patchy.acme.dev", "preview-auth.patchy.acme.dev", "status.patchy.acme.dev"])
+    )
+    error_message = "The relay's host is on the edge certificate, validated, and aliased to the edge ALB."
+  }
+
+  assert {
+    condition     = output.preview_auth_dex_redirect_uri == "https://preview-auth.patchy.acme.dev/dex/callback"
+    error_message = "The output is the relay's one Dex redirect URI."
+  }
+}
+
+run "preview_auth_off_renders_nothing" {
+  command = plan
+
+  variables {
+    edge = {
+      zone_id      = "Z0EDGE"
+      webhook_host = "patchy.acme.dev"
+      alb_name     = "acme-prod"
+    }
+  }
+
+  assert {
+    condition     = !contains(keys(yamldecode(output.helm_values)), "previewAuth") && output.preview_auth_dex_redirect_uri == null
+    error_message = "Without preview_auth, helm_values has no previewAuth key and there is no redirect URI."
+  }
+}
+
+# Rev C: with sign-in, the allowlist may be emptied; the chart is what then
+# insists on the require stage, the confirmation and a short session.
+run "preview_auth_admits_an_empty_allowlist" {
+  command = plan
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-a"]
+      inbound_cidrs   = []
+    }
+    edge = {
+      zone_id             = "Z0EDGE"
+      webhook_host        = "patchy.acme.dev"
+      certificate_domains = ["patchy.acme.dev", "*.patchy.acme.dev"]
+      alb_name            = "acme-prod"
+    }
+    preview_auth = {
+      host = "preview-auth.patchy.acme.dev"
+    }
+  }
+
+  assert {
+    condition     = yamldecode(output.helm_values).preview.inboundCIDRs == []
+    error_message = "An empty allowlist reaches the chart as an empty list, for its own Rev C guard."
+  }
+}
+
+run "empty_allowlist_without_preview_auth_is_refused" {
+  command = plan
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-a"]
+      inbound_cidrs   = []
+    }
+  }
+
+  expect_failures = [aws_iam_role.preview_node]
+}
+
+run "preview_auth_host_under_the_preview_suffix_is_refused" {
+  command = plan
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-a"]
+      inbound_cidrs   = ["203.0.113.7/32"]
+    }
+    edge = {
+      zone_id             = "Z0EDGE"
+      webhook_host        = "patchy.acme.dev"
+      certificate_domains = ["patchy.acme.dev", "*.preview.acme-apps.dev"]
+      alb_name            = "acme-prod"
+    }
+    preview_auth = {
+      host = "auth.preview.acme-apps.dev"
+    }
+  }
+
+  expect_failures = [var.preview_auth]
+}
+
+run "preview_auth_needs_previews_and_edge" {
+  command = plan
+
+  variables {
+    preview_auth = {
+      host = "preview-auth.patchy.acme.dev"
+    }
+  }
+
+  expect_failures = [var.preview_auth]
+}
+
+run "preview_auth_host_must_be_its_own" {
+  command = plan
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-a"]
+      inbound_cidrs   = ["203.0.113.7/32"]
+    }
+    edge = {
+      zone_id      = "Z0EDGE"
+      webhook_host = "patchy.acme.dev"
+      status_host  = "status.patchy.acme.dev"
+      alb_name     = "acme-prod"
+    }
+    preview_auth = {
+      host = "status.patchy.acme.dev"
+    }
+  }
+
+  expect_failures = [var.preview_auth]
+}
+
+run "edge_certificate_must_cover_the_relay" {
+  command = plan
+
+  variables {
+    previews = {
+      host_suffix     = "preview.acme-apps.dev"
+      zone_id         = "Z0PREVIEW"
+      alb_subnet_ids  = ["subnet-alb-a", "subnet-alb-b"]
+      node_subnet_ids = ["subnet-node-a"]
+      inbound_cidrs   = ["203.0.113.7/32"]
+    }
+    edge = {
+      zone_id             = "Z0EDGE"
+      webhook_host        = "patchy.acme.dev"
+      certificate_domains = ["patchy.acme.dev"]
+      alb_name            = "acme-prod"
+    }
+    preview_auth = {
+      host = "preview-auth.patchy.acme.dev"
+    }
+  }
+
+  expect_failures = [var.preview_auth]
+}

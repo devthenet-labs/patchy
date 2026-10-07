@@ -59,6 +59,14 @@ locals {
         ingress = { annotations = local.edge_ingress_annotations }
       }
     }],
+    # The relay's host and edge Ingress only: previewAuth.enabled, its stage,
+    # Dex and the viewers stay in the operator's values.
+    [for auth in(local.edge_enabled && var.preview_auth != null ? [var.preview_auth] : []) : {
+      previewAuth = {
+        host    = auth.host
+        ingress = { annotations = local.edge_ingress_annotations }
+      }
+    }],
   )...)
 
   # HTTPS on the edge ALB with the edge certificate; plain HTTP only redirects.
@@ -132,6 +140,11 @@ output "preview_certificate_arn" {
 }
 
 output "edge_certificate_arn" {
-  description = "ACM certificate for the webhook and status hosts (helm_values edge annotations); null without edge"
+  description = "ACM certificate for the webhook, status and preview sign-in relay hosts (helm_values edge annotations); null without edge"
   value       = local.edge_certificate_arn
+}
+
+output "preview_auth_dex_redirect_uri" {
+  description = "The one redirect URI of Dex's static client for the preview sign-in relay, https://<preview_auth.host>/dex/callback: the only per-install IdP setup preview sign-in needs. Null without preview_auth."
+  value       = var.preview_auth == null ? null : "https://${var.preview_auth.host}/dex/callback"
 }

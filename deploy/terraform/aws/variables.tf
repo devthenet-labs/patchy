@@ -175,9 +175,13 @@ variable "previews" {
       of one of the alb_subnet_ids: the ALB sends no traffic to a target in a zone it has not enabled. Untrusted
       preview workloads must never get public IPs, so a subnet that assigns them fails the plan. The nodes join the
       cluster and pull from ECR out of these subnets, so they need a NAT gateway or EKS, ECR and S3 endpoints.
-    - inbound_cidrs: who may reach previews: 1 to 8 IPv4 /32s.
+    - inbound_cidrs: who may reach previews: 1 to 8 IPv4 /32s. With preview_auth set it may be empty (Rev C, the
+      allowlist gone and sign-in alone guarding previews), which the chart then refuses unless sign-in is already
+      required (previewAuth.stage=require), preview.allowPublicWithAuth is "confirmed" and
+      previewAuth.sessionTimeout is at most 900: do that only after the ALB probe has run.
     - prefix_list_ids: managed prefix lists (pl-...) the preview ALB admits beside inbound_cidrs, at most 8. Optional
-      and additive: inbound_cidrs stays required. helm_values passes them as preview.prefixListsIDs.
+      and additive: inbound_cidrs stays required without preview_auth. helm_values passes them as
+      preview.prefixListsIDs.
     - dns_cidr, api_server_cidr: the cluster DNS and Kubernetes API Service /32s. Null derives .10 and .1 of the
       cluster's service CIDR, which is what EKS assigns.
   EOT
@@ -233,11 +237,11 @@ variable "previews" {
   }
   validation {
     condition = var.previews == null ? true : (
-      length(var.previews.inbound_cidrs) >= 1 && length(var.previews.inbound_cidrs) <= 8 &&
+      length(var.previews.inbound_cidrs) <= 8 &&
       length(distinct(var.previews.inbound_cidrs)) == length(var.previews.inbound_cidrs) &&
       alltrue([for cidr in var.previews.inbound_cidrs : can(cidrhost(cidr, 0)) && can(regex("^[0-9.]+/32$", cidr))])
     )
-    error_message = "previews.inbound_cidrs must list 1 to 8 distinct IPv4 /32s: the preview ALB is never open to the internet."
+    error_message = "previews.inbound_cidrs must list at most 8 distinct IPv4 /32s."
   }
   validation {
     condition = var.previews == null ? true : (
@@ -302,10 +306,61 @@ variable "edge" {
   }
 }
 
+variable "preview_auth" {
+  description = <<-EOT
+    The preview sign-in relay's edge (the chart's previewAuth, the OpenID provider every preview host's ALB signs
+    viewers in through); null (the default) creates nothing. Set, the module adds host to the edge certificate's
+    names (when edge.certificate_domains is null) and to the edge alias records, and helm_values sets
+    previewAuth.host and the relay Ingress's edge annotations. It never turns sign-in on: previewAuth.enabled, its
+    stage, Dex and the viewers stay explicit lines in the operator's own values file. Needs previews and edge.
+    - host: the relay's hostname on the edge ALB, the issuer https://<host>. It must not sit under
+      previews.host_suffix (the preview wildcard would route it to the preview ALB) and must differ from the
+      webhook and status hosts. Dex's static client for the relay takes exactly one redirect URI,
+      https://<host>/dex/callback (output preview_auth_dex_redirect_uri).
+  EOT
+  type = object({
+    host = string
+  })
+  default = null
+
+  validation {
+    condition     = var.preview_auth == null ? true : can(regex("^[a-z0-9-]+(\\.[a-z0-9-]+)+$", var.preview_auth.host))
+    error_message = "preview_auth.host must be a lowercase DNS name, such as preview-auth.patchy.acme.dev."
+  }
+  validation {
+    condition     = var.preview_auth == null ? true : (var.previews != null && var.edge != null)
+    error_message = "preview_auth needs previews (the hosts it signs viewers in for) and edge (the ALB it is reached on)."
+  }
+  validation {
+    # The edge ALB must stay reachable from the internet: the preview ALB
+    # calls the relay's token endpoint from dynamic public addresses.
+    condition = var.preview_auth == null || var.previews == null ? true : (
+      var.preview_auth.host != var.previews.host_suffix && !endswith(var.preview_auth.host, ".${var.previews.host_suffix}")
+    )
+    error_message = "preview_auth.host must not be previews.host_suffix or sit under it: the preview wildcard record would send it to the preview ALB, which admits only the preview inbound CIDRs."
+  }
+  validation {
+    condition = var.preview_auth == null || var.edge == null ? true : (
+      !contains(compact([var.edge.webhook_host, var.edge.status_host]), var.preview_auth.host)
+    )
+    error_message = "preview_auth.host must differ from edge.webhook_host and edge.status_host."
+  }
+  validation {
+    # A host is covered by itself, or by a wildcard one label above it.
+    condition = var.preview_auth == null || var.edge == null ? true : (
+      var.edge.certificate_domains == null ? true : (
+        contains(var.edge.certificate_domains, var.preview_auth.host) ||
+        contains(var.edge.certificate_domains, "*.${join(".", slice(split(".", var.preview_auth.host), 1, length(split(".", var.preview_auth.host))))}")
+      )
+    )
+    error_message = "edge.certificate_domains must cover preview_auth.host, by name or by a wildcard one label above it."
+  }
+}
+
 # One flag per ALB: the edge ALB exists after Helm stage 1, the preview ALB
 # only after stage 2, and each lookup fails the plan while its ALB is missing.
 variable "create_edge_alias_records" {
-  description = "Create the Route53 alias records for edge.webhook_host and edge.status_host, pointing at the edge ALB looked up by edge.alb_name. Set it once Helm stage 1 has created the edge Ingresses and so the ALB: the lookup fails the plan while the ALB is missing. It is independent of the preview alias, so the webhook resolves before previews are turned on."
+  description = "Create the Route53 alias records for edge.webhook_host, edge.status_host and preview_auth.host, pointing at the edge ALB looked up by edge.alb_name. Set it once Helm stage 1 has created the edge Ingresses and so the ALB: the lookup fails the plan while the ALB is missing. It is independent of the preview alias, so the webhook resolves before previews are turned on."
   type        = bool
   default     = false
 }

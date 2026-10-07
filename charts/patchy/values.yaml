@@ -321,6 +321,12 @@ previewAuth:
         # Generate new keys although this release generated some before and
         # they are gone: signs everyone out.
         regenerate: false
+        # With chart-managed keys, a render that cannot reach the cluster
+        # (helm template, Argo CD, Flux) is refused: it would draw new keys
+        # on every render. true renders anyway, with throwaway keys: for
+        # inspecting a render only, never for applying one. A GitOps install
+        # sets existingSecret instead.
+        renderOffline: false
     ingress:
         className: "" # empty: the edge class (edgeIngressClass)
         annotations: {}

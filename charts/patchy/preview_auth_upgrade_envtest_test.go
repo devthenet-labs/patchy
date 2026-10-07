@@ -106,7 +106,10 @@ func startUpgradeEnv(t *testing.T) *upgradeEnv {
 	u := &upgradeEnv{t: t, admin: admin, h: newHelm(t, env)}
 	u.base = []string{"-f", fixtures + "preview-foundation.yaml", "-f", fixtures + "intent-controller.yaml",
 		"-f", fixtures + "preview-controller.yaml"}
-	u.withAuth = append(slices.Clone(u.base), "-f", fixtures+"preview-auth.yaml")
+	// The fixture's keys.renderOffline is for renders with no cluster; here
+	// the chart must find the cluster itself and keep the managed keys.
+	u.withAuth = append(slices.Clone(u.base), "-f", fixtures+"preview-auth.yaml",
+		"--set", "previewAuth.keys.renderOffline=false")
 	u.require = append(slices.Clone(u.withAuth), "--set", "previewAuth.stage=require")
 	u.rotated = append(slices.Clone(u.require), "--set", "previewAuth.keys.rotate=2")
 	return u

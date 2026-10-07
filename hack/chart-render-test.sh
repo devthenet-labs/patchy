@@ -658,7 +658,7 @@ notes_has notes-preview-off "COST:" no
 # Off (the default) nothing of it renders: the admission goldens above, the
 # whole default render and the preview renders carry none of its objects or
 # keys. The keys Secret is generated per render here (no cluster to look it up
-# in), so no assertion reads a key value; the envtest suite
+# in, so the fixture sets keys.renderOffline), so no assertion reads a key value; the envtest suite
 # (preview_auth_upgrade_envtest_test.go) upgrades a real release through both
 # stages and a rotation, and checks the client secrets against the relay's
 # own derivation.
@@ -827,6 +827,17 @@ expect pa-permit "$panp | .spec.ingress[] | (.ports[0].port | tostring) + \" \" 
 expect pa-permit "$panp | .spec.egress[-1].ports | map(.port) | join(\",\")" '443,6443'
 render pa-from -f "$pf" -f "$pav" --set 'previewAuth.ingressFrom={10.40.0.0/24}'
 expect pa-from "$panp | .spec.ingress[0].from[0].ipBlock.cidr" 10.40.0.0/24
+# Chart-managed keys need a cluster to keep them in: a render without one
+# (helm template, GitOps) is refused unless it says its keys are throwaway,
+# and an operator-owned keys Secret needs no lookup at all.
+expect_fail 'managed keys without a cluster' 'previewAuth with chart-managed keys (no previewAuth.keys.existingSecret) needs a render that reaches the cluster' \
+  -f "$pf" -f "$pav" --set previewAuth.keys.renderOffline=false
+# shellcheck disable=SC2086
+expect_fail 'managed keys without a cluster, require stage' 'set previewAuth.keys.existingSecret and supply the slot Secrets' \
+  $pafull --set previewAuth.keys.renderOffline=false --set previewAuth.stage=require --set previewAuth.permitConfirmedGeneration=1
+render pa-existing-offline -f "$pf" -f "$pav" --set previewAuth.keys.renderOffline=false \
+  --set previewAuth.keys.existingSecret=my-keys
+expect pa-existing-offline "$padep | .spec.template.spec.volumes[0].secret.secretName" my-keys
 # An operator-owned keys Secret: the chart renders neither it nor the slot
 # client Secrets, and names the generations it is told.
 render pa-existing -f "$pf" -f "$pav" --set previewAuth.keys.existingSecret=my-keys \

@@ -69,6 +69,13 @@ internal/previewauth reproduces (a Go test renders the chart and compares).
 {{- $masters := dict -}}
 {{- $fresh := false -}}
 {{- if $managed -}}
+{{- /* Chart-managed keys live only in the cluster, so a render that cannot
+       reach one (helm template, Argo CD, Flux) would draw a new master
+       secret and signing key on every render: each GitOps sync would then
+       rotate every slot's ALB client secret under the live Ingresses and
+       sign every viewer out. kube-system always exists, so an empty lookup
+       of it means no cluster. */ -}}
+{{- if and (not (lookup "v1" "Namespace" "" "kube-system")) (not $pa.keys.renderOffline) }}{{ fail "previewAuth with chart-managed keys (no previewAuth.keys.existingSecret) needs a render that reaches the cluster (helm install/upgrade, or helm template --dry-run=server): this one cannot look up the stored keys, so it would generate new ones on every render, and each GitOps sync would rotate the slot client secrets under live Ingresses. For a render without a cluster (helm template, Argo CD, Flux) set previewAuth.keys.existingSecret and supply the slot Secrets patchy-preview-oidc-g<generation>; to inspect a render only, set previewAuth.keys.renderOffline=true (its keys are throwaway)" }}{{ end -}}
 {{- $live := lookup "v1" "Secret" $ns $keysSecret -}}
 {{- $data := (get $live "data") | default dict -}}
 {{- if and (hasKey $data "master") (hasKey $data "generation") (hasKey $data "signingKey") -}}

@@ -134,7 +134,9 @@ Set `stage: require` in `patchy-previews.yaml` and run the same `helm upgrade`.
 
 The render refuses unless the live slot Ingress policy already admits this key generation (the marker above). A render
 without a cluster (`helm template`, GitOps) cannot look it up: set `previewAuth.permitConfirmedGeneration` to the
-generation once the permit stage is live.
+generation once the permit stage is live. Such a render also cannot look up chart-managed keys, so the chart refuses it
+unless `previewAuth.keys.existingSecret` names an operator-owned keys Secret (and you supply the slot Secrets
+`patchy-preview-oidc-g<generation>`): otherwise every sync would generate new keys and sign every viewer out.
 
 This revision turns sign-in on in preview-controller (it patches every live preview's Ingress within one poll interval,
 without restarting a Pod), puts the placeholder Ingress on slot 0's set, and adds the kept policy

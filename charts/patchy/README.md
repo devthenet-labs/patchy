@@ -222,7 +222,10 @@ an Ingress before the admission policies that judge it:
 2. `previewAuth.stage: require` puts the preview-controller and the placeholder on those annotations and adds the kept
    `patchy-preview-ingress-auth` policy, which refuses a slot Ingress without them. The render fails unless the live
    policy admits the generation; a render without a cluster (`helm template`, GitOps) confirms it with
-   `previewAuth.permitConfirmedGeneration`.
+   `previewAuth.permitConfirmedGeneration`. Such a render must also use an operator-owned
+   `previewAuth.keys.existingSecret`: with chart-managed keys it is refused, since it cannot look the keys up and would
+   generate new ones on every render (`previewAuth.keys.renderOffline=true` renders anyway, with throwaway keys, for
+   inspection only).
 
 A key rotation (`previewAuth.keys.rotate`) is the same pair: the first upgrade admits the new generation and keeps the
 old one on the Ingresses, the second (the same values) moves them; `keys.dropPrevious` ends the overlap. The relay reads

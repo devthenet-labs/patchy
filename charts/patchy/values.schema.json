@@ -592,6 +592,9 @@
                         },
                         "regenerate": {
                             "type": "boolean"
+                        },
+                        "renderOffline": {
+                            "type": "boolean"
                         }
                     }
                 },

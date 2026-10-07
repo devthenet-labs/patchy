@@ -313,7 +313,7 @@ expect_fail 'preview prefix lists without inbound CIDRs' 'preview.inboundCIDRs i
 # can always remove its finalizer from an Ingress that no longer conforms.
 expect preview 'select(.kind == "ValidatingAdmissionPolicy" and .metadata.name == "patchy-preview-secret-refs") | .metadata.annotations."helm.sh/resource-policy"' 'keep'
 expect preview 'select(.kind == "ValidatingAdmissionPolicyBinding" and .metadata.name == "patchy-preview-all-slots-secret-refs") | .spec.policyName + "/" + (.spec.validationActions | join(","))' 'patchy-preview-secret-refs/Deny'
-expect preview 'select(.kind == "ValidatingAdmissionPolicy" and .spec.matchConditions[].name == "not-deleting-or-metadata-only") | .metadata.name' 'patchy-preview-services
+expect preview 'select(.kind == "ValidatingAdmissionPolicy" and .spec.matchConditions[].name == "not-metadata-only") | .metadata.name' 'patchy-preview-services
 patchy-preview-ingresses'
 expect preview 'select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name | test("^patchy-preview-"))) | .spec.failurePolicy' 'Fail
 Fail
@@ -368,7 +368,7 @@ expect_fail 'preview missing cert' 'preview.certificateARN' -f "$fixtures/previe
 # in those alone): preview-admission.default.yaml is that render (helm 4.2.3),
 # and is never regenerated to make this pass; only a deliberate, reviewed
 # policy change regenerates it (the preview sign-in phase 0 did: the
-# secret-refs policy and the deletion/metadata-only exemption). A custom path
+# secret-refs policy and the metadata-only exemption). A custom path
 # changes only the prefix and its length (preview-admission.custom.yaml;
 # regenerate it with the same helm template command and review the diff
 # against the default).

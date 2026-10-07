@@ -287,8 +287,8 @@ spec:
     matchConditions:
         - name: exact-preview-slot
           expression: 'request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]'
-        - name: not-deleting-or-metadata-only
-          expression: "request.operation != 'UPDATE' || !(has(object.metadata.deletionTimestamp) || (object.spec == oldObject.spec && has(object.metadata.annotations) == has(oldObject.metadata.annotations) && (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations)))"
+        - name: not-metadata-only
+          expression: "request.operation != 'UPDATE' || !(object.spec == oldObject.spec && has(object.metadata.annotations) == has(oldObject.metadata.annotations) && (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations))"
     variables:
         - name: helmPlaceholder
           expression: "request.namespace == 'patchy-preview-0' && object.metadata.name == 'patchy-preview-placeholder'"
@@ -331,8 +331,8 @@ spec:
     matchConditions:
         - name: exact-preview-slot
           expression: 'request.namespace in ["patchy-preview-0","patchy-preview-1","patchy-preview-2","patchy-preview-3"]'
-        - name: not-deleting-or-metadata-only
-          expression: "request.operation != 'UPDATE' || !(has(object.metadata.deletionTimestamp) || (object.spec == oldObject.spec && has(object.metadata.annotations) == has(oldObject.metadata.annotations) && (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations)))"
+        - name: not-metadata-only
+          expression: "request.operation != 'UPDATE' || !(object.spec == oldObject.spec && has(object.metadata.annotations) == has(oldObject.metadata.annotations) && (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations))"
     variables:
         - name: helmPlaceholder
           expression: "request.namespace == 'patchy-preview-0' && object.metadata.name == 'patchy-preview-placeholder'"

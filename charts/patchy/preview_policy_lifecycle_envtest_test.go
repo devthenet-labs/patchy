@@ -197,3 +197,76 @@ func testLegacyObjectsCanStillBeDeleted(t *testing.T, admin client.Client) {
 		}
 	}
 }
+
+// testTerminatingObjectsStayGuarded: being deleted is no exemption. A
+// conforming Service or Ingress held Terminating by a finalizer still has
+// every change to its spec or annotations evaluated (a NodePort or an
+// external IP on a terminating Service would be programmed on every node
+// until the finalizer goes), while the finalizer's own removal stays admitted.
+func testTerminatingObjectsStayGuarded(t *testing.T, admin client.Client) {
+	t.Helper()
+	ctx := t.Context()
+	const finalizer = "example.com/hold"
+	svc := service("patchy-preview-0", "preview-terminating", corev1.ServiceTypeClusterIP)
+	svc.Finalizers = []string{finalizer}
+	ing := ingress("patchy-preview-0", "terminating-ingress", "alb-preview", previewHost)
+	ing.Finalizers = []string{finalizer}
+	for _, obj := range []client.Object{svc, ing} {
+		if err := admin.Create(ctx, obj); err != nil {
+			t.Fatalf("create finalized %T %s: %v", obj, obj.GetName(), err)
+		}
+		if err := admin.Delete(ctx, obj); err != nil {
+			t.Fatalf("delete %T %s: %v", obj, obj.GetName(), err)
+		}
+		if err := admin.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+			t.Fatalf("get terminating %T %s: %v", obj, obj.GetName(), err)
+		}
+		if obj.GetDeletionTimestamp() == nil {
+			t.Fatalf("%T %s: no deletionTimestamp after delete", obj, obj.GetName())
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		obj  client.Object
+		want string
+	}{
+		{"service type NodePort", mutateService(svc.DeepCopy(), func(s *corev1.Service) {
+			s.Spec.Type = corev1.ServiceTypeNodePort
+		}), "internal ClusterIP"},
+		{"service external IP", mutateService(svc.DeepCopy(), func(s *corev1.Service) {
+			s.Spec.ExternalIPs = []string{"203.0.113.10"}
+		}), "internal ClusterIP"},
+		{"service annotation", mutateService(svc.DeepCopy(), func(s *corev1.Service) {
+			s.Annotations = map[string]string{"example.com/other": "true"}
+		}), "Service annotations are restricted"},
+		{"ingress class", func() client.Object {
+			i := ing.DeepCopy()
+			class := "alb"
+			i.Spec.IngressClassName = &class
+			return i
+		}(), "must use alb-preview"},
+		{"ingress annotation", func() client.Object {
+			i := ing.DeepCopy()
+			i.Annotations = map[string]string{"alb.ingress.kubernetes.io/security-groups": "open"}
+			return i
+		}(), "annotations are restricted"},
+	} {
+		t.Run("terminating "+tc.name, func(t *testing.T) {
+			err := admin.Update(ctx, tc.obj, client.DryRunAll)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want rejection containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+
+	for _, obj := range []client.Object{svc, ing} {
+		obj.SetFinalizers(nil)
+		if err := admin.Update(ctx, obj); err != nil {
+			t.Fatalf("finalizer removal on terminating %T %s refused: %v", obj, obj.GetName(), err)
+		}
+		if err := admin.Get(ctx, client.ObjectKeyFromObject(obj), obj); !apierrors.IsNotFound(err) {
+			t.Errorf("%T %s still present after its finalizer was removed: %v", obj, obj.GetName(), err)
+		}
+	}
+}

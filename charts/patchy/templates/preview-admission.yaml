@@ -20,15 +20,16 @@
 {{- range $i := until 4 }}{{ $guardSlots = append $guardSlots (printf "patchy-preview-%d" $i) }}{{ end }}
 {{- $prefix := include "patchy.previewImagePrefix" . }}
 {{- /*
-An UPDATE that removes nothing a load balancer reads: the object is already
-being deleted, or its spec and annotations are exactly what they were (a
-finalizer, label or owner reference change). EKS Auto Mode removes its
-group.ingress.eks.amazonaws.com finalizer with such an UPDATE; refusing it on
-an Ingress or Service that no longer conforms (one created before a rule
-tightened) would leave that object Terminating forever and its slot wedged.
-Neither change alters what the load balancer is told to do.
+An UPDATE that changes nothing a load balancer reads: its spec and annotations
+are exactly what they were (a finalizer, label or owner reference change).
+EKS Auto Mode removes its group.ingress.eks.amazonaws.com finalizer with such
+an UPDATE; refusing it on an Ingress or Service that no longer conforms (one
+created before a rule tightened) would leave that object Terminating forever
+and its slot wedged. Being deleted is no exemption: a Terminating object's spec
+stays writable until its finalizers go, so a spec or annotation change to one
+is evaluated like any other.
 */}}
-{{- $unchangedForLB := "request.operation != 'UPDATE' || !(has(object.metadata.deletionTimestamp) || (object.spec == oldObject.spec && has(object.metadata.annotations) == has(oldObject.metadata.annotations) && (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations)))" }}
+{{- $unchangedForLB := "request.operation != 'UPDATE' || !(object.spec == oldObject.spec && has(object.metadata.annotations) == has(oldObject.metadata.annotations) && (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations))" }}
 {{- range $kind := list (dict "name" "pods" "resource" "pods" "pod" "object.spec") (dict "name" "deployments" "resource" "deployments" "pod" "object.spec.template.spec") }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -258,7 +259,7 @@ spec:
     matchConditions:
         - name: exact-preview-slot
           expression: 'request.namespace in {{ $guardSlots | toJson }}'
-        - name: not-deleting-or-metadata-only
+        - name: not-metadata-only
           expression: {{ $unchangedForLB | quote }}
     variables:
         - name: helmPlaceholder
@@ -327,7 +328,7 @@ spec:
     matchConditions:
         - name: exact-preview-slot
           expression: 'request.namespace in {{ $guardSlots | toJson }}'
-        - name: not-deleting-or-metadata-only
+        - name: not-metadata-only
           expression: {{ $unchangedForLB | quote }}
     variables:
         - name: helmPlaceholder

@@ -45,6 +45,7 @@ func TestPreviewAdmissionAgainstAPIServer(t *testing.T) {
 	testPlaceholderStaysAdmissible(t, admin)
 	testSecretRefs(t, admin)
 	testLegacyObjectsCanStillBeDeleted(t, admin)
+	testTerminatingObjectsStayGuarded(t, admin)
 	testIsolationProbeService(t, env)
 }
 

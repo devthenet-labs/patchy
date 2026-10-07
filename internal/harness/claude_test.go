@@ -93,13 +93,18 @@ func TestClaudePromptSpecMinimal(t *testing.T) {
 	}
 }
 
+// TestClaudePromptSpecReadOnly: the read-only posture has no shell. Its
+// tools list is the whole built-in set the run has (no Bash, so none of the
+// CLI's built-in read-only shell commands either), Bash is denied by name
+// beside it, and no allow rule names Bash.
 func TestClaudePromptSpecReadOnly(t *testing.T) {
 	c := NewClaude()
 	spec := c.PromptSpec("/ws", PromptRequest{Prompt: "look", Model: "m", Sandbox: SandboxReadOnly})
 	want := []string{
 		"claude", "-p", "look", "--model", "m", "--output-format", "stream-json", "--verbose",
-		"--allowedTools", "Read Glob Grep Write Bash(git log:*) Bash(git show:*) Bash(git blame:*) Bash(git diff:*)",
-		"--disallowedTools", "WebFetch WebSearch Task",
+		"--tools", "Read,Glob,Grep,Edit,Write",
+		"--allowedTools", "Read Glob Grep Write",
+		"--disallowedTools", "WebFetch WebSearch Task Bash",
 		"--setting-sources", "user",
 		"--strict-mcp-config",
 		"--add-dir", "/ws",
@@ -142,7 +147,11 @@ func TestClaudePromptSpecKeepsTheTreesSettingsOut(t *testing.T) {
 			if !hasAddDir(argv, "/ws") || !hasAddDir(argv, "/workspace") {
 				t.Errorf("argv = %q, want the working tree added as a directory beside the request's", argv)
 			}
-			if want := []string{"A=b", claudeMDFromAddDirs}; !slices.Equal(spec.Env, want) {
+			want := []string{"A=b", claudeMDFromAddDirs}
+			if tc.sandbox == SandboxReadOnly {
+				want = append(want, claudeNoAutoMemory)
+			}
+			if !slices.Equal(spec.Env, want) {
 				t.Errorf("Env = %q, want %q", spec.Env, want)
 			}
 			if spare := reqEnv[:cap(reqEnv)][1]; spare != "" {

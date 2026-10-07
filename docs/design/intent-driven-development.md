@@ -119,9 +119,10 @@ within:
 - **source-controller** is unchanged. It pins intent Repositories exactly as it pins Finding ones. A revise Repository
   sets `spec.ref.branch` to the PR branch, which `HeadSHA` already resolves (ghclient/repos.go:23).
 - **agent-runner** gains two phases:
-  - `plan`: `SandboxReadOnly`, with its writes scoped to `reports/` (`PromptRequest.WriteDirs`, rendered by claude as a
-    path-scoped `Edit` rule in place of the bare `Write`; a Finding investigation sets none). It writes
-    `reports/plan.md` and emits a new, additive envelope type `plan` at Version 4.
+  - `plan`: `SandboxReadOnly` (no shell: claude's `--tools` lists the file tools alone), with its writes scoped to
+    `reports/` (`PromptRequest.WriteDirs`, rendered by claude as a path-scoped `Edit` rule in place of the bare `Write`;
+    a Finding investigation sets the same scope). It writes `reports/plan.md` and emits a new, additive envelope type
+    `plan` at Version 4.
   - `build`: used for the initial build and for revisions. `SandboxWorkspaceWrite`. It follows the remediation path
     (`commit.sh`, `verifyCommitted`, `buildChangeset`) and emits the existing `remediation` payload with its Changeset.
 

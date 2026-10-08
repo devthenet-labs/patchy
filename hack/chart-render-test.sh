@@ -819,6 +819,19 @@ render pa-edge -f "$pf" -f "$am" -f "$pav"
 expect pa-edge 'select(.kind == "Ingress" and .metadata.name == "patchy-preview-auth") | .spec.ingressClassName + " " + .spec.rules[0].host + " " + .spec.rules[0].http.paths[0].backend.service.name' \
   'patchy-edge preview-auth.patchy.devthe.net patchy-preview-auth'
 expect pa-permit 'select(.kind == "Ingress" and .metadata.name == "patchy-preview-auth") | .spec | has("ingressClassName")' false
+# The relay's ALB settings are explicit, not the IngressClass's: internet
+# facing (the preview ALB's token calls come from the internet), pod IP
+# targets, and a health check on / (the relay answers it 200 without
+# credentials); previewAuth.ingress.annotations overrides each one.
+paing='select(.kind == "Ingress" and .metadata.name == "patchy-preview-auth") | .metadata.annotations'
+expect pa-permit "$paing | to_entries | map(select(.key | test(\"^alb\\.ingress\\.kubernetes\\.io/\")) | .key + \"=\" + .value) | .[]" \
+  'alb.ingress.kubernetes.io/healthcheck-path=/
+alb.ingress.kubernetes.io/scheme=internet-facing
+alb.ingress.kubernetes.io/target-type=ip'
+render pa-ingress-annotations -f "$pf" -f "$pav" \
+  --set-json 'previewAuth.ingress.annotations={"alb.ingress.kubernetes.io/healthcheck-path":"/.well-known/openid-configuration","alb.ingress.kubernetes.io/ssl-redirect":"443"}'
+expect pa-ingress-annotations "$paing | .\"alb.ingress.kubernetes.io/healthcheck-path\" + \" \" + .\"alb.ingress.kubernetes.io/ssl-redirect\" + \" \" + .\"alb.ingress.kubernetes.io/scheme\"" \
+  '/.well-known/openid-configuration 443 internet-facing'
 # NetworkPolicy: 8080 from anywhere (or ingressFrom) and probes; DNS, 443 and
 # 6443 out.
 panp='select(.kind == "NetworkPolicy" and .metadata.name == "patchy-preview-auth")'

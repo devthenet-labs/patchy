@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.26](https://github.com/devthenet-labs/patchy/compare/v0.12.25...v0.12.26) (2026-10-08)
+
+
+### Bug Fixes
+
+* **chart:** judge the preview session timeout as a ceiling so a change never fails an upgrade ([#158](https://github.com/devthenet-labs/patchy/issues/158)) ([1b24177](https://github.com/devthenet-labs/patchy/commit/1b24177536fb048bfde82b20f90f106f912e85c2))
+
 ## [0.12.25](https://github.com/devthenet-labs/patchy/compare/v0.12.24...v0.12.25) (2026-10-08)
 
 

@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/quick"
@@ -244,7 +246,8 @@ func TestGoldenSingleComponentAuth(t *testing.T) {
 // TestAuthConformsProperty: an Ingress conforms exactly when it carries one
 // generation's whole pinned set for its own namespace. Adding any other
 // annotation never changes that; dropping a pinned key or changing a pinned
-// value to anything but the other generation's makes it unauthenticated.
+// value to anything but the other generation's makes it unauthenticated,
+// except that auth-session-timeout may be any shorter canonical session.
 func TestAuthConformsProperty(t *testing.T) {
 	s := authSettings()
 	s.Auth.Previous = testAuth(2, 0)
@@ -273,6 +276,9 @@ func TestAuthConformsProperty(t *testing.T) {
 				return true
 			}
 			ann[key] = value
+			if key == annotationAuthSessionTimeout {
+				return s.authConforms(ns, ann) == shorterSession(value, 3600)
+			}
 			// Only auth-idp-oidc differs between the generations, so a
 			// changed value matches neither.
 			return !s.authConforms(ns, ann)
@@ -294,5 +300,49 @@ func TestAuthConformsProperty(t *testing.T) {
 	}
 	if got := slices.Sorted(maps.Keys(testAuth(1, 1)["patchy-preview-0"])); !slices.Equal(got, authKeys) {
 		t.Errorf("authKeys = %q, want sorted %q", authKeys, got)
+	}
+}
+
+// shorterSession is the slot admission policy's auth-session-timeout rule,
+// restated as its CEL is: digits with no leading zero, at most six of them,
+// and at most ceiling seconds.
+func shorterSession(value string, ceiling int) bool {
+	if !regexp.MustCompile(`^[1-9][0-9]{0,5}$`).MatchString(value) {
+		return false
+	}
+	n, err := strconv.Atoi(value)
+	return err == nil && n <= ceiling
+}
+
+// TestAuthConformsShorterSession: the sweeper judges auth-session-timeout as
+// the admission policy does, a ceiling. After sessionTimeout is raised, an
+// Ingress rendered before (the shorter session) still conforms and is never
+// deleted; after it is lowered, one still on the longer session does not.
+func TestAuthConformsShorterSession(t *testing.T) {
+	s := authSettings()
+	set := s.Auth.Annotations["patchy-preview-1"]
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"3600", true}, {"900", true}, {"1", true}, {"3601", false}, {"7200", false}, {"0", false},
+		{"0900", false}, {"+900", false}, {"-1", false}, {" 900", false}, {"9e2", false}, {"", false},
+		{"99999999999999999999", false},
+	} {
+		ann := maps.Clone(set)
+		ann[annotationAuthSessionTimeout] = tc.value
+		if got := s.authConforms("patchy-preview-1", ann); got != tc.want {
+			t.Errorf("auth-session-timeout %q: conforms %v, want %v", tc.value, got, tc.want)
+		}
+		if got := shorterSession(tc.value, 3600); got != tc.want {
+			t.Errorf("the policy's rule on %q: %v, want %v", tc.value, got, tc.want)
+		}
+	}
+	// A shorter session never excuses another key.
+	ann := maps.Clone(set)
+	ann[annotationAuthSessionTimeout] = "900"
+	ann[annotationAuthSessionCookie] = "session"
+	if s.authConforms("patchy-preview-1", ann) {
+		t.Error("another cookie conforms under a shorter session")
 	}
 }

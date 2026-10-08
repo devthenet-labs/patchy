@@ -240,6 +240,33 @@ prompt-injected, which sees every request a viewer's browser sends to that previ
 
 Until the probe has run, `sessionTimeout` is that window. Keep it short.
 
+### What the probe found on EKS Auto Mode (2026-10-08)
+
+A live probe on devthenet-dev (a throwaway preview that listed the cookie and header names it received) answered three
+of these questions for the AWS load balancer as it behaves today:
+
+- **T1, the cookie is not forwarded.** The load balancer removes its own `patchy-preview-s<slot>-*` cookie before the
+  request reaches the target and forwards every other cookie. The app sees `x-amzn-oidc-*` headers, never the session.
+- **T2, the cookie is HttpOnly, Secure and host-only**, with `SameSite=None` and a 7-day `Expires`. The session ends at
+  `sessionTimeout` regardless: the expiry is inside the cookie, not the cookie's own lifetime. So neither the preview's
+  server code nor its JavaScript can read a viewer's session.
+- **T3c, a session replays across hosts in the same slot.** A cookie issued on one preview host, sent by hand to another
+  host in the same slot (same client and cookie name), passed authentication there without the relay being asked. The
+  relay's binding to a Preview applies only when the load balancer next calls it.
+- Replay across slots (another client and cookie name) was not tested.
+
+So stealing a session needs the viewer's machine or browser, not the preview's code. Once stolen, it works on every host
+in its slot, and without the allowlist from anywhere, until `sessionTimeout`. That is why the chart caps it at 900
+seconds for an empty allowlist.
+
+### Changing `sessionTimeout` on a live install
+
+`sessionTimeout` is part of the pinned sign-in annotations the slot admission policy compares. In one `helm upgrade`,
+the placeholder Ingress can be applied before the policy's new pinned set lands, and the upgrade fails with
+`preview Ingress sign-in annotations must be exactly one admitted key generation's pinned set for this slot`. The policy
+update still lands, so running the same upgrade again succeeds (devthenet-dev: rev 69 failed, rev 70 deployed). Until
+the chart orders this itself, expect to run the upgrade twice.
+
 ## For application authors
 
 What a previewed app sees, and must not do:

@@ -7,7 +7,33 @@
 > documentation values `111122223333` and `203.0.113.10/32`. The real ones are in terraform-devthenet's `k8s/` values
 > (private).
 
-## Current checkpoint — 2026-10-08: preview sign-in on, and 0.12.25
+## Current checkpoint — 2026-10-08 (afternoon): previews open to the internet behind sign-in
+
+**The preview IP allowlist is gone**, as the owner asked once previews worked behind sign-in.
+
+- Helm patchy rev 70 sets `preview.inboundCIDRs: []`, `preview.allowPublicWithAuth: confirmed` and
+  `previewAuth.sessionTimeout: 900`. The preview load balancer's security group admits 443 from anywhere.
+- terraform-devthenet branch `feat/patchy-previews-public-with-signin` is pushed. Its PR is for the owner to open and
+  merge (auto mode refused to open it); the text is in `.claude/plans/tf-pr-previews-public.md`.
+- Rollback: patchy rev 68 has the allowlist and `sessionTimeout` 3600. Expect `helm rollback` or the upgrade to need
+  running twice; see the guide's "Changing `sessionTimeout` on a live install".
+
+The cookie probe ran first, on throwaway intent intents#20 (PR closed). Results are in docs/intents/preview-sign-in.md,
+"What the probe found":
+
+- The session cookie never reaches the app, and it is HttpOnly, Secure and host-only.
+- A copied cookie does replay on another host in the same slot.
+- Cross-slot replay is untested.
+
+`patchy check project preview-demo` passes every check after the change.
+
+Follow-ups for patchy:
+
+- Make a `sessionTimeout` change one upgrade: the chart could admit both the old and new pinned sets for a release, as
+  it does for key generations.
+- Consider a cross-slot replay test once two slots are live.
+
+## Earlier checkpoint — 2026-10-08: preview sign-in on, and 0.12.25
 
 **Preview sign-in is on for devthenet-dev, at the `require` stage, and was tested end to end in a browser.** Every
 preview host now sends an unauthenticated visitor to the `preview-auth` relay, which signs them in with GitHub through

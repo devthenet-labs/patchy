@@ -411,8 +411,8 @@ func (p *pass) reviseInput(ctx context.Context, run *v1alpha1.IntentRun, plan []
 		}
 		return nil, err
 	}
-	round := roundText(run, repo.Status.ResolvedSHA, p.previousOutcome(run), in.earlier, in.feedback,
-		visibleFeedback(patch))
+	before := roundContext{notes: p.roundWorkingNotes(run), previous: p.previousOutcome(run), earlier: in.earlier}
+	round := roundText(run, repo.Status.ResolvedSHA, before, in.feedback, visibleFeedback(patch))
 	data := map[string]string{keyIssue: "", keyInvestigation: string(plan) + round,
 		keyApprovedPlan: string(plan), keyCheckSignature: in.signature}
 	if len(in.checks) > 0 {

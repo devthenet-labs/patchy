@@ -16,6 +16,7 @@ import (
 	v1alpha1 "github.com/bitwise-media-group/patchy/api/v1alpha1"
 	"github.com/bitwise-media-group/patchy/internal/action"
 	"github.com/bitwise-media-group/patchy/internal/command"
+	"github.com/bitwise-media-group/patchy/internal/report"
 )
 
 // This file renders what intent-controller writes to GitHub. The renderers
@@ -333,6 +334,7 @@ func planComment(p PlanComment, digest string, view planView) (string, error) {
 		Replan          string
 		Cancel          string
 		Repositories    string
+		BuilderNotes    bool
 		Plan            string
 	}{
 		Marker:          PlanMarker(p.Namespace, p.Intent, p.Revision, digest),
@@ -352,8 +354,17 @@ func planComment(p PlanComment, digest string, view planView) (string, error) {
 		Replan:          slashCommand(action.VerbReplan),
 		Cancel:          slashCommand(action.VerbCancel),
 		Repositories:    repositoryList(p.Repositories, false),
+		BuilderNotes:    hasBuilderNotes(p.Report),
 		Plan:            verbatim("markdown", string(p.Report)),
 	})
+}
+
+// hasBuilderNotes reports whether a plan's body holds a non-empty
+// report.BuilderNotesHeading section, which the approval comment points out:
+// the build reads it as part of the plan.
+func hasBuilderNotes(plan []byte) bool {
+	notes, _ := report.Section(report.StripFrontmatter(string(plan)), report.BuilderNotesHeading)
+	return strings.TrimSpace(notes) != ""
 }
 
 // repositoryList renders the repositories an intent changes, "owner/name"

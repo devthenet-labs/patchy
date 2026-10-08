@@ -123,6 +123,10 @@ After the frontmatter, write the plan in markdown under the headings Approach, S
 48 KiB; the whole report, frontmatter included, is at most 56 KiB. It is posted to the request for a human to
 approve, and the build follows it exactly — write it for both.
 
+You may end the plan with a `## Notes for the builder` section: what the build agent should know that the steps do not
+say — where things are, the commands to use, the pitfalls you found — in under 4 KiB. It is part of the plan: the
+approver reads it as written, and the build receives it with the plan.
+
 Write the whole report in plain, visible text: no emoji, and none of the characters that render as nothing or reorder
 text — zero-width spaces and joiners, bidi controls, variation selectors, tag characters, or any control character but
 tab and line break. The approver reads every byte of the plan, in a code block that does not wrap, so lay it out

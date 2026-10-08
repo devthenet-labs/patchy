@@ -735,6 +735,13 @@ func (e *intentEnv) exerciseReviseAndCheckFix(t *testing.T, name string, number 
 		!strings.Contains(string(job.Investigation), "### Compare patch") {
 		t.Errorf("revision handoff omitted approver feedback or compare patch: %q", job.Investigation)
 	}
+	// The round starts from the build's working notes, after the plan and
+	// before its feedback.
+	if notes, _, _ := strings.Cut(string(job.Investigation), "### Approver feedback"); !strings.Contains(notes,
+		"### Working notes from the previous round") || !strings.Contains(notes, "Written by the build of plan r1") ||
+		!strings.Contains(notes, "VERSION sits at the repository root") {
+		t.Errorf("revision handoff did not carry the build's working notes: %q", job.Investigation)
+	}
 	in := e.waitPhase(t, name, v1alpha1.IntentInReview)
 	revise := e.run(t, reviseName)
 	if revise.Status.Phase != v1alpha1.RunComplete || revise.Status.BaseSHA != buildSHA ||
@@ -818,6 +825,12 @@ func (e *intentEnv) exerciseReviseAndCheckFix(t *testing.T, name string, number 
 		earlier, "Please test the VERSION contents.") || strings.Contains(earlier, "Revision round started") ||
 		strings.Contains(string(fixJob.Investigation), "### Approver feedback") {
 		t.Errorf("check-fix handoff did not carry the earlier thread as context: %q", fixJob.Investigation)
+	}
+	// And the notes the revision round returned, updated from the build's.
+	if notes, _, _ := strings.Cut(string(fixJob.Investigation), "### Check failures"); !strings.Contains(notes,
+		"Written by revise round 1 (attempt 1)") ||
+		!strings.Contains(notes, "Revise round 1 was built on the previous round's working notes.") {
+		t.Errorf("check-fix handoff did not carry the revision round's working notes: %q", fixJob.Investigation)
 	}
 	in = e.waitPhase(t, name, v1alpha1.IntentInReview)
 	fix := e.run(t, fixName)

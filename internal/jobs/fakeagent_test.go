@@ -573,6 +573,43 @@ func TestFakeAgentBuildHandoff(t *testing.T) {
 	}
 }
 
+// TestFakeAgentBuildWorkingNotes: the fake build ends its report with
+// working notes, as the build prompt asks, and on a revise round says
+// whether it was handed the previous round's notes, so e2e can follow the
+// notes from round to round.
+func TestFakeAgentBuildWorkingNotes(t *testing.T) {
+	const round = "\n\n## Revise round 3\n\nPR head: abc\n\n"
+	tests := []struct {
+		name, input, want, unwanted string
+	}{
+		{"the build", approvedPlan, "VERSION sits at the repository root", "Revise round"},
+		{"a round with notes", approvedPlan + round + "### Working notes from the previous round\n\nx\n",
+			"Revise round 3 was built on the previous round's working notes.", "handed no"},
+		{"a round without", approvedPlan + round + "### Approver feedback\n\nx\n",
+			"Revise round 3 was handed no working notes.", "built on"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, err := execFakeAgent(t, "build", map[string]string{"issue.md": "", "investigation.md": tc.input})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := scanFakeAgent(t, "build", stdout)
+			if len(out.Events) != 1 || out.Events[0].Remediation == nil {
+				t.Fatalf("events = %+v, want one build event", out.Events)
+			}
+			parsed, err := report.ParseBuild([]byte(out.Events[0].Remediation.ReportMarkdown))
+			if err != nil {
+				t.Fatal(err)
+			}
+			notes, ok := report.Section(parsed.Body, report.WorkingNotesHeading)
+			if !ok || !strings.Contains(notes, tc.want) || strings.Contains(notes, tc.unwanted) {
+				t.Errorf("working notes = %q, want %q and not %q", notes, tc.want, tc.unwanted)
+			}
+		})
+	}
+}
+
 // TestFakeAgentPlanTrees mirrors agent-runner's guard on a multi-repository
 // plan: every tree the manifest lists is there, or the plan Job fails
 // fatally before planning. A pod path is looked for under the workspace

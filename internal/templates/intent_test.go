@@ -182,6 +182,10 @@ func TestIntentGoldens(t *testing.T) {
 		// in this golden verbatim, as GitHub receives them, and the header
 		// points to each; the emoji's joiner and selector it does not count.
 		{"intent_plan_hostile.md", func() (string, error) { return RenderPlanComment(hostile) }},
+		// A plan with notes for the builder says so before the approval.
+		{"intent_plan_builder_notes.md", func() (string, error) {
+			return RenderPlanComment(testPlanComment(testPlan + builderNotes))
+		}},
 		{"intent_plan_refused.md", func() (string, error) {
 			return refusedPlan(testPlanComment("---\nsummary: x\n---\n" + strings.Repeat("a", MaxCommentBytes)))
 		}},
@@ -380,6 +384,51 @@ func TestPlanCommentSizeLimit(t *testing.T) {
 			len(out) > MaxCommentBytes {
 			t.Errorf("%s: %d bytes, %v; want a refusal notice", name, len(out), err)
 		}
+	}
+}
+
+// builderNotes is a plan's notes for the builder, as a planner ends a plan.
+const builderNotes = "\n## Notes for the builder\n\n- The handler tests live in server_test.go.\n"
+
+// TestPlanCommentBuilderNotes: the approval comment's header points out a
+// plan's notes for the builder, which the build reads as part of the plan,
+// only when the plan's body holds a non-empty section of that heading;
+// everything else in the comment is as it would be without the line.
+func TestPlanCommentBuilderNotes(t *testing.T) {
+	const line = "The plan includes notes for the builder, under `## Notes for the builder`."
+	const front = "---\nsummary: x\n---\n## Approach\n\nAdd it.\n"
+	tests := []struct {
+		name, report string
+		want         bool
+	}{
+		{"notes", testPlan + builderNotes, true},
+		{"notes then more", front + "## Notes for the builder\n\nRun make.\n\n## Risks\n\nNone.\n", true},
+		{"case and closing hashes", front + "## notes for the BUILDER ##\nRun make.\n", true},
+		{"none", testPlan, false},
+		{"empty section", front + "## Notes for the builder\n\n## Risks\n\nNone.\n", false},
+		{"quoted in a fence", front + "```\n## Notes for the builder\nRun make.\n```\n", false},
+		{"a level-3 heading", front + "### Notes for the builder\nRun make.\n", false},
+		{"only in the frontmatter", "---\nsummary: x\n# ## Notes for the builder\n---\nAdd it.\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := RenderPlanComment(testPlanComment(tt.report))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(got, line) != tt.want {
+				t.Fatalf("comment has the builder-notes line = %v, want %v:\n%s", !tt.want, tt.want, got)
+			}
+			if !tt.want {
+				return
+			}
+			// The line sits under "Before you approve", before the approval
+			// instructions and the plan.
+			before, after, ok := strings.Cut(got, "### Before you approve")
+			if !ok || strings.Contains(before, line) || !strings.Contains(strings.SplitN(after, "### To approve", 2)[0], line) {
+				t.Errorf("the builder-notes line is not under Before you approve:\n%s", got)
+			}
+		})
 	}
 }
 

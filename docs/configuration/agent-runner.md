@@ -45,6 +45,15 @@ verbatim, is the build's whole contract, while the request was seen only as GitH
   may lower but never raise. Unlike a remediation's, a build's grant has no floor: one below
   `PATCHY_REMEDIATE_AUTO_MAX_TURNS`/`_TOKEN_BUDGET` is honoured, and those apply only to a build Job with no grant.
 
+Two optional report sections carry what one agent learned to the next; neither changes what a report parser accepts. The
+build prompt asks every build and round to end its report with `## Working notes`, under 6 KiB, for the next agent on
+the intent (where the code is, the commands that worked in the sandbox, decisions, what was tried and rejected, open
+questions, the state of the work), and, when its `input/investigation.md` carries earlier notes, to return them
+rewritten rather than added to. The intent controller hands a round the latest notes after the plan, under
+`### Working notes from the previous round`, and a replan's context file the latest notes of each repository. The plan
+prompt allows a plan to end with `## Notes for the builder`, under 4 KiB: part of the plan, shown to the approver
+verbatim and read by the build with the rest of it.
+
 No per-Job timeout reaches the pod, so a stage's wall clock is `PATCHY_INVESTIGATE_TIMEOUT` (plan) or
 `PATCHY_REMEDIATE_TIMEOUT` (build, and every revise round), and its idle limit `PATCHY_INVESTIGATE_IDLE_TIMEOUT` or
 `PATCHY_REMEDIATE_IDLE_TIMEOUT`: the intent controller launches each stage with its own limits there. Each intent prompt
@@ -60,13 +69,13 @@ Both run on **brokered claude only**: any other harness, or claude without `PATC
 fatal event before a model is called, because codex and copilot do not honour the sandbox postures. No configuration key
 exists for the intent phases alone.
 
-The plan and build reports, and the build's `input/investigation.md` with any revise round after the plan (its feedback,
-the earlier approver thread, a failed previous round's outcome and the compare patch), must be visible text throughout:
-a report is `report_invalid`, and a build input a fatal event, if it holds invalid UTF-8, a control character other than
-tab, line feed or a CRLF's carriage return, U+2028/U+2029, or a character that renders invisibly or reorders text (a
-format character such as a zero-width space or a bidi control, a tag character, a variation selector, or another
-default-ignorable code point). The detail names the first one's code point, line and column. A human approves the plan
-by reading every byte of it, so nothing in it may be hidden.
+The plan and build reports, and the build's `input/investigation.md` with any revise round after the plan (the working
+notes, its feedback, the earlier approver thread, a failed previous round's outcome and the compare patch), must be
+visible text throughout: a report is `report_invalid`, and a build input a fatal event, if it holds invalid UTF-8, a
+control character other than tab, line feed or a CRLF's carriage return, U+2028/U+2029, or a character that renders
+invisibly or reorders text (a format character such as a zero-width space or a bidi control, a tag character, a
+variation selector, or another default-ignorable code point). The detail names the first one's code point, line and
+column. A human approves the plan by reading every byte of it, so nothing in it may be hidden.
 
 The plan is also held to a layout rule, since it is read in a code block that does not wrap: no gap of more than 16
 columns of blank characters before more text on a line (a tab counts as 8, and any blank character but a space as 2;

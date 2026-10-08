@@ -28,18 +28,18 @@ import (
 // Each section is the controller's own rendering of data, visibly escaped
 // and fenced, and bounded on its own. Worst case, with about 2 KiB of fixed
 // prose: the previous plan (64 KiB, a 56 KiB report escaped), the last
-// build's failure (4 KiB) and the earlier approver comments (16 KiB) come to
-// about 86 KiB, far under the 1 MiB a ConfigMap and the Job's Secret may
-// hold.
+// build's failure (4 KiB), the earlier approver comments (16 KiB) and the
+// working notes (6 KiB for each of at most 8 repositories) come to about
+// 135 KiB, far under the 1 MiB a ConfigMap and the Job's Secret may hold.
 const maxContextPlanBytes = 64 << 10
 
 // planContext is the context file of a replan or revival: the previous
 // plan (prev, the plan recorded before startPlanning clears it; plan
 // revisions skip numbers, so it is the recorded one, never revision-1), the
-// latest build-side run's outcome when it failed, and the approvers'
-// comments on the request from the trigger up to the previous plan's
-// posting (those since are in the request itself). "" when there is
-// nothing to say.
+// latest build-side run's outcome when it failed, the approvers' comments
+// on the request from the trigger up to the previous plan's posting (those
+// since are in the request itself), and each repository's latest working
+// notes (lastWorkingNotes). "" when there is nothing to say.
 func (p *pass) planContext(ctx context.Context, prev *v1alpha1.IntentPlan) (string, error) {
 	plan, err := p.previousPlan(ctx, prev)
 	if err != nil {
@@ -50,7 +50,8 @@ func (p *pass) planContext(ctx context.Context, prev *v1alpha1.IntentPlan) (stri
 	if err != nil {
 		return "", err
 	}
-	if plan == "" && failure == "" && comments == "" {
+	notes := p.lastWorkingNotes()
+	if plan == "" && failure == "" && comments == "" && notes == "" {
 		return "", nil
 	}
 	var b strings.Builder
@@ -74,6 +75,13 @@ func (p *pass) planContext(ctx context.Context, prev *v1alpha1.IntentPlan) (stri
 		b.WriteString("The approvers' comments on the request before the previous plan was posted, oldest first. " +
 			"Earlier plans may already have answered them.\n\n")
 		b.WriteString(comments + "\n")
+	}
+	if notes != "" {
+		b.WriteString("\n## Working notes from the last build\n\n")
+		b.WriteString("The notes the latest build, revise or check-fix run of each repository left for the next " +
+			"agent on this intent: where things are and what it learned. They describe the earlier plan's " +
+			"work, not the request.\n\n")
+		b.WriteString(notes + "\n")
 	}
 	return b.String(), nil
 }

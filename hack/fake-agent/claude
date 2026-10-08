@@ -80,7 +80,8 @@ mkdir -p "$workspace/reports"
 write_report() {
   printf '%s\n' '---' 'success: true' 'summary: "Add a VERSION file"' 'tests:' '  ran: true' \
     '  passed: true' '  command: "go test ./..."' "$1" '---' '' '## What changed' '' \
-    'Scripted build from hack/fake-agent/claude: VERSION names the current version.' >"$report"
+    'Scripted build from hack/fake-agent/claude: VERSION names the current version.' '' \
+    '## Working notes' '' '- VERSION sits at the repository root; nothing reads it yet.' >"$report"
 }
 
 # init <session> — the session's init event, printed once per run.

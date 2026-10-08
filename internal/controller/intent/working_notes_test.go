@@ -67,6 +67,21 @@ func TestRunWorkingNotes(t *testing.T) {
 			want: []string{"0123456789abcdef", notesTruncated},
 		},
 		{
+			// A fence as long as a backtick run would not fit beside cut
+			// notes; the backticks are escaped before the cut, so patchy's
+			// own marker survives, not the generic one.
+			name: "oversize with a long backtick run keeps patchy's marker", stage: v1alpha1.IntentStageBuild,
+			report: notesReport(strings.Repeat("`", 29) + "\n" + long),
+			want:   []string{"<U+0060>", notesTruncated}, absent: []string{"\n[truncated]\n"},
+		},
+		{
+			// Under 6 KiB, but its fence would not fit: escaped, the
+			// backticks run past 6 KiB and are cut with patchy's marker.
+			name: "a short note of backticks too long to fence", stage: v1alpha1.IntentStageBuild,
+			report: notesReport(strings.Repeat("`", 2100) + "\nEND"),
+			want:   []string{"<U+0060>", notesTruncated}, absent: []string{"\n[truncated]\n"},
+		},
+		{
 			name: "a report that does not parse gives none", stage: v1alpha1.IntentStageBuild,
 			report: "no frontmatter\n\n## Working notes\n\nUNTRUSTED\n",
 		},

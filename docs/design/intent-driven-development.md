@@ -798,8 +798,8 @@ closes the intent issue itself.
     earlier attempt of its own) whose stored report holds any, failed or not, naming the run that wrote them.
   - The controller re-parses `status.report` with `report.ParseBuild` (a repository's image is untrusted) and skips a
     report that does not parse. It takes the section up to the next level-1 or level-2 heading outside a code fence,
-    escapes it to visible text, cuts it at 6 KiB with a visible "patchy truncated these working notes" line (an
-    over-long note is never refused) and fences it as data.
+    escapes it to visible text (its backticks too when a fence around them would not fit), cuts it at 6 KiB with a
+    visible "patchy truncated these working notes" line (an over-long note is never refused) and fences it as data.
   - A replan's or revival's context file carries each repository's latest notes the same way.
 - **Notes for the builder.** A plan may end with a `## Notes for the builder` section: what the build should know that
   the steps do not say, under 4 KiB by the prompt. It is part of the plan, so the approver reads it verbatim and the

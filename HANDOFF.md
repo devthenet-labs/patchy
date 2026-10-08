@@ -69,6 +69,23 @@ GitHub permission:
 Gates, all green on the branch: `mise run pr` (envtest included), the full `mise run e2e -- -timeout 25m` (590 s) and
 `cd e2e && go vet ./...`. Next: PR 2 (`feature/intent-working-notes`), the agents' own working notes.
 
+**Intent context, PR 2 (branch `feature/intent-working-notes`, stacked on PR 1, not yet pushed).** Agents now carry
+their own working notes from run to run, still with no new kind, key, envelope version or permission, and no parser
+change:
+
+- **Working notes:** the build prompt asks every build, revise and check-fix run to end its report with
+  `## Working notes`, under 6 KiB, and to rewrite any notes it was handed rather than append to them. A round gets the
+  latest notes of its repository and plan revision, failed runs included, after the plan and before the feedback. A
+  replan's or revival's `context.md` gets each repository's latest notes. The controller re-parses the stored report
+  (`report.ParseBuild`; it skips a report that no longer parses), escapes the notes, and cuts them at 6 KiB with a
+  visible marker. Over-long notes are never refused.
+- **Notes for the builder:** the plan prompt allows an optional `## Notes for the builder` section, under 4 KiB. It is
+  part of the plan, and the approval comment adds one line under "Before you approve" when a plan has one.
+
+Gates, green on the branch: `go build ./...`, `go vet ./...`, `go test ./internal/... ./api/...`, `mise run lint`,
+`cd e2e && go vet ./...` and `mise run e2e -- -timeout 25m -run "TestIntent|TestMultiRepoIntent"` (275 s). The full
+`mise run pr` and the full e2e suite were not run for PR 2.
+
 Parked: never-discard-work and session resume (branch `feature/never-discard-work`, unmerged).
 
 ## Earlier checkpoint — 2026-10-08: preview sign-in on, and 0.12.25

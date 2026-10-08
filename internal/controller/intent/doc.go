@@ -70,7 +70,12 @@
 // of the same repository and plan revision that completed is new to it, so a
 // failed round's feedback is given again; the rest is bounded context, an
 // edited older item skipped, never fatal; and a failed round before it is
-// shown with its outcome. reviewIDs and the review cutoff, which decide when
+// shown with its outcome. Before all of that, after the plan, it is handed
+// the working notes of the latest earlier build-side run of its repository
+// and plan revision that wrote any, failed or not (working_notes.go:
+// re-parsed from status.report, skipped when the report no longer parses,
+// escaped, cut at 6 KiB with a visible marker, never refused). reviewIDs and
+// the review cutoff, which decide when
 // a round starts, are unchanged by any of it. A round whose pull request is
 // merged or closed under it ends unpushed and is not retried. Nothing more is
 // written to a repository that leaves the Project (repositoryLeft): a build or round
@@ -177,7 +182,8 @@
 // snapshot's digest, and, for the label, the label is still on the issue.
 //
 // A replan's or revival's context file (planContext: the previous plan, the
-// last build-side failure, the approvers' comments up to the previous plan)
+// last build-side failure, the approvers' comments up to the previous plan,
+// each repository's latest working notes)
 // sits beside the request in the input snapshot, never in it, so the
 // approval stays bound to the request alone. It is pinned by its own digest
 // (status.input.contextDigest, then each plan run's inputs.contextDigest),

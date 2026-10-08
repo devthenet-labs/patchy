@@ -267,14 +267,17 @@ type claudeEvent struct {
 		Content []claudeBlock `json:"content"`
 		Usage   *claudeUsage  `json:"usage"`
 	} `json:"message"`
-	Result       string       `json:"result"`
-	SessionID    string       `json:"session_id"`
-	NumTurns     int          `json:"num_turns"`
-	IsError      bool         `json:"is_error"`
-	Subtype      string       `json:"subtype"`
-	Errors       []string     `json:"errors"`
-	Usage        *claudeUsage `json:"usage"`
-	TotalCostUSD *float64     `json:"total_cost_usd"`
+	// ParentToolUseID is set on a subagent's (sidechain) event: the id of
+	// the main thread's Task call it runs under.
+	ParentToolUseID string       `json:"parent_tool_use_id"`
+	Result          string       `json:"result"`
+	SessionID       string       `json:"session_id"`
+	NumTurns        int          `json:"num_turns"`
+	IsError         bool         `json:"is_error"`
+	Subtype         string       `json:"subtype"`
+	Errors          []string     `json:"errors"`
+	Usage           *claudeUsage `json:"usage"`
+	TotalCostUSD    *float64     `json:"total_cost_usd"`
 }
 
 // claudeBlock is one content block of an assistant or user message. Only the
@@ -576,14 +579,16 @@ var claudeEditTools = map[string]bool{"Edit": true, "Write": true, "MultiEdit": 
 // message: the CLI emits one assistant event per content block, so turns
 // are counted by distinct message id in stream order, the way streamUsage
 // merges them; an event with no id has nothing to merge on and is its own
-// turn. Only the stream it is given is read, so a stage measures its main
-// run alone, never a later repair round's resumed session.
+// turn. A subagent's events (parent_tool_use_id set) are neither turns nor
+// edits: they are its sidechain, not the main thread num_turns counts. Only
+// the stream it is given is read, so a stage measures its main run alone,
+// never a later repair round's resumed session.
 func firstEditTurn(stdout []byte) int {
 	seen := map[string]bool{}
 	turns := 0
 	for line := range bytes.SplitSeq(stdout, []byte{'\n'}) {
 		var ev claudeEvent
-		if json.Unmarshal(line, &ev) != nil || ev.Type != "assistant" {
+		if json.Unmarshal(line, &ev) != nil || ev.Type != "assistant" || ev.ParentToolUseID != "" {
 			continue
 		}
 		switch id := ev.Message.ID; {

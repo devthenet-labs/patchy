@@ -33,6 +33,11 @@ func TestClaudeFirstEditTurn(t *testing.T) {
 		return `{"type":"assistant","message":{"id":"` + id + `",` +
 			`"content":[{"type":"tool_use","id":"x","name":"` + tool + `","input":{}}]}}`
 	}
+	// sub is a subagent's (sidechain) event under the main thread's Task call.
+	sub := func(id, tool string) string {
+		return strings.Replace(edit(id, tool), `"type":"assistant",`,
+			`"type":"assistant","parent_tool_use_id":"x",`, 1)
+	}
 	tests := []struct {
 		name   string
 		stdout string
@@ -49,6 +54,10 @@ func TestClaudeFirstEditTurn(t *testing.T) {
 			`{"type":"user","message":{"content":[{"type":"tool_use","name":"Edit"}]}}` + "\n" + edit("m1", "Read"), 0},
 		{"a text block naming a tool is not a call",
 			`{"type":"assistant","message":{"id":"m1","content":[{"type":"text","name":"Edit"}]}}`, 0},
+		{"a subagent's turns are not the main thread's",
+			edit("m1", "Task") + "\n" + sub("s1", "Read") + "\n" + sub("s2", "Read") + "\n" + edit("m2", "Edit"), 2},
+		{"a subagent's edit is not the main thread's",
+			edit("m1", "Task") + "\n" + sub("s1", "Edit") + "\n" + edit("m2", "Read") + "\n" + edit("m3", "Edit"), 3},
 		{"an unparseable line is skipped", "not json\n" + edit("m1", "Edit"), 1},
 		{"no output", "", 0},
 	}

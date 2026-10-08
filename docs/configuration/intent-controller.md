@@ -277,17 +277,20 @@ request's head, in the same image as its build, pushed as a fast-forward of the 
 
 - **Revision rounds** from an approver: a review requesting changes (after a two-minute quiet period, so a review in
   several parts is read whole), or `/patchy revise <what to change>` commented on the pull request. The round reads the
-  approvers' reviews and comments since the last round. `limits.maxRevisions` bounds them.
+  approvers' reviews and comments on its pull request: those since the last round that succeeded as its feedback (so
+  feedback a failed round never acted on is given again), and the earlier ones as context, the newest 16 KiB with a
+  count of any left out. When the round before it failed, it is also told how. `limits.maxRevisions` bounds them.
 - **CI-fix rounds** from a failed check: when a check the Project names in `checks.fix` (`[test]`, say) fails on the
-  head patchy last pushed, the round reads that check's output, annotations and the tail of its Actions job log.
-  `limits.maxCheckFixes` bounds them. A CI-fix round that does not fix the failure stops automatic fixing: the same
-  failure again holds the intent `Blocked` with `ChecksFailing` (`RepeatedFailure`) for a human, until the Project
-  changes. Two failures are compared without the log's times, durations (`412ms`, and `2.345 s` or `(5 ms)` as Jest and
-  Maven print them), commit hashes, long ids (runner, job and process numbers), process ids (`(node:2073)`, `pid 2073`),
-  addresses, and source positions (`app_test.go:12`, `line 12`, `app.test.ts(12,5)`); every other number counts, so a
-  failure whose values moved (coverage from 71.3% to 76.1%, a test from `got 3` to `got 4`) is progress, and gets
-  another round. A tool that prints some other volatile number in its last lines (a random seed, say) can still make the
-  same failure read as a new one, which costs a round, up to `limits.maxCheckFixes`.
+  head patchy last pushed, the round reads that check's output, annotations and the tail of its Actions job log, with
+  the approvers' earlier comments and a failed previous round's outcome as context. `limits.maxCheckFixes` bounds them.
+  A CI-fix round that does not fix the failure stops automatic fixing: the same failure again holds the intent `Blocked`
+  with `ChecksFailing` (`RepeatedFailure`) for a human, until the Project changes. Two failures are compared without the
+  log's times, durations (`412ms`, and `2.345 s` or `(5 ms)` as Jest and Maven print them), commit hashes, long ids
+  (runner, job and process numbers), process ids (`(node:2073)`, `pid 2073`), addresses, and source positions
+  (`app_test.go:12`, `line 12`, `app.test.ts(12,5)`); every other number counts, so a failure whose values moved
+  (coverage from 71.3% to 76.1%, a test from `got 3` to `got 4`) is progress, and gets another round. A tool that prints
+  some other volatile number in its last lines (a random seed, say) can still make the same failure read as a new one,
+  which costs a round, up to `limits.maxCheckFixes`.
 - **Re-runs before a CI-fix round**, with `checks.rerunFailed: true` (off by default): the first time a named check
   fails on a head patchy pushed, patchy re-runs the failed jobs of the GitHub Actions run behind it once, instead of
   starting a round, so a flaky test that passes the second time costs no agent run. The re-run is recorded on the

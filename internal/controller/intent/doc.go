@@ -64,9 +64,16 @@
 // round's review cutoff, feedback window, compare base, image, pushed head,
 // observed checks and repeated-failure signature are its own repository's;
 // its counters and limits, and the blocks they raise (naming the
-// repository), stay the Intent's. A round whose pull request is merged or
-// closed under it ends unpushed and is not retried. Nothing more is written
-// to a repository that leaves the Project (repositoryLeft): a build or round
+// repository), stay the Intent's. A round reads its pull request's whole
+// approver thread since the first build of its plan revision, up to its
+// lease (revise_thread.go): what came after the last review or command round
+// of the same repository and plan revision that completed is new to it, so a
+// failed round's feedback is given again; the rest is bounded context, an
+// edited older item skipped, never fatal; and a failed round before it is
+// shown with its outcome. reviewIDs and the review cutoff, which decide when
+// a round starts, are unchanged by any of it. A round whose pull request is
+// merged or closed under it ends unpushed and is not retried. Nothing more is
+// written to a repository that leaves the Project (repositoryLeft): a build or round
 // there is not launched, is aborted, or has its push refused (pushGate reads
 // the Project uncached), a failed one is not retried, and no round notice,
 // untracked notice or sibling cross-link is posted there. Nor does it hold

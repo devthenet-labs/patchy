@@ -811,6 +811,14 @@ func (e *intentEnv) exerciseReviseAndCheckFix(t *testing.T, name string, number 
 		!strings.Contains(string(fixJob.Investigation), "version_test.go:10") {
 		t.Errorf("check-fix handoff omitted bounded CI diagnostics: %q", fixJob.Investigation)
 	}
+	// The second round is shown the thread the first acted on, as context
+	// apart from its own input: the command's note, never patchy's reply.
+	earlier, _, _ := strings.Cut(string(fixJob.Investigation), "### Check failures")
+	if _, earlier, _ = strings.Cut(earlier, "### Earlier feedback (context from earlier rounds)\n\n"); !strings.Contains(
+		earlier, "Please test the VERSION contents.") || strings.Contains(earlier, "Revision round started") ||
+		strings.Contains(string(fixJob.Investigation), "### Approver feedback") {
+		t.Errorf("check-fix handoff did not carry the earlier thread as context: %q", fixJob.Investigation)
+	}
 	in = e.waitPhase(t, name, v1alpha1.IntentInReview)
 	fix := e.run(t, fixName)
 	if fix.Status.Phase != v1alpha1.RunComplete || fix.Status.BaseSHA != head ||

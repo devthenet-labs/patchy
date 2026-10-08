@@ -184,3 +184,38 @@ func TestFatalEvent(t *testing.T) {
 		t.Errorf("Decode(fatal) = %+v, %v", got, ok)
 	}
 }
+
+// TestFirstEditTurnWire pins the first edit turn as an additive v4 field: it
+// round-trips under its own wire name when set, and leaves no key behind
+// when zero, so a pod that cannot tell (or an older one) sends what it
+// always did.
+func TestFirstEditTurnWire(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		turn    int
+		wantKey bool
+	}{
+		{"set", 7, true},
+		{"zero", 0, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			want := Event{Type: TypeRemediation, Repo: "acme/shop", Finding: "irun-1", Remediation: &Remediation{
+				Stage: Stage{Outcome: OutcomeOK, Harness: "claude", Model: "m", NumTurns: 12, FirstEditTurn: tt.turn},
+			}}
+			line, err := want.Encode()
+			if err != nil {
+				t.Fatalf("Encode() error = %v", err)
+			}
+			if got := strings.Contains(line, `"first_edit_turn":`); got != tt.wantKey {
+				t.Errorf("line %q carries first_edit_turn = %v, want %v", line, got, tt.wantKey)
+			}
+			got, ok := Decode([]byte(line))
+			if !ok {
+				t.Fatal("Decode() ok = false")
+			}
+			if got.Remediation.FirstEditTurn != tt.turn {
+				t.Errorf("decoded FirstEditTurn = %d, want %d", got.Remediation.FirstEditTurn, tt.turn)
+			}
+		})
+	}
+}

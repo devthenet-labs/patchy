@@ -1164,7 +1164,7 @@ func (r *RunReconciler) hold(ctx context.Context, run *v1alpha1.IntentRun, res *
 				cur.Status.Transcript = res.transcript
 			}
 			if res.stage != nil {
-				cur.Status.Usage = podUsage(res.stage)
+				recordStage(&cur.Status, res.stage)
 			}
 		}
 	}); err != nil {
@@ -1462,7 +1462,7 @@ func (r *RunReconciler) push(ctx context.Context, run *v1alpha1.IntentRun, ev *e
 		cur.Status.PushedCommit = commit
 		cur.Status.Report = agentresult.TruncateReport(res.report)
 		cur.Status.Transcript = res.transcript
-		cur.Status.Usage = podUsage(res.stage)
+		recordStage(&cur.Status, res.stage)
 	}); err != nil {
 		return err
 	}

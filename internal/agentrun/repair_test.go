@@ -805,6 +805,44 @@ func TestRepairThroughTheFakeHarness(t *testing.T) {
 	checkSeqs(t, turns(t, out.String()))
 }
 
+// streamEditSecond is streamSuccess with a read on its first API message and
+// a file write on its second, each message spread over two events.
+const streamEditSecond = `{"type":"system","subtype":"init","session_id":"` + testSessionID + `"}` + "\n" +
+	`{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"Looking."}]}}` + "\n" +
+	`{"type":"assistant","message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}]}}` +
+	"\n" +
+	`{"type":"assistant","message":{"id":"m2","content":[{"type":"text","text":"Writing."}]}}` + "\n" +
+	`{"type":"assistant","message":{"id":"m2","content":[{"type":"tool_use","id":"t2","name":"Write","input":{}}]}}` +
+	"\n" + streamSuccess
+
+// TestFirstEditTurnThroughTheFakeHarness: a stage records the turn its main
+// run first edited a file on, read off the real stream, and the two repair
+// rounds replaying the same fixture never move it, while their turns are
+// added to the total.
+func TestFirstEditTurnThroughTheFakeHarness(t *testing.T) {
+	fixture := filepath.Join(t.TempDir(), "stream.jsonl")
+	if err := os.WriteFile(fixture, []byte(streamEditSecond+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(harness.FakeFixtureEnv, fixture)
+	var out bytes.Buffer
+	cfg, ws := intentConfig(t, PhasePlan, &out)
+	cfg.InvestigateTimeout = 10 * time.Minute
+	layDown(t, ws, map[string]string{"reports/plan.md": badPlan})
+	counted := &countingExec{Executor: &runner.Exec{}}
+	if err := New(cfg, counted).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	p := events(t, out.String())[0].Plan
+	if p == nil || counted.runs != 3 {
+		t.Fatalf("plan = %+v after %d runs, want a plan event after 3", p, counted.runs)
+	}
+	if p.FirstEditTurn != 2 || p.NumTurns != 21 {
+		t.Errorf("first edit turn / turns = %d/%d, want 2 (the main run's) / 21 (all three runs')",
+			p.FirstEditTurn, p.NumTurns)
+	}
+}
+
 // countingExec counts the commands it runs.
 type countingExec struct {
 	Executor
@@ -823,11 +861,19 @@ func (c *countingExec) Run(ctx context.Context, spec runner.CommandSpec, timeout
 func TestAddRepair(t *testing.T) {
 	st := envelope.Stage{Model: "anthropic/claude-sonnet-5", NumTurns: 7, ElapsedSeconds: 3, Usage: firstUsage}
 	st.Usage.CostUSD = 0.0123
-	addRepair(&st, envelope.Stage{NumTurns: 2, ElapsedSeconds: 1.5, Usage: envelope.Usage{
+	addRepair(&st, envelope.Stage{NumTurns: 2, FirstEditTurn: 1, ElapsedSeconds: 1.5, Usage: envelope.Usage{
 		InputTokens: 10, CacheCreationTokens: 5, CacheReadTokens: 1000, OutputTokens: 8, CostUSD: 0.02,
 	}})
 	if !sameTokens(st.Usage, plus(firstUsage, resumedUsage)) || st.NumTurns != 9 || st.ElapsedSeconds != 4.5 {
 		t.Errorf("stage = %+v, want tokens, turns and time summed", st)
+	}
+	if st.FirstEditTurn != 0 {
+		t.Errorf("first edit turn = %d, want the first run's 0, never the repair's", st.FirstEditTurn)
+	}
+	edited := envelope.Stage{NumTurns: 7, FirstEditTurn: 4}
+	addRepair(&edited, envelope.Stage{NumTurns: 2, FirstEditTurn: 1})
+	if edited.FirstEditTurn != 4 || edited.NumTurns != 9 {
+		t.Errorf("stage = %+v, want the first run's first edit turn 4 and 9 turns", edited)
 	}
 	if want := 0.0123 + priced(t, resumedUsage); math.Abs(st.Usage.CostUSD-want) > 1e-9 {
 		t.Errorf("cost = %v, want %v", st.Usage.CostUSD, want)

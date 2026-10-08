@@ -54,6 +54,27 @@ func podUsage(st *envelope.Stage) v1alpha1.UsageSummary {
 	return u
 }
 
+// maxPodTurns is the schema's bound on an IntentRun's turn counts
+// (status.numTurns, status.firstEditTurn).
+const maxPodTurns = 100000
+
+// podTurns is a turn count a run records from its pod's stage report,
+// clamped into the schema's bounds: the pod's counts are untrusted
+// (podUsage), and one out of bounds would fail the whole status write.
+func podTurns(n int) int32 {
+	return int32(min(max(n, 0), maxPodTurns)) //nolint:gosec // clamped into [0, maxPodTurns] first
+}
+
+// recordStage records what a run's pod reported spending: its usage, its
+// turns and the turn of its first edit. Every write of status.usage goes
+// through it, so a held or pushed build records its turns as a settled run
+// does.
+func recordStage(s *v1alpha1.IntentRunStatus, st *envelope.Stage) {
+	s.Usage = podUsage(st)
+	s.NumTurns = podTurns(st.NumTurns)
+	s.FirstEditTurn = podTurns(st.FirstEditTurn)
+}
+
 // settle stamps a run's terminal status (Complete, or Failed with the
 // outcome and detail), then deletes a plan run's Repository: only a build's
 // is kept, as the intent's runner-image anchor.
@@ -74,7 +95,7 @@ func (r *RunReconciler) settle(ctx context.Context, run *v1alpha1.IntentRun, res
 				cur.Status.Transcript = res.transcript
 			}
 			if res.stage != nil {
-				cur.Status.Usage = podUsage(res.stage)
+				recordStage(&cur.Status, res.stage)
 			}
 		}
 		cur.Status.FinishedAt = &now

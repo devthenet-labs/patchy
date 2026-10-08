@@ -318,6 +318,9 @@ names, and a seeded property test checks that they are label-safe and unique wit
   - `baseSHA` and `pushedCommit`
   - `outcome`, `report` (at most 64 KiB) and `detail`
   - `usage` and `transcript`
+  - `numTurns` and `firstEditTurn`: the turns the agent took (repair rounds included) and the turn its first run first
+    edited a file on, as the pod reported them, clamped to at most 100000. The turns before the first edit are what a
+    run spent learning the code before changing it.
   - timestamps
 - **Names:** `<intent>-plan-r<rev>-a<n>`, `<intent>-bld-r<rev>-<repokey>-a<n>` and `<intent>-rev<k>-<repokey>-a<n>`,
   inside the name budget. A name can repeat across Intents, for example when the TTL deleted an Intent and its issue

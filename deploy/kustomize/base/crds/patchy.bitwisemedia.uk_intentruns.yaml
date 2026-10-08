@@ -551,6 +551,18 @@ spec:
                 description: FinishedAt is when the run was collected.
                 format: date-time
                 type: string
+              firstEditTurn:
+                description: |-
+                  FirstEditTurn is the 1-based agent turn on which the agent first used a
+                  file-editing tool (for claude: Edit, Write, MultiEdit, NotebookEdit),
+                  counted off the main agent run's stream only (a repair round never
+                  moves it); 0 when it edited nothing or the harness cannot tell. The
+                  turns before it are what the agent spent learning the code before
+                  changing it. Untrusted and clamped like NumTurns.
+                format: int32
+                maximum: 100000
+                minimum: 0
+                type: integer
               jobRef:
                 description: JobRef locates the agent Job in the agents namespace.
                 properties:
@@ -567,6 +579,16 @@ spec:
                 - name
                 - namespace
                 type: object
+              numTurns:
+                description: |-
+                  NumTurns is how many turns the agent took, as the pod reported them:
+                  the CLI's own count, with the turns of any report-repair rounds added.
+                  Recorded beside Usage, whenever Usage is. Untrusted, like every count
+                  the pod reports: the controller clamps it into the schema's bounds.
+                format: int32
+                maximum: 100000
+                minimum: 0
+                type: integer
               observedGeneration:
                 description: ObservedGeneration is the last spec generation acted
                   on.

@@ -73,6 +73,12 @@ func (f *Fake) StreamUsage(stdout []byte) *Usage {
 	return streamUsage(stdout)
 }
 
+// FirstEditTurn reads a fixture's first edit exactly as Claude reads live
+// output.
+func (f *Fake) FirstEditTurn(stdout []byte) int {
+	return firstEditTurn(stdout)
+}
+
 // ScanTurns projects fixture lines exactly as Claude projects live ones, so a
 // replayed fixture produces a real transcript end to end.
 func (f *Fake) ScanTurns(line []byte) []transcript.Turn {

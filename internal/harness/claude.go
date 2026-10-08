@@ -563,6 +563,45 @@ func streamUsage(stdout []byte) *Usage {
 	return &Usage{InputTokens: &in, CacheReadTokens: &read, CacheCreationTokens: &write, OutputTokens: &out}
 }
 
+// FirstEditTurn reads the turn of claude's first file edit; see
+// firstEditTurn.
+func (c *Claude) FirstEditTurn(stdout []byte) int { return firstEditTurn(stdout) }
+
+// claudeEditTools are the claude tools that change a file. Bash can too, but
+// a command is not told apart from a read, so it is not counted.
+var claudeEditTools = map[string]bool{"Edit": true, "Write": true, "MultiEdit": true, "NotebookEdit": true}
+
+// firstEditTurn is the 1-based turn of the first assistant event carrying a
+// tool call of claudeEditTools, or 0 when none does. A turn is one API
+// message: the CLI emits one assistant event per content block, so turns
+// are counted by distinct message id in stream order, the way streamUsage
+// merges them; an event with no id has nothing to merge on and is its own
+// turn. Only the stream it is given is read, so a stage measures its main
+// run alone, never a later repair round's resumed session.
+func firstEditTurn(stdout []byte) int {
+	seen := map[string]bool{}
+	turns := 0
+	for line := range bytes.SplitSeq(stdout, []byte{'\n'}) {
+		var ev claudeEvent
+		if json.Unmarshal(line, &ev) != nil || ev.Type != "assistant" {
+			continue
+		}
+		switch id := ev.Message.ID; {
+		case id == "":
+			turns++
+		case !seen[id]:
+			seen[id] = true
+			turns++
+		}
+		for _, b := range ev.Message.Content {
+			if b.Type == "tool_use" && claudeEditTools[b.Name] {
+				return turns
+			}
+		}
+	}
+	return 0
+}
+
 // claudeErrorReason renders the claude error envelope into one diagnostic
 // line. The claude CLI reports a failed run only on stdout: the subtype names
 // the class (error_max_turns, error_during_execution) and the `errors` array

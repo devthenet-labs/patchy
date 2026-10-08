@@ -662,12 +662,19 @@ func (a *Agent) packageChangeset(ctx context.Context, baseSHA string,
 // cancelled pod) records the usage its stream reported per model call
 // instead, because those calls were billed all the same, and the spend a
 // stage records is all an intent's cost ceiling and the rollups ever see.
+// The first edit turn is read off the stream whether or not the run ended on
+// a result. A repair round's accounting is filled into a separate Stage and
+// summed by addRepair, which leaves the first edit turn alone, so it always
+// measures the stage's main run.
 func (a *Agent) fillStage(st *envelope.Stage, h harness.Harness, res runner.Result) {
 	st.ElapsedSeconds = res.Elapsed.Seconds()
 	ar, ok := h.ParseResult(res.Stdout)
 	if ok {
 		st.SessionID = ar.SessionID
 		st.NumTurns = ar.NumTurns
+	}
+	if r, edits := h.(harness.FirstEditReporter); edits {
+		st.FirstEditTurn = r.FirstEditTurn(res.Stdout)
 	}
 	u := ar.Usage // nil when !ok: ParseResult then carries the raw stdout alone
 	if r, streams := h.(harness.StreamUsageReporter); streams && u == nil {

@@ -95,7 +95,10 @@ corrected rather than hidden.
   was asked for.
 - A repair's spend is added to the stage's. Its tokens, turns and time are summed, since a resumed claude run reports
   its own. Its `total_cost_usd` is not, since claude reports that cumulatively over the session: the repair's tokens are
-  priced at the model's rates and added to the cost the first run reported.
+  priced at the model's rates and added to the cost the first run reported. The stage's first edit turn
+  (`first_edit_turn`: the agent turn on which the first run first called Edit, Write, MultiEdit or NotebookEdit, read
+  off its stream; 0 when it edited nothing) is the first run's alone: a repair never moves it. The intent controller
+  records both counts on the IntentRun as `status.numTurns` and `status.firstEditTurn`.
 - On `remediate` and `build`, which write the working tree, a repair may change only the report and `commit.sh`. The
   clone is fingerprinted around each round (`HEAD`, what is staged, and every working file that is not ignored), and a
   repair that changed any of it is refused whole: the stage ends with its original outcome (`report_missing` or

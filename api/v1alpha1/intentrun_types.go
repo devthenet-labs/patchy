@@ -394,6 +394,24 @@ type IntentRunStatus struct {
 	// Usage accounting for the run, as the harness reported it.
 	// +optional
 	Usage UsageSummary `json:"usage,omitempty"`
+	// NumTurns is how many turns the agent took, as the pod reported them:
+	// the CLI's own count, with the turns of any report-repair rounds added.
+	// Recorded beside Usage, whenever Usage is. Untrusted, like every count
+	// the pod reports: the controller clamps it into the schema's bounds.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100000
+	NumTurns int32 `json:"numTurns,omitempty"`
+	// FirstEditTurn is the 1-based agent turn on which the agent first used a
+	// file-editing tool (for claude: Edit, Write, MultiEdit, NotebookEdit),
+	// counted off the main agent run's stream only (a repair round never
+	// moves it); 0 when it edited nothing or the harness cannot tell. The
+	// turns before it are what the agent spent learning the code before
+	// changing it. Untrusted and clamped like NumTurns.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100000
+	FirstEditTurn int32 `json:"firstEditTurn,omitempty"`
 	// Transcript points at the conversation the run produced, in a
 	// ConfigMap owned by this run.
 	// +optional

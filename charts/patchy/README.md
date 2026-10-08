@@ -228,14 +228,16 @@ an Ingress before the admission policies that judge it:
    inspection only).
 
 A key rotation (`previewAuth.keys.rotate`) is the same pair: the first upgrade admits the new generation and keeps the
-old one on the Ingresses, the second (the same values) moves them; `keys.dropPrevious` ends the overlap. The relay reads
-no Secret through the API (its keys and Dex client secret are mounted) and holds only Previews read, access reviews and
-its one code-ledger Lease. The one per-install IdP setup is a Dex static client whose redirect URI is
-`https://<previewAuth.host>/dex/callback`, which the install NOTES print. `preview.inboundCIDRs` stays required until
-the require stage, and emptying it with no `preview.prefixListsIDs` needs `preview.allowPublicWithAuth: confirmed` and
-`previewAuth.sessionTimeout` of at most 900. To roll back from the require stage, scale the preview-controller to zero
-and delete the `patchy-preview-all-slots-ingress-auth` binding (only while `preview.inboundCIDRs` is set) first: the
-kept policy otherwise refuses the placeholder dropping its annotations. The operator guide,
+old one on the Ingresses, the second (the same values) moves them; `keys.dropPrevious` ends the overlap. Raising
+`previewAuth.sessionTimeout` in the require stage is a pair too (the slot policies admit any session up to it, and the
+first upgrade only raises that ceiling); lowering it is one upgrade. The relay reads no Secret through the API (its keys
+and Dex client secret are mounted) and holds only Previews read, access reviews and its one code-ledger Lease. The one
+per-install IdP setup is a Dex static client whose redirect URI is `https://<previewAuth.host>/dex/callback`, which the
+install NOTES print. `preview.inboundCIDRs` stays required until the require stage, and emptying it with no
+`preview.prefixListsIDs` needs `preview.allowPublicWithAuth: confirmed` and `previewAuth.sessionTimeout` of at most 900.
+To roll back from the require stage, scale the preview-controller to zero and delete the
+`patchy-preview-all-slots-ingress-auth` binding (only while `preview.inboundCIDRs` is set) first: the kept policy
+otherwise refuses the placeholder dropping its annotations. The operator guide,
 [Preview sign-in](../../docs/intents/preview-sign-in.md), walks through Dex, the viewers, both stages, rotation,
 rollback and the gate before the allowlist may go; [preview-auth](../../docs/configuration/preview-auth.md) is the
 relay's reference.

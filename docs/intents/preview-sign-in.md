@@ -261,11 +261,34 @@ seconds for an empty allowlist.
 
 ### Changing `sessionTimeout` on a live install
 
-`sessionTimeout` is part of the pinned sign-in annotations the slot admission policy compares. In one `helm upgrade`,
-the placeholder Ingress can be applied before the policy's new pinned set lands, and the upgrade fails with
-`preview Ingress sign-in annotations must be exactly one admitted key generation's pinned set for this slot`. The policy
-update still lands, so running the same upgrade again succeeds (devthenet-dev: rev 69 failed, rev 70 deployed). Until
-the chart orders this itself, expect to run the upgrade twice.
+Helm applies the placeholder Ingress, and the preview-controller patches the slot Ingresses, before the slot admission
+policies change, so every Ingress write in an upgrade meets the previous revision's policies. The policies therefore
+judge `auth-session-timeout` as a ceiling, not an exact value: any whole number of seconds from 1 up to `sessionTimeout`
+(a shorter load-balancer session is never weaker). Every other pinned annotation is still compared exactly. The ceiling
+is recorded on `patchy-preview-ingresses`:
+
+```sh
+kubectl get validatingadmissionpolicy patchy-preview-ingresses \
+  -o jsonpath='{.metadata.annotations.patchy\.bitwisemedia\.uk/preview-auth-session-timeout}{"\n"}'   # 900
+```
+
+- **Lowering** takes one upgrade. The placeholder and the controller apply the new, shorter session at once, which the
+  live policy's higher ceiling admits.
+- **Raising** takes two upgrades with the same values, like a key rotation. The first records the new ceiling and keeps
+  applying the old session, and its NOTES say `SESSION TIMEOUT CHANGE IN PROGRESS`. The second applies the new session.
+  Neither upgrade is refused.
+- **The first upgrade from chart 0.12.25 or earlier** meets policies that compare the timeout exactly. With the same
+  `sessionTimeout`, nothing changes. Otherwise the chart reads the value the live policy pins and keeps applying it,
+  with the ceiling the longer of the two, and the next upgrade applies the new value. Lowering is two upgrades this one
+  time. If that upgrade also empties the allowlist (`preview.allowPublicWithAuth`) while the pinned value is over 900
+  seconds, the render is refused: lower the session first, with the allowlist still set.
+- **A render without a cluster** (`helm template`, Argo CD, Flux) cannot read the live ceiling, so it applies
+  `sessionTimeout` directly. Lowering still syncs cleanly. A raise is refused on the placeholder until the policy has
+  synced, so the sync must be retried once.
+
+Up to 0.12.25 any change failed the first upgrade on the placeholder with
+`preview Ingress sign-in annotations must be exactly one admitted key generation's pinned set for this slot`, and the
+same upgrade passed on a second run (devthenet-dev: rev 69 failed, rev 70 deployed).
 
 ## For application authors
 

@@ -188,10 +188,12 @@ controller's side:
   Ingress it writes, beside the health-check path. It names the slot's client Secret there and never reads it.
 - `--preview-auth-annotations` (`PATCHY_PREVIEW_AUTH_ANNOTATIONS`) is a JSON object mapping each slot namespace
   (`patchy-preview-<n>`) to its six `alb.ingress.kubernetes.io/auth-*` values. The chart renders it once, for both this
-  controller and the slot admission policy, so the controller writes exactly the bytes the policy compares. The
-  controller refuses to start unless every configured slot, and only those, has exactly the six keys, the slot's own
-  cookie name, `auth-type: oidc`, `authenticate` on an unauthenticated request, the `openid` scope, a session timeout
-  the load balancer accepts, and one https issuer whose endpoints sit under it.
+  controller and the slot admission policy, so the controller writes exactly the bytes the policy compares. The policy,
+  and the sweeper below, admit any shorter `auth-session-timeout` than the set's, so an Ingress written before a
+  `sessionTimeout` change stays conforming while it waits for its reconcile. The controller refuses to start unless
+  every configured slot, and only those, has exactly the six keys, the slot's own cookie name, `auth-type: oidc`,
+  `authenticate` on an unauthenticated request, the `openid` scope, a session timeout the load balancer accepts, and one
+  https issuer whose endpoints sit under it.
 - `--preview-auth-previous-annotations` is the previous key generation's sets during a rotation. An Ingress still on
   them conforms. Its own reconcile patches it to the current set, and the sweeper never deletes it.
 
@@ -202,8 +204,9 @@ at the next poll. A Preview still deploying notes the refusal in its message, an
 admitted.
 
 With auth required, the orphan sweep also lists every Ingress of the `alb-preview` class in each slot, labelled or not,
-and reports each one without either generation's pinned set: the gauge `patchy.preview.ingress.unauthenticated{slot}`, a
-log line, and a Warning Event on the Preview that owns it. It deletes such an Ingress only after it has stayed
-unauthenticated for three poll intervals, which gives the owning reconcile time to patch it first, and counts the
-deletion in `patchy.preview.ingress.unauthenticated.deleted`. It never deletes the chart's placeholder Ingress. The
-Events use the `events.k8s.io` API in the release namespace.
+and reports each one without either generation's pinned set (its `auth-session-timeout` at most the set's, as the policy
+judges it): the gauge `patchy.preview.ingress.unauthenticated{slot}`, a log line, and a Warning Event on the Preview
+that owns it. It deletes such an Ingress only after it has stayed unauthenticated for three poll intervals, which gives
+the owning reconcile time to patch it first, and counts the deletion in
+`patchy.preview.ingress.unauthenticated.deleted`. It never deletes the chart's placeholder Ingress. The Events use the
+`events.k8s.io` API in the release namespace.

@@ -598,7 +598,8 @@ func fullIntentStatus() patchyv1.IntentStatus {
 			LastTransitionTime: schemaNow, Reason: "WithinLimit", Message: "1 of 3 revisions",
 		}},
 		ObservedGeneration: 1,
-		Input:              &patchyv1.IntentInput{Revision: 1, Digest: schemaDigest, ConfigMap: "target-1-input-r1"},
+		Input: &patchyv1.IntentInput{Revision: 1, Digest: schemaDigest, ConfigMap: "target-1-input-r1",
+			ContextDigest: schemaDigest},
 		Plan: &patchyv1.IntentPlan{
 			Revision: 1, Digest: schemaDigest, ConfigMap: "target-1-plan-r1",
 			CommentID: 1001, CommentDigest: schemaDigest, PostedAt: schemaNow.DeepCopy(),
@@ -1125,6 +1126,20 @@ func testIntentRunSchema(ctx context.Context, t *testing.T, c client.Client) {
 		{"a bare-hex input digest", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) {
 			s.Inputs.InputDigest = strings.Repeat("d", 64)
 		}, true},
+		// A replan's or revival's plan run pins its context file; nothing
+		// but a plan run is handed one.
+		{"a plan run pinning its context", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.ContextDigest = schemaDigest
+		}, false},
+		{"a bare-hex context digest", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.ContextDigest = strings.Repeat("d", 64)
+		}, true},
+		{"a build run pinning a context", patchyv1.IntentStageBuild, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.ContextDigest = schemaDigest
+		}, true},
+		{"a revise run pinning a context", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.ContextDigest = schemaDigest
+		}, true},
 		{"credentials in the repository url", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) {
 			s.Repository.URL = "https://x:token@github.com/acme/shop"
 		}, true},
@@ -1191,15 +1206,17 @@ func testIntentRunSchema(ctx context.Context, t *testing.T, c client.Client) {
 				Source:   patchyv1.RunnerImageSourceRepository,
 				Manifest: ".patchy/agent.yaml",
 			},
-			BaseSHA:      schemaSHA,
-			PushedCommit: strings.Repeat("c", 40),
-			Outcome:      "ok",
-			Report:       "## Changes\n",
-			Detail:       "pushed",
-			Usage:        patchyv1.UsageSummary{InputTokens: 1, OutputTokens: 2, CostUSD: "0.123456"},
-			Transcript:   &patchyv1.TranscriptRef{Name: "target-1-revise-transcript", Turns: 12},
-			StartedAt:    schemaNow.DeepCopy(),
-			FinishedAt:   schemaNow.DeepCopy(),
+			BaseSHA:       schemaSHA,
+			PushedCommit:  strings.Repeat("c", 40),
+			Outcome:       "ok",
+			Report:        "## Changes\n",
+			Detail:        "pushed",
+			Usage:         patchyv1.UsageSummary{InputTokens: 1, OutputTokens: 2, CostUSD: "0.123456"},
+			NumTurns:      34,
+			FirstEditTurn: 9,
+			Transcript:    &patchyv1.TranscriptRef{Name: "target-1-revise-transcript", Turns: 12},
+			StartedAt:     schemaNow.DeepCopy(),
+			FinishedAt:    schemaNow.DeepCopy(),
 			Conditions: []metav1.Condition{{
 				Type: patchyv1.ConditionComplete, Status: metav1.ConditionTrue,
 				LastTransitionTime: schemaNow, Reason: "ok", Message: "run complete",
@@ -1227,6 +1244,12 @@ func testIntentRunSchema(ctx context.Context, t *testing.T, c client.Client) {
 		{"a malformed pushed commit", func(s *patchyv1.IntentRunStatus) { s.PushedCommit = "HEAD" }, true},
 		{"an unknown run phase", func(s *patchyv1.IntentRunStatus) { s.Phase = "Bogus" }, true},
 		{"an unknown image source", func(s *patchyv1.IntentRunStatus) { s.RunnerImage.Source = "bogus" }, true},
+		{"100000 turns", func(s *patchyv1.IntentRunStatus) { s.NumTurns = 100000 }, false},
+		{"turns past 100000", func(s *patchyv1.IntentRunStatus) { s.NumTurns = 100001 }, true},
+		{"negative turns", func(s *patchyv1.IntentRunStatus) { s.NumTurns = -1 }, true},
+		{"a first edit on turn 100000", func(s *patchyv1.IntentRunStatus) { s.FirstEditTurn = 100000 }, false},
+		{"a first edit past turn 100000", func(s *patchyv1.IntentRunStatus) { s.FirstEditTurn = 100001 }, true},
+		{"a negative first edit turn", func(s *patchyv1.IntentRunStatus) { s.FirstEditTurn = -1 }, true},
 	} {
 		t.Run("status with "+tt.name, func(t *testing.T) {
 			r := fresh(t)

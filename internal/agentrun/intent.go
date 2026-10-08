@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -180,6 +181,25 @@ func readReport(path string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(f, report.ReportMaxBytes+1))
 }
 
+// planContextPath is the plan's context file, the Job's analysis handoff
+// (input/investigation.md), when the controller handed a replan or revival
+// one: "" when it is absent or empty, as on a first plan. The prompt names
+// it as data and never quotes it; the controller re-hashed it against the
+// run's pin before the Job was created.
+func (a *Agent) planContextPath() (string, error) {
+	path := a.cfg.inputInvestigation()
+	info, err := os.Stat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("input context: %w", err)
+	case info.Size() == 0:
+		return "", nil
+	}
+	return path, nil
+}
+
 // plan runs the plan stage read-only and folds the result into the event
 // payload: the report exactly as written, which is what the approver reads
 // and the build follows, and its parsed frontmatter. repos is the
@@ -214,11 +234,18 @@ func (a *Agent) plan(ctx context.Context, repos []manifestRepository) *envelope.
 		ev.Detail = err.Error()
 		return ev
 	}
+	contextPath, err := a.planContextPath()
+	if err != nil {
+		ev.Outcome = envelope.OutcomeRuntimeError
+		ev.Detail = err.Error()
+		return ev
+	}
 	maxTurns, budget := a.planLimits()
 	prompt, err := templates.RenderPlanPrompt(templates.PlanPrompt{
-		IssuePath:  a.cfg.issuePath(),
-		ReportPath: a.cfg.planPath(),
-		Intent:     string(intent),
+		IssuePath:   a.cfg.issuePath(),
+		ReportPath:  a.cfg.planPath(),
+		Intent:      string(intent),
+		ContextPath: contextPath,
 		// The most the build can be granted: buildLimits' ceiling, read from
 		// this Job's PATCHY_REMEDIATE_MANUAL_*. The intent controller sets it
 		// on the plan launch to the grant the Project's build will get, so

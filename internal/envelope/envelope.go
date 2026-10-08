@@ -80,11 +80,16 @@ type Usage struct {
 
 // Stage carries what every stage reports regardless of kind.
 type Stage struct {
-	Outcome        Outcome `json:"outcome"`
-	Harness        string  `json:"harness"`
-	Model          string  `json:"model"`
-	SessionID      string  `json:"session_id,omitempty"`
-	NumTurns       int     `json:"num_turns,omitempty"`
+	Outcome   Outcome `json:"outcome"`
+	Harness   string  `json:"harness"`
+	Model     string  `json:"model"`
+	SessionID string  `json:"session_id,omitempty"`
+	NumTurns  int     `json:"num_turns,omitempty"`
+	// FirstEditTurn is the 1-based agent turn on which the main agent run
+	// first used a file-editing tool, 0 when it edited nothing or the
+	// harness cannot tell. Unlike NumTurns, report-repair rounds never add
+	// to it. Additive within version 4: an older reader ignores it.
+	FirstEditTurn  int     `json:"first_edit_turn,omitempty"`
 	Usage          Usage   `json:"usage"`
 	ElapsedSeconds float64 `json:"elapsed_seconds"`
 	// Detail explains a non-ok outcome for humans.

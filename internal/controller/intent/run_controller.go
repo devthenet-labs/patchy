@@ -730,7 +730,8 @@ func launchRefused(err error) bool {
 }
 
 // stageSpec completes spec for the run's stage from its input. A plan's
-// request is re-hashed against the snapshot the run was created for, and it
+// request is re-hashed against the snapshot the run was created for, so is
+// its context file on a replan or revival, and it
 // is handed the other intents' open pull requests its input lists
 // (planOpenPullRequests); a build's plan against the approved digest, its
 // request must be empty, and it runs the repository's pinned image, which
@@ -745,6 +746,16 @@ func (r *RunReconciler) stageSpec(run *v1alpha1.IntentRun, spec *jobs.Spec, cm *
 				detail: fmt.Sprintf("the request's bytes hash to %s, not the snapshot's %s; nothing was launched",
 					got, run.Spec.Inputs.InputDigest)}
 		}
+		// The context file of a replan or revival, pinned by its own
+		// digest; a run with no pin is handed none.
+		planCtx := cm.Data[keyInvestigation]
+		if pin := run.Spec.Inputs.ContextDigest; pin == "" && planCtx != "" ||
+			pin != "" && digest([]byte(planCtx)) != pin {
+			return false, &result{outcome: OutcomeAborted,
+				detail: fmt.Sprintf("the context file's bytes hash to %s, not the snapshot's %q; nothing was launched",
+					digest([]byte(planCtx)), pin)}
+		}
+		spec.InvestigationMarkdown = planCtx
 		spec.Model = r.PlanModel
 		spec.OpenPullRequests = r.planOpenPullRequests(run, cm)
 		return false, nil
@@ -1164,7 +1175,7 @@ func (r *RunReconciler) hold(ctx context.Context, run *v1alpha1.IntentRun, res *
 				cur.Status.Transcript = res.transcript
 			}
 			if res.stage != nil {
-				cur.Status.Usage = podUsage(res.stage)
+				recordStage(&cur.Status, res.stage)
 			}
 		}
 	}); err != nil {
@@ -1462,7 +1473,7 @@ func (r *RunReconciler) push(ctx context.Context, run *v1alpha1.IntentRun, ev *e
 		cur.Status.PushedCommit = commit
 		cur.Status.Report = agentresult.TruncateReport(res.report)
 		cur.Status.Transcript = res.transcript
-		cur.Status.Usage = podUsage(res.stage)
+		recordStage(&cur.Status, res.stage)
 	}); err != nil {
 		return err
 	}

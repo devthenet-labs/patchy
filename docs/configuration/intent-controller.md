@@ -221,6 +221,11 @@ eviction would end the run with nothing to show for it. Sizing advice, with a wo
 | The trigger label re-applied on a `Failed` intent | Revives it: a new plan, and a new approval              |
 | `/patchy cancel`                                  | Closes the intent and its issue (`not_planned`)         |
 
+A replan or revival does not start from nothing. Its planner is also handed a context file of the earlier work, as data:
+the previous plan, how the latest build, revise or check-fix run ended if it failed, and the approvers' earlier comments
+on the issue (from the trigger up to the previous plan). Each part is bounded. The request stays the authority on what
+to build, and the approval is still bound to the request alone.
+
 An action counts only when GitHub's API shows who took it: the actor of a label event, or a comment's author. That
 account must be in the Project's `approvers.logins`, have write access to the intent repository, and not be a bot.
 Anything else gets one refusal and changes nothing; a refused approve label is removed, and a trigger from anyone else
@@ -232,9 +237,10 @@ deleted.
 
 A comment edited after it was posted is never taken as a command: GitHub lets anyone with write access edit anyone's
 comment and still shows the original author. patchy answers it once, saying so, and the author can post the command
-again in a new comment. An edited comment is also left out of a replan's approver comments. An account that is not an
-approver (or is a bot) is refused whatever its command says, and gets that refusal once per intent; its later commands
-get neither a reaction nor a reply, so nobody can make patchy write to GitHub once per comment.
+again in a new comment. An edited comment is also left out of a replan's approver comments and its context file. An
+account that is not an approver (or is a bot) is refused whatever its command says, and gets that refusal once per
+intent; its later commands get neither a reaction nor a reply, so nobody can make patchy write to GitHub once per
+comment.
 
 The plan comment shows the plan's exact bytes in a code block. An approval counts only if all of these hold:
 
@@ -277,17 +283,20 @@ request's head, in the same image as its build, pushed as a fast-forward of the 
 
 - **Revision rounds** from an approver: a review requesting changes (after a two-minute quiet period, so a review in
   several parts is read whole), or `/patchy revise <what to change>` commented on the pull request. The round reads the
-  approvers' reviews and comments since the last round. `limits.maxRevisions` bounds them.
+  approvers' reviews and comments on its pull request: those since the last round that succeeded as its feedback (so
+  feedback a failed round never acted on is given again), and the earlier ones as context, the newest 16 KiB with a
+  count of any left out. When the round before it failed, it is also told how. `limits.maxRevisions` bounds them.
 - **CI-fix rounds** from a failed check: when a check the Project names in `checks.fix` (`[test]`, say) fails on the
-  head patchy last pushed, the round reads that check's output, annotations and the tail of its Actions job log.
-  `limits.maxCheckFixes` bounds them. A CI-fix round that does not fix the failure stops automatic fixing: the same
-  failure again holds the intent `Blocked` with `ChecksFailing` (`RepeatedFailure`) for a human, until the Project
-  changes. Two failures are compared without the log's times, durations (`412ms`, and `2.345 s` or `(5 ms)` as Jest and
-  Maven print them), commit hashes, long ids (runner, job and process numbers), process ids (`(node:2073)`, `pid 2073`),
-  addresses, and source positions (`app_test.go:12`, `line 12`, `app.test.ts(12,5)`); every other number counts, so a
-  failure whose values moved (coverage from 71.3% to 76.1%, a test from `got 3` to `got 4`) is progress, and gets
-  another round. A tool that prints some other volatile number in its last lines (a random seed, say) can still make the
-  same failure read as a new one, which costs a round, up to `limits.maxCheckFixes`.
+  head patchy last pushed, the round reads that check's output, annotations and the tail of its Actions job log, with
+  the approvers' earlier comments and a failed previous round's outcome as context. `limits.maxCheckFixes` bounds them.
+  A CI-fix round that does not fix the failure stops automatic fixing: the same failure again holds the intent `Blocked`
+  with `ChecksFailing` (`RepeatedFailure`) for a human, until the Project changes. Two failures are compared without the
+  log's times, durations (`412ms`, and `2.345 s` or `(5 ms)` as Jest and Maven print them), commit hashes, long ids
+  (runner, job and process numbers), process ids (`(node:2073)`, `pid 2073`), addresses, and source positions
+  (`app_test.go:12`, `line 12`, `app.test.ts(12,5)`); every other number counts, so a failure whose values moved
+  (coverage from 71.3% to 76.1%, a test from `got 3` to `got 4`) is progress, and gets another round. A tool that prints
+  some other volatile number in its last lines (a random seed, say) can still make the same failure read as a new one,
+  which costs a round, up to `limits.maxCheckFixes`.
 - **Re-runs before a CI-fix round**, with `checks.rerunFailed: true` (off by default): the first time a named check
   fails on a head patchy pushed, patchy re-runs the failed jobs of the GitHub Actions run behind it once, instead of
   starting a round, so a flaky test that passes the second time costs no agent run. The re-run is recorded on the

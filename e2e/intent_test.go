@@ -811,6 +811,14 @@ func (e *intentEnv) exerciseReviseAndCheckFix(t *testing.T, name string, number 
 		!strings.Contains(string(fixJob.Investigation), "version_test.go:10") {
 		t.Errorf("check-fix handoff omitted bounded CI diagnostics: %q", fixJob.Investigation)
 	}
+	// The second round is shown the thread the first acted on, as context
+	// apart from its own input: the command's note, never patchy's reply.
+	earlier, _, _ := strings.Cut(string(fixJob.Investigation), "### Check failures")
+	if _, earlier, _ = strings.Cut(earlier, "### Earlier feedback (context from earlier rounds)\n\n"); !strings.Contains(
+		earlier, "Please test the VERSION contents.") || strings.Contains(earlier, "Revision round started") ||
+		strings.Contains(string(fixJob.Investigation), "### Approver feedback") {
+		t.Errorf("check-fix handoff did not carry the earlier thread as context: %q", fixJob.Investigation)
+	}
 	in = e.waitPhase(t, name, v1alpha1.IntentInReview)
 	fix := e.run(t, fixName)
 	if fix.Status.Phase != v1alpha1.RunComplete || fix.Status.BaseSHA != head ||
@@ -931,6 +939,31 @@ func TestIntentEditedPlanRefused(t *testing.T) {
 	}
 	if n := len(e.own(number, templates.PlanMarker(namespace, name, 2, r2.Digest))); n != 1 {
 		t.Errorf("plan r2 comments = %d, want exactly one", n)
+	}
+	// The replan starts from the earlier work: its plan Job is handed a
+	// context file holding plan r1 as stored, not as the edited comment
+	// shows it. The first plan's Job was handed none.
+	var r1CM corev1.ConfigMap
+	if err := e.cl.client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: r1.ConfigMap}, &r1CM); err != nil {
+		t.Fatalf("read plan r1: %v", err)
+	}
+	firstPlan := e.kubelet.waitRun(t, "the first plan job", func(r agentRun) bool {
+		return r.Env["PATCHY_FINDING"] == v1alpha1.IntentRunName(name, v1alpha1.IntentStagePlan, 1, appRepo, 1)
+	})
+	if firstPlan.HasInvestigation {
+		t.Errorf("the first plan was handed a context file:\n%s", firstPlan.Investigation)
+	}
+	replan := e.kubelet.waitRun(t, "the replan's plan job", func(r agentRun) bool {
+		return r.Env["PATCHY_FINDING"] == v1alpha1.IntentRunName(name, v1alpha1.IntentStagePlan, 2, appRepo, 1)
+	})
+	ctxFile := string(replan.Investigation)
+	if !strings.Contains(ctxFile, "## The previous plan (r1)") ||
+		!strings.Contains(ctxFile, strings.TrimRight(r1CM.Data["plan.md"], "\n")) ||
+		strings.Contains(ctxFile, "Also drop the users table") {
+		t.Errorf("the replan's context file:\n%s", ctxFile)
+	}
+	if strings.Contains(string(replan.Issue), "Earlier work") {
+		t.Errorf("the replan's request holds the context:\n%s", replan.Issue)
 	}
 
 	// The approver approves r2 by command: seen, done once, and r2 built.

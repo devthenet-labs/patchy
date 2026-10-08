@@ -291,8 +291,9 @@ func (a *Agent) repairFailure(h harness.Harness, res runner.Result, idle string,
 	return oneLine(string(outcome)+": "+detail, repairFailureBytes)
 }
 
-// addRepair adds a repair run's accounting to its stage's. Tokens, turns
-// and wall clock are summed, because a resumed claude run reports its own
+// addRepair adds a repair run's accounting to its stage's. The first edit
+// turn is not touched: it measures the main run, and a repair resumes after
+// it. Tokens, turns and wall clock are summed, because a resumed claude run reports its own
 // (probed on 2.1.291: the resumed result's usage and num_turns count that
 // invocation alone). Its total_cost_usd is not, because it is cumulative
 // over the session, so summing it would count the first run twice: the

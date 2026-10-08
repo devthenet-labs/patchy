@@ -199,6 +199,60 @@ func TestPlanRunsReadOnly(t *testing.T) {
 	}
 }
 
+// TestPlanContext: a replan's or revival's plan Job is handed the context
+// file of the earlier work as input/investigation.md, and the prompt names
+// that file as data without quoting it; a first plan's Job has none (absent
+// or empty), and its prompt says nothing of earlier work.
+func TestPlanContext(t *testing.T) {
+	const marker = "PREVIOUS-PLAN-BYTES"
+	tests := []struct {
+		name    string
+		context *string
+		want    bool
+	}{
+		{"first plan, no file", nil, false},
+		{"empty file", new(""), false},
+		{"replan", new("# Earlier work on this intent\n\n" + marker + "\n"), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			cfg, ws := intentConfig(t, PhasePlan, &out)
+			if err := os.WriteFile(filepath.Join(ws, "input", "issue.md"), []byte("# Add GET /version\n"),
+				0o644); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(ws, "input", "investigation.md")
+			if tt.context != nil {
+				if err := os.WriteFile(path, []byte(*tt.context), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tokenFile := filepath.Join(t.TempDir(), "token")
+			if err := os.WriteFile(tokenFile, []byte("caller-token\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg.InvestigateHarness, cfg.BrokerTokenFile = "claude", tokenFile
+			fx := &fakeExec{steps: []step{{ws: ws, stdout: streamSuccess, writes: map[string]string{
+				"reports/plan.md": goodPlan,
+			}}}}
+			if ev := onlyEvent(t, cfg, fx, &out); ev.Plan == nil || ev.Plan.Outcome != envelope.OutcomeOK {
+				t.Fatalf("event = %+v, want an ok plan", ev)
+			}
+			argv := fx.specs[0].Argv
+			prompt := argv[slices.Index(argv, "-p")+1]
+			named := strings.Contains(prompt, "## Earlier work on this intent") &&
+				strings.Contains(prompt, "`"+path+"` holds what came of that")
+			if named != tt.want {
+				t.Errorf("prompt names the context file = %v, want %v:\n%s", named, tt.want, prompt)
+			}
+			if strings.Contains(prompt, marker) {
+				t.Errorf("the prompt quotes the context file, which it only names:\n%s", prompt)
+			}
+		})
+	}
+}
+
 func TestPlanLimits(t *testing.T) {
 	tests := []struct {
 		name               string

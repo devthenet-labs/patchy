@@ -1274,14 +1274,14 @@ func (e *env) suspend(name string, on bool) {
 }
 
 // TestHeldBuildFreesItsSlot: a build that finishes while its intent is
-// suspended is read once: its transcript, usage and report are recorded with
+// suspended is read once: its transcript, usage, turns and report are recorded with
 // the PushHeld mark, later passes read nothing of its Job, and its slot is
 // free for another run, since its agent is done. Once the suspension is
 // lifted it is pushed.
 func TestHeldBuildFreesItsSlot(t *testing.T) {
 	e := newEnv(t, testProject())
 	e.jobs.output = func(spec jobs.Spec) jobs.RunOutput {
-		out := defaultOutput(spec)
+		out := withTurns(envelope.Stage{}, envelope.Stage{NumTurns: 21, FirstEditTurn: 4})(spec)
 		out.Turns = []transcript.Turn{{Seq: 1, Role: transcript.RoleAssistant, Kind: transcript.KindText, Text: "done"}}
 		return out
 	}
@@ -1306,6 +1306,10 @@ func TestHeldBuildFreesItsSlot(t *testing.T) {
 		t.Fatalf("held run = %s, held %v, transcript %v, usage %+v, report %d bytes; want Running, held, "+
 			"with what the build reported", run.Status.Phase, pushHeld(&run), run.Status.Transcript,
 			run.Status.Usage, len(run.Status.Report))
+	}
+	if run.Status.NumTurns != 21 || run.Status.FirstEditTurn != 4 {
+		t.Errorf("held run turns %d, first edit %d; want the build's 21, 4", run.Status.NumTurns,
+			run.Status.FirstEditTurn)
 	}
 	if len(e.gh.commits) != 0 {
 		t.Fatal("a suspended intent's build was pushed")

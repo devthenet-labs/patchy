@@ -62,7 +62,8 @@ func (p *pass) pending(ctx context.Context) (bool, error) {
 // the Intent to Planning, consuming trigger (a replan or revival) in the same
 // status write. issue is the issue as this pass read it, nil to read it now.
 // A replan's and a revival's snapshot carries the approvers' comments since
-// the last plan.
+// the last plan, and beside it a context file of the earlier work
+// (planContext), read before the plan it names is cleared.
 func (p *pass) startPlanning(ctx context.Context, issue *ghclient.Issue, trigger *v1alpha1.IntentAction) error {
 	if issue == nil {
 		var err error
@@ -74,10 +75,22 @@ func (p *pass) startPlanning(ctx context.Context, issue *ghclient.Issue, trigger
 	for _, r := range p.proj.Spec.Repositories {
 		snap.Repositories = append(snap.Repositories, r.URL)
 	}
+	var planCtx string
 	if trigger != nil {
+		// The plan this Planning replaces, as recorded before the status
+		// write below clears it: plan revisions skip numbers, so the
+		// previous plan is this one, never the revision before this.
+		var prev *v1alpha1.IntentPlan
+		if pl := p.in.Status.Plan; pl != nil {
+			prev = pl.DeepCopy()
+		}
+		var err error
+		if planCtx, err = p.planContext(ctx, prev); err != nil {
+			return err
+		}
 		since := p.in.Spec.RequestedBy.At.Time
-		if pl := p.in.Status.Plan; pl != nil && pl.PostedAt != nil {
-			since = pl.PostedAt.Time
+		if prev != nil && prev.PostedAt != nil {
+			since = prev.PostedAt.Time
 		}
 		feedback, err := p.feedbackSince(ctx, since)
 		if err != nil {
@@ -92,11 +105,16 @@ func (p *pass) startPlanning(ctx context.Context, issue *ghclient.Issue, trigger
 	if revision > v1alpha1.MaxIntentRound {
 		return fmt.Errorf("input revision %d is past the limit of %d", revision, v1alpha1.MaxIntentRound)
 	}
-	cm, err := p.ensureInputConfigMap(ctx, revision, snap)
+	cm, err := p.ensureInputConfigMap(ctx, revision, snap, planCtx)
 	if err != nil {
 		return err
 	}
+	// Both digests are of the stored bytes: a ConfigMap a failed pass
+	// created is adopted as it is.
 	input := v1alpha1.IntentInput{Revision: revision, Digest: digest([]byte(cm.Data[keyIssue])), ConfigMap: cm.Name}
+	if c := cm.Data[keyContext]; c != "" {
+		input.ContextDigest = digest([]byte(c))
+	}
 	return p.setPhase(ctx, v1alpha1.IntentPlanning, func(cur *v1alpha1.Intent) {
 		cur.Status.Input = &input
 		cur.Status.Plan = nil
@@ -153,8 +171,11 @@ func (p *pass) feedbackSince(ctx context.Context, since time.Time) ([]*ghclient.
 
 // ensureInputConfigMap creates the immutable snapshot ConfigMap of revision,
 // or adopts the one a failed pass created (owned by this Intent): its bytes,
-// not a fresh snapshot's, are what the input digest covers.
-func (p *pass) ensureInputConfigMap(ctx context.Context, revision int32, snap snapshot) (*corev1.ConfigMap, error) {
+// not a fresh snapshot's, are what the input digest covers. planCtx is the
+// context file of a replan or revival, stored beside the request ("" stores
+// none).
+func (p *pass) ensureInputConfigMap(ctx context.Context, revision int32, snap snapshot,
+	planCtx string) (*corev1.ConfigMap, error) {
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: inputConfigMapName(p.in.Name, revision), Namespace: p.in.Namespace,
@@ -169,6 +190,9 @@ func (p *pass) ensureInputConfigMap(ctx context.Context, revision int32, snap sn
 			keyRepositories: strings.Join(snap.Repositories, "\n"),
 			keyComments:     snap.Comments,
 		},
+	}
+	if planCtx != "" {
+		cm.Data[keyContext] = planCtx
 	}
 	return p.ensureConfigMap(ctx, cm, p.in.UID)
 }

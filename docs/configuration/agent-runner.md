@@ -27,9 +27,11 @@ matters when debugging a Job spec or running the runtime standalone.
 
 An intent run (the intent-driven development work kind) uses two more phases, over the same Job seams: `PATCHY_FINDING`
 carries the IntentRun's name, `input/issue.md` the intent snapshot for a plan, and `input/investigation.md` the approved
-plan for a build. A build's `input/issue.md` must be empty, and a build handed a request is refused with a fatal event
-before any agent runs: the approved plan, which the approver read verbatim, is the build's whole contract, while the
-request was seen only as GitHub rendered it.
+plan for a build. On a replan or revival, a plan's `input/investigation.md` is the context file of the earlier work. The
+plan prompt names it under "Earlier work on this intent" as data, not instructions, and does not quote it. A plan with
+no such file, or an empty one, gets the prompt without that section. A build's `input/issue.md` must be empty, and a
+build handed a request is refused with a fatal event before any agent runs: the approved plan, which the approver read
+verbatim, is the build's whole contract, while the request was seen only as GitHub rendered it.
 
 - **`plan`** reads the request and the tree read-only and writes `reports/plan.md`, emitted as a `plan` event. It runs
   on the investigate stage's configuration — `PATCHY_INVESTIGATE_HARNESS`/`_MODEL`/`_TIMEOUT`, and
@@ -58,12 +60,13 @@ Both run on **brokered claude only**: any other harness, or claude without `PATC
 fatal event before a model is called, because codex and copilot do not honour the sandbox postures. No configuration key
 exists for the intent phases alone.
 
-The plan and build reports, and the build's `input/investigation.md` with any revise round after the plan, must be
-visible text throughout: a report is `report_invalid`, and a build input a fatal event, if it holds invalid UTF-8, a
-control character other than tab, line feed or a CRLF's carriage return, U+2028/U+2029, or a character that renders
-invisibly or reorders text (a format character such as a zero-width space or a bidi control, a tag character, a
-variation selector, or another default-ignorable code point). The detail names the first one's code point, line and
-column. A human approves the plan by reading every byte of it, so nothing in it may be hidden.
+The plan and build reports, and the build's `input/investigation.md` with any revise round after the plan (its feedback,
+the earlier approver thread, a failed previous round's outcome and the compare patch), must be visible text throughout:
+a report is `report_invalid`, and a build input a fatal event, if it holds invalid UTF-8, a control character other than
+tab, line feed or a CRLF's carriage return, U+2028/U+2029, or a character that renders invisibly or reorders text (a
+format character such as a zero-width space or a bidi control, a tag character, a variation selector, or another
+default-ignorable code point). The detail names the first one's code point, line and column. A human approves the plan
+by reading every byte of it, so nothing in it may be hidden.
 
 The plan is also held to a layout rule, since it is read in a code block that does not wrap: no gap of more than 16
 columns of blank characters before more text on a line (a tab counts as 8, and any blank character but a space as 2;
@@ -95,7 +98,10 @@ corrected rather than hidden.
   was asked for.
 - A repair's spend is added to the stage's. Its tokens, turns and time are summed, since a resumed claude run reports
   its own. Its `total_cost_usd` is not, since claude reports that cumulatively over the session: the repair's tokens are
-  priced at the model's rates and added to the cost the first run reported.
+  priced at the model's rates and added to the cost the first run reported. The stage's first edit turn
+  (`first_edit_turn`: the agent turn on which the first run first called Edit, Write, MultiEdit or NotebookEdit, read
+  off its stream; 0 when it edited nothing) is the first run's alone: a repair never moves it. The intent controller
+  records both counts on the IntentRun as `status.numTurns` and `status.firstEditTurn`.
 - On `remediate` and `build`, which write the working tree, a repair may change only the report and `commit.sh`. The
   clone is fingerprinted around each round (`HEAD`, what is staged, and every working file that is not ignored), and a
   repair that changed any of it is refused whole: the stage ends with its original outcome (`report_missing` or

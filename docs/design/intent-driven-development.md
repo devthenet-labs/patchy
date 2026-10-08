@@ -171,8 +171,10 @@ within:
   `patchy-<hash>-int-a<n>`.
 - `Spec.Finding` and `Spec.Owner` carry the IntentRun name.
 - `issue.md` carries the intent snapshot to a plan Job, and is empty on a build Job: agent-runner refuses a build handed
-  a request, because the approved plan is the build's whole contract. `investigation.md` carries the approved plan and,
-  for a revision, that round's feedback and compare patch.
+  a request, because the approved plan is the build's whole contract. On a replan or revival, a plan Job's
+  `investigation.md` carries the context file of the earlier work (see Planning). A build Job's `investigation.md`
+  carries the approved plan and, for a revision, that round's feedback, the pull request's earlier approver thread, the
+  previous round's failure if it failed, and the compare patch.
 - `stageEnvNames` gains a `build → PATCHY_REMEDIATE_*` mapping.
 
 The golden Job YAMLs, `prepareScript` and `buildJob` stay byte-identical. The cost is some naming debt, documented at
@@ -262,8 +264,9 @@ names, and a seeded property test checks that they are label-safe and unique wit
 - **Status:**
   - `phase` and `phaseTimes`
   - conditions: `BudgetExhausted`, `RevisionLimitReached`, `ImageRequired`, `ApprovalRejected`
-  - `input{revision, digest, configMap}`. Every entry to `Planning` except a resume from `Blocked` (the first, a replan,
-    a revival) takes a new snapshot at the next revision, so a revision is never reused.
+  - `input{revision, digest, configMap, contextDigest}`. Every entry to `Planning` except a resume from `Blocked` (the
+    first, a replan, a revival) takes a new snapshot at the next revision, so a revision is never reused.
+    `contextDigest` pins the snapshot's context file on a replan or revival, and is empty on the first plan.
   - `plan{revision, digest, configMap, commentID, commentDigest, postedAt, summary, repositories}`. The plan's revision
     is the input revision it was planned from.
   - `approval{by, source, eventID, at, planRevision, planDigest, inputDigest}`. `source` (`label` or `command`) says
@@ -318,6 +321,9 @@ names, and a seeded property test checks that they are label-safe and unique wit
   - `baseSHA` and `pushedCommit`
   - `outcome`, `report` (at most 64 KiB) and `detail`
   - `usage` and `transcript`
+  - `numTurns` and `firstEditTurn`: the turns the agent took (repair rounds included) and the turn its first run first
+    edited a file on, as the pod reported them, clamped to at most 100000. The turns before the first edit are what a
+    run spent learning the code before changing it.
   - timestamps
 - **Names:** `<intent>-plan-r<rev>-a<n>`, `<intent>-bld-r<rev>-<repokey>-a<n>` and `<intent>-rev<k>-<repokey>-a<n>`,
   inside the name budget. A name can repeat across Intents, for example when the TTL deleted an Intent and its issue
@@ -371,7 +377,24 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
      `<!-- patchy:intent patchy/target-1 -->` is posted exactly once.
 3. **Planning.**
    - Snapshot the issue title and body into the immutable ConfigMap `<intent>-input-r<N>`, together with its digest. On
-     a replan, the snapshot also includes approver comments made since the last plan.
+     a replan or revival, the snapshot also includes approver comments made since the last plan.
+   - On a replan or revival (never the first plan), store a context file of the earlier work beside the snapshot, as
+     `context.md`, pinned by its own digest (`input.contextDigest`, copied onto each plan run's `inputs.contextDigest`).
+     It holds three sections, each escaped to visible text, fenced as data and bounded on its own:
+     - the previous plan: the plan recorded before Planning cleared it, read from its `<intent>-plan-r<rev>` ConfigMap.
+       Plan revisions skip numbers, so this is the recorded plan, not revision N-1. It is capped at 64 KiB.
+     - the outcome and detail of the intent's latest build, revise or check-fix run, when that run failed, capped at 4
+       KiB.
+     - the approvers' comments on the issue from the trigger up to the previous plan's posting, under the snapshot's
+       filters (no outsider, no bot, nothing patchy wrote, nothing edited). The newest are kept within 16 KiB, and a
+       line counts the older comments left out. An edited comment is skipped, never fatal.
+
+     The pull request's review thread is not included. The context file is never part of the request: the approval stays
+     bound to the request's digest, which it re-renders from the issue, so a replan's context never refuses an approval.
+     A plan run copies the file into its `investigation.md` after re-hashing it against its pin, and the run controller
+     re-hashes it again at launch. agent-runner names the file in the plan prompt, under "Earlier work on this intent",
+     as data rather than instructions, and the request stays the authority. Worst case the file is about 86 KiB.
+
    - Create a Repository at the default branch.
    - Create the IntentRun `…-plan-r1-a1`. Its input ConfigMap also records the other intents of the Project that have
      not ended and the pull requests they have open in its repositories (at most five, each with its title and its first
@@ -447,7 +470,8 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
     - Check limits. If one is exceeded, the Intent goes to `Blocked` with a notice.
     - Create a Repository with `ref.branch = patchy-intent/<intent>`. This pins the current PR head, including any human
       commits.
-    - Render the feedback and the compare patch into `investigation.md`, after the plan.
+    - Render into `investigation.md`, after the plan: the previous round's outcome if it failed, the earlier approver
+      thread as context, the round's new feedback (or its check failures) and the compare patch.
     - Launch with the image from R0, never from the PR head. Move to `Revising`.
 11. **Revise push.**
     - Validate: the changeset's base must equal the PR-head pin.
@@ -735,10 +759,29 @@ closes the intent issue itself.
 
 ### Revise loop: inputs and bounds
 
-- **Feedback.** Reviews, inline review comments and PR conversation comments written by approvers since the previous
-  round.
+- **Feedback.** Reviews, inline review comments and PR conversation comments written by approvers on the round's own
+  pull request, from the first build of the approved plan revision up to the round's lease (its first attempt's
+  creation, which every retry reads again unchanged).
+  - What is new to the round goes under `### Approver feedback`: the round's own consumed reviews and command note, and
+    everything after the lease of the last review or command round of the same repository and plan revision that
+    completed (or after the build, if none has). A failed round's feedback, and what was posted while it ran, is
+    therefore given again, as new, to the next round. `reviewIDs` and the trigger cutoff are unchanged: they decide when
+    a round starts, not what it reads.
+  - The rest of the thread goes first, under `### Earlier feedback (context from earlier rounds)`, marked as context
+    that earlier rounds may already have acted on: at most 16 KiB, the newest kept, with a visible "N older items
+    omitted" line. An older item since edited, deleted or no longer an approver's, or one GitHub fails to verify, is
+    left out; only the round's own consumed reviews and command fail the round that way. Items are verified newest first
+    and only until the section is full, for the new feedback too.
+  - patchy's own comments (its bot, any bot account, anything carrying its marker), non-approvers' comments and bare
+    `/patchy` commands are never included; a command's note is.
+  - When the round before, in the same repository and plan revision, failed, `### Previous round's outcome` carries its
+    outcome and detail (at most 4 KiB), fenced as data.
+  - A check-fix round gets the earlier thread and the previous outcome too, all as context: its own input is its check
+    failures, and its failure signature is theirs alone. If GitHub will not give the thread, the section says "Earlier
+    feedback unavailable." and the round runs on its checks.
   - Inline comments carry path, line and side, plus the tail of the diff hunk (at most 1 KiB).
-  - Limits: at most 40 items, 2 KiB each, 24 KiB in total.
+  - Limits on the new feedback: at most 40 items, 2 KiB each, 24 KiB in total. With the plan (56 KiB), the round's input
+    stays under about 173 KiB.
   - Control characters are stripped, and each item is fenced under a "data, not rules" preamble (the quoting idiom in
     templates.go:150-186).
   - Comments from non-approvers are counted but never included. App repos are public, so anyone can comment.

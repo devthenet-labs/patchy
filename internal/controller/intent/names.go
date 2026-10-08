@@ -43,8 +43,13 @@ const (
 	// Job's issue.md, and the input snapshot's rendered request.
 	keyIssue = "issue.md"
 	// keyInvestigation is a build run's approved plan, the Job's
-	// investigation.md.
+	// investigation.md; a replan's or revival's plan run carries its
+	// context file under it.
 	keyInvestigation = "investigation.md"
+	// keyContext is the input snapshot's context file on a replan or
+	// revival (planContext): beside the request, never part of it or its
+	// digest, and absent on the first plan.
+	keyContext = "context.md"
 	// keyApprovedPlan keeps the exact approved prefix of a revise handoff.
 	keyApprovedPlan   = "approved-plan.md"
 	keyCheckSignature = "check-signature"

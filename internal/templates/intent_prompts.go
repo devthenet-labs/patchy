@@ -65,6 +65,12 @@ type PlanPrompt struct {
 	// Limits are the plan run's own, which the prompt states before the
 	// build's so the planner budgets its reading against them.
 	Limits StageLimits
+	// ContextPath is the context file of a replan or revival
+	// (input/investigation.md): the previous plan, the last build's failure
+	// and the approvers' earlier comments, which the prompt names as data
+	// and never quotes. "" omits the section, and the prompt is exactly the
+	// prompt without it: the first plan has none.
+	ContextPath string
 	// PreviousAttempt is the failed plan this one retries; nil omits the
 	// section.
 	PreviousAttempt *PreviousAttempt

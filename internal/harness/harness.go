@@ -145,6 +145,18 @@ type StreamUsageReporter interface {
 	StreamUsage(stdout []byte) *Usage
 }
 
+// FirstEditReporter is the optional capability of reading off a run's stream
+// the agent turn on which it first changed a file: how much of a run went on
+// learning the code before changing it, which is what carrying context from
+// earlier runs forward should shrink. A harness without it reports nothing,
+// and the stage records 0 (unknown).
+type FirstEditReporter interface {
+	// FirstEditTurn returns the 1-based agent turn (one model API message)
+	// on which the stream first shows a file-editing tool call, or 0 when it
+	// shows none.
+	FirstEditTurn(stdout []byte) int
+}
+
 // TurnScanner is the optional capability of projecting the live output stream
 // onto the harness-neutral conversation vocabulary; it powers the transcript
 // the status page replays. A harness without it simply produces no transcript.

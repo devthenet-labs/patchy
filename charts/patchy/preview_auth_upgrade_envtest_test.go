@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,6 +40,8 @@ const (
 	authRequired  = "pinned sign-in annotations (preview sign-in is required)"
 	authNotPinned = "exactly one admitted key generation's pinned set"
 	idpAnnotation = "alb.ingress.kubernetes.io/auth-idp-oidc"
+	timeoutKey    = "alb.ingress.kubernetes.io/auth-session-timeout"
+	ceilingMarker = "patchy.bitwisemedia.uk/preview-auth-session-timeout"
 )
 
 // TestPreviewAuthUpgradeAgainstAPIServer upgrades a real release, with real
@@ -48,7 +51,10 @@ const (
 // the admission policies that judge it, so each stage meets the previous
 // revision's policies: this is the order the critique's F3 split exists for.
 // It also holds the chart's client secrets to the relay's own derivation and
-// the controller's annotation JSON to the controller's own validation.
+// the controller's annotation JSON to the controller's own validation, and
+// changes sessionTimeout at the require stage: lowered in one upgrade, raised
+// in two, and lowered off an exact-compare policy (a chart before the
+// ceiling) in two, none of them refused.
 func TestPreviewAuthUpgradeAgainstAPIServer(t *testing.T) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Skip("KUBEBUILDER_ASSETS not set; run via mise run envtest")
@@ -60,6 +66,9 @@ func TestPreviewAuthUpgradeAgainstAPIServer(t *testing.T) {
 	u.install()
 	u.permit()
 	u.requireStage()
+	u.lowerTimeout()
+	u.raiseTimeout()
+	u.lowerTimeoutOffExactPolicy()
 	u.rotate()
 	u.refuseToStopRequiring()
 	u.refuseLostKeys()
@@ -118,7 +127,9 @@ func startUpgradeEnv(t *testing.T) *upgradeEnv {
 func (u *upgradeEnv) upgrade(args []string) { u.h.mustRun(u.upgradeArgs(args)...) }
 
 func (u *upgradeEnv) upgradeArgs(args []string) []string {
-	return append([]string{"upgrade", "patchy", ".", "--namespace", "patchy"}, args...)
+	// No history limit: rollBack returns to revision 1, more than Helm's
+	// default ten upgrades ago.
+	return append([]string{"upgrade", "patchy", ".", "--namespace", "patchy", "--history-max", "0"}, args...)
 }
 
 // install is today's release: previews without sign-in, and a live
@@ -220,6 +231,173 @@ func (u *upgradeEnv) requireStage() {
 	}
 }
 
+// shortSession is the require stage's values with a 900-second
+// sessionTimeout, below the fixture's 3600.
+func (u *upgradeEnv) shortSession() []string {
+	return append(slices.Clone(u.require), "--set", "previewAuth.sessionTimeout=900")
+}
+
+// lowerTimeout lowers sessionTimeout in ONE upgrade: the placeholder, which
+// Helm applies before the policies, carries the shorter session, which the
+// live policy's ceiling admits. A chart that compared the timeout exactly
+// failed this upgrade on the placeholder.
+func (u *upgradeEnv) lowerTimeout() {
+	t, admin := u.t, u.admin
+	u.upgrade(u.shortSession())
+	checkTimeout(t, admin, "lower", "900", "900")
+	set := slotSets(t, admin, 1)["patchy-preview-1"]
+	refused := []string{authNotPinned, authRequired}
+	waitRefused(t, admin, withSet(ingress("patchy-preview-1", "probe-long", "alb-preview", previewHost),
+		withValue(set, timeoutKey, "3600")), refused...)
+	for _, tc := range []struct {
+		value string
+		admit bool
+	}{
+		{"900", true}, {"1", true}, {"600", true}, {"901", false}, {"0", false}, {"0900", false},
+		{"+900", false}, {"9e2", false}, {"", false}, {"9000000000000000000000", false},
+	} {
+		err := admin.Create(t.Context(), withSet(ingress("patchy-preview-1", "timeout", "alb-preview", previewHost),
+			withValue(set, timeoutKey, tc.value)), client.DryRunAll)
+		if tc.admit && err != nil {
+			t.Errorf("lower: auth-session-timeout %q refused: %v", tc.value, err)
+		}
+		if !tc.admit && !deniedWith(err, refused...) {
+			t.Errorf("lower: auth-session-timeout %q: want refused, got %v", tc.value, err)
+		}
+	}
+	// Every other pinned key is still compared exactly.
+	if err := admin.Create(t.Context(), withSet(ingress("patchy-preview-1", "cookie", "alb-preview", previewHost),
+		withValue(withValue(set, timeoutKey, "600"), "alb.ingress.kubernetes.io/auth-session-cookie", "session")),
+		client.DryRunAll); !deniedWith(err, refused...) {
+		t.Errorf("lower: another cookie under the ceiling: want refused, got %v", err)
+	}
+	u.relinkDemo()
+}
+
+// raiseTimeout raises sessionTimeout back: the first upgrade records the new
+// ceiling and keeps applying the old session (the live policy would refuse a
+// longer one on the placeholder), the second applies it.
+func (u *upgradeEnv) raiseTimeout() {
+	t, admin := u.t, u.admin
+	u.upgrade(u.require)
+	checkTimeout(t, admin, "raise, first pass", "900", "3600")
+	u.upgrade(u.require)
+	checkTimeout(t, admin, "raise, second pass", "3600", "3600")
+	u.relinkDemo()
+}
+
+// exactTimeout matches the policies' ceiling rule for auth-session-timeout,
+// leaving the exact comparison every other key gets.
+var exactTimeout = regexp.MustCompile(`\(k == 'alb\.ingress\.kubernetes\.io/auth-session-timeout' \?[^:]*:\s*` +
+	`(object\.metadata\.annotations\[k\] == s\[k\])\)`)
+
+// lowerTimeoutOffExactPolicy is the first upgrade into the ceiling from a
+// chart that compared auth-session-timeout exactly: the live policies are
+// rewritten to that chart's rule, with no recorded ceiling. Lowering then
+// keeps the pinned value for one upgrade (the old policy would refuse
+// anything else on the placeholder) and applies the new one on the next.
+func (u *upgradeEnv) lowerTimeoutOffExactPolicy() {
+	t, admin := u.t, u.admin
+	for _, name := range []string{"patchy-preview-ingresses", "patchy-preview-ingress-auth"} {
+		vap := &admissionregistrationv1.ValidatingAdmissionPolicy{}
+		if err := admin.Get(t.Context(), client.ObjectKey{Name: name}, vap); err != nil {
+			t.Fatal(err)
+		}
+		delete(vap.Annotations, ceilingMarker)
+		n := 0
+		for i, v := range vap.Spec.Validations {
+			if exactTimeout.MatchString(v.Expression) {
+				vap.Spec.Validations[i].Expression = exactTimeout.ReplaceAllString(v.Expression, "($1)")
+				n++
+			}
+		}
+		if n != 1 {
+			t.Fatalf("%s: %d validations judge the timeout as a ceiling, want 1", name, n)
+		}
+		// Applied as Helm's own field manager, as the older chart's upgrade
+		// left it, so the next upgrade owns the fields it changes.
+		manager := ""
+		for _, m := range vap.ManagedFields {
+			if m.Operation == metav1.ManagedFieldsOperationApply {
+				manager = m.Manager
+			}
+		}
+		if manager == "" {
+			t.Fatalf("%s: no field manager applied it", name)
+		}
+		vap.ManagedFields, vap.ResourceVersion = nil, ""
+		vap.APIVersion, vap.Kind = "admissionregistration.k8s.io/v1", "ValidatingAdmissionPolicy"
+		//nolint:staticcheck // client.Apply with a typed object is what this API server test needs.
+		if err := admin.Patch(t.Context(), vap, client.Apply, client.FieldOwner(manager),
+			client.ForceOwnership); err != nil {
+			t.Fatalf("rewrite %s to the exact rule: %v", name, err)
+		}
+	}
+	set := slotSets(t, admin, 1)["patchy-preview-1"]
+	waitRefused(t, admin, withSet(ingress("patchy-preview-1", "probe-exact", "alb-preview", previewHost),
+		withValue(set, timeoutKey, "900")), authNotPinned, authRequired)
+	// That upgrade would keep the pinned 3600 applied, so it may not open
+	// the preview ALB to any address as well.
+	public := append(u.shortSession(), "--set-json", "preview.inboundCIDRs=[]",
+		"--set", "preview.allowPublicWithAuth=confirmed")
+	if out, err := u.h.run(u.upgradeArgs(public)...); err == nil ||
+		!strings.Contains(out, "pins auth-session-timeout 3600 exactly") {
+		t.Errorf("lower off the exact policy and drop the allowlist: want refused, got %v: %s", err, out)
+	}
+	u.upgrade(u.shortSession())
+	checkTimeout(t, admin, "lower off the exact policy, first pass", "3600", "3600")
+	u.upgrade(u.shortSession())
+	checkTimeout(t, admin, "lower off the exact policy, second pass", "900", "900")
+	// And back, as raiseTimeout.
+	u.upgrade(u.require)
+	checkTimeout(t, admin, "raise again, first pass", "900", "3600")
+	u.upgrade(u.require)
+	checkTimeout(t, admin, "raise again, second pass", "3600", "3600")
+	u.relinkDemo()
+}
+
+// relinkDemo patches the live preview Ingress to generation 1's current set,
+// as its reconcile does after a sessionTimeout change.
+func (u *upgradeEnv) relinkDemo() {
+	patchSet(u.t, u.admin, "patchy-preview-1", "preview-demo-1", slotSets(u.t, u.admin, 1)["patchy-preview-1"])
+}
+
+// checkTimeout holds the placeholder, the controller's annotations and the
+// policy's sets to the applied auth-session-timeout, and the policy's
+// recorded ceiling to ceiling.
+func checkTimeout(t *testing.T, c client.Client, stage, applied, ceiling string) {
+	t.Helper()
+	if got := authOf(placeholder(t, c))[timeoutKey]; got != applied {
+		t.Errorf("%s: placeholder %s = %q, want %q", stage, timeoutKey, got, applied)
+	}
+	cm := &corev1.ConfigMap{}
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "patchy", Name: "patchy-preview-controller-config"},
+		cm); err != nil {
+		t.Fatal(err)
+	}
+	current, err := preview.ParseAuthAnnotations(cm.Data["PATCHY_PREVIEW_AUTH_ANNOTATIONS"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for ns, set := range current {
+		if set[timeoutKey] != applied {
+			t.Errorf("%s: controller %s %s = %q, want %q", stage, ns, timeoutKey, set[timeoutKey], applied)
+		}
+	}
+	for ns, set := range slotSets(t, c, 1) {
+		if set[timeoutKey] != applied {
+			t.Errorf("%s: policy set %s %s = %q, want %q", stage, ns, timeoutKey, set[timeoutKey], applied)
+		}
+	}
+	vap := &admissionregistrationv1.ValidatingAdmissionPolicy{}
+	if err := c.Get(t.Context(), client.ObjectKey{Name: "patchy-preview-ingresses"}, vap); err != nil {
+		t.Fatal(err)
+	}
+	if got := vap.Annotations[ceilingMarker]; got != ceiling {
+		t.Errorf("%s: %s = %q, want %q", stage, ceilingMarker, got, ceiling)
+	}
+}
+
 // rotate is a key rotation's two passes, then the end of its overlap.
 func (u *upgradeEnv) rotate() {
 	t, admin := u.t, u.admin
@@ -314,7 +492,7 @@ func (u *upgradeEnv) refuseLostKeys() {
 func (u *upgradeEnv) rollBack() {
 	t, admin := u.t, u.admin
 	deleteThroughFinalizer(t, admin, "patchy-preview-1", "legacy-noauth")
-	out, err := u.h.run("rollback", "patchy", "1", "--namespace", "patchy")
+	out, err := u.h.run("rollback", "patchy", "1", "--namespace", "patchy", "--history-max", "0")
 	if err == nil || !strings.Contains(out, "sign-in") {
 		t.Errorf("rollback with the required policy bound: want refused, got %v: %s", err, out)
 	}
@@ -324,7 +502,7 @@ func (u *upgradeEnv) rollBack() {
 		t.Fatalf("runbook: delete the required policy's binding: %v", err)
 	}
 	waitAdmitted(t, admin, ingress("patchy-preview-1", "probe-unbound", "alb-preview", previewHost))
-	u.h.mustRun("rollback", "patchy", "1", "--namespace", "patchy")
+	u.h.mustRun("rollback", "patchy", "1", "--namespace", "patchy", "--history-max", "0")
 	if got := authOf(placeholder(t, admin)); len(got) != 0 {
 		t.Errorf("after rollback: placeholder still carries %v", got)
 	}

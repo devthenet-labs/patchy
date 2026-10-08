@@ -123,6 +123,11 @@ Revocation takes effect:
 - for a removal from a GitHub team: when the relay session ends (`--preview-auth-session-max-age`, 12 hours), since the
   relay asks Dex only at sign-in.
 
+The chart's `previewAuth.sessionTimeout` sets `auth-session-timeout`, and the slot admission policies admit it as a
+ceiling: any shorter session passes, a longer one is refused. Lowering it on a live install is one upgrade and raising
+it two; see
+[changing `sessionTimeout` on a live install](../intents/preview-sign-in.md#changing-sessiontimeout-on-a-live-install).
+
 ## Kubernetes access
 
 Least privilege, all rendered by the chart:

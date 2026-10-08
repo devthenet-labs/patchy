@@ -204,8 +204,11 @@ func (s Settings) authFor(slot int32) map[string]string {
 }
 
 // authConforms reports whether annotations carry the slot namespace's whole
-// pinned set of the current or the previous generation. Other annotations are
-// the admission policy's to judge.
+// pinned set of the current or the previous generation, as the slot admission
+// policy judges it: every key exactly, except auth-session-timeout, which may
+// be any whole number of seconds up to the set's (a shorter ALB session is
+// never weaker; an Ingress rendered before a raise still carries the shorter
+// one). Other annotations are the admission policy's to judge.
 func (s Settings) authConforms(namespace string, annotations map[string]string) bool {
 	for _, gen := range []AuthAnnotations{s.Auth.Annotations, s.Auth.Previous} {
 		set, ok := gen[namespace]
@@ -214,7 +217,9 @@ func (s Settings) authConforms(namespace string, annotations map[string]string) 
 		}
 		match := true
 		for k, v := range set {
-			if got, ok := annotations[k]; !ok || got != v {
+			got, ok := annotations[k]
+			if !ok || (k == annotationAuthSessionTimeout && !timeoutWithin(got, v)) ||
+				(k != annotationAuthSessionTimeout && got != v) {
 				match = false
 				break
 			}
@@ -224,4 +229,16 @@ func (s Settings) authConforms(namespace string, annotations map[string]string) 
 		}
 	}
 	return false
+}
+
+// timeoutWithin reports whether got is a canonical whole number of seconds
+// from 1 to ceiling, the slot admission policy's rule for
+// auth-session-timeout.
+func timeoutWithin(got, ceiling string) bool {
+	limit, err := strconv.Atoi(ceiling)
+	if err != nil {
+		return false
+	}
+	t, err := strconv.Atoi(got)
+	return err == nil && strconv.Itoa(t) == got && t >= 1 && t <= limit
 }

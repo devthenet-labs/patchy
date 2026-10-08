@@ -29,8 +29,8 @@ The cookie probe ran first, on throwaway intent intents#20 (PR closed). Results 
 
 Follow-ups for patchy:
 
-- Make a `sessionTimeout` change one upgrade: the chart could admit both the old and new pinned sets for a release, as
-  it does for key generations.
+- Make a `sessionTimeout` change never fail an upgrade: branch `fix/preview-auth-timeout-race` judges the timeout as a
+  ceiling (lowering is one upgrade, raising two).
 - Consider a cross-slot replay test once two slots are live.
 
 ## Earlier checkpoint — 2026-10-08: preview sign-in on, and 0.12.25

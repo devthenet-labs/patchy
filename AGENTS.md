@@ -214,7 +214,8 @@ completions/        GENERATED shell completions, committed so the Homebrew cask 
   the single-writer table and the durable-settle rules), `controller/preview` (fixed slot workload renderer,
   bounded rollout, cleanup and orphan sweep; no forge access; with `--preview-auth-required`, default off, it renders
   each slot's pinned sign-in annotations from the chart's JSON, the one the slot admission policy compares, and the
-  sweep reports a slot Ingress without the current or previous generation's set, deleting it only after three poll
+  sweep reports a slot Ingress without the current or previous generation's set (auth-session-timeout judged, as the
+  policy judges it, as a ceiling), deleting it only after three poll
   intervals; an Ingress write refused at admission or by RBAC waits and requeues, never spending a retry).
 - `kube` — the controller-runtime manager wrapper: scheme, kubeconfig/in-cluster config, leader election,
   multi-namespace cache, health probes, logr↔slog bridge. Secrets are never cached; a controller that needs only

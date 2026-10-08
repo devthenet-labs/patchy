@@ -7,31 +7,49 @@
 > documentation values `111122223333` and `203.0.113.10/32`. The real ones are in terraform-devthenet's `k8s/` values
 > (private).
 
-## Current checkpoint — 2026-10-08 (afternoon): previews open to the internet behind sign-in
+## Current checkpoint — 2026-10-08 (evening): previews public behind sign-in, and 0.12.26
 
-**The preview IP allowlist is gone**, as the owner asked once previews worked behind sign-in.
+**The preview IP allowlist is gone**, as the owner asked once previews worked behind sign-in. **0.12.26 (#158) makes a
+`sessionTimeout` change never fail an upgrade.**
 
-- Helm patchy rev 70 sets `preview.inboundCIDRs: []`, `preview.allowPublicWithAuth: confirmed` and
-  `previewAuth.sessionTimeout: 900`. The preview load balancer's security group admits 443 from anywhere.
-- terraform-devthenet branch `feat/patchy-previews-public-with-signin` is pushed. Its PR is for the owner to open and
-  merge (auto mode refused to open it); the text is in `.claude/plans/tf-pr-previews-public.md`.
-- Rollback: patchy rev 68 has the allowlist and `sessionTimeout` 3600. Expect `helm rollback` or the upgrade to need
-  running twice; see the guide's "Changing `sessionTimeout` on a live install".
+- Live on devthenet-dev: Helm patchy rev 71 (0.12.26) and patchy-config rev 45. Rollbacks:
+  - rev 70: 0.12.25, public;
+  - rev 68: 0.12.25 with the allowlist and `sessionTimeout` 3600.
 
-The cookie probe ran first, on throwaway intent intents#20 (PR closed). Results are in docs/intents/preview-sign-in.md,
-"What the probe found":
+  Rolling back below rev 71 returns to the exact timeout pin; see the guide's "Changing `sessionTimeout` on a live
+  install".
+
+- Values: `preview.inboundCIDRs: []`, `preview.allowPublicWithAuth: confirmed`, `previewAuth.sessionTimeout: 900`. The
+  preview load balancer's security group admits 443 from anywhere. terraform-devthenet #48 is merged, so its main
+  matches the cluster.
+- 0.12.26 judges `auth-session-timeout` as a ceiling: a canonical whole number of seconds up to `sessionTimeout`,
+  recorded on `patchy-preview-ingresses` as `patchy.bitwisemedia.uk/preview-auth-session-timeout` (900 live). Lowering
+  is one upgrade; raising is two, and the first pass fails nothing. The sweep accepts a shorter session too.
+- Live check after the upgrade: patch dry-runs of the placeholder Ingress against the live policy admit 600 (0.12.25
+  refused exactly this) and refuse 1200 and `0600`.
+
+The cookie probe ran before the allowlist went, on throwaway intent intents#20 (PR closed). Results are in
+docs/intents/preview-sign-in.md, "What the probe found":
 
 - The session cookie never reaches the app, and it is HttpOnly, Secure and host-only.
 - A copied cookie does replay on another host in the same slot.
 - Cross-slot replay is untested.
 
-`patchy check project preview-demo` passes every check after the change.
+A demo intent (intents#21, PR closed) showed a preview in public behind sign-in. `patchy check project preview-demo`
+passes every check.
 
-Follow-ups for patchy:
+Follow-ups:
 
-- Make a `sessionTimeout` change never fail an upgrade: branch `fix/preview-auth-timeout-race` judges the timeout as a
-  ceiling (lowering is one upgrade, raising two).
 - Consider a cross-slot replay test once two slots are live.
+- `hack/e2e.sh` should set an explicit `-timeout`: the suite runs close to Go's 10-minute default.
+
+Still with the owner:
+
+- **The upstream advisory:** `.claude/plans/upstream-advisory-draft.md`, the owner's to send or drop.
+- **The site values in the public fork's history:** the home IP is in 12 commits and the account ID in 22; the current
+  files use documentation values. Left as is unless the owner asks for a rewrite.
+
+Parked: intent context, never-discard-work and session resume (branch `feature/never-discard-work`, unmerged).
 
 ## Earlier checkpoint — 2026-10-08: preview sign-in on, and 0.12.25
 

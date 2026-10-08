@@ -331,11 +331,30 @@ func TestPreviewAuthFailures(t *testing.T) {
 		},
 		"Dex redirects to another scheme on its host": {
 			change: func(_ *world, f *fakeWeb) {
-				f.answers["dex.acme.test/auth"] = answer{status: http.StatusFound, location: "http://dex.acme.test/auth/github"}
+				f.answers["dex.acme.test/auth"] = answer{status: http.StatusFound,
+					location: "http://dex.acme.test/auth/github"}
 				f.answers["dex.acme.test/auth/github"] = answer{status: http.StatusBadRequest,
 					body: "<p>Unregistered redirect_uri.</p>"}
 			},
-			check: CheckPreviewAuthDex, status: checkreport.Pass, want: []string{"http://dex.acme.test"},
+			check: CheckPreviewAuthDex, status: checkreport.Skip, want: []string{"another scheme or port",
+				"http://dex.acme.test"},
+		},
+		"Dex redirects to another port on its host": {
+			change: func(_ *world, f *fakeWeb) {
+				f.answers["dex.acme.test/auth"] = answer{status: http.StatusFound,
+					location: "https://dex.acme.test:8443/auth/github"}
+			},
+			check: CheckPreviewAuthDex, status: checkreport.Skip, want: []string{"another scheme or port",
+				"dex.acme.test:8443"},
+		},
+		"Dex redirects to its host spelled with case and default port": {
+			change: func(_ *world, f *fakeWeb) {
+				f.answers["dex.acme.test/auth"] = answer{status: http.StatusFound,
+					location: "https://DEX.acme.test:443/auth/github?" + dexAuthQuery}
+				f.answers["dex.acme.test/auth/github"] = answer{status: http.StatusBadRequest,
+					body: "<p>Unregistered redirect_uri.</p>"}
+			},
+			check: CheckPreviewAuthDex, status: checkreport.Fail, want: []string{"Unregistered redirect_uri"},
 		},
 		"Dex shows its connector page": {
 			change: func(_ *world, f *fakeWeb) {

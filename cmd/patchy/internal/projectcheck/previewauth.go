@@ -128,11 +128,12 @@ const dexMaxHops = 5
 // answers any client_id there with a redirect to its own /auth/<connector>
 // (live Dex v2.45.1 does, for registered and unknown clients alike), and only
 // that endpoint judges the client, so the check follows redirects that stay
-// on the authorization endpoint's scheme and host, at most dexMaxHops of
-// them, and judges the answer it ends on: a redirect off Dex's host (to the
-// connector's upstream) or a sign-in page passes, Dex's error pages for an
-// unknown client or an unregistered redirect URI fail, and a redirect loop
-// or too many hops skip. It never follows a redirect off Dex's host, so
+// on the authorization endpoint's origin (host compared without case, the
+// scheme's default port made explicit), at most dexMaxHops of them, and
+// judges the answer it ends on: a redirect to another host (the connector's
+// upstream) or a sign-in page passes, Dex's error pages for an unknown client
+// or an unregistered redirect URI fail, and a redirect loop, too many hops or
+// a redirect to another scheme or port on Dex's own host skip. It never follows a redirect off Dex's host, so
 // nobody signs in; Dex may keep the unused request until it expires.
 func (r *run) dexRedirect(ctx context.Context, s settings, issuer string) {
 	dexIssuer, clientID := s.auth.data[keyAuthDexIssuer], s.auth.data[keyAuthDexClientID]
@@ -174,24 +175,8 @@ func (r *run) dexRedirect(ctx context.Context, s settings, issuer string) {
 			return
 		}
 		if status >= 300 && status < 400 && location != "" {
-			to, err := next.Parse(location)
-			switch {
-			case err != nil:
-				r.add(CheckPreviewAuthDex, "", checkreport.Skip, "Dex answered %d with an unreadable Location %q",
-					status, location)
-				return
-			case to.Scheme != authURL.Scheme || to.Host != authURL.Host:
-				r.add(CheckPreviewAuthDex, "", checkreport.Pass, "Dex at %s accepts client %s with redirect URI %s "+
-					"(it answered %d, on to %s://%s)", dexIssuer, clientID, redirect, status, to.Scheme, to.Host)
-				return
-			case seen[to.String()]:
-				r.add(CheckPreviewAuthDex, "", checkreport.Skip, "Dex's authorization endpoint is a redirect loop "+
-					"(%s leads back to %s), which says nothing about the client", next.Path, to.Path)
-				return
-			case hop >= dexMaxHops:
-				r.add(CheckPreviewAuthDex, "", checkreport.Skip, "Dex's authorization endpoint answered more than %d "+
-					"redirects on its own host (the last to %s), which says nothing about the client", dexMaxHops,
-					to.Path)
+			to, ok := r.dexFollow(dexIssuer, clientID, redirect, authURL, next, location, status, hop, seen)
+			if !ok {
 				return
 			}
 			next = to
@@ -200,6 +185,68 @@ func (r *run) dexRedirect(ctx context.Context, s settings, issuer string) {
 		r.judgeDex(dexIssuer, clientID, redirect, status, pageText(body))
 		return
 	}
+}
+
+// dexFollow judges a redirect the Dex check met at next: the URL to ask
+// next, or false once it has added the check's line (a redirect to another
+// host passes; an unreadable Location, another scheme or port on Dex's own
+// host, a loop or too many hops skip).
+func (r *run) dexFollow(dexIssuer, clientID, redirect string, authURL, next *url.URL, location string, status,
+	hop int, seen map[string]bool,
+) (*url.URL, bool) {
+	to, err := next.Parse(location)
+	if err != nil {
+		r.add(CheckPreviewAuthDex, "", checkreport.Skip, "Dex answered %d with an unreadable Location %q",
+			status, location)
+		return nil, false
+	}
+	sameHost, sameOrigin := compareOrigin(to, authURL)
+	switch {
+	case !sameHost:
+		r.add(CheckPreviewAuthDex, "", checkreport.Pass, "Dex at %s accepts client %s with redirect URI %s "+
+			"(it answered %d, on to %s://%s)", dexIssuer, clientID, redirect, status, to.Scheme, to.Host)
+		return nil, false
+	case !sameOrigin:
+		r.add(CheckPreviewAuthDex, "", checkreport.Skip, "Dex redirected to another scheme or port on its "+
+			"own host (%s://%s), which says nothing about the client", to.Scheme, to.Host)
+		return nil, false
+	}
+	// The same origin however spelled: ask it as the endpoint is spelled.
+	to.Scheme, to.Host = authURL.Scheme, authURL.Host
+	switch {
+	case seen[to.String()]:
+		r.add(CheckPreviewAuthDex, "", checkreport.Skip, "Dex's authorization endpoint is a redirect loop "+
+			"(%s leads back to %s), which says nothing about the client", next.Path, to.Path)
+		return nil, false
+	case hop >= dexMaxHops:
+		r.add(CheckPreviewAuthDex, "", checkreport.Skip, "Dex's authorization endpoint answered more than %d "+
+			"redirects on its own host (the last to %s), which says nothing about the client", dexMaxHops,
+			to.Path)
+		return nil, false
+	}
+	return to, true
+}
+
+// compareOrigin reports whether to names base's host (without case) and
+// whether it is base's origin too: the same scheme and the same port, the
+// scheme's default made explicit.
+func compareOrigin(to, base *url.URL) (sameHost, sameOrigin bool) {
+	sameHost = strings.EqualFold(to.Hostname(), base.Hostname())
+	return sameHost, sameHost && strings.EqualFold(to.Scheme, base.Scheme) && effectivePort(to) == effectivePort(base)
+}
+
+// effectivePort is u's port, or its scheme's default when it names none.
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
 }
 
 // judgeDex judges the answer the Dex check ended on that is not a redirect.

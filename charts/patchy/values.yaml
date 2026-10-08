@@ -330,9 +330,10 @@ previewAuth:
     ingress:
         className: "" # empty: the edge class (edgeIngressClass)
         # Merged over the chart's own ALB settings for the relay, each of which
-        # a key here overrides: alb.ingress.kubernetes.io/scheme
-        # internet-facing, target-type ip and healthcheck-path / (the relay
-        # answers / 200 without credentials).
+        # a key here overrides: alb.ingress.kubernetes.io/target-type ip,
+        # healthcheck-path / (the relay answers / 200 without credentials)
+        # and, off the chart's edge class only, scheme internet-facing (on it,
+        # edgeIngressClass.scheme governs the shared ALB).
         annotations: {}
         tls: []
     # Proxies appending to X-Forwarded-For in front of the relay (1 behind

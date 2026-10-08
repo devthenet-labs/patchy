@@ -549,16 +549,22 @@ spec:
 {{- end }}
 ---
 # The relay's public endpoint: the browser's sign-in and the preview ALB's
-# token and userinfo calls. On the edge class, never the preview ALB. Its ALB
-# settings are explicit rather than the IngressClass's defaults: internet
-# facing (the preview ALB calls the token endpoint from public addresses),
-# pod IP targets (the NetworkPolicy admits the ALB to the pods' 8080), and a
-# health check on /, which the relay answers 200 without credentials.
-# previewAuth.ingress.annotations overrides each.
-{{- $ingressAnnotations := merge (dict) ($vals.ingress.annotations | default dict) (dict
-    "alb.ingress.kubernetes.io/scheme" "internet-facing"
+# token and userinfo calls. On the edge class, never the preview ALB. Its
+# relay-specific ALB settings are explicit rather than the IngressClass's
+# defaults: pod IP targets (the NetworkPolicy admits the ALB to the pods'
+# 8080) and a health check on /, which the relay answers 200 without
+# credentials. Off the chart's edge class it also asks for an internet-facing
+# ALB (the preview ALB calls the token endpoint from public addresses); on it,
+# edgeIngressClass.scheme governs the one shared ALB, as for the webhook and
+# status-page Ingresses, so the relay declares no scheme of its own to
+# contradict their group. previewAuth.ingress.annotations overrides each.
+{{- $albDefaults := dict
     "alb.ingress.kubernetes.io/target-type" "ip"
-    "alb.ingress.kubernetes.io/healthcheck-path" "/") }}
+    "alb.ingress.kubernetes.io/healthcheck-path" "/" }}
+{{- if or (not $className) (ne $className (include "patchy.edgeIngressClassName" .)) }}
+{{- $_ := set $albDefaults "alb.ingress.kubernetes.io/scheme" "internet-facing" }}
+{{- end }}
+{{- $ingressAnnotations := merge (dict) ($vals.ingress.annotations | default dict) $albDefaults }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

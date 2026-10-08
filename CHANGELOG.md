@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.25](https://github.com/devthenet-labs/patchy/compare/v0.12.24...v0.12.25) (2026-10-08)
+
+
+### Bug Fixes
+
+* **preview-auth:** accurate Dex check, explicit relay ALB settings, deflake DNS job test ([#154](https://github.com/devthenet-labs/patchy/issues/154)) ([964d122](https://github.com/devthenet-labs/patchy/commit/964d122ea74721dabcbb4d787743016815968bec))
+
 ## [0.12.24](https://github.com/devthenet-labs/patchy/compare/v0.12.23...v0.12.24) (2026-10-07)
 
 

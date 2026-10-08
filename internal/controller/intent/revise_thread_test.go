@@ -5,6 +5,7 @@ package intent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -306,6 +307,51 @@ func TestCheckFixRoundGetsTheThread(t *testing.T) {
 	}
 }
 
+// TestCheckFixRoundWithoutTheThread: a check-fix round whose thread GitHub
+// will not list still runs on its checks, with the earlier feedback shown as
+// unavailable. Regression: the context-only thread read failed the round, or
+// requeued it until GitHub answered.
+func TestCheckFixRoundWithoutTheThread(t *testing.T) {
+	project := testProject()
+	project.Spec.Checks.Fix = []string{"test"}
+	e := newEnv(t, project)
+	name := e.awaiting()
+	e.jobs.output = func(spec jobs.Spec) jobs.RunOutput {
+		if strings.Contains(spec.Finding, "-rev1-") {
+			return failingBuild(spec)
+		}
+		return defaultOutput(spec)
+	}
+	e.gh.label(1, "patchy:approved", approver)
+	in := e.drive(name, v1alpha1.IntentInReview, repoImage)
+	head := in.Status.PullRequests[0].HeadSHA
+	e.reviewOn(1, 3502, "THREAD-REVIEW: name the field sha.")
+	e.clock.Advance(3 * time.Minute)
+	e.drive(name, v1alpha1.IntentRevising, repoImage)
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	e.gh.mu.Lock()
+	e.gh.checks[head] = []ghclient.CheckRun{{ID: 3503, Name: "test", HeadSHA: head, Status: "completed",
+		Conclusion: "failure", Output: ghclient.CheckOutput{Title: "CHECK-TITLE"}}}
+	e.gh.repoErrs["ListPullRequestReviewComments acme/app"] = errors.New("graphql: something went wrong")
+	e.gh.mu.Unlock()
+	e.drive(name, v1alpha1.IntentRevising, repoImage)
+	if run := e.reviseRun(name, 2); run == nil || run.Spec.Trigger != v1alpha1.IntentRunTriggerChecks {
+		t.Fatalf("round 2 = %+v, want a check-fix round", run)
+	}
+	e.drive(name, v1alpha1.IntentInReview, repoImage)
+	if r := e.round(name, 2).latest(); r.Status.Phase != v1alpha1.RunComplete {
+		t.Fatalf("round 2 = %s %s %q; the thread read failed it", r.Status.Phase, r.Status.Outcome,
+			r.Status.Detail)
+	}
+	input := e.secondRound(name)
+	if earlier, ok := section(input, earlierFeedbackHeading); !ok || earlier != earlierUnavailable {
+		t.Errorf("earlier feedback = %q, want %q", earlier, earlierUnavailable)
+	}
+	if failures, ok := section(input, "Check failures"); !ok || !strings.Contains(failures, "CHECK-TITLE") {
+		t.Errorf("check failures = %q, want the checks", failures)
+	}
+}
+
 // testRun is a revise run of round in repoURL at plan revision rev, created
 // at, with phase.
 func testRun(stage v1alpha1.IntentStage, trigger v1alpha1.IntentRunTrigger, round, rev int32, repoURL string,
@@ -415,10 +461,7 @@ func TestRenderEarlierKeepsTheNewestAndCountsTheRest(t *testing.T) {
 			at: t0.Add(time.Duration(i) * time.Minute), text: fmt.Sprintf("ITEM-%02d %s", i, strings.Repeat("x", 900))})
 	}
 	skip := func(_ context.Context, it reviseFeedbackItem) (bool, error) { return it.key.id != 40, nil }
-	got, err := renderEarlier(context.Background(), items, skip)
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := renderEarlier(context.Background(), items, skip)
 	if len(got) > maxEarlierFeedbackBytes {
 		t.Errorf("earlier feedback = %d bytes, over %d", len(got), maxEarlierFeedbackBytes)
 	}
@@ -433,8 +476,70 @@ func TestRenderEarlierKeepsTheNewestAndCountsTheRest(t *testing.T) {
 	if strings.Index(got, "ITEM-37") > strings.Index(got, "ITEM-38") {
 		t.Error("earlier feedback is not oldest first")
 	}
-	if got, _ := renderEarlier(context.Background(), items[:2], skip); strings.Contains(got, "omitted") {
+	if got := renderEarlier(context.Background(), items[:2], skip); strings.Contains(got, "omitted") {
 		t.Errorf("nothing was left out, yet %q", got)
+	}
+}
+
+// TestRenderEarlierSkipsAFailedLookup: an older item GitHub fails to
+// verify is left out, never fatal to the round.
+func TestRenderEarlierSkipsAFailedLookup(t *testing.T) {
+	t0 := time.Date(2026, 10, 8, 9, 0, 0, 0, time.UTC)
+	items := []reviseFeedbackItem{
+		{key: feedbackKey{feedbackComment, 1}, at: t0, text: "OLDER"},
+		{key: feedbackKey{feedbackComment, 2}, at: t0.Add(time.Minute), text: "FAILS"},
+	}
+	verify := func(_ context.Context, it reviseFeedbackItem) (bool, error) {
+		if it.key.id == 2 {
+			return false, errors.New("graphql: something went wrong")
+		}
+		return true, nil
+	}
+	if got := renderEarlier(context.Background(), items, verify); !strings.Contains(got, "OLDER") ||
+		strings.Contains(got, "FAILS") {
+		t.Errorf("earlier feedback = %q, want the failed lookup skipped", got)
+	}
+}
+
+// TestRenderFreshVerifiesOnlyWhatItShows: the new feedback looks up only
+// the items it can show, newest first, so one past the bound is never
+// asked about, and an item that does not verify takes no slot.
+func TestRenderFreshVerifiesOnlyWhatItShows(t *testing.T) {
+	t0 := time.Date(2026, 10, 8, 9, 0, 0, 0, time.UTC)
+	n := maxFeedbackItems + 20
+	items := make([]reviseFeedbackItem, 0, n)
+	for i := range n {
+		items = append(items, reviseFeedbackItem{key: feedbackKey{feedbackComment, int64(i + 1)},
+			at: t0.Add(time.Duration(i) * time.Minute), text: fmt.Sprintf("ITEM-%03d", i)})
+	}
+	newest := int64(n)
+	asked := 0
+	verify := func(_ context.Context, it reviseFeedbackItem) (bool, error) {
+		asked++
+		if it.key.id == 1 {
+			return false, errors.New("the oldest item is past the bound and never asked about")
+		}
+		return it.key.id != newest, nil
+	}
+	got, err := renderFresh(context.Background(), items, verify)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asked != maxFeedbackItems+1 {
+		t.Errorf("verified %d items, want %d", asked, maxFeedbackItems+1)
+	}
+	if shown := strings.Count(got, "ITEM-"); shown != maxFeedbackItems {
+		t.Errorf("shown %d items, want %d", shown, maxFeedbackItems)
+	}
+	last := fmt.Sprintf("ITEM-%03d", n-1)
+	if strings.Contains(got, last) || !strings.Contains(got, fmt.Sprintf("ITEM-%03d", n-2)) {
+		t.Errorf("new feedback did not keep the newest verified items")
+	}
+	if strings.Index(got, fmt.Sprintf("ITEM-%03d", n-3)) > strings.Index(got, fmt.Sprintf("ITEM-%03d", n-2)) {
+		t.Error("new feedback is not oldest first")
+	}
+	if _, err := renderFresh(context.Background(), items[:2], verify); err == nil {
+		t.Error("a failed lookup of a shown item did not fail the round's new feedback")
 	}
 }
 
@@ -462,11 +567,11 @@ func TestRoundSectionsSeededProperty(t *testing.T) {
 				at:   t0.Add(time.Duration(rng.Intn(1000)) * time.Second),
 				text: "PR comment by x:\n" + visibleFeedback(hostile(3000))})
 		}
-		earlier, err := renderEarlier(context.Background(), items, all)
+		earlier := renderEarlier(context.Background(), items, all)
+		fresh, err := renderFresh(context.Background(), items, all)
 		if err != nil {
 			t.Fatal(err)
 		}
-		fresh := renderFresh(items)
 		run := testRun(v1alpha1.IntentStageRevise, v1alpha1.IntentRunTriggerReview, 2, 1, appRepoURL, t0,
 			v1alpha1.RunPending)
 		prev := testRun(v1alpha1.IntentStageRevise, v1alpha1.IntentRunTriggerReview, 1, 1, appRepoURL, t0,

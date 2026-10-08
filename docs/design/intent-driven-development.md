@@ -769,14 +769,16 @@ closes the intent issue itself.
     a round starts, not what it reads.
   - The rest of the thread goes first, under `### Earlier feedback (context from earlier rounds)`, marked as context
     that earlier rounds may already have acted on: at most 16 KiB, the newest kept, with a visible "N older items
-    omitted" line. An older item since edited, deleted or no longer an approver's is left out; only the round's own
-    consumed reviews and command fail the round that way.
+    omitted" line. An older item since edited, deleted or no longer an approver's, or one GitHub fails to verify, is
+    left out; only the round's own consumed reviews and command fail the round that way. Items are verified newest first
+    and only until the section is full, for the new feedback too.
   - patchy's own comments (its bot, any bot account, anything carrying its marker), non-approvers' comments and bare
     `/patchy` commands are never included; a command's note is.
   - When the round before, in the same repository and plan revision, failed, `### Previous round's outcome` carries its
     outcome and detail (at most 4 KiB), fenced as data.
   - A check-fix round gets the earlier thread and the previous outcome too, all as context: its own input is its check
-    failures, and its failure signature is theirs alone.
+    failures, and its failure signature is theirs alone. If GitHub will not give the thread, the section says "Earlier
+    feedback unavailable." and the round runs on its checks.
   - Inline comments carry path, line and side, plus the tail of the diff hunk (at most 1 KiB).
   - Limits on the new feedback: at most 40 items, 2 KiB each, 24 KiB in total. With the plan (56 KiB), the round's input
     stays under about 173 KiB.

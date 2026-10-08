@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -173,9 +174,15 @@ type roundInput struct {
 	checks                       []string
 }
 
+// earlierUnavailable stands in for a check-fix round's earlier thread when
+// GitHub would not give it.
+const earlierUnavailable = "Earlier feedback unavailable."
+
 // roundFeedback reads a round's input at its pinned head. A check-fix
 // round's thread is all context: its new input is its checks, and its
-// failure signature is theirs alone.
+// failure signature is theirs alone. So the thread is best effort there: a
+// failed read shows earlierUnavailable instead of blocking a round that
+// never needed it.
 func (p *pass) roundFeedback(ctx context.Context, run *v1alpha1.IntentRun, pr v1alpha1.IntentPullRequest,
 	head string) (roundInput, error) {
 	var in roundInput
@@ -186,15 +193,20 @@ func (p *pass) roundFeedback(ctx context.Context, run *v1alpha1.IntentRun, pr v1
 			return in, err
 		}
 		in.feedback, in.signature, in.checks = d.feedback, d.signature, d.names
+		_, earlier, err := p.reviseFeedback(ctx, run, pr)
+		if err != nil {
+			p.r.log().LogAttrs(ctx, slog.LevelWarn, "could not read a check-fix round's earlier feedback",
+				slog.String("intent", p.in.Name), slog.String("run", run.Name), slog.Any("error", err))
+			earlier = earlierUnavailable
+		}
+		in.earlier = earlier
+		return in, nil
 	}
 	fresh, earlier, err := p.reviseFeedback(ctx, run, pr)
 	if err != nil {
 		return in, err
 	}
-	in.earlier = earlier
-	if run.Spec.Trigger != v1alpha1.IntentRunTriggerChecks {
-		in.feedback = fresh
-	}
+	in.feedback, in.earlier = fresh, earlier
 	return in, nil
 }
 
@@ -251,33 +263,32 @@ func (p *pass) reviseFeedback(ctx context.Context, run *v1alpha1.IntentRun,
 		}
 	}
 	v := verifier{p: p, repo: pr.Repository, approved: map[string]bool{}}
-	kept := fresh[:0]
-	for _, it := range fresh {
-		ok, err := v.verify(ctx, it)
-		if err != nil {
-			return "", "", err
-		}
-		if ok {
-			kept = append(kept, it)
-		}
-	}
-	earlier, err = renderEarlier(ctx, old, v.verify)
+	feedback, err = renderFresh(ctx, fresh, v.verify)
 	if err != nil {
 		return "", "", err
 	}
-	return renderFresh(kept), earlier, nil
+	return feedback, renderEarlier(ctx, old, v.verify), nil
 }
 
 // renderFresh is the round's new feedback as before the thread was read:
-// the newest maxFeedbackItems, oldest first, within maxFeedbackTotalBytes.
-func renderFresh(items []reviseFeedbackItem) string {
+// the newest maxFeedbackItems that verify, oldest first, within
+// maxFeedbackTotalBytes. Like renderEarlier, an item is verified only when it
+// is about to be shown, so a busy thread costs GitHub no more lookups than
+// the bound can show; but a lookup error fails the round, whose new
+// feedback must be what the approvers wrote.
+func renderFresh(ctx context.Context, items []reviseFeedbackItem,
+	verify func(context.Context, reviseFeedbackItem) (bool, error)) (string, error) {
 	slices.SortStableFunc(items, func(a, b reviseFeedbackItem) int { return a.at.Compare(b.at) })
-	if len(items) > maxFeedbackItems {
-		items = items[len(items)-maxFeedbackItems:]
-	}
 	var out []string
 	total := 0
-	for i := len(items) - 1; i >= 0; i-- {
+	for i := len(items) - 1; i >= 0 && len(out) < maxFeedbackItems; i-- {
+		ok, err := verify(ctx, items[i])
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			continue
+		}
 		item := fencedBounded(items[i].text, maxFeedbackItemBytes)
 		if total+len(item)+2 > maxFeedbackTotalBytes {
 			break
@@ -286,28 +297,25 @@ func renderFresh(items []reviseFeedbackItem) string {
 		out = append(out, item)
 	}
 	slices.Reverse(out)
-	return strings.Join(out, "\n\n")
+	return strings.Join(out, "\n\n"), nil
 }
 
 // renderEarlier is the thread's older items, newest kept, oldest first,
 // within maxEarlierFeedbackBytes, with a visible count of the older items
 // left out. An item is verified only when it is about to be shown, so a long
 // thread costs GitHub no more lookups than the bound can show; one edited,
-// vanished or no longer an approver's is skipped, never fatal: a later edit
-// to an old comment must not block every later round.
+// vanished, no longer an approver's or whose lookup failed is skipped, never
+// fatal: a later edit to an old comment, or GitHub failing to say, must not
+// block every later round.
 func renderEarlier(ctx context.Context, items []reviseFeedbackItem,
-	verify func(context.Context, reviseFeedbackItem) (bool, error)) (string, error) {
+	verify func(context.Context, reviseFeedbackItem) (bool, error)) string {
 	slices.SortStableFunc(items, func(a, b reviseFeedbackItem) int { return a.at.Compare(b.at) })
 	// Room for the omitted line, which is at most this long.
 	budget := maxEarlierFeedbackBytes - len(omittedLine(len(items))) - 2
 	var out []string
 	total, omitted := 0, 0
 	for i := len(items) - 1; i >= 0; i-- {
-		ok, err := verify(ctx, items[i])
-		if err != nil {
-			return "", err
-		}
-		if !ok {
+		if ok, err := verify(ctx, items[i]); err != nil || !ok {
 			continue
 		}
 		item := fencedBounded(items[i].text, maxFeedbackItemBytes)
@@ -324,7 +332,7 @@ func renderEarlier(ctx context.Context, items []reviseFeedbackItem,
 		out = append(out, omittedLine(omitted))
 	}
 	slices.Reverse(out)
-	return strings.Join(out, "\n\n"), nil
+	return strings.Join(out, "\n\n")
 }
 
 func omittedLine(n int) string {

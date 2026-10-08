@@ -134,7 +134,8 @@ func later(a, b *v1alpha1.IntentRun) bool {
 // trigger up to the previous plan's posting, under feedbackSince's filters
 // (not patchy's, not a bot's, an approver's, never edited), the newest kept
 // within maxEarlierFeedbackBytes with a visible count of the older ones left
-// out. An edited or vanished comment is skipped. "" when there is no
+// out. An edited or vanished comment, or one whose edit check fails, is
+// skipped. "" when there is no
 // previous plan comment.
 func (p *pass) earlierIssueComments(ctx context.Context, prev *v1alpha1.IntentPlan) (string, error) {
 	if prev == nil || prev.PostedAt == nil {
@@ -158,5 +159,5 @@ func (p *pass) earlierIssueComments(ctx context.Context, prev *v1alpha1.IntentPl
 	return renderEarlier(ctx, items, func(ctx context.Context, it reviseFeedbackItem) (bool, error) {
 		edited, err := p.everEdited(ctx, &ghclient.Comment{ID: it.key.id, NodeID: it.nodeID})
 		return !edited, err
-	})
+	}), nil
 }

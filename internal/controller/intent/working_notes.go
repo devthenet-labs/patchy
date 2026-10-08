@@ -33,7 +33,7 @@ const workingNotesHeading = "Working notes from the previous round"
 const notesTruncated = "\n[patchy truncated these working notes here: they ran past 6 KiB]"
 
 // runWorkingNotes is the working notes of run's stored report, escaped so
-// every character shows, cut to maxWorkingNotesBytes with notesTruncated,
+// every character shows (backticks too, when no fence would fit), cut to maxWorkingNotesBytes with notesTruncated,
 // and fenced as data; "" when the run has no report, its report does not
 // parse as a build report, or it has no notes.
 func runWorkingNotes(run *v1alpha1.IntentRun) string {
@@ -49,6 +49,12 @@ func runWorkingNotes(run *v1alpha1.IntentRun) string {
 	if notes == "" {
 		return ""
 	}
+	// A fence longer than the bound leaves no room for the notes beside it
+	// (a long run of backticks): show the backticks as escapes first, so the
+	// cut below is the only one and its marker is patchy's.
+	if len(fenced(cutBytes(notes, maxWorkingNotesBytes))) > maxWorkingNotesBytes+64 {
+		notes = strings.ReplaceAll(notes, "`", "<U+0060>")
+	}
 	if len(notes) > maxWorkingNotesBytes {
 		end := maxWorkingNotesBytes - len(notesTruncated)
 		for end > 0 && !utf8.RuneStart(notes[end]) {
@@ -56,8 +62,8 @@ func runWorkingNotes(run *v1alpha1.IntentRun) string {
 		}
 		notes = notes[:end] + notesTruncated
 	}
-	// The fence's own lines fit beside the cut notes; only a run of
-	// backticks as long as the notes would cut them again (fencedBounded).
+	// The fence's own lines always fit beside the cut notes now, so
+	// fencedBounded never cuts or escapes them again.
 	return fencedBounded(notes, maxWorkingNotesBytes+64)
 }
 

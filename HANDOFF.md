@@ -82,9 +82,8 @@ change:
 - **Notes for the builder:** the plan prompt allows an optional `## Notes for the builder` section, under 4 KiB. It is
   part of the plan, and the approval comment adds one line under "Before you approve" when a plan has one.
 
-Gates, green on the branch: `go build ./...`, `go vet ./...`, `go test ./internal/... ./api/...`, `mise run lint`,
-`cd e2e && go vet ./...` and `mise run e2e -- -timeout 25m -run "TestIntent|TestMultiRepoIntent"` (275 s). The full
-`mise run pr` and the full e2e suite were not run for PR 2.
+Gates, all green on the branch: `mise run pr` (envtest included), the full `mise run e2e -- -timeout 25m` (588 s) and
+`cd e2e && go vet ./...`.
 
 Parked: never-discard-work and session resume (branch `feature/never-discard-work`, unmerged).
 

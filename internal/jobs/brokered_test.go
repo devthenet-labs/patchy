@@ -47,7 +47,22 @@ func createJob(t *testing.T, cfg Config, spec Spec) *batchv1.Job {
 	if err != nil {
 		t.Fatalf("get job: %v", err)
 	}
+	// The fake clientset's managed fields are the API server's bookkeeping,
+	// not what Create sent, and each entry carries the wall clock: drop them
+	// so the Job depends on the Config and Spec alone.
+	job.ManagedFields = nil
 	return job
+}
+
+// TestCreateJobCarriesNoClockStamp: createJob's Job is a function of the
+// Config and Spec alone, so two of them compare byte for byte. The fake
+// clientset tracks managed fields and stamps each entry with the wall clock
+// at second resolution, so a comparison that straddled a second boundary
+// differed (TestDNSClusterLeavesTheJobAlone failed about 1 run in 40).
+func TestCreateJobCarriesNoClockStamp(t *testing.T) {
+	if mf := createJob(t, brokeredConfig(), testSpec()).ManagedFields; len(mf) != 0 {
+		t.Errorf("createJob kept %d managedFields entries (stamped %v)", len(mf), mf[0].Time)
+	}
 }
 
 func envMap(ct corev1.Container) map[string]corev1.EnvVar {

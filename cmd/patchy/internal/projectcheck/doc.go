@@ -48,7 +48,9 @@
 //     preview-controller requires sign-in): the relay answers its discovery
 //     document at its issuer; Dex accepts the relay's client with its one
 //     redirect URI (asked of Dex's authorization endpoint without a session,
-//     following nothing, since Dex's clients are not readable); and, once
+//     following only redirects on Dex's own host, such as a single-connector
+//     Dex's hop to its connector endpoint, never one off it, since Dex's
+//     clients are not readable); and, once
 //     sign-in is required, the placeholder host and every Ready Preview of
 //     the Project answer without credentials with the load balancer's
 //     redirect to the relay for their own slot's client

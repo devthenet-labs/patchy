@@ -30,6 +30,14 @@ const (
 	dexClient   = "patchy-preview-auth"
 )
 
+// dexAuthQuery is what a single-connector Dex carries over to its
+// connector's endpoint; githubAuthorize is where that endpoint sends a
+// registered client and redirect URI (live Dex v2.45.1).
+const (
+	dexAuthQuery    = "client_id=" + dexClient + "&redirect_uri=x&response_type=code&scope=openid&state=s"
+	githubAuthorize = "https://github.com/login/oauth/authorize?client_id=gh&state=req"
+)
+
 // answer is one canned HTTP answer, or the error the request fails with.
 type answer struct {
 	status   int
@@ -96,7 +104,8 @@ func signInWorld(t *testing.T) (*world, *fakeWeb) {
 			body: `{"issuer":"` + relayIssuer + `","authorization_endpoint":"` + relayIssuer + `/authorize"}`},
 		"dex.acme.test/.well-known/openid-configuration": {status: http.StatusOK,
 			body: `{"issuer":"` + dexIssuer + `","authorization_endpoint":"` + dexIssuer + `/auth"}`},
-		"dex.acme.test/auth":          {status: http.StatusFound, location: dexIssuer + "/auth/github?req=x"},
+		"dex.acme.test/auth":          {status: http.StatusFound, location: "/auth/github?" + dexAuthQuery},
+		"dex.acme.test/auth/github":   {status: http.StatusFound, location: githubAuthorize},
 		"placeholder." + suffix + "/": probeRedirect("placeholder", 0),
 		"shop-7." + suffix + "/":      probeRedirect("shop-7", 1),
 		"shop-8." + suffix + "/":      {status: http.StatusOK, body: "the app, unprotected"},
@@ -190,6 +199,29 @@ func TestPreviewAuthAllPass(t *testing.T) {
 	}
 }
 
+// TestDexCheckStaysOnDexHost: the Dex check follows a single-connector
+// Dex's redirect to its connector endpoint, carrying the query, and never
+// the connector's redirect off Dex's host.
+func TestDexCheckStaysOnDexHost(t *testing.T) {
+	w, web := signInWorld(t)
+	w.runWeb(web)
+	var paths []string
+	for _, u := range web.asked {
+		if u.Host == "github.com" {
+			t.Errorf("followed Dex's redirect off its host to %s", u)
+		}
+		if u.Host == "dex.acme.test" {
+			paths = append(paths, u.Path)
+		}
+		if u.Path == "/auth/github" && u.Query().Get("client_id") != dexClient {
+			t.Errorf("the connector endpoint was asked %s", u)
+		}
+	}
+	if got := strings.Join(paths, " "); got != "/.well-known/openid-configuration /auth /auth/github" {
+		t.Errorf("asked Dex for %s", got)
+	}
+}
+
 // TestPreviewAuthFailures: each part of sign-in that is wrong fails or
 // skips its own line, with a reason that says what to fix.
 func TestPreviewAuthFailures(t *testing.T) {
@@ -250,6 +282,60 @@ func TestPreviewAuthFailures(t *testing.T) {
 			},
 			check: CheckPreviewAuthDex, status: checkreport.Fail, want: []string{"Dex has no client " + dexClient,
 				"Invalid client_id"},
+		},
+		"single connector, redirect URI not registered": {
+			change: func(_ *world, f *fakeWeb) {
+				f.answers["dex.acme.test/auth/github"] = answer{status: http.StatusBadRequest,
+					body: "<h2>Bad Request</h2><p>Unregistered redirect_uri.</p>"}
+			},
+			check: CheckPreviewAuthDex, status: checkreport.Fail, want: []string{"refuses redirect URI " + relayIssuer +
+				"/dex/callback", "Unregistered redirect_uri"},
+		},
+		"single connector, no such client": {
+			change: func(_ *world, f *fakeWeb) {
+				f.answers["dex.acme.test/auth/github"] = answer{status: http.StatusNotFound,
+					body: "<h2>Not Found</h2><p>Invalid client_id.</p>"}
+			},
+			check: CheckPreviewAuthDex, status: checkreport.Fail, want: []string{"Dex has no client " + dexClient,
+				"Invalid client_id"},
+		},
+		"Dex redirects straight off its host": {
+			change: func(_ *world, f *fakeWeb) {
+				f.answers["dex.acme.test/auth"] = answer{status: http.StatusFound, location: githubAuthorize}
+				delete(f.answers, "dex.acme.test/auth/github")
+			},
+			check: CheckPreviewAuthDex, status: checkreport.Pass, want: []string{"https://github.com"},
+		},
+		"Dex redirects by absolute URL on its host": {
+			change: func(_ *world, f *fakeWeb) {
+				f.answers["dex.acme.test/auth"] = answer{status: http.StatusFound,
+					location: dexIssuer + "/auth/github?" + dexAuthQuery}
+			},
+			check: CheckPreviewAuthDex, status: checkreport.Pass, want: []string{"https://github.com"},
+		},
+		"Dex redirect loop": {
+			change: func(_ *world, f *fakeWeb) {
+				f.answers["dex.acme.test/auth/github"] = answer{status: http.StatusFound, location: "/auth?" + dexAuthQuery}
+			},
+			check: CheckPreviewAuthDex, status: checkreport.Skip, want: []string{"redirect loop"},
+		},
+		"Dex redirects too often": {
+			change: func(_ *world, f *fakeWeb) {
+				f.answers["dex.acme.test/auth/github"] = answer{status: http.StatusFound, location: "/hop1"}
+				for i := 1; i <= dexMaxHops; i++ {
+					f.answers[fmt.Sprintf("dex.acme.test/hop%d", i)] = answer{status: http.StatusFound,
+						location: fmt.Sprintf("/hop%d", i+1)}
+				}
+			},
+			check: CheckPreviewAuthDex, status: checkreport.Skip, want: []string{"more than", "redirects"},
+		},
+		"Dex redirects to another scheme on its host": {
+			change: func(_ *world, f *fakeWeb) {
+				f.answers["dex.acme.test/auth"] = answer{status: http.StatusFound, location: "http://dex.acme.test/auth/github"}
+				f.answers["dex.acme.test/auth/github"] = answer{status: http.StatusBadRequest,
+					body: "<p>Unregistered redirect_uri.</p>"}
+			},
+			check: CheckPreviewAuthDex, status: checkreport.Pass, want: []string{"http://dex.acme.test"},
 		},
 		"Dex shows its connector page": {
 			change: func(_ *world, f *fakeWeb) {

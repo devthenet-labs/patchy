@@ -117,15 +117,23 @@ func (r *run) relayDiscovery(ctx context.Context, issuer string) {
 	}
 }
 
+// dexMaxHops bounds the redirects the Dex check follows on Dex's own host.
+const dexMaxHops = 5
+
 // dexRedirect checks that Dex has the relay's static client with the
 // relay's one redirect URI, <issuer>/dex/callback, registered: the one
 // per-install IdP setup. Dex's client list is not readable without its
 // storage, so the check asks Dex's authorization endpoint the way a
-// sign-in would, without a browser session: Dex answers an unknown client
-// and an unregistered redirect URI with an error page, and a registered
-// pair with its sign-in page or a redirect to its connector. It follows
-// nothing, so nobody signs in; Dex may keep the unused request until it
-// expires.
+// sign-in would, without a browser session. Dex with a single connector
+// answers any client_id there with a redirect to its own /auth/<connector>
+// (live Dex v2.45.1 does, for registered and unknown clients alike), and only
+// that endpoint judges the client, so the check follows redirects that stay
+// on the authorization endpoint's scheme and host, at most dexMaxHops of
+// them, and judges the answer it ends on: a redirect off Dex's host (to the
+// connector's upstream) or a sign-in page passes, Dex's error pages for an
+// unknown client or an unregistered redirect URI fail, and a redirect loop
+// or too many hops skip. It never follows a redirect off Dex's host, so
+// nobody signs in; Dex may keep the unused request until it expires.
 func (r *run) dexRedirect(ctx context.Context, s settings, issuer string) {
 	dexIssuer, clientID := s.auth.data[keyAuthDexIssuer], s.auth.data[keyAuthDexClientID]
 	redirect := issuer + "/dex/callback"
@@ -148,19 +156,56 @@ func (r *run) dexRedirect(ctx context.Context, s settings, issuer string) {
 		return
 	}
 	authURL, err := url.Parse(doc.AuthorizationEndpoint)
-	if err != nil || authURL.Scheme != "https" {
+	if err != nil || authURL.Scheme != "https" || authURL.Host == "" {
 		r.add(CheckPreviewAuthDex, "", checkreport.Fail, "Dex's authorization endpoint %q is not an https URL",
 			doc.AuthorizationEndpoint)
 		return
 	}
 	authURL.RawQuery = url.Values{"client_id": {clientID}, "redirect_uri": {redirect}, "response_type": {"code"},
 		"scope": {"openid"}, "state": {"patchy-check-project"}}.Encode()
-	status, body, location, err := r.httpGet(ctx, authURL.String())
-	page := pageText(body)
+	next := authURL
+	seen := map[string]bool{}
+	for hop := 0; ; hop++ {
+		seen[next.String()] = true
+		status, body, location, err := r.httpGet(ctx, next.String())
+		if err != nil {
+			r.add(CheckPreviewAuthDex, "", checkreport.Skip, "cannot reach Dex's authorization endpoint at %s: %v",
+				next.Redacted(), err)
+			return
+		}
+		if status >= 300 && status < 400 && location != "" {
+			to, err := next.Parse(location)
+			switch {
+			case err != nil:
+				r.add(CheckPreviewAuthDex, "", checkreport.Skip, "Dex answered %d with an unreadable Location %q",
+					status, location)
+				return
+			case to.Scheme != authURL.Scheme || to.Host != authURL.Host:
+				r.add(CheckPreviewAuthDex, "", checkreport.Pass, "Dex at %s accepts client %s with redirect URI %s "+
+					"(it answered %d, on to %s://%s)", dexIssuer, clientID, redirect, status, to.Scheme, to.Host)
+				return
+			case seen[to.String()]:
+				r.add(CheckPreviewAuthDex, "", checkreport.Skip, "Dex's authorization endpoint is a redirect loop "+
+					"(%s leads back to %s), which says nothing about the client", next.Path, to.Path)
+				return
+			case hop >= dexMaxHops:
+				r.add(CheckPreviewAuthDex, "", checkreport.Skip, "Dex's authorization endpoint answered more than %d "+
+					"redirects on its own host (the last to %s), which says nothing about the client", dexMaxHops,
+					to.Path)
+				return
+			}
+			next = to
+			continue
+		}
+		r.judgeDex(dexIssuer, clientID, redirect, status, pageText(body))
+		return
+	}
+}
+
+// judgeDex judges the answer the Dex check ended on that is not a redirect.
+func (r *run) judgeDex(dexIssuer, clientID, redirect string, status int, page string) {
 	switch {
-	case err != nil:
-		r.add(CheckPreviewAuthDex, "", checkreport.Skip, "cannot reach Dex's authorization endpoint: %v", err)
-	case status == http.StatusOK || (status >= 300 && status < 400 && location != ""):
+	case status == http.StatusOK:
 		r.add(CheckPreviewAuthDex, "", checkreport.Pass, "Dex at %s accepts client %s with redirect URI %s "+
 			"(it answered %d)", dexIssuer, clientID, redirect, status)
 	case strings.Contains(page, "redirect_uri"):

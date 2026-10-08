@@ -156,8 +156,9 @@ type IntentRunTreeStatus struct {
 type IntentRunInputs struct {
 	// ConfigMap names the run's own input ConfigMap (owned by this run):
 	// the issue.md and investigation.md handed to the Job — the intent
-	// snapshot, and for build and revise runs the approved plan plus, for a
-	// revise run, that round's feedback and compare patch.
+	// snapshot (and on a replan or revival the planner's context file), and
+	// for build and revise runs the approved plan plus, for a revise run,
+	// that round's feedback and compare patch.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	ConfigMap string `json:"configMap"`
@@ -177,6 +178,13 @@ type IntentRunInputs struct {
 	// +optional
 	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
 	PlanDigest string `json:"planDigest,omitempty"`
+	// ContextDigest is the digest of the context file a replan's or a
+	// revival's plan run is handed (Intent status.input.contextDigest):
+	// re-hashed at launch, and a mismatch stops it. Empty for a run with no
+	// context, and set on plan runs only.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
+	ContextDigest string `json:"contextDigest,omitempty"`
 	// ReviewIDs are the GitHub review ids a review or command round
 	// consumed (slice 1b): recorded here, on the immutable spec, so no
 	// review ever starts a second round. Required on a review round.
@@ -268,6 +276,7 @@ type IntentRunGrant struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.inputs.checkRunIDs) || (has(self.trigger) && self.trigger == 'checks')",message="inputs.checkRunIDs are consumed only by checks rounds"
 // +kubebuilder:validation:XValidation:rule="!has(self.inputs.statusIDs) || (has(self.trigger) && self.trigger == 'checks')",message="inputs.statusIDs are consumed only by checks rounds"
 // +kubebuilder:validation:XValidation:rule="!has(self.inputs.commandID) || (has(self.trigger) && self.trigger == 'command')",message="inputs.commandID is consumed only by command rounds"
+// +kubebuilder:validation:XValidation:rule="!has(self.inputs.contextDigest) || self.stage == 'plan'",message="inputs.contextDigest is set on plan runs only: a build or revise run is handed the approved plan alone"
 // +kubebuilder:validation:XValidation:rule="!has(self.trees) || self.stage == 'plan'",message="spec.trees is set on plan runs only: a build or revise run works on its one repository"
 // +kubebuilder:validation:XValidation:rule="!has(self.trees) || self.trees.all(t, (t.url.endsWith('.git') ? t.url.substring(0, size(t.url) - 4) : t.url).lowerAscii() != (self.repository.url.endsWith('.git') ? self.repository.url.substring(0, size(self.repository.url) - 4) : self.repository.url).lowerAscii() && self.trees.exists_one(u, (u.url.endsWith('.git') ? u.url.substring(0, size(u.url) - 4) : u.url).lowerAscii() == (t.url.endsWith('.git') ? t.url.substring(0, size(t.url) - 4) : t.url).lowerAscii()))",message="every tree is a different repository from the others and from spec.repository (compared case-insensitively, ignoring a .git suffix)"
 type IntentRunSpec struct {

@@ -188,10 +188,19 @@ spec:
                     description: |-
                       ConfigMap names the run's own input ConfigMap (owned by this run):
                       the issue.md and investigation.md handed to the Job — the intent
-                      snapshot, and for build and revise runs the approved plan plus, for a
-                      revise run, that round's feedback and compare patch.
+                      snapshot (and on a replan or revival the planner's context file), and
+                      for build and revise runs the approved plan plus, for a revise run,
+                      that round's feedback and compare patch.
                     maxLength: 253
                     minLength: 1
+                    type: string
+                  contextDigest:
+                    description: |-
+                      ContextDigest is the digest of the context file a replan's or a
+                      revival's plan run is handed (Intent status.input.contextDigest):
+                      re-hashed at launch, and a mismatch stops it. Empty for a run with no
+                      context, and set on plan runs only.
+                    pattern: ^sha256:[0-9a-f]{64}$
                     type: string
                   inputDigest:
                     description: |-
@@ -458,6 +467,9 @@ spec:
             - message: inputs.commandID is consumed only by command rounds
               rule: '!has(self.inputs.commandID) || (has(self.trigger) && self.trigger
                 == ''command'')'
+            - message: 'inputs.contextDigest is set on plan runs only: a build or
+                revise run is handed the approved plan alone'
+              rule: '!has(self.inputs.contextDigest) || self.stage == ''plan'''
             - message: 'spec.trees is set on plan runs only: a build or revise run
                 works on its one repository'
               rule: '!has(self.trees) || self.stage == ''plan'''

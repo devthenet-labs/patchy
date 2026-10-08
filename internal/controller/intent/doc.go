@@ -170,11 +170,18 @@
 // move when a pending review is submitted, and a same-second edit may leave
 // it unchanged. Before a command is acted on, GitHub's own edit record
 // (GraphQL lastEditedAt/includesCreatedEdit) is read. For the same reason an
-// edited comment never reaches a replan's snapshot. An approval is accepted
-// only if it is newer than the plan comment, the plan comment re-fetched
-// still hashes to the digest recorded when it was posted and was never
-// edited, the issue re-read still renders to the input snapshot's digest,
-// and, for the label, the label is still on the issue.
+// edited comment never reaches a replan's snapshot, or its context file. An
+// approval is accepted only if it is newer than the plan comment, the plan
+// comment re-fetched still hashes to the digest recorded when it was posted
+// and was never edited, the issue re-read still renders to the input
+// snapshot's digest, and, for the label, the label is still on the issue.
+//
+// A replan's or revival's context file (planContext: the previous plan, the
+// last build-side failure, the approvers' comments up to the previous plan)
+// sits beside the request in the input snapshot, never in it, so the
+// approval stays bound to the request alone. It is pinned by its own digest
+// (status.input.contextDigest, then each plan run's inputs.contextDigest),
+// re-hashed as the run's input is written and again at launch.
 //
 // A command from someone refused without asking GitHub (not an approver, or
 // a bot) is refused whatever it says, and its author gets that refusal once

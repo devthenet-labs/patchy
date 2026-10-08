@@ -27,9 +27,11 @@ matters when debugging a Job spec or running the runtime standalone.
 
 An intent run (the intent-driven development work kind) uses two more phases, over the same Job seams: `PATCHY_FINDING`
 carries the IntentRun's name, `input/issue.md` the intent snapshot for a plan, and `input/investigation.md` the approved
-plan for a build. A build's `input/issue.md` must be empty, and a build handed a request is refused with a fatal event
-before any agent runs: the approved plan, which the approver read verbatim, is the build's whole contract, while the
-request was seen only as GitHub rendered it.
+plan for a build. On a replan or revival, a plan's `input/investigation.md` is the context file of the earlier work. The
+plan prompt names it under "Earlier work on this intent" as data, not instructions, and does not quote it. A plan with
+no such file, or an empty one, gets the prompt without that section. A build's `input/issue.md` must be empty, and a
+build handed a request is refused with a fatal event before any agent runs: the approved plan, which the approver read
+verbatim, is the build's whole contract, while the request was seen only as GitHub rendered it.
 
 - **`plan`** reads the request and the tree read-only and writes `reports/plan.md`, emitted as a `plan` event. It runs
   on the investigate stage's configuration — `PATCHY_INVESTIGATE_HARNESS`/`_MODEL`/`_TIMEOUT`, and

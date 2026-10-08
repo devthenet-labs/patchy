@@ -171,9 +171,10 @@ within:
   `patchy-<hash>-int-a<n>`.
 - `Spec.Finding` and `Spec.Owner` carry the IntentRun name.
 - `issue.md` carries the intent snapshot to a plan Job, and is empty on a build Job: agent-runner refuses a build handed
-  a request, because the approved plan is the build's whole contract. `investigation.md` carries the approved plan and,
-  for a revision, that round's feedback, the pull request's earlier approver thread, the previous round's failure if it
-  failed, and the compare patch.
+  a request, because the approved plan is the build's whole contract. On a replan or revival, a plan Job's
+  `investigation.md` carries the context file of the earlier work (see Planning). A build Job's `investigation.md`
+  carries the approved plan and, for a revision, that round's feedback, the pull request's earlier approver thread, the
+  previous round's failure if it failed, and the compare patch.
 - `stageEnvNames` gains a `build → PATCHY_REMEDIATE_*` mapping.
 
 The golden Job YAMLs, `prepareScript` and `buildJob` stay byte-identical. The cost is some naming debt, documented at
@@ -263,8 +264,9 @@ names, and a seeded property test checks that they are label-safe and unique wit
 - **Status:**
   - `phase` and `phaseTimes`
   - conditions: `BudgetExhausted`, `RevisionLimitReached`, `ImageRequired`, `ApprovalRejected`
-  - `input{revision, digest, configMap}`. Every entry to `Planning` except a resume from `Blocked` (the first, a replan,
-    a revival) takes a new snapshot at the next revision, so a revision is never reused.
+  - `input{revision, digest, configMap, contextDigest}`. Every entry to `Planning` except a resume from `Blocked` (the
+    first, a replan, a revival) takes a new snapshot at the next revision, so a revision is never reused.
+    `contextDigest` pins the snapshot's context file on a replan or revival, and is empty on the first plan.
   - `plan{revision, digest, configMap, commentID, commentDigest, postedAt, summary, repositories}`. The plan's revision
     is the input revision it was planned from.
   - `approval{by, source, eventID, at, planRevision, planDigest, inputDigest}`. `source` (`label` or `command`) says
@@ -375,7 +377,24 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
      `<!-- patchy:intent patchy/target-1 -->` is posted exactly once.
 3. **Planning.**
    - Snapshot the issue title and body into the immutable ConfigMap `<intent>-input-r<N>`, together with its digest. On
-     a replan, the snapshot also includes approver comments made since the last plan.
+     a replan or revival, the snapshot also includes approver comments made since the last plan.
+   - On a replan or revival (never the first plan), store a context file of the earlier work beside the snapshot, as
+     `context.md`, pinned by its own digest (`input.contextDigest`, copied onto each plan run's `inputs.contextDigest`).
+     It holds three sections, each escaped to visible text, fenced as data and bounded on its own:
+     - the previous plan: the plan recorded before Planning cleared it, read from its `<intent>-plan-r<rev>` ConfigMap.
+       Plan revisions skip numbers, so this is the recorded plan, not revision N-1. It is capped at 64 KiB.
+     - the outcome and detail of the intent's latest build, revise or check-fix run, when that run failed, capped at 4
+       KiB.
+     - the approvers' comments on the issue from the trigger up to the previous plan's posting, under the snapshot's
+       filters (no outsider, no bot, nothing patchy wrote, nothing edited). The newest are kept within 16 KiB, and a
+       line counts the older comments left out. An edited comment is skipped, never fatal.
+
+     The pull request's review thread is not included. The context file is never part of the request: the approval stays
+     bound to the request's digest, which it re-renders from the issue, so a replan's context never refuses an approval.
+     A plan run copies the file into its `investigation.md` after re-hashing it against its pin, and the run controller
+     re-hashes it again at launch. agent-runner names the file in the plan prompt, under "Earlier work on this intent",
+     as data rather than instructions, and the request stays the authority. Worst case the file is about 86 KiB.
+
    - Create a Repository at the default branch.
    - Create the IntentRun `…-plan-r1-a1`. Its input ConfigMap also records the other intents of the Project that have
      not ended and the pull requests they have open in its repositories (at most five, each with its title and its first

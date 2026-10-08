@@ -292,6 +292,9 @@ func (p *pass) createRun(ctx context.Context, stage v1alpha1.IntentStage, repo v
 	round, attempt int32, prev *v1alpha1.PreviousAttempt) (*v1alpha1.IntentRun, error) {
 	name := v1alpha1.IntentRunName(p.in.Name, stage, round, repo.Name, attempt)
 	inputs := v1alpha1.IntentRunInputs{ConfigMap: runInputName(name), InputDigest: p.in.Status.Input.Digest}
+	if stage == v1alpha1.IntentStagePlan {
+		inputs.ContextDigest = p.in.Status.Input.ContextDigest
+	}
 	if stage == v1alpha1.IntentStageBuild {
 		ap := p.in.Status.Approval
 		inputs.InputDigest, inputs.PlanRevision, inputs.PlanDigest = ap.InputDigest, ap.PlanRevision, ap.PlanDigest
@@ -554,7 +557,8 @@ func (p *pass) ensureRunRepository(ctx context.Context, run *v1alpha1.IntentRun,
 // runInput is the run's handoff: issue.md and, for a build,
 // investigation.md; for a plan, the other intents' open pull requests too,
 // when there are any (otherOpenPullRequests), read once as the run's input is
-// created.
+// created, and on a replan or revival the snapshot's context file as its
+// investigation.md, re-hashed against the run's pin.
 func (p *pass) runInput(ctx context.Context, run *v1alpha1.IntentRun) (map[string]string, error) {
 	if run.Spec.Stage == v1alpha1.IntentStagePlan {
 		var cm corev1.ConfigMap
@@ -567,6 +571,13 @@ func (p *pass) runInput(ctx context.Context, run *v1alpha1.IntentRun) (map[strin
 			return nil, fmt.Errorf("input snapshot %s holds %s, not %s", name, got, run.Spec.Inputs.InputDigest)
 		}
 		data := map[string]string{keyIssue: issue}
+		if pin := run.Spec.Inputs.ContextDigest; pin != "" {
+			planCtx := cm.Data[keyContext]
+			if got := digest([]byte(planCtx)); got != pin {
+				return nil, fmt.Errorf("input snapshot %s holds context %s, not %s", name, got, pin)
+			}
+			data[keyInvestigation] = planCtx
+		}
 		if open := p.otherOpenPullRequests(ctx); open != "" {
 			data[keyOpenPullRequests] = open
 		}

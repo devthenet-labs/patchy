@@ -598,7 +598,8 @@ func fullIntentStatus() patchyv1.IntentStatus {
 			LastTransitionTime: schemaNow, Reason: "WithinLimit", Message: "1 of 3 revisions",
 		}},
 		ObservedGeneration: 1,
-		Input:              &patchyv1.IntentInput{Revision: 1, Digest: schemaDigest, ConfigMap: "target-1-input-r1"},
+		Input: &patchyv1.IntentInput{Revision: 1, Digest: schemaDigest, ConfigMap: "target-1-input-r1",
+			ContextDigest: schemaDigest},
 		Plan: &patchyv1.IntentPlan{
 			Revision: 1, Digest: schemaDigest, ConfigMap: "target-1-plan-r1",
 			CommentID: 1001, CommentDigest: schemaDigest, PostedAt: schemaNow.DeepCopy(),
@@ -1124,6 +1125,20 @@ func testIntentRunSchema(ctx context.Context, t *testing.T, c client.Client) {
 		}, true},
 		{"a bare-hex input digest", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) {
 			s.Inputs.InputDigest = strings.Repeat("d", 64)
+		}, true},
+		// A replan's or revival's plan run pins its context file; nothing
+		// but a plan run is handed one.
+		{"a plan run pinning its context", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.ContextDigest = schemaDigest
+		}, false},
+		{"a bare-hex context digest", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.ContextDigest = strings.Repeat("d", 64)
+		}, true},
+		{"a build run pinning a context", patchyv1.IntentStageBuild, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.ContextDigest = schemaDigest
+		}, true},
+		{"a revise run pinning a context", patchyv1.IntentStageRevise, func(s *patchyv1.IntentRunSpec) {
+			s.Inputs.ContextDigest = schemaDigest
 		}, true},
 		{"credentials in the repository url", patchyv1.IntentStagePlan, func(s *patchyv1.IntentRunSpec) {
 			s.Repository.URL = "https://x:token@github.com/acme/shop"

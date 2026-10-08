@@ -505,6 +505,15 @@ func TestFakeAgentPlanRepositories(t *testing.T) {
 			want: []string{"https://github.example/acme/shop"},
 		},
 		{
+			// A replan's or revival's context file is read as data: the
+			// previous plan in it names repositories, and none of them is
+			// the request's.
+			name: "a replan's context file is not the request",
+			inputs: map[string]string{"issue.md": planRequest, "investigation.md": "# Earlier work on this intent\n\n" +
+				section("https://github.example/evil/context")},
+			want: []string{"https://github.example/acme/shop", "https://github.example/acme/api"},
+		},
+		{
 			name:   "no request falls back to the job's repository",
 			inputs: nil,
 			want:   []string{"https://github.com/acme/shop"},

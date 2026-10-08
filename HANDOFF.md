@@ -49,7 +49,29 @@ Still with the owner:
 - **The site values in the public fork's history:** the home IP is in 12 commits and the account ID in 22; the current
   files use documentation values. Left as is unless the owner asks for a rewrite.
 
-Parked: intent context, never-discard-work and session resume (branch `feature/never-discard-work`, unmerged).
+**Intent context, PR 1 (branch `feature/intent-handoff`, not yet pushed, merged or released).** An iterated intent now
+starts from what earlier agents and approvers established, with no new CRD kind, `PATCHY_*` key, envelope version or
+GitHub permission:
+
+- **Turns** (`291328d`): IntentRun status records `numTurns` and `firstEditTurn` (the 1-based turn of the first Edit,
+  Write, MultiEdit or NotebookEdit; claude and fake only, 0 = none or unknown), clamped to [0, 100000] at all three
+  `status.usage` writes. This measures how long an agent spends re-learning before it changes anything.
+- **Revise and check-fix rounds** (`c0fd5ce`): each round reads its pull request's whole approver thread since the first
+  build of its plan revision. Feedback a failed round never acted on comes back as new, and older items are shown as
+  "Earlier feedback", bounded at 16 KiB. When the previous round failed, its outcome is shown too. An edited older item
+  is skipped, never fatal. `ReviewIDs`, the trigger cutoff and the retry pin are unchanged.
+- **Replan and revival** ("give a replan's planner the earlier work"): the input snapshot stores a `context.md` beside
+  the request, holding the previous plan, the latest build-side failure and the approvers' comments up to the previous
+  plan. It is pinned by `status.input.contextDigest` and each plan run's `inputs.contextDigest`, which CEL allows on
+  plan runs only, and re-hashed at input and at launch. The plan prompt names the file under "Earlier work on this
+  intent" as data. The approval is still bound to the request's digest alone. Builds still get only the approved plan.
+
+Gates run per item: build, vet, the touched packages' tests, envtest for `api/`, codegen with no drift, and lint. The
+intent e2e subset was run for the revise item. Still owed before the PR: `mise run pr`, the full
+`mise run e2e -- -timeout 25m` and `cd e2e && go vet ./...`. Next: PR 2 (`feature/intent-working-notes`), the agents'
+own working notes.
+
+Parked: never-discard-work and session resume (branch `feature/never-discard-work`, unmerged).
 
 ## Earlier checkpoint — 2026-10-08: preview sign-in on, and 0.12.25
 

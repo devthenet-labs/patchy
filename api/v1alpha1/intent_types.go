@@ -340,10 +340,20 @@ type IntentInput struct {
 	Digest string `json:"digest"`
 	// ConfigMap names the immutable ConfigMap holding the snapshot
 	// (<intent>-input-r<revision>): the issue title and body, plus, on a
-	// replan, the approvers' comments since the previous plan.
+	// replan, the approvers' comments since the previous plan. On a replan
+	// or revival it also holds the planner's context file (context.md):
+	// the previous plan, the last build's failure and the earlier approver
+	// comments, which are not part of the request or its digest.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	ConfigMap string `json:"configMap"`
+	// ContextDigest is the sha256 of the snapshot's context file, which
+	// this revision's plan runs are handed beside the request; empty when
+	// there is none (always on the first plan). It never binds an
+	// approval: the approval is bound to Digest, the request's.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^sha256:[0-9a-f]{64}$`
+	ContextDigest string `json:"contextDigest,omitempty"`
 }
 
 // IntentPlan is the plan posted for approval.

@@ -234,6 +234,12 @@ plan)
   turn system notice '' 'session 00000000-0000-4000-8000-000000000002 started'
   turn assistant tool_use Read 'input/issue.md'
   turn user tool_result Read 'The request, and the repositories it may change.'
+  # A replan or revival is handed the earlier work beside the request: read
+  # as data, never as the request (the repositories come from issue.md).
+  if [ -s "$workspace/input/investigation.md" ]; then
+    turn assistant tool_use Read 'input/investigation.md'
+    turn user tool_result Read 'The earlier work on this intent: the previous plan and what came of it.'
+  fi
   turn assistant thinking '' 'The request is small and self-contained: one new file at the repository root, no API change, and the existing suite covers the build.'
   turn assistant tool_use Write 'reports/plan.md'
   turn user tool_result Write 'wrote reports/plan.md (0.8 KB)'

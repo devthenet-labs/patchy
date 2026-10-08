@@ -219,7 +219,12 @@ eviction would end the run with nothing to show for it. Sizing advice, with a wo
 | The approve label, or `/patchy approve`           | Approves the posted plan; the build starts              |
 | The trigger label re-applied, or `/patchy replan` | Plans again, with approver comments since the last plan |
 | The trigger label re-applied on a `Failed` intent | Revives it: a new plan, and a new approval              |
-| `/patchy cancel`                                  | Closes the intent and its issue (`not_planned`)         |
+
+A replan or revival does not start from nothing. Its planner is also handed a context file of the earlier work, as data:
+the previous plan, how the latest build, revise or check-fix run ended if it failed, and the approvers' earlier comments
+on the issue (from the trigger up to the previous plan). Each part is bounded. The request stays the authority on what
+to build, and the approval is still bound to the request alone. | `/patchy cancel` | Closes the intent and its issue
+(`not_planned`) |
 
 An action counts only when GitHub's API shows who took it: the actor of a label event, or a comment's author. That
 account must be in the Project's `approvers.logins`, have write access to the intent repository, and not be a bot.
@@ -232,9 +237,10 @@ deleted.
 
 A comment edited after it was posted is never taken as a command: GitHub lets anyone with write access edit anyone's
 comment and still shows the original author. patchy answers it once, saying so, and the author can post the command
-again in a new comment. An edited comment is also left out of a replan's approver comments. An account that is not an
-approver (or is a bot) is refused whatever its command says, and gets that refusal once per intent; its later commands
-get neither a reaction nor a reply, so nobody can make patchy write to GitHub once per comment.
+again in a new comment. An edited comment is also left out of a replan's approver comments and its context file. An
+account that is not an approver (or is a bot) is refused whatever its command says, and gets that refusal once per
+intent; its later commands get neither a reaction nor a reply, so nobody can make patchy write to GitHub once per
+comment.
 
 The plan comment shows the plan's exact bytes in a code block. An approval counts only if all of these hold:
 

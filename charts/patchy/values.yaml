@@ -296,6 +296,10 @@ previewAuth:
         users: []
     # The ALB's auth-session-timeout in seconds: the worst-case revocation and
     # replay window until the ALB probe has shown how its session behaves.
+    # The slot Ingress policies admit it as a ceiling (any shorter session).
+    # In the require stage, lowering it is one upgrade; raising it is two
+    # with the same values (the first records the new ceiling, the second
+    # applies it), as a key rotation is.
     sessionTimeout: 3600
     accessTokenTTL: 10m
     sessionMaxAge: 12h

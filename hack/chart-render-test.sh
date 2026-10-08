@@ -942,6 +942,23 @@ render pa-public $pafull -f "$out/no-allowlist.yaml" --set previewAuth.stage=req
 expect pa-public 'select(.kind == "IngressClassParams" and .metadata.name == "alb-preview") | .spec | has("inboundCIDRs")' false
 cm pa-public preview-controller PATCHY_PREVIEW_AUTH_REQUIRED true
 expect pa-public "$pcm | .data.PATCHY_PREVIEW_AUTH_ANNOTATIONS | from_json | .\"patchy-preview-0\" | .\"alb.ingress.kubernetes.io/auth-session-timeout\"" 900
+# sessionTimeout is a ceiling the slot Ingress policies admit up to, recorded
+# on patchy-preview-ingresses for the next upgrade's lookup (both policies
+# carry it as a variable). A render without a cluster sees no live policy, so
+# it applies sessionTimeout itself: placeholder, controller and policy sets.
+paceil='select(.kind == "ValidatingAdmissionPolicy" and (.metadata.name == "patchy-preview-ingresses" or .metadata.name == "patchy-preview-ingress-auth"))'
+expect pa-public "$paceil | .metadata.name + \" \" + (.metadata.annotations.\"patchy.bitwisemedia.uk/preview-auth-session-timeout\" // \"-\") + \" \" + (.spec.variables[] | select(.name == \"authTimeoutCeiling\") | .expression)" \
+  'patchy-preview-ingresses 900 900
+patchy-preview-ingress-auth - 900'
+expect pa-require "$paceil | .metadata.annotations.\"patchy.bitwisemedia.uk/preview-auth-session-timeout\" // \"-\"" '3600
+-'
+expect pa-permit "$paceil | .metadata.annotations.\"patchy.bitwisemedia.uk/preview-auth-session-timeout\"" 3600
+expect pa-public 'select(.kind == "Ingress" and .metadata.name == "patchy-preview-placeholder") | .metadata.annotations."alb.ingress.kubernetes.io/auth-session-timeout"' 900
+# Both rules judge the timeout as a ceiling, every other pinned key exactly.
+expect pa-public "$paceil | .metadata.name + \" \" + (.spec.validations[].expression | select(test(\"auth-session-timeout' [?]\")) | \"ceiling\")" \
+  'patchy-preview-ingresses ceiling
+patchy-preview-ingress-auth ceiling'
+notes_has notes-pa-require "SESSION TIMEOUT CHANGE" no
 # shellcheck disable=SC2086
 render pa-prefix-only $pafull -f "$out/no-allowlist.yaml" --set previewAuth.stage=require \
   --set previewAuth.permitConfirmedGeneration=1 --set 'preview.prefixListsIDs={pl-0123456789abcdef0}'

@@ -22,10 +22,13 @@
 {{- /*
 Preview sign-in (previewAuth, _preview-auth.tpl): with it enabled, the slot
 Ingress policy admits each admitted key generation's pinned sign-in
-annotations, exactly and as a whole set, and records the generations in its
-preview-auth-admits annotation (the require stage's lookup reads it). In the
-require stage a second, kept policy requires them. Disabled, both policies
-render exactly as before.
+annotations, exactly and as a whole set, except auth-session-timeout, which
+may be any whole number of seconds up to the ceiling (a shorter ALB session is
+never weaker, and so a sessionTimeout change is never refused by the policy
+it replaces). It records the generations in its preview-auth-admits
+annotation and the ceiling in preview-auth-session-timeout (the require
+stage's lookups read both). In the require stage a second, kept policy
+requires them. Disabled, both policies render exactly as before.
 */}}
 {{- $pas := include "patchy.previewAuthState" . | fromJson }}
 {{- $authWant := "" }}
@@ -337,6 +340,9 @@ metadata:
         # The key generations whose sign-in annotations this policy admits;
         # the require stage refuses to apply one not listed here.
         patchy.bitwisemedia.uk/preview-auth-admits: {{ $pas.admits | quote }}
+        # The longest auth-session-timeout this policy admits; the require
+        # stage applies no longer one.
+        patchy.bitwisemedia.uk/preview-auth-session-timeout: {{ int $pas.timeoutCeiling | toString | quote }}
         {{- end }}
 spec:
     failurePolicy: Fail
@@ -363,6 +369,8 @@ spec:
         - name: authKeys
           expression: >-
               {{ $authKeys }}
+        - name: authTimeoutCeiling
+          expression: {{ int $pas.timeoutCeiling | toString | quote }}
         {{- end }}
     validations:
         - expression: >-
@@ -404,14 +412,20 @@ spec:
           message: preview Ingress annotations are restricted to a safe healthcheck path or the named placeholder's Helm ownership{{ if $pas.enabled }}, plus the slot's pinned sign-in annotations{{ end }}
         {{- if $pas.enabled }}
         # Sign-in annotations come as one admitted generation's whole set for
-        # this very slot (its own client Secret and cookie), or not at all.
+        # this very slot (its own client Secret and cookie), or not at all;
+        # its auth-session-timeout a canonical whole number of seconds up to
+        # the ceiling (six digits bound it before int() reads it).
         - expression: >-
               !has(object.metadata.annotations) ||
               !variables.authKeys.exists(k, k in object.metadata.annotations) ||
               (request.namespace in variables.authWant &&
                 variables.authWant[request.namespace].exists(s,
-                  s.all(k, k in object.metadata.annotations && object.metadata.annotations[k] == s[k])))
-          message: preview Ingress sign-in annotations must be exactly one admitted key generation's pinned set for this slot
+                  s.all(k, k in object.metadata.annotations &&
+                    (k == 'alb.ingress.kubernetes.io/auth-session-timeout' ?
+                      object.metadata.annotations[k].matches('^[1-9][0-9]{0,5}$') &&
+                        int(object.metadata.annotations[k]) <= variables.authTimeoutCeiling :
+                      object.metadata.annotations[k] == s[k]))))
+          message: preview Ingress sign-in annotations must be exactly one admitted key generation's pinned set for this slot, with an auth-session-timeout of at most {{ int $pas.timeoutCeiling }} seconds
         {{- end }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -442,7 +456,8 @@ spec:
 {{- if and $pas.enabled (eq $pas.stage "require") }}
 ---
 # Preview sign-in required: every slot Ingress carries its slot's whole pinned
-# set of an admitted key generation, the placeholder included. Its own policy
+# set of an admitted key generation (its auth-session-timeout up to the
+# ceiling, as above), the placeholder included. Its own policy
 # and kept, so a rollback that reverts the others still refuses an Ingress
 # that drops sign-in (scale preview-controller to zero and delete this
 # policy's binding first, and only while preview.inboundCIDRs is still set).
@@ -472,12 +487,18 @@ spec:
         - name: want
           expression: >-
               {{ $authWant }}
+        - name: authTimeoutCeiling
+          expression: {{ int $pas.timeoutCeiling | toString | quote }}
     validations:
         - expression: >-
               request.namespace in variables.want &&
               has(object.metadata.annotations) &&
               variables.want[request.namespace].exists(s,
-                s.all(k, k in object.metadata.annotations && object.metadata.annotations[k] == s[k]))
+                s.all(k, k in object.metadata.annotations &&
+                  (k == 'alb.ingress.kubernetes.io/auth-session-timeout' ?
+                    object.metadata.annotations[k].matches('^[1-9][0-9]{0,5}$') &&
+                      int(object.metadata.annotations[k]) <= variables.authTimeoutCeiling :
+                    object.metadata.annotations[k] == s[k])))
           message: preview Ingresses must carry their slot's pinned sign-in annotations (preview sign-in is required)
 ---
 apiVersion: admissionregistration.k8s.io/v1

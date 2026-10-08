@@ -169,6 +169,12 @@ Preview sign-in: stage {{ $pas.stage }}, key generation {{ int $pas.gen }}{{ if 
      kept on rollback). Before a rollback, read the preview sign-in runbook:
      the kept policy refuses an Ingress that drops sign-in.
 {{- end }}
+{{- if and (eq $pas.stage "require") (ne (int $pas.sessionTimeout) (int $pa.sessionTimeout)) }}
+
+  SESSION TIMEOUT CHANGE IN PROGRESS: the slot Ingress policies now admit an
+  auth-session-timeout of up to {{ int $pas.timeoutCeiling }} seconds, but slot Ingresses still
+  carry {{ int $pas.sessionTimeout }}. Run the same helm upgrade once more to apply {{ int $pa.sessionTimeout }}.
+{{- end }}
 {{- end }}
 {{- $egressMode := include "patchy.egressMode" . }}
 {{- if eq $egressMode "none" }}

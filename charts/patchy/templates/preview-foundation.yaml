@@ -34,6 +34,10 @@
 {{- if not $p.prefixListsIDs }}
 {{- if ne ($p.allowPublicWithAuth | default "") "confirmed" }}{{ fail "preview.inboundCIDRs and preview.prefixListsIDs are both empty, which opens the preview ALB to any address: set preview.allowPublicWithAuth=confirmed to accept that sign-in alone guards previews, and only after the ALB probe has run" }}{{ end }}
 {{- if gt (int .Values.previewAuth.sessionTimeout) 900 }}{{ fail (printf "preview.allowPublicWithAuth needs previewAuth.sessionTimeout of at most 900 (it is %d): until the ALB probe shows how its session cookie behaves, the session is the window a replayed cookie works in" (int .Values.previewAuth.sessionTimeout)) }}{{ end }}
+{{- /* The ceiling the policies admit is sessionTimeout, except for the one
+       upgrade off a chart that pinned the timeout exactly, which keeps the
+       old value applied. Never open the ALB with that longer session. */}}
+{{- if gt (int $pas.timeoutCeiling) 900 }}{{ fail (printf "preview.allowPublicWithAuth needs a session of at most 900 seconds, but the live slot admission policy pins auth-session-timeout %d exactly (a chart before the timeout ceiling), so this upgrade would keep applying it: upgrade once with previewAuth.sessionTimeout=%d and the allowlist still set, then remove the allowlist" (int $pas.timeoutCeiling) (int .Values.previewAuth.sessionTimeout)) }}{{ end }}
 {{- end }}
 {{- end }}
 {{- if not $p.certificateARN }}{{ fail "preview.certificateARN is required when preview.enabled=true" }}{{ end }}

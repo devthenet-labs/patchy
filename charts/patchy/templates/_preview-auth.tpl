@@ -27,6 +27,10 @@ Fields:
   applyGen           require only: the generation the controller and the
                      placeholder put on slot Ingresses
   otherGen           require only: the other admitted generation, or 0
+  sessionTimeout     the auth-session-timeout the pinned sets carry (below)
+  timeoutCeiling     the longest auth-session-timeout the slot Ingress
+                     policies admit, recorded on patchy-preview-ingresses as
+                     preview-auth-session-timeout
 
 A slot's pinned set for generation g:
   alb.ingress.kubernetes.io/auth-type                 oidc
@@ -38,7 +42,20 @@ A slot's pinned set for generation g:
   alb.ingress.kubernetes.io/auth-session-cookie       patchy-preview-s<slot>
   alb.ingress.kubernetes.io/auth-session-timeout      <sessionTimeout>
 rendered once here, so the controller (PATCHY_PREVIEW_AUTH_ANNOTATIONS), the
-placeholder and both admission policies carry the very same bytes.
+placeholder and both admission policies carry the very same bytes, except
+that the policies judge auth-session-timeout as a ceiling: any whole number
+of seconds from 1 to timeoutCeiling (a shorter ALB session is never weaker).
+
+The ceiling is previewAuth.sessionTimeout. Helm applies the placeholder
+Ingress, and the controller its slot Ingresses, before the policies change,
+so in the require stage the sets carry the shorter of sessionTimeout and the
+live policy's recorded ceiling: lowering takes one upgrade, raising two (the
+first records the new ceiling, the second applies it), and neither is ever
+refused. A live policy from a chart that compared the timeout exactly (no
+recorded ceiling) is read for the value it pins, which the sets keep for this
+one upgrade, with the ceiling the longer of the two; the next upgrade applies
+sessionTimeout. With no live policy (a first install, or a render without a
+cluster) the sets carry sessionTimeout.
 
 A slot's ALB client secret is hex(sha256(master || "\x00patchy-preview-auth/
 v1/client-secret\x00" || generation || "\x00" || slot)), the construction
@@ -131,6 +148,40 @@ internal/previewauth reproduces (a Go test renders the chart and compares).
 {{- if gt $prevGen 0 }}{{ $gens = append $gens $prevGen }}{{ end -}}
 {{- $admits := list -}}
 {{- range $g := $gens | sortAlpha }}{{ $admits = append $admits (printf "g%v" $g) }}{{ end -}}
+{{- /* The session timeout the sets carry, and the ceiling the policies
+       admit (see above). Only the require stage applies the sets to an
+       Ingress, so only it defers to the live policy. */ -}}
+{{- $vap := lookup "admissionregistration.k8s.io/v1" "ValidatingAdmissionPolicy" "" "patchy-preview-ingresses" -}}
+{{- $timeout := int $pa.sessionTimeout -}}
+{{- $ceiling := $timeout -}}
+{{- if eq $pa.stage "require" -}}
+{{- $liveCeiling := dig "metadata" "annotations" "patchy.bitwisemedia.uk/preview-auth-session-timeout" "" $vap -}}
+{{- if regexMatch "^[1-9][0-9]{0,5}$" $liveCeiling -}}
+{{- $timeout = min $timeout (atoi $liveCeiling) | int -}}
+{{- else -}}
+{{- /* An exact-compare policy: the value slot 0's sets pin, which the
+       placeholder must carry to be admitted by it. */ -}}
+{{- $pinned := "" -}}
+{{- range $v := dig "spec" "variables" list $vap -}}
+{{- if and (kindIs "map" $v) (eq (get $v "name" | toString) "authWant") -}}
+{{- $want := fromJson (get $v "expression" | toString) -}}
+{{- $slot0 := get $want "patchy-preview-0" -}}
+{{- if kindIs "slice" $slot0 -}}
+{{- range $s := $slot0 -}}
+{{- if kindIs "map" $s -}}
+{{- $t := get $s "alb.ingress.kubernetes.io/auth-session-timeout" | toString -}}
+{{- if and (not $pinned) (regexMatch "^[1-9][0-9]{0,5}$" $t) }}{{ $pinned = $t }}{{ end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if $pinned -}}
+{{- $timeout = atoi $pinned -}}
+{{- $ceiling = max $ceiling $timeout | int -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- $sets := dict -}}
 {{- $clientSecrets := dict -}}
 {{- range $g := $gens -}}
@@ -144,7 +195,7 @@ internal/previewauth reproduces (a Go test renders the chart and compares).
     "alb.ingress.kubernetes.io/auth-on-unauthenticated-request" "authenticate"
     "alb.ingress.kubernetes.io/auth-scope" "openid"
     "alb.ingress.kubernetes.io/auth-session-cookie" (printf "patchy-preview-s%d" $i)
-    "alb.ingress.kubernetes.io/auth-session-timeout" (toString (int $pa.sessionTimeout))) -}}
+    "alb.ingress.kubernetes.io/auth-session-timeout" (toString $timeout)) -}}
 {{- if $managed -}}
 {{- $_ := set $secrets (toString $i) (sha256sum (printf "%s\x00patchy-preview-auth/v1/client-secret\x00%d\x00%d" (get $masters (toString $g)) $g $i)) -}}
 {{- end -}}
@@ -161,7 +212,6 @@ internal/previewauth reproduces (a Go test renders the chart and compares).
        Ingress, and the controller patches every slot Ingress, before it
        updates any admission policy. A rotation's first upgrade therefore
        keeps applying the previous generation; the next applies the new. */ -}}
-{{- $vap := lookup "admissionregistration.k8s.io/v1" "ValidatingAdmissionPolicy" "" "patchy-preview-ingresses" -}}
 {{- $live := splitList "," (dig "metadata" "annotations" "patchy.bitwisemedia.uk/preview-auth-admits" "" $vap) -}}
 {{- $confirmed := int ($pa.permitConfirmedGeneration | default 0) -}}
 {{- if or (has (printf "g%d" $gen) $live) (eq $confirmed $gen) -}}
@@ -176,7 +226,8 @@ internal/previewauth reproduces (a Go test renders the chart and compares).
 {{- end -}}
 {{- $st = dict "enabled" true "stage" $pa.stage "issuer" $issuer "managedKeys" $managed "keysSecret" $keysSecret
     "keys" $keys "keysFresh" $fresh "gen" $gen "prevGen" $prevGen "admits" (join "," $admits) "sets" $sets
-    "clientSecrets" $clientSecrets "applyGen" $applyGen "otherGen" $otherGen -}}
+    "clientSecrets" $clientSecrets "applyGen" $applyGen "otherGen" $otherGen
+    "sessionTimeout" $timeout "timeoutCeiling" $ceiling -}}
 {{- end -}}
 {{- $_ := set $pa "_state" ($st | toJson) -}}
 {{- end -}}

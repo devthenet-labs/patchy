@@ -7,7 +7,77 @@
 > documentation values `111122223333` and `203.0.113.10/32`. The real ones are in terraform-devthenet's `k8s/` values
 > (private).
 
-## Current checkpoint — 2026-10-07 (overnight): 0.12.22 to 0.12.24
+## Current checkpoint — 2026-10-08: preview sign-in on, and 0.12.25
+
+**Preview sign-in is on for devthenet-dev, at the `require` stage, and was tested end to end in a browser.** Every
+preview host now sends an unauthenticated visitor to the `preview-auth` relay, which signs them in with GitHub through
+Dex once per browser session. Access is decided by a SubjectAccessReview on `projects/previews`. The relay hands the
+preview's load balancer only an opaque, pairwise subject, never an identity for the app. The preview IP allowlist is
+**still on**; removing it is the owner's call.
+
+Switch-on, in order:
+
+1. terraform-devthenet #47 (merged): the relay's DNS record, its Dex static client `patchy-preview-auth`, and the values
+   overlay `k8s/patchy-values-preview-auth.yaml`.
+2. The two client Secrets, created from one random value and never printed.
+3. Dex rev 5. Rev 4 crash-looped because of a values edit; the old pod kept serving. Dex's rollback point is rev 3.
+4. patchy rev 66 at `permit`.
+5. patchy rev 67 at `require`.
+
+0.12.25 (#154) then landed the three follow-ups from the live test:
+
+- **`patchy check project` judges Dex's answer for real.** The Dex check used to pass on any redirect, and Dex also
+  redirects an unknown client at `/auth`. It now follows redirects that stay on Dex's own origin and judges where they
+  end: github.com is PASS; `Unregistered redirect_uri.` (400) or `Invalid client_id.` (404) is FAIL.
+- **The relay Ingress sets its load-balancer settings explicitly.** It sets `ip` targets and a health check on `/`. It
+  sets `internet-facing` only when it is off the chart's edge class.
+- **The flaky `TestDNSClusterLeavesTheJobAlone` is fixed.** The fake clientset stamps managed fields with the wall-clock
+  second, so two Jobs created on either side of a second boundary differed.
+
+**Live on devthenet-dev:**
+
+- Helm patchy rev 68 (0.12.25, `require`) and patchy-config rev 44.
+- Rollback points for patchy: 67 (0.12.24, `require`), 66 (`permit`), 65 (sign-in off).
+- Rolling back from `require` is not a plain `helm rollback`. Follow docs/intents/preview-sign-in.md, "Rolling back":
+  1. Scale preview-controller to 0.
+  2. Delete the binding `patchy-preview-all-slots-ingress-auth`.
+  3. Run `helm rollback patchy 65`.
+- After the upgrade, `patchy check project preview-demo` passes every check, including `preview-auth-dex`, which now
+  ends at github.com.
+
+**Live test, 2026-10-08 (intents#19 → `preview-demo-19`, slot 0; 0.12.24, then again on 0.12.25):**
+
+- **Sign-in worked.** A browser with the owner's GitHub session signed in without a prompt. The relay's audit lines
+  were: authorize → `login`, callback → `issued` (access review passed), token 200 (the load balancer's client
+  authentication works), userinfo 200. The only identity in them is the pairwise subject. The page served the PR's
+  build.
+- **Sessions are per host.** In the same slot, the placeholder host started a fresh authorize instead of reusing the
+  session, and the relay answered "No live preview": it fails closed.
+- **No bypass got through.** An unauthenticated request, forged `x-amzn-oidc-*` headers and a made-up session cookie
+  each got the 302 to the relay.
+- **The ALB's authorize request carries `state` only.** It sends no nonce and no PKCE, which is why the relay binds its
+  codes to client, slot, Preview UID and label itself.
+- **Clean-up worked.** Closing the test PR closed the intent, and the slot's Ingress was gone within a minute.
+
+**Not verified:**
+
+- The session cookie's HttpOnly and Domain attributes. browser-use cannot read cookies and the AWS docs say nothing, so
+  this needs a DevTools look.
+- A non-viewer's 403 page; that needs a second GitHub account.
+- Replaying a session across slots; only slot 0 was live.
+
+The e2e suite now runs close to Go's 10-minute default test timeout (579–597 s on the owner's machine). `hack/e2e.sh`
+should set an explicit `-timeout`.
+
+**Still waiting on the owner:**
+
+- the cookie check above;
+- whether to drop the preview IP allowlist;
+- the upstream advisory and the git-history scrub.
+
+Intent context, never-discard-work and session resume stay parked (branch `feature/never-discard-work`, unmerged).
+
+## Earlier checkpoint — 2026-10-07 (overnight): 0.12.22 to 0.12.24
 
 **Three releases, each deployed and checked live on devthenet-dev.** The owner narrowed the night's work to preview
 sign-in plus four small fixes; the larger "never discard work" and intent-context work is parked (branch

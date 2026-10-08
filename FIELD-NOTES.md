@@ -41,6 +41,18 @@ becomes documentation or a fix, link the PR beside it. Newest first within each 
 
 ## Running intents
 
+- **A preview's sign-in session belongs to its host** (preview-demo-19, 2026-10-08, 0.12.24). Each preview host's load
+  balancer keeps its own session cookie, so a viewer who opens a second preview signs in again. With an existing GitHub
+  and Dex session that second sign-in is a silent redirect chain with no prompt. Docs: say so in the viewer's guide, so
+  a redirect flash on a new preview is not mistaken for a fault.
+- **A Helm values edit to Dex's static clients can break the client next to it** (devthenet-dev, 2026-10-08). The new
+  client's lines went inside the previous client's block, so that client lost its `secretEnv` and the new one had two.
+  Dex rev 4 crash-looped; the old pod kept serving, so nothing went down. Docs: the operator guide should show the whole
+  client entry, and a check before upgrading should render Dex's config and compare the client list.
+- **A Dex that redirects is not proof the client is registered** (2026-10-08). Dex answers `/auth` for an unknown client
+  with a 302 to its connector before it judges anything. The relay check now follows that hop (#154); any other check
+  that probes an OpenID provider should judge where the redirects end, not the first status code.
+
 - **Live output streams on the real CLI** (preview-demo-16, 2026-10-06, 0.12.20). In a repository-image build pod, the
   agent's `go vet`/`go test` command printed its first chunk at 20:31:19Z and its last, with Done, 22 seconds later,
   while it ran. Docs: the run panel's Live output box shows the latest command only, and only while the run is live; the

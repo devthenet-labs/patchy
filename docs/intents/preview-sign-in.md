@@ -282,9 +282,11 @@ kubectl get validatingadmissionpolicy patchy-preview-ingresses \
   with the ceiling the longer of the two, and the next upgrade applies the new value. Lowering is two upgrades this one
   time. If that upgrade also empties the allowlist (`preview.allowPublicWithAuth`) while the pinned value is over 900
   seconds, the render is refused: lower the session first, with the allowlist still set.
-- **A render without a cluster** (`helm template`, Argo CD, Flux) cannot read the live ceiling, so it applies
-  `sessionTimeout` directly. Lowering still syncs cleanly. A raise is refused on the placeholder until the policy has
-  synced, so the sync must be retried once.
+- **A render without a cluster** (`helm template`, Argo CD, Flux) cannot read the live policy, so it applies
+  `sessionTimeout` directly. Against policies from this chart, lowering syncs cleanly, and a raise is refused on the
+  placeholder until the policy has synced, so the sync must be retried once. The first sync off chart 0.12.25 or earlier
+  meets policies that compare the timeout exactly, so any change, lowering included, is refused on the placeholder until
+  the policies have synced: retry the sync once.
 
 Up to 0.12.25 any change failed the first upgrade on the placeholder with
 `preview Ingress sign-in annotations must be exactly one admitted key generation's pinned set for this slot`, and the

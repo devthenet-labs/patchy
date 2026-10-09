@@ -16,7 +16,7 @@ as a hard break. */ -}}
 
 **Repositories:** patchy opens one pull request in each of: {{ . }}.
 {{- end }}
-{{- if or .Invisible .Wide .BlankRun .NewDependencies .Questions }}
+{{- if or .Invisible .Wide .BlankRun .NewDependencies .Questions .BuilderNotes }}
 
 ### Before you approve
 {{- with .Invisible }}
@@ -37,6 +37,10 @@ The plan has a run of {{ . }} blank lines with more of the plan below it: read t
 {{ range . }}
 - {{ . }}
 {{- end }}
+{{- end }}
+{{- if .BuilderNotes }}
+
+The plan includes notes for the builder, under `## Notes for the builder`. The build receives them as part of the plan, so read them as you read its steps.
 {{- end }}
 {{- with .Questions }}
 

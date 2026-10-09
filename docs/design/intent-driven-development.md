@@ -380,7 +380,7 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
      a replan or revival, the snapshot also includes approver comments made since the last plan.
    - On a replan or revival (never the first plan), store a context file of the earlier work beside the snapshot, as
      `context.md`, pinned by its own digest (`input.contextDigest`, copied onto each plan run's `inputs.contextDigest`).
-     It holds three sections, each escaped to visible text, fenced as data and bounded on its own:
+     It holds four sections, each escaped to visible text, fenced as data and bounded on its own:
      - the previous plan: the plan recorded before Planning cleared it, read from its `<intent>-plan-r<rev>` ConfigMap.
        Plan revisions skip numbers, so this is the recorded plan, not revision N-1. It is capped at 64 KiB.
      - the outcome and detail of the intent's latest build, revise or check-fix run, when that run failed, capped at 4
@@ -388,12 +388,14 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
      - the approvers' comments on the issue from the trigger up to the previous plan's posting, under the snapshot's
        filters (no outsider, no bot, nothing patchy wrote, nothing edited). The newest are kept within 16 KiB, and a
        line counts the older comments left out. An edited comment is skipped, never fatal.
+     - the working notes of each repository's latest build, revise or check-fix run that wrote any, failed or not, each
+       cut at 6 KiB (see "Working notes" below).
 
      The pull request's review thread is not included. The context file is never part of the request: the approval stays
      bound to the request's digest, which it re-renders from the issue, so a replan's context never refuses an approval.
      A plan run copies the file into its `investigation.md` after re-hashing it against its pin, and the run controller
      re-hashes it again at launch. agent-runner names the file in the plan prompt, under "Earlier work on this intent",
-     as data rather than instructions, and the request stays the authority. Worst case the file is about 86 KiB.
+     as data rather than instructions, and the request stays the authority. Worst case the file is about 135 KiB.
 
    - Create a Repository at the default branch.
    - Create the IntentRun `…-plan-r1-a1`. Its input ConfigMap also records the other intents of the Project that have
@@ -470,8 +472,9 @@ in `intent_types.go`, following the idiom of `transitions.go` but separate from 
     - Check limits. If one is exceeded, the Intent goes to `Blocked` with a notice.
     - Create a Repository with `ref.branch = patchy-intent/<intent>`. This pins the current PR head, including any human
       commits.
-    - Render into `investigation.md`, after the plan: the previous round's outcome if it failed, the earlier approver
-      thread as context, the round's new feedback (or its check failures) and the compare patch.
+    - Render into `investigation.md`, after the plan: the latest working notes, the previous round's outcome if it
+      failed, the earlier approver thread as context, the round's new feedback (or its check failures) and the compare
+      patch.
     - Launch with the image from R0, never from the PR head. Move to `Revising`.
 11. **Revise push.**
     - Validate: the changeset's base must equal the PR-head pin.
@@ -780,11 +783,28 @@ closes the intent issue itself.
     failures, and its failure signature is theirs alone. If GitHub will not give the thread, the section says "Earlier
     feedback unavailable." and the round runs on its checks.
   - Inline comments carry path, line and side, plus the tail of the diff hunk (at most 1 KiB).
-  - Limits on the new feedback: at most 40 items, 2 KiB each, 24 KiB in total. With the plan (56 KiB), the round's input
-    stays under about 173 KiB.
+  - Limits on the new feedback: at most 40 items, 2 KiB each, 24 KiB in total. With the plan (56 KiB) and the working
+    notes (6 KiB), the round's input stays under about 179 KiB.
   - Control characters are stripped, and each item is fenced under a "data, not rules" preamble (the quoting idiom in
     templates.go:150-186).
   - Comments from non-approvers are counted but never included. App repos are public, so anyone can comment.
+- **Working notes.** Every build report ends with an optional `## Working notes` body section: the build prompt asks for
+  a short note, under 6 KiB, for the next agent on the intent (where the code is, commands that worked or did not in the
+  sandbox, decisions and why, what was tried and rejected, open questions, the state of the work), and for an updated
+  version, not an appended one, when the input already carries notes. `report.ParseBuild` accepts the same reports as
+  before; the section is neither required nor bounded beyond the body's 48 KiB.
+  - A round's input carries, under `### Working notes from the previous round` after the plan and before every feedback
+    section, the notes of the latest earlier run of its repository and plan revision (the build, an earlier round, or an
+    earlier attempt of its own) whose stored report holds any, failed or not, naming the run that wrote them.
+  - The controller re-parses `status.report` with `report.ParseBuild` (a repository's image is untrusted) and skips a
+    report that does not parse. It takes the section up to the next level-1 or level-2 heading outside a code fence,
+    escapes it to visible text (its backticks too when a fence around them would not fit), cuts it at 6 KiB with a
+    visible "patchy truncated these working notes" line (an over-long note is never refused) and fences it as data.
+  - A replan's or revival's context file carries each repository's latest notes the same way.
+- **Notes for the builder.** A plan may end with a `## Notes for the builder` section: what the build should know that
+  the steps do not say, under 4 KiB by the prompt. It is part of the plan, so the approver reads it verbatim and the
+  build receives it with the plan; no parser changes. When the plan body has a non-empty section of that heading, the
+  approval comment's "Before you approve" says so in one line.
 - **Diff.** The compare patch for `base...head`, at most 48 KiB, with any truncation stated. There is no second tree in
   the pod.
 - **Visible text only.** agent-runner holds the whole of `investigation.md` to the plan's rule, the round after the plan

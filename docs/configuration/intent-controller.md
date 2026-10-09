@@ -222,9 +222,13 @@ eviction would end the run with nothing to show for it. Sizing advice, with a wo
 | `/patchy cancel`                                  | Closes the intent and its issue (`not_planned`)         |
 
 A replan or revival does not start from nothing. Its planner is also handed a context file of the earlier work, as data:
-the previous plan, how the latest build, revise or check-fix run ended if it failed, and the approvers' earlier comments
-on the issue (from the trigger up to the previous plan). Each part is bounded. The request stays the authority on what
-to build, and the approval is still bound to the request alone.
+the previous plan, how the latest build, revise or check-fix run ended if it failed, the approvers' earlier comments on
+the issue (from the trigger up to the previous plan), and each repository's latest working notes (below). Each part is
+bounded. The request stays the authority on what to build, and the approval is still bound to the request alone.
+
+A plan may end with a `## Notes for the builder` section: what the build should know that its steps do not say, such as
+where things are, the commands to use and the pitfalls. It is part of the plan, so the approver reads it as written and
+the build receives it with the plan. When a plan has one, the approval comment says so under "Before you approve".
 
 An action counts only when GitHub's API shows who took it: the actor of a label event, or a comment's author. That
 account must be in the Project's `approvers.logins`, have write access to the intent repository, and not be a bot.
@@ -297,6 +301,13 @@ request's head, in the same image as its build, pushed as a fast-forward of the 
   (coverage from 71.3% to 76.1%, a test from `got 3` to `got 4`) is progress, and gets another round. A tool that prints
   some other volatile number in its last lines (a random seed, say) can still make the same failure read as a new one,
   which costs a round, up to `limits.maxCheckFixes`.
+- **Working notes** carry what each agent learned to the next. Every build, revision and CI-fix agent is asked to end
+  its report with a `## Working notes` section for the next agent on the intent: where the code is, the commands that
+  worked in its sandbox, its decisions and what it tried and rejected, open questions and the state of the work. A round
+  is handed the notes of the latest earlier run of its repository and plan revision that wrote any, failed or not, after
+  the plan and before its feedback, and returns them updated. patchy re-reads them from the run's stored report, which
+  must still parse, shows every character visibly, and cuts notes longer than 6 KiB with a visible marker rather than
+  refusing them.
 - **Re-runs before a CI-fix round**, with `checks.rerunFailed: true` (off by default): the first time a named check
   fails on a head patchy pushed, patchy re-runs the failed jobs of the GitHub Actions run behind it once, instead of
   starting a round, so a flaky test that passes the second time costs no agent run. The re-run is recorded on the

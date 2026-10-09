@@ -130,8 +130,10 @@ func getUnit(t *testing.T, c client.Client, name string) *v1alpha1.EvaluationUni
 	return &u
 }
 
-func getEval(t *testing.T, c client.Client, name string) *v1alpha1.Evaluation {
+// getEval re-reads the eval-1 parent every test in this package creates.
+func getEval(t *testing.T, c client.Client) *v1alpha1.Evaluation {
 	t.Helper()
+	const name = "eval-1"
 	var e v1alpha1.Evaluation
 	if err := c.Get(t.Context(), types.NamespacedName{Namespace: "patchy", Name: name}, &e); err != nil {
 		t.Fatalf("Get(%s): %v", name, err)
@@ -183,7 +185,7 @@ func TestGateCreatesChildrenIdempotently(t *testing.T) {
 		}
 	}
 
-	parent := getEval(t, c, "eval-1")
+	parent := getEval(t, c)
 	if parent.Status.Phase != v1alpha1.EvaluationRunning {
 		t.Errorf("parent phase = %q, want Running", parent.Status.Phase)
 	}
@@ -308,7 +310,7 @@ func TestLaunchWorkspaceLost(t *testing.T) {
 	if u.Status.Phase != v1alpha1.RunFailed || u.Status.Reason != v1alpha1.UnitWorkspaceLost {
 		t.Errorf("unit = %s/%s, want Failed/WorkspaceLost", u.Status.Phase, u.Status.Reason)
 	}
-	parent := getEval(t, c, "eval-1")
+	parent := getEval(t, c)
 	if !meta.IsStatusConditionTrue(parent.Status.Conditions, v1alpha1.ConditionStalled) {
 		t.Error("parent Stalled condition not set")
 	}
@@ -362,7 +364,7 @@ func TestCollectResultOK(t *testing.T) {
 	if u.Status.ResultsRef == nil || u.Status.ResultsRef.Name != unit.Name+"-results" {
 		t.Errorf("resultsRef = %+v, want %s-results", u.Status.ResultsRef, unit.Name)
 	}
-	parent := getEval(t, c, "eval-1")
+	parent := getEval(t, c)
 	if parent.Status.Phase != v1alpha1.EvaluationComplete || parent.Status.UnitsComplete != 1 {
 		t.Errorf("parent = %s complete=%d, want Complete/1", parent.Status.Phase, parent.Status.UnitsComplete)
 	}

@@ -36,7 +36,7 @@ jobs:
         # the project board and its Project Sync App belong to the upstream org;
         # a fork has neither, so skip rather than fail on every issue/PR
         if: vars.ADD_TO_PROJECT_CLIENT_ID != ''
-        uses: bitwise-media-group/github-workflows/.github/workflows/add-to-project.yaml@a0d0170124ad80a06082078b60669d7c99d33ee6 # v6.3.0
+        uses: devthenet-labs/github-workflows/.github/workflows/add-to-project.yaml@6838679e81c60654484ad3a7dec7697a2236748e # v6.3.0 + RUNNER_LABEL
         with:
             project-url: https://github.com/orgs/bitwise-media-group/projects/1
             app-client-id: ${{ vars.ADD_TO_PROJECT_CLIENT_ID }}

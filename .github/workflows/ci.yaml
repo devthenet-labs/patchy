@@ -31,7 +31,7 @@ jobs:
         # affects the build: the dev CLIs (golangci-lint, govulncheck, addlicense,
         # gotestsum, ...) are pinned by the toolchain submodule's
         # config.toml/mise.lock, not a tools/go.sum.
-        uses: bitwise-media-group/github-workflows/.github/workflows/ci.yaml@a0d0170124ad80a06082078b60669d7c99d33ee6 # v6.3.0
+        uses: devthenet-labs/github-workflows/.github/workflows/ci.yaml@6838679e81c60654484ad3a7dec7697a2236748e # v6.3.0 + RUNNER_LABEL
         with:
             # The reusable workflow's e2e job is opt-in (its default is off,
             # since e2e often needs services or secrets); without this it is
@@ -58,7 +58,7 @@ jobs:
     # CI half. The setup mirrors the reusable workflow's jobs, with its action
     # pins (github-workflows v6.3.0) — keep the two in step when bumping.
     envtest:
-        runs-on: ubuntu-latest
+        runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
         permissions:
             # check out the repository
             contents: read
@@ -97,7 +97,7 @@ jobs:
     # only at release, after the chart has merged. helm and yq come pinned from
     # mise, set up as in the envtest job above; no Go toolchain is needed.
     helm-lint:
-        runs-on: ubuntu-latest
+        runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
         permissions:
             # check out the repository
             contents: read
@@ -125,7 +125,7 @@ jobs:
     # init downloads the AWS provider only for its schema. terraform, tflint and
     # terraform-docs come pinned from mise, set up as in the jobs above.
     terraform:
-        runs-on: ubuntu-latest
+        runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
         permissions:
             # check out the repository
             contents: read
@@ -154,7 +154,7 @@ jobs:
     # the test job pins their bytes; this proves those bytes work. Set up as
     # in the envtest job above; mise provides the linters, node and python.
     scaffold-check:
-        runs-on: ubuntu-latest
+        runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
         permissions:
             # check out the repository
             contents: read

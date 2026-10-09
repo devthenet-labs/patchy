@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12.27](https://github.com/devthenet-labs/patchy/compare/v0.12.26...v0.12.27) (2026-10-09)
+
+
+### Features
+
+* **intent:** carry agents' working notes from run to run ([#164](https://github.com/devthenet-labs/patchy/issues/164)) ([3a0db3a](https://github.com/devthenet-labs/patchy/commit/3a0db3ae1396fdcdd17c6433514da02892d08cfb))
+* **intent:** carry earlier rounds' context into replans, revisions and CI fixes ([#161](https://github.com/devthenet-labs/patchy/issues/161)) ([5a61f4b](https://github.com/devthenet-labs/patchy/commit/5a61f4b10ff3b93ef540709c9e086da66990e7a6))
+
+
+### Bug Fixes
+
+* **deps:** build with Go 1.26.9 and golang.org/x/net v0.60.0 ([#166](https://github.com/devthenet-labs/patchy/issues/166)) ([885ee84](https://github.com/devthenet-labs/patchy/commit/885ee84a6c3aacfc3f3fbe0141f92309a5f8fc5b))
+
 ## [0.12.26](https://github.com/devthenet-labs/patchy/compare/v0.12.25...v0.12.26) (2026-10-08)
 
 

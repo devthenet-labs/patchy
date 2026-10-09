@@ -54,11 +54,11 @@ func decodeBody[T any](t *testing.T, r *http.Request) T {
 	return v
 }
 
-// wantHeader asserts one request header value.
-func wantHeader(t *testing.T, r *http.Request, key, want string) {
+// wantAuth asserts the request's Authorization header value.
+func wantAuth(t *testing.T, r *http.Request, want string) {
 	t.Helper()
-	if got := r.Header.Get(key); got != want {
-		t.Errorf("%s header = %q, want %q", key, got, want)
+	if got := r.Header.Get("Authorization"); got != want {
+		t.Errorf("Authorization header = %q, want %q", got, want)
 	}
 }
 

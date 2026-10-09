@@ -62,7 +62,7 @@ func TestListOpen(t *testing.T) {
 	page2 := `[{"number":3,"title":"t3","state":"open"}]`
 	paged := pagedHandler(t, page1, page2)
 	mux.HandleFunc("GET /repos/o/r/issues", func(w http.ResponseWriter, r *http.Request) {
-		wantHeader(t, r, "Authorization", "Bearer pat-token")
+		wantAuth(t, r, "Bearer pat-token")
 		q := r.URL.Query()
 		if q.Get("state") != "open" {
 			t.Errorf("state = %q, want %q", q.Get("state"), "open")

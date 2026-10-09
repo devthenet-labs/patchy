@@ -30,6 +30,12 @@ includes = [".mise/tasks/go-cli.toml", "tasks.toml"]
 # controller-runtime minor pinned in go.mod (v0.24.x). yq extracts the CRD
 # spec schemas into the patchy-config values schema (hack/codegen.sh).
 [tools]
+# Overrides the shared toolchain's go, which locks 1.26.6: go.mod asks for
+# 1.26.9, the release that fixes GO-2026-6599 to GO-2026-6617 (net/http,
+# HTTP/2, crypto/tls, html/template), and the tasks run with
+# GOTOOLCHAIN=local. Toolchain v3 moved the go pin into each repo's root, so
+# this pin stays when the submodule moves to v3.
+go = "1.26.9"
 # osv-scanner is a runtime dependency of `patchy mirror` image scanning
 # (the scan stage shells out to it); cosign — which sign/verify shell out
 # to — is already pinned by the shared toolchain.

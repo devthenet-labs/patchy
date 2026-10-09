@@ -16,7 +16,7 @@ import (
 func TestDefaultBranch(t *testing.T) {
 	mux, c := newFakeClient(t)
 	mux.HandleFunc("GET /repos/o/r", func(w http.ResponseWriter, r *http.Request) {
-		wantHeader(t, r, "Authorization", "Bearer pat-token")
+		wantAuth(t, r, "Bearer pat-token")
 		writeJSON(t, w, `{"name":"r","default_branch":"trunk"}`)
 	})
 

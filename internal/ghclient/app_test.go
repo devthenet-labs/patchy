@@ -73,7 +73,7 @@ func TestInstallation(t *testing.T) {
 		writeJSON(t, w, `{"token":"inst-tok","expires_at":"2100-01-01T00:00:00Z"}`)
 	})
 	mux.HandleFunc("GET /repos/o/r", func(w http.ResponseWriter, r *http.Request) {
-		wantHeader(t, r, "Authorization", "token inst-tok")
+		wantAuth(t, r, "token inst-tok")
 		writeJSON(t, w, `{"default_branch":"main"}`)
 	})
 

@@ -45,7 +45,7 @@ permissions: {}
 
 jobs:
     publish:
-        runs-on: ubuntu-latest
+        runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
         strategy:
             matrix:
                 chart: [patchy, patchy-config]

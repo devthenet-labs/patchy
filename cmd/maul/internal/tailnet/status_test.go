@@ -56,7 +56,7 @@ func TestFindThePreviewsDevice(t *testing.T) {
 	}
 	// The laptop asked for the same name but carries no tag: never it.
 	if m := Find(st, "maul-previews", []string{"tag:other"}); m.Found ||
-		!strings.Contains(m.Why, "no device named maul-previews carrying tag:other") {
+		!strings.Contains(m.Why, "maul-previews.tail1234.ts.net does not carry tag:other") {
 		t.Errorf("another tag: %+v", m)
 	}
 }
@@ -69,12 +69,22 @@ func TestFindWhyNot(t *testing.T) {
 		`"HostName": "maul-previews-1", "DNSName": "maul-previews-1`, 1)
 	twice := strings.Replace(statusJSON, `"TailscaleIPs": ["100.101.3.3"], "Online": false`,
 		`"TailscaleIPs": ["100.101.3.3"], "Tags": ["tag:maul-previews"], "Online": false`, 1)
+	// The operator's device under the old tag, as a renamed tag leaves it
+	// until the tailnet policy lets the operator own the new one.
+	oldTag := strings.Replace(statusJSON, `"Tags": ["tag:maul-previews"]`, `"Tags": ["tag:patchy-previews"]`, 1)
+	gone := strings.Replace(oldTag, `"maul-previews.tail1234.ts.net."`, `"elsewhere.tail1234.ts.net."`, 1)
 	hostile := strings.Replace(statusJSON, `"NeedsLogin"`, `"Running"`, 1)
 	hostile = strings.Replace(hostile, `"Running"`, `"Run\u001b[31mning"`, 1)
 	for name, tc := range map[string]struct{ raw, want string }{
-		"not running":   {stopped, "this machine's Tailscale client is NeedsLogin, not Running"},
-		"renamed":       {renamed, "an older maul-previews still holds the name"},
-		"two of them":   {twice, "2 devices named maul-previews"},
+		"not running": {stopped, "this machine's Tailscale client is NeedsLogin, not Running"},
+		"renamed":     {renamed, "an older maul-previews still holds the name"},
+		"two of them": {twice, "2 devices named maul-previews"},
+		"other tag": {oldTag, "maul-previews.tail1234.ts.net does not carry tag:maul-previews: the operator can " +
+			"apply tag:maul-previews only while the tailnet policy's \"tagOwners\" lets its own tag " +
+			"(tag:k8s-operator by default) own it"},
+		"no device": {gone, "no device named maul-previews carrying tag:maul-previews is on this machine's " +
+			"tailnet: the operator creates it once the gateway's Service is installed, and the operator can " +
+			"apply tag:maul-previews only while the tailnet policy's \"tagOwners\""},
 		"control chars": {hostile, "this machine's Tailscale client is unknown"},
 	} {
 		st, err := ParseStatus([]byte(tc.raw))

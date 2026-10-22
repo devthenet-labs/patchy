@@ -154,10 +154,15 @@ func Find(st Status, hostname string, tags []string) Match {
 	tagged := func(d Device) bool {
 		return len(d.IPv4) > 0 && !slices.ContainsFunc(tags, func(t string) bool { return !slices.Contains(d.Tags, t) })
 	}
-	var found, renamed []Device
+	var found, renamed, untagged []Device
 	for _, d := range st.Devices {
 		switch {
 		case !tagged(d):
+			// Only the device's own tailnet name: another machine may
+			// merely have asked for the same one.
+			if d.Name == hostname && len(d.IPv4) > 0 {
+				untagged = append(untagged, d)
+			}
 		case d.Name == hostname || d.HostName == hostname:
 			found = append(found, d)
 		case strings.HasPrefix(d.Name, hostname+"-") && digits(d.Name[len(hostname)+1:]):
@@ -174,10 +179,24 @@ func Find(st Status, hostname string, tags []string) Match {
 		return Match{Why: fmt.Sprintf("no device is named %s, but %s carr%s %s: an older %s still holds the "+
 			"name, so delete it in the admin console and the operator's proxy takes the name back once it "+
 			"restarts", hostname, names(renamed), pluralVerb(len(renamed)), want, hostname)}
+	case len(untagged) > 0:
+		return Match{Why: fmt.Sprintf("%s does not carry %s: %s", names(untagged), want, tagPolicyHint(want))}
 	}
-	return Match{Why: fmt.Sprintf("no device named %s carrying %s is on this machine's tailnet (the operator "+
-		"creates it once the gateway's Service is installed)", hostname, want)}
+	return Match{Why: fmt.Sprintf("no device named %s carrying %s is on this machine's tailnet: the operator "+
+		"creates it once the gateway's Service is installed, and %s", hostname, want, tagPolicyHint(want))}
 }
+
+// tagPolicyHint is what the operator needs before it can tag a device:
+// the tailnet policy must name the operator's own tag as an owner of each.
+// A renamed tag fails here too, until the policy is changed to match.
+func tagPolicyHint(want string) string {
+	return fmt.Sprintf("the operator can apply %s only while the tailnet policy's \"tagOwners\" lets its own tag "+
+		"(%s by default) own it, as step 6 of the NEXT-STEPS.md maul setup previews writes shows", want, operatorTag)
+}
+
+// operatorTag is the tag the Tailscale operator's own device carries
+// unless its chart says otherwise.
+const operatorTag = "tag:k8s-operator"
 
 func digits(s string) bool {
 	return s != "" && strings.Trim(s, "0123456789") == ""
